@@ -1,0 +1,4 @@
+{"messages":[{"role":"user","content":"What is a parameter in a neural network?"},{"role":"assistant","content":"A parameter is a learned number, like a weight or bias, that the model adjusts during training."}]}
+{"messages":[{"role":"user","content":"Why is a BPE tokenizer better than character-level for this project?"},{"role":"assistant","content":"BPE usually learns more efficient text chunks than single characters, which helps the model use its small context window and parameter budget better."}]}
+{"messages":[{"role":"user","content":"How can I make my small model more conversational?"},{"role":"assistant","content":"Train the base model on general text first, then fine-tune it on clean dialogue examples with a consistent chat format."}]}
+

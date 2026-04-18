@@ -1,0 +1,8 @@
+flask>=3.0
+torch>=2.2
+datasets>=2.19
+tokenizers>=0.15
+sentencepiece>=0.2
+tqdm>=4.66
+numpy>=1.26
+requests>=2.31

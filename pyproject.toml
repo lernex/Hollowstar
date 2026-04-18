@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68,<82", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tinystories-local"
+version = "0.1.0"
+description = "A tiny local GPT-style training starter for TinyStories on Apple silicon."
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "flask>=3.0",
+  "torch>=2.2",
+  "datasets>=2.19",
+  "tokenizers>=0.15",
+  "sentencepiece>=0.2",
+  "tqdm>=4.66",
+  "numpy>=1.26",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

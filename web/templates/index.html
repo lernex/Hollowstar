@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TinyLM Studio</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail">
+        <div class="brand">
+          <p class="eyebrow">Local Model Playground</p>
+          <h1>TinyLM Studio</h1>
+          <p class="subtle">
+            A calmer way to probe your checkpoints, compare runs, and see whether the model is
+            actually learning to talk.
+          </p>
+        </div>
+
+        <section class="controls">
+          <label>
+            <span>Model</span>
+            <select id="checkpoint">
+              {% for checkpoint in checkpoints %}
+              <option value="{{ checkpoint.value }}" {% if checkpoint.value == default_checkpoint %}selected{% endif %}>
+                {{ checkpoint.label }}
+              </option>
+              {% endfor %}
+            </select>
+          </label>
+
+          <div class="model-card" id="modelCard">
+            <p class="model-kicker" id="modelTagline">{{ default_checkpoint_meta.tagline if default_checkpoint_meta else "Checkpoint" }}</p>
+            <h3 id="modelName">{{ default_checkpoint_meta.label if default_checkpoint_meta else "No model found" }}</h3>
+            <p class="subtle" id="modelDescription">{{ default_checkpoint_meta.description if default_checkpoint_meta else "Train a checkpoint to unlock the chat surface." }}</p>
+          </div>
+
+          <label>
+            <span>System prompt</span>
+            <textarea id="systemPrompt" rows="4">{{ default_system_prompt }}</textarea>
+          </label>
+
+          <div class="range-grid">
+            <label>
+              <span>Temperature</span>
+              <input id="temperature" type="range" min="0" max="1.5" step="0.05" value="0.8" />
+              <strong id="temperatureValue">0.80</strong>
+            </label>
+            <label>
+              <span>Top-k</span>
+              <input id="topK" type="range" min="1" max="100" step="1" value="40" />
+              <strong id="topKValue">40</strong>
+            </label>
+            <label>
+              <span>Max new tokens</span>
+              <input id="maxTokens" type="range" min="16" max="200" step="8" value="96" />
+              <strong id="maxTokensValue">96</strong>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button id="seedPrompt" class="ghost" type="button">Load test prompt</button>
+            <button id="clearChat" class="ghost" type="button">Clear chat</button>
+          </div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="masthead">
+          <div>
+            <p class="eyebrow">Conversation Surface</p>
+            <h2>Talk to the checkpoint, not the terminal.</h2>
+          </div>
+          <div class="status" id="statusPill">Ready</div>
+        </header>
+
+        <section id="chatLog" class="chat-log"></section>
+
+        <section class="composer">
+          <label class="composer-label" for="userInput">Your message</label>
+          <textarea
+            id="userInput"
+            rows="4"
+            placeholder="Ask something basic first. Tiny models usually reveal their strengths and weirdness quickly."
+          ></textarea>
+          <div class="composer-bar">
+            <p class="hint">
+              Tip: compare the `fast` checkpoint against any future chat-tuned checkpoint and watch how the style shifts.
+            </p>
+            <button id="sendButton" type="button">Send</button>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      window.__TINYLMS__ = {
+        defaultCheckpoint: {{ default_checkpoint|tojson }},
+        checkpoints: {{ checkpoints|tojson }},
+      };
+    </script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>
