@@ -161,6 +161,7 @@ def main() -> None:
     parser.add_argument("--matmul-precision", choices=["highest", "high", "medium"], default=None)
     parser.add_argument("--tf32", action="store_true")
     parser.add_argument("--pad-to-block-size", action="store_true")
+    parser.add_argument("--log-interval", type=int, default=100)
     args = parser.parse_args()
 
     device = choose_device(args.device)
@@ -243,6 +244,8 @@ def main() -> None:
 
     for epoch in range(start_epoch, args.epochs + 1):
         running_loss = 0.0
+        interval_loss = 0.0
+        interval_updates = 0
         optimizer.zero_grad(set_to_none=True)
         for step_in_epoch, (xb, yb) in enumerate(train_loader, start=1):
             non_blocking = device.type == "cuda"
@@ -251,6 +254,7 @@ def main() -> None:
             with autocast_context():
                 _, loss = train_model(xb, yb)
             running_loss += loss.item()
+            interval_loss += loss.item()
             scaler.scale(loss / args.grad_accum_steps).backward()
 
             if step_in_epoch % args.grad_accum_steps == 0 or step_in_epoch == len(train_loader):
@@ -261,12 +265,22 @@ def main() -> None:
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
                 global_step += 1
+                interval_updates += 1
+                if args.log_interval > 0 and global_step % args.log_interval == 0:
+                    print(
+                        f"epoch {epoch:3d} | step {global_step:4d} | "
+                        f"train {interval_loss / max(interval_updates, 1):.4f}",
+                        flush=True,
+                    )
+                    interval_loss = 0.0
+                    interval_updates = 0
 
         train_loss = running_loss / len(train_loader)
         val_loss = evaluate(train_model, val_loader, device, autocast_context)
         print(
             f"epoch {epoch:3d} | step {global_step:4d} | "
-            f"train {train_loss:.4f} | val {val_loss:.4f} | ppl {math.exp(val_loss):.2f}"
+            f"train {train_loss:.4f} | val {val_loss:.4f} | ppl {math.exp(val_loss):.2f}",
+            flush=True,
         )
 
         save_checkpoint(
