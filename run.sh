@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -34,6 +34,7 @@ METIS11_REASONING_EXAMPLES="${METIS11_REASONING_EXAMPLES:-18000}"
 METIS11_BASE_STEPS="${METIS11_BASE_STEPS:-5000}"
 METIS11_H100_DTYPE="${METIS11_H100_DTYPE:-bf16}"
 METIS11_H100_COMPILE_MODE="${METIS11_H100_COMPILE_MODE:-default}"
+VENV_FLAGS="${VENV_FLAGS:-}"
 
 usage() {
   cat <<'EOF'
@@ -65,6 +66,7 @@ Commands:
   metis11-think train the Metis 1.1 thinking checkpoint
   metis11-full run the full Metis 1.1 base + chat + thinking pipeline
   metis11-h100-full run the optimized H100 Metis 1.1 path
+  metis11-h100-pod run the optimized GPU path and mirror logs into pod logs
   metis100-base train a ~104M experimental Metis base model
   metis100-full run tokenizer + data + 100M base training
   base        run setup -> tokenizer -> prepare -> train
@@ -79,6 +81,9 @@ cmd="${1:-help}"
 
 case "$cmd" in
   setup)
+    if [[ ! -x "$PY" ]]; then
+      python3 -m venv ${VENV_FLAGS:+$VENV_FLAGS } .venv
+    fi
     "$PIP" install -U pip
     "$PIP" install -r requirements.txt
     "$PIP" install -e .
@@ -184,6 +189,9 @@ case "$cmd" in
     "$0" metis11-h100-chat
     "$0" metis11-think-data
     "$0" metis11-h100-think
+    ;;
+  metis11-h100-pod)
+    ./scripts/pod_launch.sh "$0" metis11-h100-full
     ;;
   metis100-base)
     "$PY" scripts/train.py --data-dir data/metis_base --tokenizer-path artifacts/metis_tokenizer/tokenizer.json --out-dir checkpoints/metis100_base --max-steps 3000 --batch-size 2 --grad-accum-steps 8 --block-size 512 --n-layer 20 --n-head 8 --n-embd 640 --lr 2e-4 --eval-interval 250

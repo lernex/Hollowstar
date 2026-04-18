@@ -1,6 +1,9 @@
-SHELL := /bin/zsh
-PY := ./.venv/bin/python
-PIP := ./.venv/bin/pip
+SHELL := /bin/bash
+VENV_DIR ?= .venv
+PYTHON ?= python3
+VENV_FLAGS ?=
+PY := ./$(VENV_DIR)/bin/python
+PIP := ./$(VENV_DIR)/bin/pip
 ENV_FILE := .env
 BASE_CHECKPOINT ?= checkpoints/fast/best.pt
 CHAT_CHECKPOINT ?= checkpoints/chat_sft/best.pt
@@ -30,7 +33,7 @@ include $(ENV_FILE)
 export HF_TOKEN
 endif
 
-.PHONY: help setup tokenizer prepare train generate chat-data sft chat chat-fast app base full-chat fast standard overnight metis-tokenizer metis-data metis-base metis-think-data metis-think metis-full metis11-tokenizer metis11-data metis11-base metis11-chat-data metis11-chat metis11-think-data metis11-think metis11-full metis11-h100-base metis11-h100-chat metis11-h100-think metis11-h100-full metis100-base metis100-full clean-bench
+.PHONY: help setup tokenizer prepare train generate chat-data sft chat chat-fast app base full-chat fast standard overnight metis-tokenizer metis-data metis-base metis-think-data metis-think metis-full metis11-tokenizer metis11-data metis11-base metis11-chat-data metis11-chat metis11-think-data metis11-think metis11-full metis11-h100-base metis11-h100-chat metis11-h100-think metis11-h100-full metis11-h100-pod metis100-base metis100-full clean-bench
 
 help:
 	@echo "Targets:"
@@ -68,6 +71,7 @@ help:
 	@echo "  make overnight   - longer run for better quality"
 
 setup:
+	test -x $(PY) || $(PYTHON) -m venv $(VENV_FLAGS) $(VENV_DIR)
 	$(PIP) install -U pip
 	$(PIP) install -r requirements.txt
 	$(PIP) install -e .
@@ -163,6 +167,9 @@ metis11-h100-full:
 	$(MAKE) metis11-h100-chat
 	$(MAKE) metis11-think-data
 	$(MAKE) metis11-h100-think
+
+metis11-h100-pod:
+	./scripts/pod_launch.sh $(MAKE) metis11-h100-full
 
 metis100-base:
 	$(PY) scripts/train.py --data-dir data/metis_base --tokenizer-path artifacts/metis_tokenizer/tokenizer.json --out-dir checkpoints/metis100_base --max-steps 3000 --batch-size 2 --grad-accum-steps 8 --block-size 512 --n-layer 20 --n-head 8 --n-embd 640 --lr 2e-4 --eval-interval 250
