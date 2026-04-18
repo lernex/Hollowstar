@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from datasets import load_dataset
@@ -147,6 +148,7 @@ def main() -> None:
 
     log_progress(f"Saved tokenizer to {tokenizer_path}")
     log_progress(json.dumps(meta, indent=2))
+    os._exit(0)
 
 
 if __name__ == "__main__":
