@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 from datasets import load_dataset
 from tokenizers import Tokenizer
+from tqdm import tqdm
 
 
 ROLE_PREFIX = {
@@ -40,7 +41,12 @@ def load_hf_stream(dataset_name: str, split: str, limit: int | None):
     dataset = load_dataset(dataset_name, split=split, streaming=True)
     if limit is None:
         raise ValueError("Streaming mode requires an explicit limit.")
-    return list(islice(dataset, limit))
+    rows = []
+    for index, row in enumerate(islice(dataset, limit), start=1):
+        rows.append(row)
+        if index == 1 or index % 5000 == 0:
+            print(f"Loaded chat examples from HF: {index}/{limit}", flush=True)
+    return rows
 
 
 def split_name(example: dict, index: int, val_ratio: float) -> str:
@@ -133,10 +139,12 @@ def write_dataset_from_examples(
     output_path: Path,
     tokenizer: Tokenizer,
     max_length: int,
+    split_name: str,
 ) -> tuple[int, int]:
     processed = []
     skipped = 0
-    for example in raw_examples:
+    total = len(raw_examples)
+    for index, example in enumerate(tqdm(raw_examples, desc=f"Encoding {split_name}", total=total), start=1):
         item = encode_conversation(
             tokenizer=tokenizer,
             messages=normalize_messages(example),
@@ -146,6 +154,12 @@ def write_dataset_from_examples(
             skipped += 1
             continue
         processed.append(item)
+        if index == 1 or index % 5000 == 0:
+            print(
+                f"Encoded {split_name} chat examples: {index}/{total} | "
+                f"kept={len(processed)} skipped={skipped}",
+                flush=True,
+            )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(processed, output_path)
@@ -213,12 +227,14 @@ def main() -> None:
         output_dir / "train.pt",
         tokenizer,
         args.max_length,
+        "train",
     )
     val_count, val_skipped = write_dataset_from_examples(
         val_examples,
         output_dir / "val.pt",
         tokenizer,
         args.max_length,
+        "val",
     )
 
     metadata = {
@@ -231,7 +247,7 @@ def main() -> None:
     }
     metadata.update(source)
     (output_dir / "meta.json").write_text(json.dumps(metadata, indent=2))
-    print(json.dumps(metadata, indent=2))
+    print(json.dumps(metadata, indent=2), flush=True)
 
 
 if __name__ == "__main__":

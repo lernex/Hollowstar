@@ -33,6 +33,7 @@ def main() -> None:
     parser.add_argument("--id-column", default="id")
     parser.add_argument("--max-docs", type=int, default=60000)
     parser.add_argument("--val-ratio", type=float, default=0.02)
+    parser.add_argument("--progress-interval", type=int, default=2000)
     args = parser.parse_args()
 
     tokenizer = Tokenizer.from_file(args.tokenizer_path)
@@ -75,7 +76,10 @@ def main() -> None:
         progress_total = args.max_docs
 
     with train_path.open("wb") as train_handle, val_path.open("wb") as val_handle:
-        for row in tqdm(row_iterator, total=progress_total, desc="Streaming documents"):
+        for index, row in enumerate(
+            tqdm(row_iterator, total=progress_total, desc="Streaming documents"),
+            start=1,
+        ):
             text = row.get("text", "")
             if not text or not text.strip():
                 continue
@@ -103,6 +107,15 @@ def main() -> None:
                 counts["val_tokens"] += int(ids.size)
                 source_bucket["val_docs"] += 1
                 source_bucket["val_tokens"] += int(ids.size)
+
+            if index == 1 or index % args.progress_interval == 0:
+                print(
+                    "Prepared docs "
+                    f"{index}/{args.max_docs} | "
+                    f"train_docs={counts['train_docs']} val_docs={counts['val_docs']} | "
+                    f"train_tokens={counts['train_tokens']:,} val_tokens={counts['val_tokens']:,}",
+                    flush=True,
+                )
 
     meta = {
         "source_mode": "mixture" if mixture is not None else "single_dataset",

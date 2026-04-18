@@ -11,6 +11,10 @@ from tokenizers.trainers import BpeTrainer
 from data_mixture import DatasetMixture
 
 
+def log_progress(message: str) -> None:
+    print(message, flush=True)
+
+
 def build_text_iterator(
     dataset_name: str,
     dataset_config: str | None,
@@ -47,6 +51,7 @@ def main() -> None:
     parser.add_argument("--streaming", action="store_true")
     parser.add_argument("--text-column", default="text")
     parser.add_argument("--output-dir", default="artifacts/tokenizer")
+    parser.add_argument("--progress-interval", type=int, default=5000)
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -72,21 +77,37 @@ def main() -> None:
         source_counts = {spec.name: 0 for spec in mixture.sources}
 
         def training_iterator():
+            yielded = 0
             for example in mixture:
                 source_counts[example["source"]] += 1
+                yielded += 1
+                if yielded == 1 or yielded % args.progress_interval == 0:
+                    log_progress(
+                        f"Tokenizer samples collected: {yielded}/{args.max_samples} | "
+                        f"source={example['source']}"
+                    )
                 yield example["text"]
 
         iterator = training_iterator()
     else:
         mixture = None
-        iterator = build_text_iterator(
-            args.dataset_name,
-            args.dataset_config,
-            args.split,
-            args.max_samples,
-            args.streaming,
-            args.text_column,
-        )
+
+        def training_iterator():
+            yielded = 0
+            for text in build_text_iterator(
+                args.dataset_name,
+                args.dataset_config,
+                args.split,
+                args.max_samples,
+                args.streaming,
+                args.text_column,
+            ):
+                yielded += 1
+                if yielded == 1 or yielded % args.progress_interval == 0:
+                    log_progress(f"Tokenizer samples collected: {yielded}/{args.max_samples}")
+                yield text
+
+        iterator = training_iterator()
 
     tokenizer.train_from_iterator(
         iterator,
@@ -124,8 +145,8 @@ def main() -> None:
         meta["split"] = args.split
     (output_dir / "tokenizer_meta.json").write_text(json.dumps(meta, indent=2))
 
-    print(f"Saved tokenizer to {tokenizer_path}")
-    print(json.dumps(meta, indent=2))
+    log_progress(f"Saved tokenizer to {tokenizer_path}")
+    log_progress(json.dumps(meta, indent=2))
 
 
 if __name__ == "__main__":

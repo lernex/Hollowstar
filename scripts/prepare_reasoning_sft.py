@@ -179,6 +179,13 @@ def main() -> None:
         target = val_examples if split_name(consumed, args.val_ratio) == "val" else train_examples
         target.append(encoded)
         progress.update(1)
+        accepted = len(train_examples) + len(val_examples)
+        if accepted == 1 or accepted % 2000 == 0:
+            print(
+                f"Collected reasoning examples: {accepted}/{args.max_examples} | "
+                f"train={len(train_examples)} val={len(val_examples)} skipped={skipped}",
+                flush=True,
+            )
 
     progress.close()
 
@@ -204,7 +211,7 @@ def main() -> None:
         "system_prompt": args.system_prompt,
     }
     (output_dir / "meta.json").write_text(json.dumps(meta, indent=2))
-    print(json.dumps(meta, indent=2))
+    print(json.dumps(meta, indent=2), flush=True)
 
 
 if __name__ == "__main__":
