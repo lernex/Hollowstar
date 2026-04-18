@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 
@@ -212,6 +213,7 @@ def main() -> None:
     }
     (output_dir / "meta.json").write_text(json.dumps(meta, indent=2))
     print(json.dumps(meta, indent=2), flush=True)
+    os._exit(0)
 
 
 if __name__ == "__main__":
