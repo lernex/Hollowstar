@@ -143,7 +143,7 @@ def save_checkpoint(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train a small GPT on tokenized TinyStories.")
+    parser = argparse.ArgumentParser(description="Train a small GPT on tokenized language-model data.")
     parser.add_argument("--data-dir", default="data/tinystories_bpe")
     parser.add_argument("--tokenizer-path", default="artifacts/tokenizer/tokenizer.json")
     parser.add_argument("--out-dir", default="checkpoints/default")

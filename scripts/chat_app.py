@@ -288,7 +288,7 @@ def api_chat():
         label = meta["label"] if meta else "This checkpoint"
         reply = (
             f"{label} is collapsing into whitespace or formatting tokens on this prompt. "
-            "Try Little Lantern 1.0 for now, or retrain the instruct run with a less aggressive truncation strategy."
+            "Try a stronger Metis checkpoint for now, or retrain this run with a less aggressive truncation strategy."
         )
     return jsonify(
         {

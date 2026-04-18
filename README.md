@@ -1,10 +1,10 @@
-# TinyStories Local Trainer
+# Metis Local Trainer
 
-This is a minimal, learn-by-building setup for training a small GPT-style language model locally on Apple silicon.
+This is a minimal, learn-by-building setup for training small GPT-style language models locally, with the main focus now on the Metis model line.
 
 The pipeline is:
 
-1. Download TinyStories with Hugging Face `datasets`
+1. Download or stream a text corpus with Hugging Face `datasets`
 2. Train a BPE tokenizer with `tokenizers`
 3. Encode the dataset into `train.bin` / `val.bin`
 4. Train a roughly 10M-parameter causal language model with PyTorch
@@ -53,7 +53,7 @@ python scripts/train_tokenizer.py \
   --max-samples 200000
 ```
 
-Tokenize TinyStories into binary files:
+Tokenize the legacy TinyStories starter corpus into binary files:
 
 ```bash
 python scripts/prepare_data.py
@@ -192,6 +192,10 @@ The checkpoints land at:
 - `checkpoints/metis_base/best.pt`
 - `checkpoints/metis_think/best.pt`
 
+## Legacy Starter Recipe
+
+The original TinyStories starter flow is still in the repo for comparison and quick smoke tests, but it is no longer the main path for current Metis work.
+
 ## Metis 1.1 Presets
 
 If you want a stronger local model without immediately jumping into truly painful runtimes, this repo now includes a fuller Metis 1.1 recipe built around higher-quality small-model data:
@@ -266,8 +270,8 @@ That gives you a fast end-to-end sanity check before you commit to a longer run.
 
 ## Files
 
-- `scripts/train_tokenizer.py`: trains a BPE tokenizer on TinyStories
-- `scripts/prepare_data.py`: tokenizes TinyStories and writes binary token files
+- `scripts/train_tokenizer.py`: trains a BPE tokenizer on text data
+- `scripts/prepare_data.py`: tokenizes the legacy starter dataset and writes binary token files
 - `scripts/train.py`: trains the transformer
 - `scripts/prepare_chat_data.py`: turns JSONL chat examples into SFT tensors
 - `make chat-data` / `./run.sh chat-data`: by default uses a 20k/2k subset of `HuggingFaceH4/ultrachat_200k`

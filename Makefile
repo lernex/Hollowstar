@@ -14,6 +14,7 @@ METIS11_BASE_CHECKPOINT ?= checkpoints/metis11_base/best.pt
 METIS11_CHAT_CHECKPOINT ?= checkpoints/metis11_chat/best.pt
 METIS11_THINK_CHECKPOINT ?= checkpoints/metis11_think/best.pt
 METIS100_BASE_CHECKPOINT ?= checkpoints/metis100_base/best.pt
+HF_NAMESPACE ?= Lernex
 METIS11_PRETRAIN_MIX ?= configs/metis11_pretrain_mix.json
 METIS11_TOKENIZER_DIR ?= artifacts/metis11_tokenizer
 METIS11_TOKENIZER_PATH ?= $(METIS11_TOKENIZER_DIR)/tokenizer.json
@@ -33,13 +34,13 @@ include $(ENV_FILE)
 export HF_TOKEN
 endif
 
-.PHONY: help setup tokenizer prepare train generate chat-data sft chat chat-fast app base full-chat fast standard overnight metis-tokenizer metis-data metis-base metis-think-data metis-think metis-full metis11-tokenizer metis11-data metis11-base metis11-chat-data metis11-chat metis11-think-data metis11-think metis11-full metis11-h100-base metis11-h100-chat metis11-h100-think metis11-h100-full metis11-h100-pod metis100-base metis100-full clean-bench
+.PHONY: help setup tokenizer prepare train generate chat-data sft chat chat-fast app base full-chat fast standard overnight metis-tokenizer metis-data metis-base metis-think-data metis-think metis-full metis11-tokenizer metis11-data metis11-base metis11-chat-data metis11-chat metis11-think-data metis11-think metis11-full metis11-h100-base metis11-h100-chat metis11-h100-think metis11-h100-full metis11-h100-pod metis100-base metis100-full hf-upload-metis11-base hf-upload-metis11-chat hf-upload-metis11-think clean-bench
 
 help:
 	@echo "Targets:"
 	@echo "  make setup       - install/update dependencies and editable package"
 	@echo "  make tokenizer   - train the BPE tokenizer"
-	@echo "  make prepare     - tokenize TinyStories into train.bin / val.bin"
+	@echo "  make prepare     - tokenize the legacy TinyStories starter corpus into train.bin / val.bin"
 	@echo "  make train       - train the base 10M model"
 	@echo "  make generate    - sample from the base model"
 	@echo "  make chat-data   - prepare chat fine-tuning tensors"
@@ -62,6 +63,9 @@ help:
 	@echo "  make metis11-think     - train the Metis 1.1 thinking checkpoint"
 	@echo "  make metis11-full      - run the full Metis 1.1 base + chat + thinking pipeline"
 	@echo "  make metis11-h100-full - run the optimized H100 Metis 1.1 path"
+	@echo "  make hf-upload-metis11-base  - upload the Metis 1.1 base checkpoint to Hugging Face"
+	@echo "  make hf-upload-metis11-chat  - upload the Metis 1.1 chat checkpoint to Hugging Face"
+	@echo "  make hf-upload-metis11-think - upload the Metis 1.1 think checkpoint to Hugging Face"
 	@echo "  make metis100-base   - train a ~104M experimental Metis base model"
 	@echo "  make metis100-full   - run tokenizer + data + 100M base training"
 	@echo "  make base        - run setup -> tokenizer -> prepare -> train"
@@ -173,6 +177,15 @@ metis11-h100-pod:
 
 metis100-base:
 	$(PY) scripts/train.py --data-dir data/metis_base --tokenizer-path artifacts/metis_tokenizer/tokenizer.json --out-dir checkpoints/metis100_base --max-steps 3000 --batch-size 2 --grad-accum-steps 8 --block-size 512 --n-layer 20 --n-head 8 --n-embd 640 --lr 2e-4 --eval-interval 250
+
+hf-upload-metis11-base:
+	$(PY) scripts/upload_hf_model.py --create-repo --private --repo-id $(HF_NAMESPACE)/Metis-1.1-base --checkpoint checkpoints/metis11_base/best.pt --tokenizer-path $(METIS11_TOKENIZER_PATH) --message "Upload Metis 1.1 base checkpoint"
+
+hf-upload-metis11-chat:
+	$(PY) scripts/upload_hf_model.py --create-repo --private --repo-id $(HF_NAMESPACE)/Metis-1.1-chat --checkpoint checkpoints/metis11_chat/best.pt --tokenizer-path $(METIS11_TOKENIZER_PATH) --message "Upload Metis 1.1 chat checkpoint"
+
+hf-upload-metis11-think:
+	$(PY) scripts/upload_hf_model.py --create-repo --private --repo-id $(HF_NAMESPACE)/Metis-1.1-think --checkpoint checkpoints/metis11_think/best.pt --tokenizer-path $(METIS11_TOKENIZER_PATH) --message "Upload Metis 1.1 think checkpoint"
 
 metis100-full: setup metis-tokenizer metis-data metis100-base
 

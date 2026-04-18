@@ -40,7 +40,7 @@ def build_text_iterator(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train a BPE tokenizer on TinyStories.")
+    parser = argparse.ArgumentParser(description="Train a BPE tokenizer on text data.")
     parser.add_argument("--mixture-config", default=None)
     parser.add_argument("--dataset-name", default="roneneldan/TinyStories")
     parser.add_argument("--dataset-config", default=None)

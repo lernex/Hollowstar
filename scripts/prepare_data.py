@@ -51,7 +51,7 @@ def load_split(dataset_name: str, split: str, limit: int | None):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Tokenize TinyStories into binary files.")
+    parser = argparse.ArgumentParser(description="Tokenize a dataset into binary files.")
     parser.add_argument("--dataset-name", default="roneneldan/TinyStories")
     parser.add_argument("--train-split", default="train")
     parser.add_argument("--val-split", default="validation")
@@ -109,4 +109,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
