@@ -1,0 +1,52 @@
+{
+  "seed": 42,
+  "sources": [
+    {
+      "name": "fineweb_edu",
+      "dataset_name": "HuggingFaceTB/smollm-corpus",
+      "dataset_config": "fineweb-edu-dedup",
+      "split": "train",
+      "streaming": true,
+      "weight": 0.75,
+      "text_column": "text",
+      "id_column": "id",
+      "loader": "text",
+      "min_chars": 200
+    },
+    {
+      "name": "cosmopedia_v2",
+      "dataset_name": "HuggingFaceTB/smollm-corpus",
+      "dataset_config": "cosmopedia-v2",
+      "split": "train",
+      "streaming": true,
+      "weight": 0.12,
+      "text_column": "text",
+      "id_column": "prompt",
+      "loader": "text",
+      "min_chars": 180
+    },
+    {
+      "name": "codeparrot_python",
+      "dataset_name": "codeparrot/codeparrot-clean",
+      "split": "train",
+      "streaming": true,
+      "weight": 0.05,
+      "text_column": "content",
+      "id_column": "hash",
+      "loader": "text",
+      "min_chars": 80
+    },
+    {
+      "name": "finemath_4plus",
+      "dataset_name": "HuggingFaceTB/finemath",
+      "dataset_config": "finemath-4plus",
+      "split": "train",
+      "streaming": true,
+      "weight": 0.08,
+      "text_column": "text",
+      "id_column": "url",
+      "loader": "text",
+      "min_chars": 120
+    }
+  ]
+}

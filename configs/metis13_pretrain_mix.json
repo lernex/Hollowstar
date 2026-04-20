@@ -1,0 +1,83 @@
+{
+  "seed": 42,
+  "sources": [
+    {
+      "name": "fineweb_edu",
+      "dataset_name": "HuggingFaceTB/smollm-corpus",
+      "dataset_config": "fineweb-edu-dedup",
+      "split": "train",
+      "streaming": true,
+      "weight": 0.76,
+      "text_column": "text",
+      "id_column": "id",
+      "loader": "text",
+      "min_chars": 220,
+      "min_alpha_ratio": 0.55,
+      "max_repeat_char_run": 40,
+      "max_line_length": 1800,
+      "max_url_count": 12
+    },
+    {
+      "name": "cosmopedia_v2",
+      "dataset_name": "HuggingFaceTB/smollm-corpus",
+      "dataset_config": "cosmopedia-v2",
+      "split": "train",
+      "streaming": true,
+      "weight": 0.06,
+      "text_column": "text",
+      "id_column": "prompt",
+      "loader": "text",
+      "min_chars": 180,
+      "min_alpha_ratio": 0.5,
+      "max_repeat_char_run": 40,
+      "max_line_length": 2000,
+      "max_url_count": 4
+    },
+    {
+      "name": "finemath_4plus",
+      "dataset_name": "HuggingFaceTB/finemath",
+      "dataset_config": "finemath-4plus",
+      "split": "train",
+      "streaming": true,
+      "weight": 0.08,
+      "text_column": "text",
+      "id_column": "url",
+      "loader": "text",
+      "min_chars": 120,
+      "min_alpha_ratio": 0.28,
+      "max_repeat_char_run": 32,
+      "max_line_length": 2200,
+      "max_url_count": 6
+    },
+    {
+      "name": "codeparrot_clean",
+      "dataset_name": "codeparrot/codeparrot-clean",
+      "split": "train",
+      "streaming": true,
+      "weight": 0.06,
+      "text_column": "content",
+      "id_column": "hash",
+      "loader": "text",
+      "min_chars": 80,
+      "min_alpha_ratio": 0.16,
+      "max_repeat_char_run": 32,
+      "max_line_length": 4000,
+      "max_url_count": 3
+    },
+    {
+      "name": "github_code_clean",
+      "dataset_name": "codeparrot/github-code-clean",
+      "split": "train",
+      "streaming": true,
+      "weight": 0.04,
+      "text_column": "code",
+      "id_column": "id",
+      "loader": "text",
+      "min_chars": 80,
+      "min_alpha_ratio": 0.12,
+      "max_repeat_char_run": 32,
+      "max_line_length": 4000,
+      "max_url_count": 3
+    }
+  ]
+}

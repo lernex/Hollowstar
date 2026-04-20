@@ -40,6 +40,18 @@ def build_text_iterator(
             yield row[text_column]
 
 
+def build_jsonl_iterator(path: str | Path, text_field: str):
+    with Path(path).open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            payload = json.loads(line)
+            text = payload.get(text_field, "")
+            if text:
+                yield text
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train a BPE tokenizer on text data.")
     parser.add_argument("--mixture-config", default=None)
@@ -51,6 +63,8 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=200000)
     parser.add_argument("--streaming", action="store_true")
     parser.add_argument("--text-column", default="text")
+    parser.add_argument("--jsonl-path", default=None)
+    parser.add_argument("--jsonl-text-field", default="text")
     parser.add_argument("--output-dir", default="artifacts/tokenizer")
     parser.add_argument("--progress-interval", type=int, default=5000)
     args = parser.parse_args()
@@ -73,7 +87,22 @@ def main() -> None:
 
     source_counts: dict[str, int] = {}
 
-    if args.mixture_config:
+    if args.jsonl_path:
+        mixture = None
+
+        def training_iterator():
+            yielded = 0
+            for text in build_jsonl_iterator(args.jsonl_path, args.jsonl_text_field):
+                yielded += 1
+                if yielded == 1 or yielded % args.progress_interval == 0:
+                    log_progress(
+                        f"Tokenizer training rows consumed from sample file: "
+                        f"{yielded}/{args.max_samples}"
+                    )
+                yield text
+
+        iterator = training_iterator()
+    elif args.mixture_config:
         mixture = DatasetMixture(args.mixture_config, total_examples=args.max_samples)
         source_counts = {spec.name: 0 for spec in mixture.sources}
 
@@ -127,8 +156,9 @@ def main() -> None:
     tokenizer.save(str(tokenizer_path))
 
     meta = {
-        "source_mode": "mixture" if mixture is not None else "single_dataset",
+        "source_mode": "jsonl" if args.jsonl_path else ("mixture" if mixture is not None else "single_dataset"),
         "mixture_config": args.mixture_config,
+        "jsonl_path": args.jsonl_path,
         "vocab_size": args.vocab_size,
         "min_frequency": args.min_frequency,
         "max_samples": args.max_samples,
@@ -137,7 +167,9 @@ def main() -> None:
         "special_tokens": {token: tokenizer.token_to_id(token) for token in special_tokens},
         "tokenizer_path": str(tokenizer_path),
     }
-    if mixture is not None:
+    if args.jsonl_path:
+        meta["jsonl_text_field"] = args.jsonl_text_field
+    elif mixture is not None:
         meta["mixture"] = mixture.summary()
         meta["source_counts"] = source_counts
     else:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from tinylm import choose_device, generate_completion, load_model, load_tokenizer
+from metis_runtime import choose_device, generate_completion, load_model, load_tokenizer
 
 
 def main() -> None:

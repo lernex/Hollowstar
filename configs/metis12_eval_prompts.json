@@ -1,0 +1,64 @@
+{
+  "prompts": [
+    {
+      "id": "base-prose-1",
+      "group": "base",
+      "prompt": "A short paragraph about why regular sleep matters for learning:\n",
+      "max_new_tokens": 120
+    },
+    {
+      "id": "base-completion-1",
+      "group": "base",
+      "prompt": "The capital of France is",
+      "max_new_tokens": 40
+    },
+    {
+      "id": "base-arithmetic-1",
+      "group": "base",
+      "prompt": "12 + 17 =",
+      "max_new_tokens": 24
+    },
+    {
+      "id": "chat-greeting-1",
+      "group": "chat",
+      "prompt": "User: Hi there\nAssistant:",
+      "max_new_tokens": 80
+    },
+    {
+      "id": "chat-self-intro-1",
+      "group": "chat",
+      "prompt": "User: Introduce yourself in one short sentence.\nAssistant:",
+      "max_new_tokens": 80
+    },
+    {
+      "id": "chat-qa-1",
+      "group": "chat",
+      "prompt": "User: What's the difference between a comet and an asteroid?\nAssistant:",
+      "max_new_tokens": 160
+    },
+    {
+      "id": "chat-followup-1",
+      "group": "chat",
+      "prompt": "User: I want a healthy breakfast idea.\nAssistant: Greek yogurt with berries and nuts is a simple option.\nUser: Can you give me a dairy-free version?\nAssistant:",
+      "max_new_tokens": 140
+    },
+    {
+      "id": "think-math-1",
+      "group": "think",
+      "prompt": "User: If I have 3 bags with 4 apples each and eat 2 apples, how many apples remain?\nAssistant:",
+      "max_new_tokens": 180
+    },
+    {
+      "id": "think-logic-1",
+      "group": "think",
+      "prompt": "User: A train leaves at 2:15 PM and arrives 1 hour 35 minutes later. What time does it arrive?\nAssistant:",
+      "max_new_tokens": 180
+    },
+    {
+      "id": "think-chat-retention-1",
+      "group": "think",
+      "prompt": "User: Say hello, then answer this: what does photosynthesis do?\nAssistant:",
+      "max_new_tokens": 180
+    }
+  ]
+}

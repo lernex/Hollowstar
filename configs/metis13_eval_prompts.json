@@ -1,0 +1,64 @@
+{
+  "prompts": [
+    {
+      "id": "base-prose-1",
+      "group": "base",
+      "prompt": "A short paragraph about why sleep helps memory formation:\n",
+      "max_new_tokens": 120
+    },
+    {
+      "id": "base-completion-1",
+      "group": "base",
+      "prompt": "The largest planet in our solar system is",
+      "max_new_tokens": 40
+    },
+    {
+      "id": "base-arithmetic-1",
+      "group": "base",
+      "prompt": "27 + 18 =",
+      "max_new_tokens": 24
+    },
+    {
+      "id": "chat-greeting-1",
+      "group": "chat",
+      "prompt": "User: Hi there\nAssistant:",
+      "max_new_tokens": 80
+    },
+    {
+      "id": "chat-self-intro-1",
+      "group": "chat",
+      "prompt": "User: Introduce yourself in one short sentence.\nAssistant:",
+      "max_new_tokens": 80
+    },
+    {
+      "id": "chat-qa-1",
+      "group": "chat",
+      "prompt": "User: What's the difference between weather and climate?\nAssistant:",
+      "max_new_tokens": 160
+    },
+    {
+      "id": "chat-followup-1",
+      "group": "chat",
+      "prompt": "User: I want a healthy breakfast idea.\nAssistant: Greek yogurt with berries and nuts is a simple option.\nUser: Can you give me a dairy-free version?\nAssistant:",
+      "max_new_tokens": 140
+    },
+    {
+      "id": "think-math-1",
+      "group": "think",
+      "prompt": "User: If a class has 28 students and 7 are absent, how many are present?\nAssistant:",
+      "max_new_tokens": 180
+    },
+    {
+      "id": "think-logic-1",
+      "group": "think",
+      "prompt": "User: A meeting starts at 1:40 PM and lasts 2 hours 25 minutes. What time does it end?\nAssistant:",
+      "max_new_tokens": 180
+    },
+    {
+      "id": "think-chat-retention-1",
+      "group": "think",
+      "prompt": "User: Say hello, then explain what photosynthesis does.\nAssistant:",
+      "max_new_tokens": 180
+    }
+  ]
+}

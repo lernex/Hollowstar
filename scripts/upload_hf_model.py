@@ -24,10 +24,28 @@ def build_readme(repo_id: str, checkpoint_path: Path, tokenizer_path: Path | Non
     return "\n".join(lines) + "\n"
 
 
+def upload_directory(api: HfApi, repo_id: str, artifact_dir: Path, message: str) -> list[str]:
+    uploaded_files: list[str] = []
+    for path in sorted(artifact_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        repo_path = str(path.relative_to(artifact_dir))
+        api.upload_file(
+            path_or_fileobj=str(path),
+            path_in_repo=repo_path,
+            repo_id=repo_id,
+            repo_type="model",
+            commit_message=message,
+        )
+        uploaded_files.append(repo_path)
+    return uploaded_files
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Upload a Metis checkpoint and tokenizer files to a Hugging Face model repo.")
     parser.add_argument("--repo-id", required=True)
-    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--checkpoint", default=None)
+    parser.add_argument("--artifact-dir", default=None)
     parser.add_argument("--tokenizer-path", default=None)
     parser.add_argument("--private", action="store_true")
     parser.add_argument("--create-repo", action="store_true")
@@ -38,6 +56,25 @@ def main() -> None:
     if not token:
         raise RuntimeError("HF_TOKEN is required in the environment.")
 
+    api = HfApi(token=token)
+    if args.create_repo:
+        api.create_repo(repo_id=args.repo_id, repo_type="model", private=args.private, exist_ok=True)
+
+    if args.artifact_dir:
+        artifact_dir = Path(args.artifact_dir)
+        if not artifact_dir.exists():
+            raise FileNotFoundError(f"Artifact directory not found: {artifact_dir}")
+        summary = {
+            "repo_id": args.repo_id,
+            "artifact_dir": str(artifact_dir),
+            "uploaded_files": upload_directory(api, args.repo_id, artifact_dir, args.message),
+        }
+        print(json.dumps(summary, indent=2), flush=True)
+        return
+
+    if not args.checkpoint:
+        raise ValueError("Provide either --artifact-dir or --checkpoint.")
+
     checkpoint_path = Path(args.checkpoint)
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
@@ -45,10 +82,6 @@ def main() -> None:
     tokenizer_path = Path(args.tokenizer_path) if args.tokenizer_path else None
     if tokenizer_path is not None and not tokenizer_path.exists():
         raise FileNotFoundError(f"Tokenizer not found: {tokenizer_path}")
-
-    api = HfApi(token=token)
-    if args.create_repo:
-        api.create_repo(repo_id=args.repo_id, repo_type="model", private=args.private, exist_ok=True)
 
     uploads: list[tuple[Path, str]] = [(checkpoint_path, checkpoint_path.name)]
 

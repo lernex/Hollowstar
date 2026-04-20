@@ -1,6 +1,5 @@
 flask>=3.0
-torch>=2.2
-datasets>=2.19
+datasets>=2.19,<4
 tokenizers>=0.15
 sentencepiece>=0.2
 tqdm>=4.66
@@ -9,3 +8,4 @@ requests>=2.31
 huggingface_hub>=0.29
 transformers>=4.51
 safetensors>=0.4
+einops>=0.8

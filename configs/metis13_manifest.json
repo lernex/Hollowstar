@@ -1,0 +1,76 @@
+{
+  "name": "Metis-1.3",
+  "family": "Metis",
+  "description": "Metis-1.3 is a 200M-parameter Mamba2-attention hybrid focused on cleaner conversation, longer context, and more stable educational reasoning.",
+  "model": {
+    "architecture": "mamba2_hybrid_decoder",
+    "model_type": "metis_mamba2_hybrid",
+    "vocab_size": 8192,
+    "block_size": 4096,
+    "d_model": 1152,
+    "n_layer": 28,
+    "n_heads": 18,
+    "n_kv_heads": 6,
+    "head_dim": 64,
+    "attn_layer_idx": [3, 7, 11, 15, 19, 23, 27],
+    "attn_d_conv": 4,
+    "attn_rotary_emb_dim": 0,
+    "ssm_layer": "Mamba2",
+    "ssm_d_state": 64,
+    "ssm_d_conv": 4,
+    "ssm_expand": 2,
+    "tie_embeddings": true,
+    "rms_norm": true,
+    "residual_in_fp32": false,
+    "fused_add_norm": false,
+    "pad_vocab_size_multiple": 16,
+    "torch_dtype": "bfloat16",
+    "estimated_params": 201490560
+  },
+  "tokenizer": {
+    "vocab_size": 8192,
+    "sample_docs": 8000000,
+    "min_frequency": 2,
+    "progress_interval": 5000
+  },
+  "pretrain": {
+    "target_train_tokens": 12000000000,
+    "val_ratio": 0.01,
+    "base_lr": 0.00018,
+    "warmup_ratio": 0.02,
+    "weight_decay": 0.1,
+    "optimizer_beta1": 0.9,
+    "optimizer_beta2": 0.95,
+    "local_batch_size": 2,
+    "grad_accum_steps": 32,
+    "checkpoint_interval": 1000
+  },
+  "chat_sft": {
+    "max_length": 2048,
+    "target_examples": 500000,
+    "epochs": 1.25,
+    "base_lr": 7e-05,
+    "warmup_ratio": 0.03,
+    "local_batch_size": 4,
+    "grad_accum_steps": 8,
+    "checkpoint_interval": 250
+  },
+  "reasoning_sft": {
+    "max_length": 2048,
+    "target_examples": 180000,
+    "epochs": 1.0,
+    "base_lr": 4e-05,
+    "warmup_ratio": 0.04,
+    "local_batch_size": 3,
+    "grad_accum_steps": 8,
+    "checkpoint_interval": 125
+  },
+  "release": {
+    "namespace": "Lernex",
+    "repos": {
+      "base": "Lernex/Metis-1.3-base",
+      "chat": "Lernex/Metis-1.3-chat",
+      "think": "Lernex/Metis-1.3-think"
+    }
+  }
+}

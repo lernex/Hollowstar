@@ -255,6 +255,161 @@ Rough runtime expectations on this machine, using the earlier Metis 1.0 run as a
 
 Those are still local-toy scales, not Chinchilla-optimal training budgets, but the Metis 1.1 recipe is now much more data-aware than the old single-dataset path.
 
+## Metis 1.2 Runpod Flow
+
+Metis 1.2 is the new Runpod-oriented path for the next model line:
+
+## Metis 1.3 Runpod Flow
+
+Metis 1.3 is the new large-step recipe:
+
+- backbone: `Mamba2` + sparse attention hybrid
+- size: about `200M` parameters
+- context: `4096`
+- pretraining budget: `12B` tokens
+- precision: `BF16`
+
+CPU prep:
+
+```bash
+make metis13-cpu-memory-prep
+make metis13-cpu-compute-prep
+```
+
+GPU train/export/eval:
+
+```bash
+make metis13-gpu-full
+```
+
+Recommended split-pod flow:
+
+1. RAM-heavy CPU pod:
+   - `make metis13-cpu-memory-prep`
+   - builds the tokenizer sample on fast local disk
+   - trains the tokenizer on fast local disk
+   - renders final HF/tokenizer assets
+   - syncs only final tokenizer/config assets to the network volume
+
+2. Compute-heavy CPU pod:
+   - `make metis13-cpu-compute-prep`
+   - hydrates tokenizer/config assets from the network volume to fast local disk
+   - builds pretraining memmaps on local disk, then syncs them
+   - builds chat/reasoning JSONL on local disk, then syncs them
+   - writes the final derived training plan and syncs it
+
+3. GPU pod:
+   - `make metis13-gpu-full`
+   - trains base/chat/think and exports release folders
+
+If you ever want the old single-pod fallback, you can still run:
+
+```bash
+make metis13-cpu-prep
+```
+
+Final artifacts written to the network volume after the two CPU pods:
+
+- tokenizer assets to `artifacts/metis13_hf_assets`
+- pretraining memmaps to `data/metis13_base`
+- chat SFT JSONL to `data/metis13_chat_sft`
+- reasoning SFT JSONL to `data/metis13_reasoning_sft`
+- derived plan to `plans/metis13_plan.json`
+
+Intermediate work stays on fast local disk whenever possible:
+
+- tokenizer sample JSONL
+- tokenizer fitting workspace
+- memmap build workspace
+- SFT dataset build workspace
+
+The GPU flow trains:
+
+- `checkpoints` under the shared run root for base/chat/think
+- clean export folders for base/chat/think releases
+- an eval comparison JSON for the three stages
+
+- name: `Metis-1.2`
+- size target: about `100M-110M`
+- context: `1024`
+- target stack: `TorchTitan` + `torchao.float8` on the GPU pod
+- release format: Hugging Face `model.safetensors` directories, not raw `.pt` checkpoints
+
+The new config files live here:
+
+- [configs/metis12_manifest.json](/Users/giulianno/Documents/10M%20model/configs/metis12_manifest.json)
+- [configs/metis12_pretrain_mix.json](/Users/giulianno/Documents/10M%20model/configs/metis12_pretrain_mix.json)
+- [configs/metis12_chat_mix.json](/Users/giulianno/Documents/10M%20model/configs/metis12_chat_mix.json)
+- [configs/metis12_reasoning_mix.json](/Users/giulianno/Documents/10M%20model/configs/metis12_reasoning_mix.json)
+- [configs/metis12_eval_prompts.json](/Users/giulianno/Documents/10M%20model/configs/metis12_eval_prompts.json)
+
+The workflow is intentionally split across two pods that share the same network volume:
+
+1. CPU pod:
+   - build the tokenizer
+   - render the local HF asset folder
+   - stream and tokenize the pretraining corpus into memmap binaries with a `4B` train-token target plus a small held-out val split
+   - prepare the chat and reasoning JSONL SFT sets
+   - write a derived run plan with step counts and warmups
+2. GPU pod:
+   - install a CUDA `12.8+` PyTorch nightly plus TorchTitan and torchao
+   - run base, chat, and think stages with the prepared data
+   - export BF16 Hugging Face releases for `base`, `chat`, and `think`
+   - compare the three stages with the manual eval suite
+
+The main entrypoints are:
+
+```bash
+make metis12-cpu-prep
+make metis12-gpu-full
+```
+
+or
+
+```bash
+./run.sh metis12-cpu-prep
+./run.sh metis12-gpu-full
+```
+
+The Runpod scripts now bake in the operational lessons from the first real Metis 1.2 pod bring-up:
+
+- both CPU and GPU flows write caches and temp files to the shared volume instead of local `/tmp`
+- both flows refuse to start a second overlapping run by default via shared-volume locks
+- both flows write a live stage file and status file under the shared volume so you can tell where the run is without guessing from `ps`
+- fresh pods prefer a modern bootstrap interpreter like `python3.12` when creating `.venv`
+
+The status files live here by default:
+
+- CPU prep stage: `$METIS12_SHARED_ROOT/state/metis12_cpu_prep_stage.txt`
+- CPU prep status: `$METIS12_SHARED_ROOT/state/metis12_cpu_prep_status.env`
+- GPU stage: `$METIS12_SHARED_ROOT/state/metis12_gpu_stage.txt`
+- GPU status: `$METIS12_SHARED_ROOT/state/metis12_gpu_status.env`
+
+If a pod dies and leaves behind a stale lock, you can intentionally clear it on the next start:
+
+```bash
+METIS12_FORCE_UNLOCK=1 ./run.sh metis12-cpu-prep
+METIS12_FORCE_UNLOCK=1 ./run.sh metis12-gpu-full
+```
+
+Practical Runpod notes we want to keep for Metis 1.3 and later:
+
+- `/workspace` is the network volume, but `/` is usually a much smaller local container disk
+- `pip` and big wheel installs will happily fill local `/tmp` unless `TMPDIR` is redirected
+- do not launch a second prep or training shell against the same shared root unless you mean to replace the first one
+- after a fresh CPU pod comes up, verify the interpreter with `python3.12 --version` before assuming `python3` is new enough
+
+The key supporting scripts are:
+
+- `scripts/runpod_metis12_cpu.sh`
+- `scripts/runpod_metis12_gpu.sh`
+- `scripts/render_metis12_hf_assets.py`
+- `scripts/prepare_metis12_sft_data.py`
+- `scripts/plan_metis12.py`
+- `scripts/assemble_hf_release.py`
+- `scripts/eval_model_suite.py`
+- `src/metis_titan/`
+
 ## Recommended first run
 
 For your first pass, keep it short:
@@ -281,6 +436,9 @@ That gives you a fast end-to-end sanity check before you commit to a longer run.
 - `scripts/prepare_streaming_data.py`: writes binary training data from a streaming text corpus
 - `scripts/prepare_reasoning_sft.py`: builds short-form reasoning SFT data from OpenThoughts
 - `scripts/data_mixture.py`: streams the weighted Metis 1.1 corpus mix, including Python-Edu blob fetches
+- `scripts/runpod_metis12_cpu.sh`: shared-volume CPU prep for Metis 1.2
+- `scripts/runpod_metis12_gpu.sh`: TorchTitan FP8 GPU training flow for Metis 1.2
+- `src/metis_titan/`: custom TorchTitan configs and memmap dataloader for Metis 1.2
 - `src/tinylm/model.py`: model definition
 
 ## Notes for Apple Silicon

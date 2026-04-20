@@ -1,0 +1,530 @@
+Metis-1.3 Plan
+
+Status:
+- Living draft.
+- Seeded from the Metis-1.2 recipe until Metis-1.2 finishes training and eval.
+- Update this file incrementally as we learn what actually helped or hurt.
+
+Current baseline assumption:
+- Metis-1.3 should start from the Metis-1.2 shape and training philosophy unless Metis-1.2 results clearly show a better direction.
+- The biggest guaranteed change already learned is operational: cleaner CPU-prep vs GPU-train dependency separation.
+
+Model
+
+Name:
+- Metis-1.3
+
+Current placeholder size target:
+- ~100M params
+
+Current placeholder architecture:
+- n_layer=18
+- n_head=12
+- n_embd=768
+- block_size=1024
+- vocab=8192
+- estimated params: about 100M-110M
+
+Why this placeholder shape:
+- 768 hidden size is a real step up from 1.1
+- 1024 context is worth it for chat quality
+- still small enough to train cheaply on a 5090
+- keep this as the default starting point until Metis-1.2 proves we should scale up, scale down, or rebalance depth vs width
+
+Precision
+
+Training compute:
+- FP8
+
+Master weights:
+- BF16
+
+Release weights:
+- BF16 model.safetensors
+
+Rules:
+- do not use FP8-only master weights
+- do not upload training checkpoints as the main Hub artifact
+
+Pretraining
+
+Current placeholder total pretraining tokens:
+- recommended: 4B
+
+Language scope:
+- keep Metis English-first for now
+- do not intentionally broaden Metis-1.3 into a multilingual model unless there is a strong later product reason
+- prefer simpler English-centric corpus curation and stronger English quality over diluted multilingual coverage at this stage
+
+Current placeholder pretraining mix:
+- 75% HuggingFaceTB/smollm-corpus fineweb-edu-dedup
+- 12% HuggingFaceTB/smollm-corpus cosmopedia-v2
+- 5% HuggingFaceTB/smollm-corpus python-edu
+- 8% HuggingFaceTB/finemath finemath-4plus
+
+Why this placeholder mix:
+- more real educational web text
+- less dependence on synthetic textbook content
+- enough math to help reasoning
+- some code, but not too much
+- keep multilingual coverage incidental rather than a training objective
+
+Tokenizer training
+
+Current placeholder tokenizer plan:
+- train on 5M-10M sampled docs from the same pretraining mix
+- keep vocab at 8192 unless tokenizer eval clearly says otherwise
+
+Tokenizer training improvements already planned for Metis-1.3:
+- keep the tokenizer sample large; do not shrink it just to save time unless eval later proves it is wasteful
+- use an authenticated HF_TOKEN during CPU prep to reduce unauthenticated throttling and improve dataset access reliability
+- prebuild a local/shared-volume tokenizer sample file before actual tokenizer fitting instead of training directly from a fully remote streaming iterator
+- avoid slow Software Heritage blob fetches in tokenizer sampling; specifically, do not use `python_edu` blob-fetch mode in the tokenizer sample path unless we later replace it with a faster local/plain-text code source
+- prefer more RAM on the CPU pod for tokenizer work; if choosing between more RAM and more vCPU, memory headroom is currently the safer optimization
+
+Future code-data replacement for tokenizer and pretraining:
+- preferred direct-content replacement for `python_edu`: `codeparrot/codeparrot-clean`
+- preferred broader replacement when we want more multi-language code coverage: `codeparrot/github-code-clean`
+- current best future direction is a blended code slice built from those datasets instead of Software Heritage blob-fetching code
+
+Recommended future code mix:
+- if using one simple replacement, use `codeparrot/codeparrot-clean`
+- if using a better two-source replacement, try roughly 60-80% `codeparrot/codeparrot-clean` and 20-40% `codeparrot/github-code-clean`
+
+Why this replacement is attractive:
+- direct file contents instead of one-by-one blob fetches
+- much faster CPU sampling and tokenizer prebuilds
+- better practical coverage of real code syntax and identifiers
+- easier to prebuild locally onto the shared volume
+- cleaner operational path than `python_edu` blob mode
+
+Tokenizer sampling policy for now:
+- preserve a large tokenizer sample target because Metis-1.1 likely suffered from a tokenizer/data scale that was too small
+- keep tokenizer coverage broad, but make the sampling pipeline faster and cleaner rather than solving speed by shrinking the sample too aggressively
+
+Training Budget
+
+For 4B tokens with block_size=1024, total optimizer budget depends on effective batch.
+
+Good target effective batch:
+- effective tokens/update: 262,144 to 524,288
+
+Examples:
+- if 262,144 tokens/update, then about 15,259 updates for 4B tokens
+- if 524,288 tokens/update, then about 7,629 updates for 4B tokens
+
+Current placeholder base training budget:
+- 8k-16k optimizer steps depending on real batch size
+
+Learning rate:
+- base LR: around 2e-4
+- cosine decay
+- warmup: 1-2% of steps
+- weight decay: 0.1
+
+Post-Training Curriculum
+
+Stage 1: Chat SFT
+
+Goal:
+- make Metis hold clean, natural conversation first
+
+Datasets:
+- HuggingFaceTB/smoltalk2 SFT no-think subsets
+- prioritize:
+- everyday-conversations
+- systemchats-30k
+- smollm3_smol-magpie-ultra
+- OpenHermes-2.5
+- useful rewrite/summarize/instruction subsets
+
+Context:
+- max_length=768
+- keep responses fairly short and clean
+
+Size:
+- 200k-600k examples after filtering/dedup
+
+Epochs:
+- 1-2
+- stop early if degenerate behavior rises
+
+Stage 2: Reasoning SFT
+
+Goal:
+- add concise reasoning without breaking chat
+
+Datasets:
+- small curated mix, not giant OpenThoughts-first
+- recommended:
+- HuggingFaceTB/smoltalk2_everyday_convs_think
+- selected think subsets from HuggingFaceTB/smoltalk2
+- optional smaller slice of OpenThoughts-114k
+
+Mix:
+- 60% SmolTalk2-style think/chat reasoning
+- 40% carefully filtered OpenThoughts-style reasoning
+
+Important:
+- keep traces short
+- keep final answers prominent
+- mix some normal no-think chat data into the final reasoning stage too
+
+Suggested final reasoning-stage mix:
+- 70% reasoning examples
+- 30% normal chat examples
+
+Why keep retained chat in the final stage:
+- helps stop the "reasoning tune destroys conversation" problem
+
+Eval Gates
+
+Do not advance stages unless these pass.
+
+Base eval gate:
+- not degenerate on simple completions
+- can continue short prose without collapsing
+- arithmetic is not blank
+- no repeated punctuation/underscore collapse
+
+Chat eval gate:
+- greeting works
+- self-intro works
+- direct Q&A works
+- short multi-turn follow-up works
+- outputs are legible on 20-50 manual prompts
+
+Think eval gate:
+- still passes all chat evals
+- adds short reasoning on math/logic prompts
+- no trace spam
+- no format collapse
+
+Compare every single run:
+- base
+- chat
+- think
+
+Export / Release Format
+
+Hub release should contain:
+- model.safetensors
+- config.json
+- generation_config.json
+- tokenizer.json
+- tokenizer_config.json
+- special_tokens_map.json
+- README.md
+
+Keep these separate from training checkpoints:
+- latest.pt
+- optimizer state
+- scaler state
+- resume metadata
+
+Rule:
+- training artifacts stay local/private
+- release artifacts go to Hugging Face
+
+Serving
+
+Training:
+- PyTorch ecosystem with proper FP8 stack
+
+Release/export:
+- Hugging Face format
+
+Inference/serving later:
+- optionally vLLM
+
+Hardware Plan
+
+For the RTX 5090 pod:
+- still a good target class for Metis-1.3 unless Metis-1.2 says otherwise
+- Linux CUDA environment required
+- use a real FP8-capable stack, not the old handwritten trainer alone
+
+Final Recommended Stack
+
+Training framework:
+- TorchTitan + torchao.float8
+
+Master weights:
+- bf16
+
+Export:
+- safetensors
+
+Tentative release repos:
+- Lernex/Metis-1.3-base
+- Lernex/Metis-1.3-chat
+- Lernex/Metis-1.3-think
+
+Exact Stage Summary
+
+- train tokenizer on 5M-10M docs from the current pretrain mix
+- pretrain ~100M model on 4B tokens
+- run base eval gate
+- chat SFT on SmolTalk2 no-think mix
+- run chat eval gate
+- reasoning SFT on small conversational reasoning mix plus some retained chat data
+- run think eval gate
+- export release weights to model.safetensors
+- upload polished HF artifacts, not .pt checkpoints
+
+Runpod Workflow
+
+Goal:
+- keep GPU time focused on actual training, not downloads or preprocessing
+
+Workflow:
+- create a network volume
+- launch a CPU pod in the same region/datacenter
+- attach that network volume
+- download datasets, tokenizer files, HF cache, and preprocess/tokenize there
+- terminate the CPU pod
+- launch the GPU pod
+- attach the same network volume
+- start training from the already-prepared files
+
+Why:
+- saves real money by avoiding GPU rates for downloading HF data, building caches, tokenizer training, and dataset preprocessing
+
+Shared-volume rules
+
+Always keep these on the network volume:
+- HF_HOME
+- HF_DATASETS_CACHE
+- TRANSFORMERS_CACHE
+- TORCH_HOME
+- PIP_CACHE_DIR
+- TMPDIR
+- repo checkout used for the pod run
+- prepared data
+- tokenizer artifacts
+- stage/status files
+
+Do not rely on the network volume as your only long-term backup:
+- Runpod network volumes are for workflow handoff, not archival storage
+
+Operational lessons already learned from Metis-1.2
+
+1. CPU prep and GPU training need different dependency stacks.
+- Do not install the full CUDA training stack on the CPU prep pod unless a specific prep step truly needs it.
+- Heavy GPU wheels make CPU prep slower, noisier, and less clean.
+
+2. Local container root disks are small.
+- `/workspace` may be huge while `/` is tiny.
+- pip and temporary unpacking will fill local `/tmp` unless `TMPDIR` is redirected to the shared volume.
+
+3. Duplicate runs are expensive and confusing.
+- Never let two prep or training shells hit the same shared root silently.
+- Use shared-volume lock files and stage files by default.
+
+4. Fresh pod Python versions are not guaranteed.
+- Verify a modern interpreter explicitly.
+- Prefer Python 3.12 for fresh pod bootstrap unless there is a concrete reason not to.
+
+5. CPU prep progress should be observable.
+- Persist stage/status files under the shared volume so the current phase can be checked without guessing from a noisy log.
+
+6. Large tokenizer sampling is fine, but remote blob-heavy sampling is the wrong place to pay for it.
+- Keep the tokenizer sample large if quality needs it.
+- Speed it up by prebuilding the sample locally on the shared volume, authenticating HF access, and removing slow blob-fetch sources from the tokenizer path.
+
+7. Pretraining data prep can also become the CPU bottleneck even when system CPU and RAM look mostly idle.
+- Low overall CPU usage does not mean the job is healthy-fast; a single-process streaming/tokenization pipeline can spend most of its time waiting on remote reads, per-document Python overhead, or network-volume writes.
+- Do not leave `python_edu` in Software Heritage blob-fetch mode in the main pretraining prep path for future runs.
+- Prefer direct-content code datasets and local prebuilt text shards before tokenization.
+- Prefer multi-worker or multi-shard tokenization/write pipelines over one-document-at-a-time preprocessing.
+
+8. Shared network volumes should be handoff storage, not the main scratch workspace for high-throughput preprocessing.
+- Use the pod's fast local disk for temporary tokenizer samples, local text shards, intermediate tokenization outputs, and other heavy write phases.
+- Copy only the finished handoff artifacts onto the network volume:
+- tokenizer files
+- final pretraining binaries or memmaps
+- final chat/reasoning SFT datasets
+- plan metadata and release-critical files
+- This keeps the CPU pod fast while preserving the cheap CPU-to-GPU handoff workflow.
+
+Metis-1.3 dependency split plan
+
+CPU pod responsibilities:
+- clone repo
+- create or reuse shared-volume caches
+- install only CPU prep dependencies
+- download and cache datasets
+- train tokenizer
+- render HF tokenizer/config assets if needed
+- prebuild local text shards for large pretraining corpora when possible
+- use local pod disk as the active scratch workspace for heavy preprocessing when possible
+- prepare pretraining memmaps or binaries
+- prepare chat and reasoning SFT data
+- write plan metadata and stage/status files
+- copy final handoff-ready artifacts onto the network volume
+
+CPU pod dependency policy:
+- prefer a dedicated lightweight requirements file such as `requirements-cpu-prep.txt`
+- avoid CUDA PyTorch nightly
+- avoid TorchTitan
+- avoid torchao
+- avoid torchvision/torchaudio unless a prep step truly needs them
+- if torch is required for a prep script, prefer CPU-only torch on the CPU pod
+
+CPU pod sizing preference for tokenizer-heavy runs:
+- prefer enough RAM that tokenizer sampling can stay comfortable in memory
+- if forced to choose between `4 vCPU / 8 GB` and `2 vCPU / 16 GB`, prefer the `16 GB` RAM option unless later profiling proves otherwise
+- if the pipeline is already fixed to be local-shard and multi-worker, `4 vCPU / 16 GB` is the better default target for faster CPU prep
+
+Recommended future CPU split:
+
+CPU Pod 1:
+- target spec: `2 vCPU / 16 GB RAM`
+- role: data acquisition, caching, and local staging
+- use the pod's local disk as the active scratch area
+- main jobs:
+- clone repo
+- install lightweight CPU prep deps
+- authenticate HF and warm caches
+- download/cache datasets
+- materialize local text shards for pretraining
+- materialize local/cached source data for chat and reasoning SFT
+- sync only reusable staged artifacts to the network volume
+
+Why CPU Pod 1 gets this shape:
+- this stage is more I/O, parsing, decompression, caching, and local staging than raw CPU crunch
+- `16 GB` should be enough based on observed memory usage
+- `2 vCPU` should be enough for the more wait-heavy and memory-safe staging work, which helps avoid overpaying for compute during steps that are not strongly CPU-bound
+
+CPU Pod 2:
+- target spec: `8 vCPU / 16 GB RAM`
+- role: tokenization, packing, and final CPU-side artifact generation
+- use the pod's local disk as the active scratch area
+- main jobs:
+- build tokenizer sample from local staged text
+- train tokenizer
+- build final pretraining `train.bin` and `val.bin`
+- build final chat and reasoning JSONL outputs
+- render HF tokenizer/config assets
+- sync only final handoff artifacts to the network volume
+
+Why CPU Pod 2 gets this shape:
+- this is the CPU-heaviest part of the prep workflow
+- tokenization and packing have repeatedly shown real CPU saturation
+- memory still appears comfortable within `16 GB`
+- if extra CPU budget is spent anywhere in the CPU prep lane, this is the highest-leverage place
+
+Optional lower-cost variant:
+- if future profiling shows some sub-step inside CPU Pod 1 is still surprisingly compute-heavy, temporarily bump that stage back to `4 vCPU / 16 GB`
+- current best guess is still that most of CPU Pod 1 should stay on the cheaper `2 vCPU / 16 GB` shape
+
+GPU pod responsibilities:
+- install the real CUDA training stack
+- install TorchTitan
+- install torchao
+- run base, chat, and think training
+- export BF16 Hugging Face releases
+- run eval comparisons
+- optionally upload finished releases to HF
+
+GPU pod dependency policy:
+- use a dedicated training requirements path such as `requirements-gpu-train.txt`
+- install CUDA-capable PyTorch and the exact TorchTitan/torchao stack needed for FP8 training
+- keep release/export/upload dependencies here if they are only needed post-training
+
+Pinned GPU stack for Metis-1.3:
+- preferred base image: `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404`
+- this gives a cleaner starting point with:
+- Ubuntu `24.04`
+- Python `3.12`
+- CUDA user-space stack `12.8.1`
+- PyTorch `2.8.0`
+- matching `torchvision` and `torchaudio` from the same image family
+- do not run live `pip install --pre --upgrade torch torchvision torchaudio` on a fresh GPU pod for Metis-1.3
+- instead, pin the image itself and treat the image as the source of truth for the torch stack
+
+Pinned training framework targets:
+- TorchTitan: pin to an exact commit instead of `git clone` + `pull`
+- current provisional pin from the Metis-1.2 GPU bring-up: `08da451f2604d6c277e8b206de223c86fdb7935a`
+- torchao: pin to an exact commit instead of unpinned `git+https://github.com/pytorch/ao.git`
+- current provisional pin from the Metis-1.2 GPU bring-up: `b3e0db2fae37427b867f8d2b43a0d94d1a474249`
+- install torchao with `--no-build-isolation` so the build can see the already-installed torch environment
+
+Preferred Metis-1.3 GPU image strategy:
+- best option: build a custom Runpod Pod template on top of the pinned official base image
+- preinstall the pinned TorchTitan checkout
+- preinstall the pinned torchao commit
+- preinstall any other stable GPU-only dependencies
+- use this custom image as the training template so the GPU pod starts close to actual training instead of redoing a giant environment install
+- for the long-term workflow, prefer an environment-only GPU image rather than baking the whole repo into the image
+- the image should primarily contain the stable CUDA/PyTorch/TorchTitan/torchao environment
+- the actual training code should come from the live repo checkout on `/workspace` or a fresh clone at pod start
+- that keeps normal code changes separate from environment-image rebuilds and avoids forcing a new image push for every repo edit
+
+Custom-vs-community image guidance:
+- prefer extending an official Runpod base image over relying on a community template
+- official templates/images get full Runpod support
+- community templates are self/community supported and should only be used if the Dockerfile or image contents are clear and trustworthy
+- if using a custom image, version-tag it explicitly and avoid mutable `latest` tags
+
+Container-disk policy for GPU setup:
+- if any runtime install still remains, keep pip temp/build caches on the local container disk, not the network volume
+- the shared network volume should hold prepared training data, checkpoints, and release artifacts
+- container disk is for fast transient setup scratch, while the custom image should eliminate most of the setup work in the first place
+
+Spot-pod readiness requirements:
+- if using Runpod spot GPUs, assume the pod can disappear at any time and design the GPU launcher around restart-safe stage resumes
+- enable TorchTitan checkpointing explicitly; do not rely on checkpoint config objects without `enable=true`
+- use a shorter checkpoint cadence on spot than on-demand so lost work stays bounded
+- current best default for Metis-sized runs:
+- base checkpoint interval around 250 steps
+- chat checkpoint interval around 100 steps
+- think checkpoint interval around 50 steps
+- make the GPU launcher resume from the latest persistent checkpoint on the shared volume instead of assuming a fresh uninterrupted run
+- make the launcher skip already-finished stages when release artifacts already exist
+- assemble HF release folders atomically so a spot interruption during export does not leave behind a half-written directory that looks complete
+- treat the shared network volume as the durable source of truth for checkpoints and completed stage outputs when using spot pods
+
+Metis-1.3 workflow target
+
+The ideal future flow should feel like this:
+
+CPU pod:
+- fast setup
+- lean dependency install
+- mostly data movement and preprocessing
+- no giant unnecessary CUDA wheel install
+- heavy temporary writes stay on local disk, not the network volume
+- only final prepared artifacts get synced to the shared network volume
+
+GPU pod:
+- one clean training-focused environment
+- start close to base training as soon as the pod comes up
+
+Questions to revisit after Metis-1.2 finishes
+
+- keep 18x12x768 or change model shape?
+- keep block_size=1024 or push context further?
+- keep 4B tokens or change token budget?
+- keep vocab at 8192 or adjust?
+- keep current pretraining mix or rebalance more toward web, code, or math?
+- keep the same chat/reasoning curriculum split?
+- are the eval gates strict enough?
+- should CPU prep outputs change format for faster GPU startup?
+- should export/upload remain in the GPU pod or move to a cheaper post-train CPU pod?
+
+Next likely edits after Metis-1.2 evidence arrives
+
+- architecture changes based on actual quality/cost tradeoffs
+- corpus rebalance based on chat and reasoning weaknesses
+- tokenizer changes if eval says 8192 is too tight
+- exact tokenizer prebuild workflow, including a dedicated local/shared `tokenizer_sample` artifact and the final source mix used for tokenizer-only sampling
+- replace `python_edu` in the main pretraining prep path with faster direct-content code data, preferably `codeparrot/codeparrot-clean` plus an optional smaller `codeparrot/github-code-clean` slice
+- add a local text-shard stage for pretraining corpora before tokenization instead of tokenizing directly from remote streaming iterators
+- parallelize pretraining data prep across workers/shards so tokenization and bin writing are not single-process bottlenecks
+- avoid non-streaming SmolTalk/OpenThoughts prep on the shared network volume, because the HF cache can balloon to tens of GB for unused splits
+- prefer streaming SFT prep or local-scratch-only dataset materialization, then keep only the final chat/reasoning JSONL outputs on the network volume
+- add transient HF cache cleanup after SFT stages so shared-volume usage does not silently fill up from dataset snapshots
+- post-training data mix changes if chat or think regress
+- cleaner hard split between `requirements-cpu-prep.txt` and `requirements-gpu-train.txt`
+- exact Runpod commands and recovery steps that proved reliable in practice

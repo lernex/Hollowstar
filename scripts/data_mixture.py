@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -16,6 +17,9 @@ from datasets import load_dataset
 
 SOFTWARE_HERITAGE_URL = "https://softwareheritage.s3.amazonaws.com/content/{blob_id}"
 USER_AGENT = "metis-data-pipeline/1.1"
+CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+MULTISPACE_RE = re.compile(r"[ \t]{2,}")
+MULTIBLANK_RE = re.compile(r"\n{3,}")
 
 
 @dataclass(frozen=True)
@@ -32,6 +36,11 @@ class SourceSpec:
     blob_id_column: str = "blob_id"
     min_chars: int = 0
     max_chars: int | None = None
+    min_alpha_ratio: float | None = None
+    max_repeat_char_run: int | None = 48
+    max_line_length: int | None = None
+    max_url_count: int | None = None
+    normalize_whitespace: bool = True
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "SourceSpec":
@@ -48,6 +57,11 @@ class SourceSpec:
             blob_id_column=raw.get("blob_id_column", "blob_id"),
             min_chars=int(raw.get("min_chars", 0)),
             max_chars=raw.get("max_chars"),
+            min_alpha_ratio=raw.get("min_alpha_ratio"),
+            max_repeat_char_run=raw.get("max_repeat_char_run", 48),
+            max_line_length=raw.get("max_line_length"),
+            max_url_count=raw.get("max_url_count"),
+            normalize_whitespace=bool(raw.get("normalize_whitespace", True)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,6 +78,11 @@ class SourceSpec:
             "blob_id_column": self.blob_id_column,
             "min_chars": self.min_chars,
             "max_chars": self.max_chars,
+            "min_alpha_ratio": self.min_alpha_ratio,
+            "max_repeat_char_run": self.max_repeat_char_run,
+            "max_line_length": self.max_line_length,
+            "max_url_count": self.max_url_count,
+            "normalize_whitespace": self.normalize_whitespace,
         }
 
 
@@ -94,7 +113,7 @@ class SourceState:
                 self.skipped_examples += 1
                 continue
 
-            stripped = text.strip()
+            stripped = clean_text(text, self.spec)
             if len(stripped) < self.spec.min_chars:
                 self.skipped_examples += 1
                 continue
@@ -104,6 +123,10 @@ class SourceState:
                 if not stripped:
                     self.skipped_examples += 1
                     continue
+
+            if not passes_quality_filters(stripped, self.spec):
+                self.skipped_examples += 1
+                continue
 
             self.emitted_examples += 1
             return {
@@ -147,13 +170,15 @@ class DatasetMixture:
 
         self.total_examples = int(total_examples)
         self.seed = int(self.raw_config.get("seed", 42) if seed is None else seed)
-        self.schedule = build_schedule([spec.weight for spec in self.sources], self.total_examples, self.seed)
+        self.planned_counts = build_planned_counts(
+            [spec.weight for spec in self.sources],
+            self.total_examples,
+        )
         self.fetcher = SoftwareHeritageFetcher()
         self.states = [SourceState(spec=spec, iterator=iter(load_source_dataset(spec))) for spec in self.sources]
-        self.planned_counts = dict(Counter(self.schedule))
 
     def __iter__(self):
-        for source_index in self.schedule:
+        for source_index in iter_schedule(self.planned_counts, self.seed):
             example = self.states[source_index].next_example(self.fetcher)
             if example is None:
                 continue
@@ -181,15 +206,16 @@ class DatasetMixture:
 
 
 def load_source_dataset(spec: SourceSpec):
-    return load_dataset(
-        spec.dataset_name,
-        name=spec.dataset_config,
-        split=spec.split,
-        streaming=spec.streaming,
-    )
+        return load_dataset(
+            spec.dataset_name,
+            name=spec.dataset_config,
+            split=spec.split,
+            streaming=spec.streaming,
+            trust_remote_code=True,
+        )
 
 
-def build_schedule(weights: list[float], total_examples: int, seed: int) -> list[int]:
+def build_planned_counts(weights: list[float], total_examples: int) -> dict[int, int]:
     weight_sum = sum(weights)
     normalized = [weight / weight_sum for weight in weights]
     raw_counts = [weight * total_examples for weight in normalized]
@@ -203,13 +229,76 @@ def build_schedule(weights: list[float], total_examples: int, seed: int) -> list
     for index in ranked[:remainder]:
         counts[index] += 1
 
-    schedule: list[int] = []
-    for index, count in enumerate(counts):
-        schedule.extend([index] * count)
+    return {index: count for index, count in enumerate(counts)}
 
+
+def clean_text(text: str, spec: SourceSpec) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = CONTROL_CHARS_RE.sub("", text)
+    if spec.normalize_whitespace:
+        text = "\n".join(line.rstrip() for line in text.splitlines())
+        text = MULTISPACE_RE.sub(" ", text)
+        text = MULTIBLANK_RE.sub("\n\n", text)
+    return text.strip()
+
+
+def alpha_ratio(text: str) -> float:
+    meaningful = [char for char in text if not char.isspace()]
+    if not meaningful:
+        return 0.0
+    alpha = sum(char.isalpha() for char in meaningful)
+    return alpha / len(meaningful)
+
+
+def max_repeat_char_run(text: str) -> int:
+    if not text:
+        return 0
+    best = 1
+    current = 1
+    for previous, current_char in zip(text, text[1:]):
+        if current_char == previous:
+            current += 1
+            best = max(best, current)
+        else:
+            current = 1
+    return best
+
+
+def url_count(text: str) -> int:
+    return text.count("http://") + text.count("https://") + text.count("www.")
+
+
+def passes_quality_filters(text: str, spec: SourceSpec) -> bool:
+    if spec.min_alpha_ratio is not None and alpha_ratio(text) < float(spec.min_alpha_ratio):
+        return False
+    if spec.max_repeat_char_run is not None and max_repeat_char_run(text) > int(spec.max_repeat_char_run):
+        return False
+    if spec.max_url_count is not None and url_count(text) > int(spec.max_url_count):
+        return False
+    if spec.max_line_length is not None:
+        if any(len(line) > int(spec.max_line_length) for line in text.splitlines()):
+            return False
+    return True
+
+
+def iter_schedule(planned_counts: dict[int, int], seed: int):
+    remaining = dict(planned_counts)
+    total_remaining = sum(remaining.values())
     rng = Random(seed)
-    rng.shuffle(schedule)
-    return schedule
+    source_indices = sorted(remaining)
+    while total_remaining > 0:
+        pick = rng.randrange(total_remaining)
+        cumulative = 0
+        for index in source_indices:
+            count = remaining[index]
+            if count <= 0:
+                continue
+            cumulative += count
+            if pick < cumulative:
+                remaining[index] -= 1
+                total_remaining -= 1
+                yield index
+                break
 
 
 def extract_doc_id(row: dict[str, Any], spec: SourceSpec, fallback_index: int) -> str:

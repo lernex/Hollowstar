@@ -1,0 +1,6 @@
+datasets>=2.19,<4
+tokenizers>=0.15
+sentencepiece>=0.2
+tqdm>=4.66
+numpy>=1.26
+requests>=2.31

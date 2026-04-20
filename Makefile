@@ -28,13 +28,15 @@ METIS11_REASONING_EXAMPLES ?= 18000
 METIS11_BASE_STEPS ?= 5000
 METIS11_H100_DTYPE ?= bf16
 METIS11_H100_COMPILE_MODE ?= default
+METIS12_SHARED_ROOT ?= $(PWD)/.runpod/metis12
+METIS13_SHARED_ROOT ?= $(PWD)/.runpod/metis13
 
 ifneq (,$(wildcard $(ENV_FILE)))
 include $(ENV_FILE)
 export HF_TOKEN
 endif
 
-.PHONY: help setup tokenizer prepare train generate chat-data sft chat chat-fast app base full-chat fast standard overnight metis-tokenizer metis-data metis-base metis-think-data metis-think metis-full metis11-tokenizer metis11-data metis11-base metis11-chat-data metis11-chat metis11-think-data metis11-think metis11-full metis11-h100-base metis11-h100-chat metis11-h100-think metis11-h100-full metis11-h100-pod metis100-base metis100-full hf-upload-metis11-base hf-upload-metis11-chat hf-upload-metis11-think clean-bench
+.PHONY: help setup tokenizer prepare train generate chat-data sft chat chat-fast app base full-chat fast standard overnight metis-tokenizer metis-data metis-base metis-think-data metis-think metis-full metis11-tokenizer metis11-data metis11-base metis11-chat-data metis11-chat metis11-think-data metis11-think metis11-full metis11-h100-base metis11-h100-chat metis11-h100-think metis11-h100-full metis11-h100-pod metis12-cpu-prep metis12-gpu-full metis13-cpu-memory-prep metis13-cpu-compute-prep metis13-cpu-prep metis13-gpu-full metis100-base metis100-full hf-upload-metis11-base hf-upload-metis11-chat hf-upload-metis11-think clean-bench
 
 help:
 	@echo "Targets:"
@@ -66,6 +68,12 @@ help:
 	@echo "  make hf-upload-metis11-base  - upload the Metis 1.1 base checkpoint to Hugging Face"
 	@echo "  make hf-upload-metis11-chat  - upload the Metis 1.1 chat checkpoint to Hugging Face"
 	@echo "  make hf-upload-metis11-think - upload the Metis 1.1 think checkpoint to Hugging Face"
+	@echo "  make metis12-cpu-prep    - run the shared-volume CPU preparation flow for Metis-1.2"
+	@echo "  make metis12-gpu-full    - run the TorchTitan FP8 GPU flow for Metis-1.2"
+	@echo "  make metis13-cpu-memory-prep  - run the RAM-heavy tokenizer/assets pod for Metis-1.3"
+	@echo "  make metis13-cpu-compute-prep - run the compute-heavy data-build pod for Metis-1.3"
+	@echo "  make metis13-cpu-prep         - run both Metis-1.3 CPU halves sequentially on one pod"
+	@echo "  make metis13-gpu-full    - run the Mamba2-hybrid BF16 GPU flow for Metis-1.3"
 	@echo "  make metis100-base   - train a ~104M experimental Metis base model"
 	@echo "  make metis100-full   - run tokenizer + data + 100M base training"
 	@echo "  make base        - run setup -> tokenizer -> prepare -> train"
@@ -174,6 +182,24 @@ metis11-h100-full:
 
 metis11-h100-pod:
 	./scripts/pod_launch.sh $(MAKE) metis11-h100-full
+
+metis12-cpu-prep:
+	METIS12_SHARED_ROOT="$(METIS12_SHARED_ROOT)" ./scripts/runpod_metis12_cpu.sh
+
+metis12-gpu-full:
+	METIS12_SHARED_ROOT="$(METIS12_SHARED_ROOT)" ./scripts/runpod_metis12_gpu.sh
+
+metis13-cpu-memory-prep:
+	METIS13_SHARED_ROOT="$(METIS13_SHARED_ROOT)" METIS13_CPU_ROLE="memory" ./scripts/runpod_metis13_cpu.sh
+
+metis13-cpu-compute-prep:
+	METIS13_SHARED_ROOT="$(METIS13_SHARED_ROOT)" METIS13_CPU_ROLE="compute" ./scripts/runpod_metis13_cpu.sh
+
+metis13-cpu-prep:
+	METIS13_SHARED_ROOT="$(METIS13_SHARED_ROOT)" METIS13_CPU_ROLE="full" ./scripts/runpod_metis13_cpu.sh
+
+metis13-gpu-full:
+	METIS13_SHARED_ROOT="$(METIS13_SHARED_ROOT)" ./scripts/runpod_metis13_gpu.sh
 
 metis100-base:
 	$(PY) scripts/train.py --data-dir data/metis_base --tokenizer-path artifacts/metis_tokenizer/tokenizer.json --out-dir checkpoints/metis100_base --max-steps 3000 --batch-size 2 --grad-accum-steps 8 --block-size 512 --n-layer 20 --n-head 8 --n-embd 640 --lr 2e-4 --eval-interval 250

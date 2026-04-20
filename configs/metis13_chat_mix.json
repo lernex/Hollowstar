@@ -1,0 +1,66 @@
+{
+  "seed": 42,
+  "max_history_turns": 3,
+  "sources": [
+    {
+      "name": "smoltalk_everyday_no_think",
+      "dataset_name": "HuggingFaceTB/smoltalk2",
+      "dataset_config": "SFT",
+      "split": "smoltalk_smollm3_everyday_conversations_no_think",
+      "streaming": true,
+      "weight": 0.36,
+      "format": "smoltalk_messages",
+      "keep_think": false
+    },
+    {
+      "name": "smoltalk_systemchats_no_think",
+      "dataset_name": "HuggingFaceTB/smoltalk2",
+      "dataset_config": "SFT",
+      "split": "smoltalk_smollm3_systemchats_30k_no_think",
+      "streaming": true,
+      "weight": 0.18,
+      "format": "smoltalk_messages",
+      "keep_think": false
+    },
+    {
+      "name": "smoltalk_magpie_no_think",
+      "dataset_name": "HuggingFaceTB/smoltalk2",
+      "dataset_config": "SFT",
+      "split": "smoltalk_smollm3_smol_magpie_ultra_no_think",
+      "streaming": true,
+      "weight": 0.15,
+      "format": "smoltalk_messages",
+      "keep_think": false
+    },
+    {
+      "name": "openhermes_no_think",
+      "dataset_name": "HuggingFaceTB/smoltalk2",
+      "dataset_config": "SFT",
+      "split": "OpenHermes_2.5_no_think",
+      "streaming": true,
+      "weight": 0.12,
+      "format": "smoltalk_messages",
+      "keep_think": false
+    },
+    {
+      "name": "smoltalk_rewrite_no_think",
+      "dataset_name": "HuggingFaceTB/smoltalk2",
+      "dataset_config": "SFT",
+      "split": "smoltalk_smollm3_smol_rewrite_no_think",
+      "streaming": true,
+      "weight": 0.10,
+      "format": "smoltalk_messages",
+      "keep_think": false
+    },
+    {
+      "name": "smoltalk_summarize_no_think",
+      "dataset_name": "HuggingFaceTB/smoltalk2",
+      "dataset_config": "SFT",
+      "split": "smoltalk_smollm3_smol_summarize_no_think",
+      "streaming": true,
+      "weight": 0.09,
+      "format": "smoltalk_messages",
+      "keep_think": false
+    }
+  ]
+}

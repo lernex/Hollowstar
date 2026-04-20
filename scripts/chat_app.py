@@ -6,7 +6,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
 
-from tinylm import (
+from metis_runtime import (
     build_bounded_chat_prompt,
     choose_device,
     extract_assistant_reply,
@@ -23,6 +23,7 @@ CHECKPOINTS_DIR = ROOT_DIR / "checkpoints"
 DEFAULT_TOKENIZER_PATH = ROOT_DIR / "artifacts" / "tokenizer" / "tokenizer.json"
 METIS_TOKENIZER_PATH = ROOT_DIR / "artifacts" / "metis_tokenizer" / "tokenizer.json"
 METIS11_TOKENIZER_PATH = ROOT_DIR / "artifacts" / "metis11_tokenizer" / "tokenizer.json"
+METIS13_TOKENIZER_PATH = ROOT_DIR / "artifacts" / "metis13_hf_assets" / "tokenizer.json"
 DEFAULT_SYSTEM_PROMPT = "You are a concise, friendly assistant. Answer clearly and directly."
 
 MODEL_PRESETS = {
@@ -67,6 +68,27 @@ MODEL_PRESETS = {
         "description": "A large-for-local experimental Metis run that trades a much longer training time for noticeably more capacity.",
         "default_temperature": 0.4,
         "tokenizer_path": METIS_TOKENIZER_PATH,
+    },
+    "metis13_base": {
+        "name": "Metis 1.3 Base",
+        "tagline": "200M Mamba2 hybrid",
+        "description": "A 200M Metis backbone that shifts to a Mamba2-attention hybrid with 4K context and a much larger pretraining budget.",
+        "default_temperature": 0.35,
+        "tokenizer_path": METIS13_TOKENIZER_PATH,
+    },
+    "metis13_chat": {
+        "name": "Metis 1.3 Chat",
+        "tagline": "Refined chat tune",
+        "description": "Metis 1.3 after a cleaner SmolTalk-heavy conversational stage designed to keep replies natural and legible.",
+        "default_temperature": 0.3,
+        "tokenizer_path": METIS13_TOKENIZER_PATH,
+    },
+    "metis13_think": {
+        "name": "Metis 1.3 Think",
+        "tagline": "Concise reasoning tune",
+        "description": "The full Metis 1.3 stack with retained chat data plus shorter, cleaner reasoning traces.",
+        "default_temperature": 0.2,
+        "tokenizer_path": METIS13_TOKENIZER_PATH,
     },
     "fast": {
         "name": "Little Lantern 1.0",
@@ -159,6 +181,9 @@ def checkpoint_choices() -> list[dict[str, str]]:
 
 def pick_default_checkpoint() -> str | None:
     preferred = [
+        CHECKPOINTS_DIR / "metis13_think" / "best.pt",
+        CHECKPOINTS_DIR / "metis13_chat" / "best.pt",
+        CHECKPOINTS_DIR / "metis13_base" / "best.pt",
         CHECKPOINTS_DIR / "metis11_think" / "best.pt",
         CHECKPOINTS_DIR / "metis11_chat" / "best.pt",
         CHECKPOINTS_DIR / "metis_think" / "best.pt",

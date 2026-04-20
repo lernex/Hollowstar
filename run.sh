@@ -35,7 +35,28 @@ METIS11_REASONING_EXAMPLES="${METIS11_REASONING_EXAMPLES:-18000}"
 METIS11_BASE_STEPS="${METIS11_BASE_STEPS:-5000}"
 METIS11_H100_DTYPE="${METIS11_H100_DTYPE:-bf16}"
 METIS11_H100_COMPILE_MODE="${METIS11_H100_COMPILE_MODE:-default}"
+METIS12_SHARED_ROOT="${METIS12_SHARED_ROOT:-$ROOT_DIR/.runpod/metis12}"
+METIS13_SHARED_ROOT="${METIS13_SHARED_ROOT:-$ROOT_DIR/.runpod/metis13}"
 VENV_FLAGS="${VENV_FLAGS:-}"
+BOOTSTRAP_PYTHON="${BOOTSTRAP_PYTHON:-}"
+
+choose_bootstrap_python() {
+  if [[ -n "$BOOTSTRAP_PYTHON" ]]; then
+    printf '%s\n' "$BOOTSTRAP_PYTHON"
+    return 0
+  fi
+
+  local candidate
+  for candidate in python3.12 python3.11 python3.10 python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  echo "No suitable Python interpreter found for bootstrapping .venv" >&2
+  return 1
+}
 
 usage() {
   cat <<'EOF'
@@ -68,6 +89,12 @@ Commands:
   metis11-full run the full Metis 1.1 base + chat + thinking pipeline
   metis11-h100-full run the optimized H100 Metis 1.1 path
   metis11-h100-pod run the optimized GPU path and mirror logs into pod logs
+  metis12-cpu-prep run the shared-volume CPU preparation flow for Metis-1.2
+  metis12-gpu-full run the TorchTitan FP8 GPU flow for Metis-1.2
+  metis13-cpu-memory-prep run the RAM-heavy tokenizer/assets pod for Metis-1.3
+  metis13-cpu-compute-prep run the compute-heavy data-build pod for Metis-1.3
+  metis13-cpu-prep run both Metis-1.3 CPU halves sequentially on one pod
+  metis13-gpu-full run the Mamba2-hybrid BF16 GPU flow for Metis-1.3
   hf-upload-metis11-base upload the Metis 1.1 base checkpoint to Hugging Face
   hf-upload-metis11-chat upload the Metis 1.1 chat checkpoint to Hugging Face
   hf-upload-metis11-think upload the Metis 1.1 think checkpoint to Hugging Face
@@ -86,7 +113,7 @@ cmd="${1:-help}"
 case "$cmd" in
   setup)
     if [[ ! -x "$PY" ]]; then
-      python3 -m venv ${VENV_FLAGS:+$VENV_FLAGS } .venv
+      "$(choose_bootstrap_python)" -m venv ${VENV_FLAGS:+$VENV_FLAGS } .venv
     fi
     "$PIP" install -U pip
     "$PIP" install -r requirements.txt
@@ -196,6 +223,24 @@ case "$cmd" in
     ;;
   metis11-h100-pod)
     ./scripts/pod_launch.sh "$0" metis11-h100-full
+    ;;
+  metis12-cpu-prep)
+    METIS12_SHARED_ROOT="$METIS12_SHARED_ROOT" ./scripts/runpod_metis12_cpu.sh
+    ;;
+  metis12-gpu-full)
+    METIS12_SHARED_ROOT="$METIS12_SHARED_ROOT" ./scripts/runpod_metis12_gpu.sh
+    ;;
+  metis13-cpu-memory-prep)
+    METIS13_SHARED_ROOT="$METIS13_SHARED_ROOT" METIS13_CPU_ROLE="memory" ./scripts/runpod_metis13_cpu.sh
+    ;;
+  metis13-cpu-compute-prep)
+    METIS13_SHARED_ROOT="$METIS13_SHARED_ROOT" METIS13_CPU_ROLE="compute" ./scripts/runpod_metis13_cpu.sh
+    ;;
+  metis13-cpu-prep)
+    METIS13_SHARED_ROOT="$METIS13_SHARED_ROOT" METIS13_CPU_ROLE="full" ./scripts/runpod_metis13_cpu.sh
+    ;;
+  metis13-gpu-full)
+    METIS13_SHARED_ROOT="$METIS13_SHARED_ROOT" ./scripts/runpod_metis13_gpu.sh
     ;;
   hf-upload-metis11-base)
     "$PY" scripts/upload_hf_model.py --create-repo --private --repo-id "$HF_NAMESPACE/Metis-1.1-base" --checkpoint checkpoints/metis11_base/best.pt --tokenizer-path "$METIS11_TOKENIZER_PATH" --message "Upload Metis 1.1 base checkpoint"

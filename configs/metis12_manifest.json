@@ -1,0 +1,67 @@
+{
+  "name": "Metis-1.2",
+  "family": "Metis",
+  "description": "Metis-1.2 is a compact conversational model built around a 1024-token context, a mixed educational pretraining corpus, and a staged chat-to-reasoning post-training curriculum.",
+  "model": {
+    "architecture": "llama3_style_decoder",
+    "vocab_size": 8192,
+    "block_size": 1024,
+    "n_layer": 18,
+    "n_head": 12,
+    "n_kv_head": 12,
+    "n_embd": 768,
+    "ffn_hidden_size": 1408,
+    "ffn_dim_multiplier": 0.6875,
+    "multiple_of": 256,
+    "rope_theta": 500000,
+    "rms_norm_eps": 1e-05,
+    "tie_word_embeddings": true,
+    "estimated_params": 107000000
+  },
+  "tokenizer": {
+    "vocab_size": 8192,
+    "sample_docs": 5000000,
+    "min_frequency": 2,
+    "progress_interval": 5000
+  },
+  "pretrain": {
+    "target_train_tokens": 4000000000,
+    "val_ratio": 0.01,
+    "base_lr": 0.0002,
+    "warmup_ratio": 0.015,
+    "weight_decay": 0.1,
+    "optimizer_beta1": 0.9,
+    "optimizer_beta2": 0.95,
+    "local_batch_size": 8,
+    "global_batch_size": 256,
+    "checkpoint_interval": 1000
+  },
+  "chat_sft": {
+    "max_length": 768,
+    "target_examples": 400000,
+    "epochs": 1.5,
+    "base_lr": 8e-05,
+    "warmup_ratio": 0.03,
+    "local_batch_size": 16,
+    "global_batch_size": 128,
+    "checkpoint_interval": 250
+  },
+  "reasoning_sft": {
+    "max_length": 768,
+    "target_examples": 120000,
+    "epochs": 1.0,
+    "base_lr": 5e-05,
+    "warmup_ratio": 0.04,
+    "local_batch_size": 12,
+    "global_batch_size": 96,
+    "checkpoint_interval": 100
+  },
+  "release": {
+    "namespace": "Lernex",
+    "repos": {
+      "base": "Lernex/Metis-1.2-base",
+      "chat": "Lernex/Metis-1.2-chat",
+      "think": "Lernex/Metis-1.2-think"
+    }
+  }
+}
