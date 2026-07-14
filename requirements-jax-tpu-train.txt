@@ -1,0 +1,16 @@
+--find-links https://storage.googleapis.com/jax-releases/libtpu_releases.html
+
+# Google Cloud TPU v6e JAX lane for Metis-1.5.
+# Keep this free of Neuron, torch_xla, CUDA-only, and Triton dependencies.
+jax[tpu]>=0.5.3
+numpy>=1.26
+tokenizers>=0.15
+sentencepiece>=0.2
+tqdm>=4.66
+requests>=2.31
+huggingface_hub>=0.29
+transformers>=4.51,<5
+safetensors>=0.4
+orbax-checkpoint>=0.8
+grain>=0.2
+zstandard>=0.22

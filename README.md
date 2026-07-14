@@ -410,6 +410,22 @@ The key supporting scripts are:
 - `scripts/eval_model_suite.py`
 - `src/metis_titan/`
 
+## Metis 1.5 Release Eval
+
+After the Metis-1.5 releases are exported, run the local release sanity suite
+against the base and think folders:
+
+```bash
+python -m pip install -r requirements-eval.txt
+python scripts/eval_model_suite.py \
+  --suite configs/metis15_eval_prompts.json \
+  --model base=releases/metis15/base \
+  --model think=releases/metis15/think \
+  --output-path releases/metis15/eval_comparison.json
+```
+
+The main pipeline can run the same check with `METIS15_RUN_EVAL=1 make metis15-full`.
+
 ## Recommended first run
 
 For your first pass, keep it short:

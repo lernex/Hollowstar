@@ -1,0 +1,14 @@
+{
+  "stage": "continued_pretrain",
+  "steps": 2,
+  "start_step": 2,
+  "final_step": 4,
+  "start_loss": 3.934556722640991,
+  "end_loss": 3.8335394859313965,
+  "device_count": 1,
+  "capacity": 16,
+  "grad_accum_steps": 2,
+  "tokens_seen": 256,
+  "mor_target_depth": 1.5,
+  "mor_aux_coef": 0.017500000074505806
+}

@@ -1,0 +1,28 @@
+{
+  "format": "metis_jax_orbax_v1",
+  "manifest_hash": "f7acea0e6b20b9b73e98c4dda356262d96bb05a6655b2ea2bf1f705315925555",
+  "metrics": {
+    "capacity": 16,
+    "device_count": 1,
+    "end_loss": 3.838923692703247,
+    "final_step": 4,
+    "grad_accum_steps": 2,
+    "mor_aux_coef": 0.017500000074505806,
+    "mor_packed_overflow_frac": 0.0,
+    "mor_target_depth": 1.5,
+    "stage": "continued_pretrain",
+    "start_loss": 3.9368224143981934,
+    "start_step": 2,
+    "steps": 2,
+    "tokens_seen": 256
+  },
+  "optimizer_step": 4,
+  "sampler_state": {
+    "cursor": 4,
+    "data_fingerprint": "synthetic:20260602:2:16",
+    "epoch": 0,
+    "split": "synthetic",
+    "tokens_emitted": 256
+  },
+  "step": 4
+}

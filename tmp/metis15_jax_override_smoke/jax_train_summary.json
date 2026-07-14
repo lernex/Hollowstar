@@ -1,0 +1,12 @@
+{
+  "stage": "pretrain",
+  "steps": 2,
+  "start_step": 0,
+  "final_step": 2,
+  "start_loss": 4.130553245544434,
+  "end_loss": 4.0077433586120605,
+  "device_count": 1,
+  "capacity": 9,
+  "grad_accum_steps": 2,
+  "tokens_seen": 96
+}

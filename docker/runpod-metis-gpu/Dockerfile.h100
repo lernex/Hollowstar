@@ -1,0 +1,88 @@
+# check=skip=InvalidBaseImagePlatform
+FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404@sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851
+
+ARG TRANSFORMER_ENGINE_REF="v2.15"
+ARG FLASH_ATTENTION_REPO="https://github.com/Dao-AILab/flash-attention.git"
+ARG FLASH_ATTENTION_REF="v2.8.3"
+ARG INSTALL_FLASH_ATTENTION=0
+ARG TE_BUILD_MAX_JOBS=8
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    METIS_IMAGE_ROOT=/opt/metis \
+    VIRTUAL_ENV=/opt/metis-venv \
+    PATH=/opt/metis-venv/bin:$PATH \
+    METIS13_PYTHON_BIN=/opt/metis-venv/bin/python \
+    METIS13_SKIP_ENV_SETUP=1 \
+    METIS15_PYTHON_BIN=/opt/metis-venv/bin/python \
+    METIS15_SKIP_ENV_SETUP=1 \
+    TORCH_CUDA_ARCH_LIST=9.0a \
+    NVTE_CUDA_ARCHS=90a \
+    MAX_JOBS=$TE_BUILD_MAX_JOBS \
+    NVTE_BUILD_MAX_JOBS=$TE_BUILD_MAX_JOBS \
+    NVCC_THREADS=1 \
+    NVTE_BUILD_THREADS_PER_JOB=1 \
+    CMAKE_BUILD_PARALLEL_LEVEL=$TE_BUILD_MAX_JOBS \
+    CUDA_PATH=/usr/local/cuda
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+WORKDIR /opt
+
+RUN apt-get update --yes && \
+    DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      git && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv --system-site-packages "$VIRTUAL_ENV"
+
+COPY requirements-gpu-train.txt /tmp/requirements-gpu-train.txt
+RUN pip install --upgrade pip "setuptools<82" wheel ninja && \
+    pip install -r /tmp/requirements-gpu-train.txt
+
+RUN pip uninstall -y transformer-engine transformer-engine-cu12 transformer-engine-torch \
+      transformer_engine transformer_engine_cu12 transformer_engine_torch >/dev/null 2>&1 || true && \
+    pip install pybind11 "nvidia-mathdx==25.6.0" && \
+    git clone --branch "$TRANSFORMER_ENGINE_REF" --recursive --depth 1 https://github.com/NVIDIA/TransformerEngine.git /tmp/TransformerEngine && \
+    cd /tmp/TransformerEngine && \
+    NVTE_FRAMEWORK=pytorch pip install --no-build-isolation . && \
+    rm -rf /tmp/TransformerEngine
+
+RUN if [[ "$INSTALL_FLASH_ATTENTION" == "1" ]]; then \
+      git clone --branch "$FLASH_ATTENTION_REF" --depth 1 "$FLASH_ATTENTION_REPO" /tmp/flash-attention && \
+      cd /tmp/flash-attention/hopper && \
+      python setup.py install && \
+      rm -rf /tmp/flash-attention; \
+    else \
+      echo "Skipping Hopper FlashAttention build; SDPA/native GQA remains the default."; \
+    fi
+
+COPY . "$METIS_IMAGE_ROOT"
+
+WORKDIR $METIS_IMAGE_ROOT
+RUN pip install -e . && \
+    python - <<'PY'
+import torch
+import transformer_engine
+import transformer_engine.pytorch as te
+from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+
+assert torch.__version__.startswith("2.8.0"), torch.__version__
+assert hasattr(torch, "_grouped_mm"), "PyTorch grouped GEMM op is required"
+print("torch", torch.__version__)
+print("cuda", torch.version.cuda)
+print("grouped_mm", torch._C._jit_get_schemas_for_operator("aten::_grouped_mm")[0])
+print("transformer_engine", getattr(transformer_engine, "__version__", "unknown"), getattr(te, "__file__", "missing"))
+print("liger", LigerFusedLinearCrossEntropyLoss)
+PY
+
+RUN python scripts/train_mamba_lm.py --help >/dev/null && \
+    python scripts/train_mamba_sft.py --help >/dev/null && \
+    python scripts/train_mamba_reward.py --help >/dev/null && \
+    python scripts/train_mamba_dpo.py --help >/dev/null && \
+    python scripts/audit_metis_compute.py --manifest configs/metis15_manifest.json
+
+WORKDIR /opt/metis

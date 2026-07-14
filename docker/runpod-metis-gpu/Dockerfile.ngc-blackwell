@@ -1,0 +1,109 @@
+# syntax=docker/dockerfile:1.7
+FROM nvcr.io/nvidia/pytorch:26.04-py3
+
+ARG TRANSFORMER_ENGINE_REF="main"
+ARG TE_BUILD_MAX_JOBS=8
+ARG PATCH_TE_SM120_MXFP8_GUARD=1
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    METIS_IMAGE_ROOT=/opt/metis \
+    VIRTUAL_ENV=/usr/local \
+    METIS15_PYTHON_BIN=/usr/bin/python3 \
+    METIS15_SKIP_ENV_SETUP=1 \
+    TORCH_CUDA_ARCH_LIST=12.0a \
+    NVTE_CUDA_ARCHS=120a \
+    MAX_JOBS=$TE_BUILD_MAX_JOBS \
+    NVTE_BUILD_MAX_JOBS=$TE_BUILD_MAX_JOBS \
+    NVCC_THREADS=1 \
+    NVTE_BUILD_THREADS_PER_JOB=1 \
+    CMAKE_BUILD_PARALLEL_LEVEL=$TE_BUILD_MAX_JOBS \
+    CUDA_PATH=/usr/local/cuda
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+WORKDIR /opt
+
+COPY requirements-gpu-train.txt /tmp/requirements-gpu-train.txt
+RUN python -m pip install --upgrade pip "setuptools<82" wheel ninja && \
+    python -m pip install -r /tmp/requirements-gpu-train.txt
+
+RUN <<'BASH'
+set -euo pipefail
+python -m pip uninstall -y transformer-engine transformer-engine-cu12 transformer-engine-cu13 transformer-engine-torch \
+  transformer_engine transformer_engine_cu12 transformer_engine_cu13 transformer_engine_torch >/dev/null 2>&1 || true
+python -m pip install pybind11 "nvidia-mathdx==25.6.0"
+git clone --branch "$TRANSFORMER_ENGINE_REF" --recursive --depth 1 https://github.com/NVIDIA/TransformerEngine.git /tmp/TransformerEngine
+if [[ "$PATCH_TE_SM120_MXFP8_GUARD" == "1" ]]; then
+  python - <<'PY'
+from pathlib import Path
+
+path = Path("/tmp/TransformerEngine/transformer_engine/pytorch/quantization.py")
+text = path.read_text()
+old = '''def _compute_mxfp8_support() -> Tuple[bool, str]:
+    """Return if fp8 support is available"""
+    if get_device_compute_capability() >= (12, 0):
+        return False, "MXFP8 (for all gemm layouts) is not supported on 12.0+ architectures yet."
+    if get_device_compute_capability() >= (10, 0):  # blackwell and above
+        return True, ""
+    return False, "Device compute capability 10.0 or higher required for MXFP8 execution."
+'''
+new = '''def _compute_mxfp8_support() -> Tuple[bool, str]:
+    """Return if fp8 support is available"""
+    if get_device_compute_capability() >= (10, 0):  # blackwell and above
+        return True, ""
+    return False, "Device compute capability 10.0 or higher required for MXFP8 execution."
+'''
+if old not in text:
+    old = '''@functools.lru_cache(maxsize=None)
+def check_mxfp8_support() -> Tuple[bool, str]:
+    """Return if fp8 support is available"""
+    if get_device_compute_capability() >= (12, 0):
+        return False, "MXFP8 (for all gemm layouts) is not supported on 12.0+ architectures yet."
+    if get_device_compute_capability() >= (10, 0):  # blackwell and above
+        return True, ""
+    return False, "Device compute capability 10.0 or higher required for MXFP8 execution."
+'''
+    new = '''@functools.lru_cache(maxsize=None)
+def check_mxfp8_support() -> Tuple[bool, str]:
+    """Return if fp8 support is available"""
+    if get_device_compute_capability() >= (10, 0):  # blackwell and above
+        return True, ""
+    return False, "Device compute capability 10.0 or higher required for MXFP8 execution."
+'''
+if old not in text:
+    raise SystemExit("Unable to locate Transformer Engine MXFP8 SM120 guard to patch")
+path.write_text(text.replace(old, new))
+PY
+fi
+cd /tmp/TransformerEngine
+NVTE_FRAMEWORK=pytorch python -m pip install --no-build-isolation .
+rm -rf /tmp/TransformerEngine
+BASH
+
+COPY . "$METIS_IMAGE_ROOT"
+
+WORKDIR $METIS_IMAGE_ROOT
+RUN python -m pip install -e . && \
+    python - <<'PY'
+import torch
+import transformer_engine
+import transformer_engine.pytorch as te
+import transformer_engine.common.recipe as recipe
+from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+
+print("torch", torch.__version__)
+print("cuda", torch.version.cuda)
+print("transformer_engine", getattr(transformer_engine, "__version__", "unknown"), getattr(te, "__file__", "missing"))
+print("transformer_engine_nvfp4", hasattr(recipe, "NVFP4BlockScaling"))
+print("transformer_engine_mxfp8", hasattr(recipe, "MXFP8BlockScaling"))
+print("liger", LigerFusedLinearCrossEntropyLoss)
+PY
+
+RUN python scripts/train_mamba_lm.py --help >/dev/null && \
+    python scripts/train_mamba_sft.py --help >/dev/null && \
+    python scripts/train_mamba_reward.py --help >/dev/null && \
+    python scripts/train_mamba_dpo.py --help >/dev/null
+
+WORKDIR /opt/metis

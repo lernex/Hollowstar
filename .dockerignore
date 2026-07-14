@@ -1,6 +1,7 @@
 .git
 .gitignore
 .venv
+.codex_tmp
 __pycache__
 *.pyc
 *.pyo
@@ -15,9 +16,12 @@ build
 node_modules
 checkpoints
 artifacts
+releases
 data
 .runpod
 vendor
+.playwright-cli
+.playwright-mcp
 *.pt
 *.bin
 *.safetensors

@@ -1,0 +1,424 @@
+{
+  "seed": 42,
+  "max_history_turns": 3,
+  "stage": "chat_sft",
+  "profile": "metis15_1p2m_chat_sft_bucketed_v1",
+  "target_examples": 1200000,
+  "notes": [
+    "Chat SFT is now an internal alignment stage only; Metis-1.5 releases base and think, not a separate chat checkpoint.",
+    "Target is 1.2M filtered English, non-code examples with no single source above 25%.",
+    "OpenHermes stays capped at 60K, and WildChat stays a small realism/diversity source."
+  ],
+  "global_filters": {
+    "language": "en",
+    "english_confidence_min": 0.9,
+    "drop_large_code_blocks": true,
+    "max_code_fences": 0,
+    "benchmark_decontam": [
+      "mmlu",
+      "mmlu_pro",
+      "arc",
+      "hellaswag",
+      "openbookqa",
+      "sciq",
+      "truthfulqa",
+      "gpqa",
+      "alpacaeval",
+      "mt_bench",
+      "ifeval",
+      "arena_hard"
+    ]
+  },
+  "caps": {
+    "same_bucket_fallback_only": true,
+    "max_single_source_share": 0.25,
+    "openhermes_max_examples": 80000,
+    "code_examples_max_share": 0.05
+  },
+  "buckets": [
+    {
+      "name": "general_instruction_assistant_behavior",
+      "target_examples": 300000,
+      "share": 0.25,
+      "purpose": "General assistant behavior, instruction following, and everyday helpfulness.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "chat_tulu3_general_instruction",
+          "dataset_name": "allenai/tulu-3-sft-mixture",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 169850,
+          "max_examples": 169850,
+          "format": "messages",
+          "keep_think": false,
+          "use_custom_instructions": false,
+          "filters": {
+            "drop_code": true,
+            "drop_multilingual": true,
+            "prefer_sources": ["oasst1", "no_robots", "flan", "personahub"]
+          }
+        },
+        {
+          "name": "metis15_identity_manual",
+          "dataset_name": "examples/metis15_identity_sft.jsonl",
+          "split": "train",
+          "streaming": false,
+          "target_examples": 150,
+          "max_examples": 150,
+          "format": "local_messages_jsonl",
+          "keep_think": false,
+          "use_custom_instructions": false,
+          "filters": {
+            "drop_code": true,
+            "drop_multilingual": true
+          }
+        },
+        {
+          "name": "chat_no_robots_general_instruction",
+          "dataset_name": "HuggingFaceH4/no_robots",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 130000,
+          "format": "messages",
+          "keep_think": false,
+          "use_custom_instructions": false,
+          "filters": {
+            "drop_code": true,
+            "drop_multilingual": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "everyday_chat_simple_help",
+      "target_examples": 210000,
+      "share": 0.175,
+      "purpose": "Plain no-think conversational usefulness and real user prompt diversity.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "chat_smoltalk_everyday_no_think",
+          "dataset_name": "HuggingFaceTB/smoltalk2",
+          "dataset_config": "SFT",
+          "split": "smoltalk_smollm3_everyday_conversations_no_think",
+          "streaming": true,
+          "target_examples": 80000,
+          "format": "smoltalk_messages",
+          "keep_think": false
+        },
+        {
+          "name": "chat_smoltalk_systemchats_no_think",
+          "dataset_name": "HuggingFaceTB/smoltalk2",
+          "dataset_config": "SFT",
+          "split": "smoltalk_smollm3_systemchats_30k_no_think",
+          "streaming": true,
+          "target_examples": 20000,
+          "format": "smoltalk_messages",
+          "keep_think": false
+        },
+        {
+          "name": "chat_wildchat_clean_real_prompts",
+          "dataset_name": "allenai/WildChat",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 110000,
+          "format": "wildchat_conversation",
+          "keep_think": false,
+          "allowed_languages": ["English", "en"],
+          "max_turns": 6,
+          "skip_toxic": true,
+          "skip_redacted": true
+        }
+      ]
+    },
+    {
+      "name": "writing_summarization_rewriting",
+      "target_examples": 140000,
+      "share": 0.1166666667,
+      "purpose": "Writing, summarization, rewriting, and concise transformation tasks.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "chat_smoltalk_rewrite",
+          "dataset_name": "HuggingFaceTB/smoltalk2",
+          "dataset_config": "SFT",
+          "split": "smoltalk_smollm3_smol_rewrite_no_think",
+          "streaming": true,
+          "target_examples": 40000,
+          "format": "smoltalk_messages",
+          "keep_think": false
+        },
+        {
+          "name": "chat_smoltalk_summarize",
+          "dataset_name": "HuggingFaceTB/smoltalk2",
+          "dataset_config": "SFT",
+          "split": "smoltalk_smollm3_smol_summarize_no_think",
+          "streaming": true,
+          "target_examples": 30000,
+          "format": "smoltalk_messages",
+          "keep_think": false
+        },
+        {
+          "name": "chat_tulu3_writing_summarization",
+          "dataset_name": "allenai/tulu-3-sft-mixture",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 70000,
+          "format": "messages",
+          "keep_think": false,
+          "use_custom_instructions": false,
+          "filters": {
+            "drop_code": true,
+            "drop_multilingual": true,
+            "prefer_sources": ["flan", "no_robots", "oasst1"],
+            "task_types": ["summarization", "rewriting", "writing"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "format_following_constraints",
+      "target_examples": 130000,
+      "share": 0.1083333333,
+      "purpose": "Constraint following, requested formats, and persona-style instruction discipline.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "chat_no_robots_format_constraints",
+          "dataset_name": "HuggingFaceH4/no_robots",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 100000,
+          "format": "messages",
+          "keep_think": false,
+          "use_custom_instructions": false,
+          "filters": {
+            "drop_code": true
+          }
+        },
+        {
+          "name": "chat_smoltalk_system_constraints",
+          "dataset_name": "HuggingFaceTB/smoltalk2",
+          "dataset_config": "SFT",
+          "split": "smoltalk_smollm3_systemchats_30k_no_think",
+          "streaming": true,
+          "target_examples": 30000,
+          "format": "smoltalk_messages",
+          "keep_think": false
+        }
+      ]
+    },
+    {
+      "name": "knowledge_reference_answers",
+      "target_examples": 130000,
+      "share": 0.1083333333,
+      "purpose": "Grounded reference-style answers and explanation-shaped factual QA.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "chat_smoltalk_magpie_reference",
+          "dataset_name": "HuggingFaceTB/smoltalk2",
+          "dataset_config": "SFT",
+          "split": "smoltalk_smollm3_smol_magpie_ultra_no_think",
+          "streaming": true,
+          "target_examples": 30000,
+          "format": "smoltalk_messages",
+          "keep_think": false,
+          "filters": {
+            "drop_code": true
+          }
+        },
+        {
+          "name": "chat_sciriff_reference_tasks",
+          "dataset_name": "allenai/SciRIFF",
+          "dataset_config": "4096",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 60000,
+          "format": "sciriff_io",
+          "prompt_column": "input",
+          "response_column": "output",
+          "keep_think": false
+        },
+        {
+          "name": "chat_openstax_reference_qa",
+          "dataset_name": "pranav-gupta/openstax-qa",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 40000,
+          "format": "prompt_response",
+          "prompt_column": "problem_cleaned",
+          "response_column": "solution_cleaned",
+          "allowed_languages": ["en"],
+          "keep_think": false,
+          "filters": {
+            "language": "en",
+            "subjects": ["science", "math", "social_science", "humanities"],
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "science_instruction",
+      "target_examples": 90000,
+      "share": 0.075,
+      "purpose": "Science and literature-task instruction following, especially physics, chemistry, and scientific reading.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "chat_sciriff_science_instruction",
+          "dataset_name": "allenai/SciRIFF",
+          "dataset_config": "4096",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 45000,
+          "format": "sciriff_io",
+          "prompt_column": "input",
+          "response_column": "output",
+          "keep_think": false
+        },
+        {
+          "name": "chat_sciinstruct_english_filtered",
+          "dataset_name": "zd21/SciInstruct",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 20000,
+          "format": "prompt_response",
+          "prompt_column": "content",
+          "response_column": "summary",
+          "keep_think": false,
+          "filters": {
+            "language": "en",
+            "drop_non_latin": true,
+            "same_bucket_fallback_if_underfilled": true
+          }
+        },
+        {
+          "name": "chat_openstax_science_qa",
+          "dataset_name": "pranav-gupta/openstax-qa",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 25000,
+          "format": "prompt_response",
+          "prompt_column": "problem_cleaned",
+          "response_column": "solution_cleaned",
+          "allowed_languages": ["en"],
+          "keep_think": false,
+          "filters": {
+            "language": "en",
+            "subjects": ["physics", "chemistry", "biology", "math"],
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "math_light_instruction",
+      "target_examples": 80000,
+      "share": 0.0666666667,
+      "purpose": "Short algebra and medium math explanations without long hidden traces.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "chat_openr1_easy_verified_math",
+          "dataset_name": "open-r1/OpenR1-Math-220k",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 40000,
+          "format": "messages",
+          "keep_think": false,
+          "filters": {
+            "require_math_verify": true,
+            "difficulty": "easy_to_medium"
+          }
+        },
+        {
+          "name": "chat_numinamath_simple",
+          "dataset_name": "AI-MO/NuminaMath-CoT",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 40000,
+          "format": "messages",
+          "keep_think": false,
+          "filters": {
+            "difficulty": "easy_to_medium",
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "safety_refusal_harmlessness",
+      "target_examples": 60000,
+      "share": 0.05,
+      "purpose": "Harmlessness and refusal behavior, capped so the small model does not become refusal-heavy.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "chat_tulu3_safety",
+          "dataset_name": "allenai/tulu-3-sft-mixture",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 60000,
+          "format": "messages",
+          "keep_think": false,
+          "use_custom_instructions": false,
+          "filters": {
+            "prefer_sources": ["safety", "harmlessness"],
+            "drop_code": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "legacy_openhermes_capped",
+      "target_examples": 60000,
+      "share": 0.05,
+      "purpose": "Small legacy OpenHermes slice for continuity only.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "chat_openhermes_no_think_capped",
+          "dataset_name": "HuggingFaceTB/smoltalk2",
+          "dataset_config": "SFT",
+          "split": "OpenHermes_2.5_no_think",
+          "streaming": true,
+          "target_examples": 60000,
+          "max_examples": 60000,
+          "format": "smoltalk_messages",
+          "keep_think": false
+        }
+      ]
+    }
+  ]
+}

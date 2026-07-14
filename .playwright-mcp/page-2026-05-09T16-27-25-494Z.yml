@@ -1,0 +1,51 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - generic [ref=e4]:
+      - paragraph [ref=e5]: Local Model Playground
+      - heading "TinyLM Studio" [level=1] [ref=e6]
+      - paragraph [ref=e7]: A calmer way to probe your checkpoints, compare runs, and see whether the model is actually learning to talk.
+    - generic [ref=e8]:
+      - generic [ref=e9]:
+        - generic [ref=e10]: Model
+        - combobox "Model" [ref=e11]:
+          - option "Metis 1.4 Base" [selected]
+      - generic [ref=e12]:
+        - paragraph [ref=e13]: 500M MoR base / HF export
+        - heading "Metis 1.4 Base" [level=3] [ref=e14]
+        - paragraph [ref=e15]: The 500M Metis-1.4 MoR backbone with 1K context, adaptive recursion, and a cleaner 20B-token pretraining budget.
+      - generic [ref=e16]:
+        - generic [ref=e17]: System prompt
+        - textbox "System prompt" [ref=e18]: You are a concise, friendly assistant. Answer clearly and directly.
+      - generic [ref=e19]:
+        - generic [ref=e20]:
+          - generic [ref=e21]: Temperature
+          - slider "Temperature 0.35" [ref=e22]: "0.35"
+          - strong [ref=e23]: "0.35"
+        - generic [ref=e24]:
+          - generic [ref=e25]: Top-k
+          - slider "Top-k 40" [ref=e26]: "40"
+          - strong [ref=e27]: "40"
+        - generic [ref=e28]:
+          - generic [ref=e29]: Max new tokens
+          - slider "Max new tokens 96" [ref=e30]: "96"
+          - strong [ref=e31]: "96"
+      - generic [ref=e32]:
+        - button "Load test prompt" [ref=e33] [cursor=pointer]
+        - button "Clear chat" [ref=e34] [cursor=pointer]
+  - main [ref=e35]:
+    - generic [ref=e36]:
+      - generic [ref=e37]:
+        - paragraph [ref=e38]: Conversation Surface
+        - heading "Talk to the checkpoint, not the terminal." [level=2] [ref=e39]
+      - generic [ref=e40]: Ready
+    - generic [ref=e42]:
+      - paragraph [ref=e43]: First contact
+      - heading "Start simple and watch the model’s habits show up fast." [level=3] [ref=e44]
+      - paragraph [ref=e45]: "Good tiny-model prompts: “What is a tokenizer?”, “Tell me a short story about a rabbit.”, “Explain loss in simple words.”"
+    - generic [ref=e46]:
+      - generic [ref=e47]: Your message
+      - textbox "Your message" [ref=e48]:
+        - /placeholder: Ask something basic first. Tiny models usually reveal their strengths and weirdness quickly.
+      - generic [ref=e49]:
+        - paragraph [ref=e50]: "Tip: compare the `fast` checkpoint against any future chat-tuned checkpoint and watch how the style shifts."
+        - button "Send" [ref=e51] [cursor=pointer]

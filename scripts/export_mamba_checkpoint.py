@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 from metis_mamba import export_checkpoint_to_dir
+from metis_mamba.checkpoints import publish_directory
 
 
 ASSET_FILES = [
@@ -41,8 +42,8 @@ def build_readme(manifest: dict, stage_name: str, repo_id: str | None) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Export a Metis-1.3 checkpoint into a clean release directory.")
-    parser.add_argument("--manifest", default="configs/metis13_manifest.json")
+    parser = argparse.ArgumentParser(description="Export a Metis checkpoint into a clean release directory.")
+    parser.add_argument("--manifest", default="configs/metis15_manifest.json")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--assets-dir", required=True)
     parser.add_argument("--out-dir", required=True)
@@ -53,7 +54,7 @@ def main() -> None:
     manifest = json.loads(Path(args.manifest).read_text())
     assets_dir = Path(args.assets_dir)
     out_dir = Path(args.out_dir)
-    tmp_dir = out_dir.with_name(f"{out_dir.name}.tmp")
+    tmp_dir = out_dir.with_name(f".{out_dir.name}.tmp")
 
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir)
@@ -71,9 +72,7 @@ def main() -> None:
     )
     (tmp_dir / "README.md").write_text(build_readme(manifest, args.stage_name, args.repo_id), encoding="utf-8")
 
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    tmp_dir.replace(out_dir)
+    publish_directory(tmp_dir, out_dir)
 
     summary = {
         "stage_name": args.stage_name,

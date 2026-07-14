@@ -91,12 +91,12 @@ def choose_device(requested: str | None) -> torch.device:
 def load_runner(model_path: Path, device: torch.device):
     if model_path.is_dir() and (model_path / "config.json").exists():
         config = json.loads((model_path / "config.json").read_text())
-        if config.get("model_type") == "metis_mamba2_hybrid":
+        if str(config.get("model_type", "")).startswith("metis_"):
             return CustomRunner(model_path, device)
         return HfRunner(model_path, device)
     if model_path.is_file() and model_path.suffix == ".pt":
         checkpoint = torch.load(model_path, map_location="cpu")
-        if checkpoint.get("model_family") == "metis_mamba2_hybrid":
+        if str(checkpoint.get("model_family", "")).startswith("metis_"):
             return CustomRunner(model_path, device)
         return LegacyRunner(model_path, device)
     raise ValueError(f"Unsupported model path for evaluation: {model_path}")
@@ -107,7 +107,7 @@ class CustomRunner:
         if path.is_dir():
             tokenizer_path = path / "tokenizer.json"
         else:
-            tokenizer_path = path.parent.parent / "artifacts" / "metis13_hf_assets" / "tokenizer.json"
+            tokenizer_path = path.parent.parent / "artifacts" / "metis15_hf_assets" / "tokenizer.json"
         self.tokenizer = load_tokenizer(tokenizer_path)
         self.model = load_model(path, device)
         self.device = device
@@ -131,7 +131,7 @@ class CustomRunner:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Metis prompt suite against one or more checkpoints.")
-    parser.add_argument("--suite", default="configs/metis12_eval_prompts.json")
+    parser.add_argument("--suite", default="configs/metis15_eval_prompts.json")
     parser.add_argument("--model", action="append", required=True, help="label=/path/to/model")
     parser.add_argument("--device", default=None)
     parser.add_argument("--output-path", default=None)

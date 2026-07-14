@@ -1,0 +1,72 @@
+- generic [ref=e1]:
+  - main [ref=e4]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - button "Provide feedback" [ref=e11] [cursor=pointer]
+        - button "Multi-session disabled" [ref=e18] [cursor=pointer]:
+          - text: Multi-session disabled
+          - generic [ref=e19]:
+            - img
+        - button "Language English" [ref=e26] [cursor=pointer]:
+          - text: English
+          - generic [ref=e27]:
+            - img
+      - link "Amazon Web Services logo" [ref=e30] [cursor=pointer]:
+        - /url: https://aws.amazon.com/
+        - img "Amazon Web Services logo" [ref=e31]
+    - generic [ref=e33]:
+      - generic [ref=e40]:
+        - generic [ref=e43]:
+          - heading "IAM user sign in" [level=2] [ref=e48]:
+            - generic [ref=e50]:
+              - generic [ref=e51]: IAM user sign in
+              - generic [ref=e58]:
+                - img
+          - generic [ref=e61]:
+            - generic [ref=e63]:
+              - generic [ref=e64]:
+                - generic [ref=e67]:
+                  - generic [ref=e69]: Account ID or alias
+                  - button "(Don't have?)" [ref=e72] [cursor=pointer]:
+                    - generic [ref=e73]: (Don't have?)
+                - textbox "Account ID or alias (Don't have?)" [active] [ref=e78]
+              - generic [ref=e85]:
+                - generic [ref=e86]:
+                  - img [ref=e87]
+                  - checkbox "Remember this account" [ref=e89]
+                - generic [ref=e91]: Remember this account
+            - generic [ref=e93]:
+              - generic [ref=e94]: IAM username
+              - textbox "IAM username" [ref=e99]
+            - generic [ref=e100]:
+              - generic [ref=e101]:
+                - generic [ref=e102]: Password
+                - textbox "Password" [ref=e107]
+              - generic [ref=e108]:
+                - generic:
+                  - generic [ref=e111]:
+                    - generic [ref=e112]:
+                      - img [ref=e113]
+                      - checkbox "Show Password" [ref=e115]
+                    - generic [ref=e117]: Show Password
+                  - button "Having trouble?" [ref=e121] [cursor=pointer]:
+                    - button "Having trouble?" [ref=e123]
+            - button "Sign in" [ref=e125] [cursor=pointer]
+            - button "Sign in using root user email" [ref=e127] [cursor=pointer]
+            - button "Create a new AWS account" [ref=e130]
+        - generic [ref=e132]:
+          - text: By continuing, you agree to
+          - link "AWS Customer Agreement" [ref=e133]:
+            - /url: https://aws.amazon.com/terms
+          - text: or other agreement for AWS services, and the
+          - link "Privacy Notice" [ref=e134]:
+            - /url: https://aws.amazon.com/privacy
+          - text: . This site uses essential cookies. See our
+          - link "Cookie Notice" [ref=e135]:
+            - /url: https://aws.amazon.com/legal/cookies
+          - text: for more information.
+      - link "Amazon Web Services Marketing" [ref=e138]:
+        - /url: https://aws.amazon.com/security-agent/?sc_icampaign=launch_frontier-agents-ga_2026&sc_ichannel=ha&sc_iplace=signin&trk=4919a623-21dc-4da4-80c1-47c8824008ef
+        - img "Amazon Web Services Marketing" [ref=e139]
+    - generic [ref=e141]: © 2026 Amazon Web Services, Inc. or its affiliates. All rights reserved.
+  - alert [ref=e142]

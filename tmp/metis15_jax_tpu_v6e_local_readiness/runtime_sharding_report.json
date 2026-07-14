@@ -1,0 +1,39 @@
+{
+  "abstract_full_shape": {
+    "continued_pretrain_capacity": 3072,
+    "embed_spec": "P()",
+    "experts_per_chip": 4,
+    "layer0_expert_w1_spec": "P('expert', None, None)",
+    "layer0_router_bias_spec": "P('expert',)",
+    "layer0_router_spec": "P(None, 'expert')",
+    "mor_router_w1_spec": "P()",
+    "param_count": 898051168,
+    "pretrain_capacity": 4096
+  },
+  "device_count": 8,
+  "devices": [
+    "cpu:0",
+    "cpu:1",
+    "cpu:2",
+    "cpu:3",
+    "cpu:4",
+    "cpu:5",
+    "cpu:6",
+    "cpu:7"
+  ],
+  "jax_version": "0.10.1",
+  "manifest": "/Users/giulianno/Documents/10M model/configs/metis15_manifest.json",
+  "runtime_tiny": {
+    "available": true,
+    "batch_input_ids_shape": [
+      2,
+      2,
+      16
+    ],
+    "batch_input_ids_sharding": "NamedSharding(mesh=Mesh('expert': 8, axis_types=(Auto,)), spec=P(), memory_kind=device)",
+    "mesh": "Mesh(axis_sizes=(8,), axis_names=('expert',), axis_types=(Auto,))",
+    "optimizer_step_sharding": "NamedSharding(mesh=Mesh('expert': 8, axis_types=(Auto,)), spec=P(), memory_kind=device)",
+    "param_expert_w1_sharding": "NamedSharding(mesh=Mesh('expert': 8, axis_types=(Auto,)), spec=P('expert', None, None), memory_kind=device)",
+    "param_router_sharding": "NamedSharding(mesh=Mesh('expert': 8, axis_types=(Auto,)), spec=P(None, 'expert'), memory_kind=device)"
+  }
+}

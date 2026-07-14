@@ -1,0 +1,1078 @@
+{
+  "seed": 42,
+  "stage": "pretrain",
+  "profile": "metis15_50b_bucketed_v1",
+  "target_train_tokens": 50000000000,
+  "notes": [
+    "Metis-1.5 base pretrain uses 50B of the 60B base-plus-CPT budget.",
+    "The mix is bucketed by capability target so underfilled sources can only fall back within the same bucket.",
+    "All sources require English filtering, global deduplication, and benchmark contamination checks before tokenization."
+  ],
+  "global_filters": {
+    "language": "en",
+    "english_confidence_min": 0.9,
+    "paragraph_english_ratio_min": 0.85,
+    "script": "Latn",
+    "global_exact_dedup": true,
+    "global_near_dedup": true,
+    "benchmark_decontam": [
+      "mmlu",
+      "mmlu_pro",
+      "arc",
+      "hellaswag",
+      "openbookqa",
+      "sciq",
+      "truthfulqa",
+      "gpqa",
+      "gsm8k",
+      "math",
+      "aime",
+      "amc",
+      "olympiadbench",
+      "minerva_math",
+      "svamp",
+      "asdiv",
+      "ifeval",
+      "mt_bench",
+      "arena_hard",
+      "rewardbench"
+    ],
+    "metadata_required": [
+      "source",
+      "subsource",
+      "license",
+      "language",
+      "english_confidence",
+      "script",
+      "domain",
+      "subject_bucket",
+      "quality_score",
+      "dedup_hash",
+      "near_dedup_cluster",
+      "contamination_flags",
+      "code_ratio",
+      "synthetic_flag",
+      "token_count",
+      "sampling_weight"
+    ]
+  },
+  "caps": {
+    "max_single_dataset_share": 0.25,
+    "broad_web_total_share": [0.45, 0.55],
+    "synthetic_text_max_share": 0.1,
+    "math_proof_share": [0.1, 0.14],
+    "academic_stem_share": [0.08, 0.12],
+    "reference_wiki_share": [0.05, 0.08],
+    "books_longform_share": [0.03, 0.06],
+    "qa_forum_share": [0.03, 0.06],
+    "biomedical_max_share": 0.04
+  },
+  "buckets": [
+    {
+      "name": "high_quality_web_dclm",
+      "target_tokens": 12000000000,
+      "share": 0.24,
+      "purpose": "High-quality English web backbone from DCLM-style model-based filtering.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.25
+      },
+      "sources": [
+        {
+          "name": "dclm_baseline_hq",
+          "dataset_name": "mlfoundations/dclm-baseline-1.0",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 7000000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 240,
+          "min_alpha_ratio": 0.6,
+          "max_repeat_char_run": 36,
+          "max_line_length": 1800,
+          "max_url_count": 8,
+          "filters": {
+            "quality_score_band": "high",
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "dclm_edu_score_filtered",
+          "dataset_name": "HuggingFaceTB/dclm-edu",
+          "split": "train",
+          "streaming": true,
+          "repo_parquet_prefix": "data/",
+          "target_tokens": 5000000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 240,
+          "min_alpha_ratio": 0.6,
+          "max_repeat_char_run": 36,
+          "max_line_length": 1800,
+          "max_url_count": 8,
+          "filters": {
+            "edu_score_min": 3,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "high_quality_web_fineweb",
+      "target_tokens": 9000000000,
+      "share": 0.18,
+      "purpose": "FineWeb-Edu/FineWeb-HQ breadth with score bands instead of blind sampling.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.25
+      },
+      "sources": [
+        {
+          "name": "fineweb_edu_score3plus",
+          "dataset_name": "HuggingFaceFW/fineweb-edu",
+          "dataset_config": "sample-100BT",
+          "split": "train",
+          "streaming": true,
+          "repo_parquet_prefix": "sample/100BT/",
+          "target_tokens": 5000000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.58,
+          "max_repeat_char_run": 36,
+          "max_line_length": 1800,
+          "max_url_count": 8,
+          "filters": {
+            "fineweb_edu_score_min": 3,
+            "allow_score_2_diversity_share": 0.15,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "fineweb_hq_score_filtered",
+          "dataset_name": "epfml/FineWeb-HQ",
+          "split": "train",
+          "streaming": true,
+          "repo_parquet_prefix": "data/",
+          "target_tokens": 4000000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 240,
+          "min_alpha_ratio": 0.6,
+          "max_repeat_char_run": 36,
+          "max_line_length": 1800,
+          "max_url_count": 8,
+          "filters": {
+            "quality_score_band": "top_deciles",
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "nemotron_quality_web",
+      "target_tokens": 5000000000,
+      "share": 0.1,
+      "purpose": "Newer high-quality English web to reduce overdependence on DCLM/FineWeb.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.1
+      },
+      "sources": [
+        {
+          "name": "essential_web_v1_curated_high_quality",
+          "dataset_name": "EssentialAI/essential-web-v1.0",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 2000000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 360,
+          "min_alpha_ratio": 0.62,
+          "max_repeat_char_run": 28,
+          "max_line_length": 1400,
+          "max_url_count": 4,
+          "filters": {
+            "language": "en",
+            "script": "Latn",
+            "english_confidence_min": 0.92,
+            "latin_letter_ratio_min": 0.82,
+            "quality_score_band": "highest_metadata_filtered",
+            "parquet_prefixes": [
+              "data/crawl=CC-MAIN-2024-38/",
+              "data/crawl=CC-MAIN-2024-33/",
+              "data/crawl=CC-MAIN-2024-30/",
+              "data/crawl=CC-MAIN-2024-26/",
+              "data/crawl=CC-MAIN-2024-22/",
+              "data/crawl=CC-MAIN-2024-18/",
+              "data/crawl=CC-MAIN-2024-10/",
+              "data/crawl=CC-MAIN-2023-50/",
+              "data/crawl=CC-MAIN-2023-40/",
+              "data/crawl=CC-MAIN-2023-23/"
+            ],
+            "row_numeric_min": {
+              "quality_signals.fasttext.english": 0.92,
+              "quality_signals.red_pajama_v2.rps_doc_stop_word_fraction": 0.2,
+              "quality_signals.red_pajama_v2.rps_doc_frac_unique_words": 0.45,
+              "quality_signals.red_pajama_v2.rps_doc_unigram_entropy": 3.2,
+              "quality_signals.red_pajama_v2.rps_doc_num_sentences": 4
+            },
+            "row_numeric_max": {
+              "quality_signals.red_pajama_v2.rps_doc_curly_bracket": 0.02,
+              "quality_signals.red_pajama_v2.rps_doc_lorem_ipsum": 0,
+              "quality_signals.red_pajama_v2.rps_doc_ldnoobw_words": 0.02,
+              "quality_signals.red_pajama_v2.rps_doc_frac_no_alph_words": 0.35,
+              "quality_signals.red_pajama_v2.rps_doc_symbol_to_word_ratio": 0.15,
+              "quality_signals.red_pajama_v2.rps_doc_frac_chars_dupe_10grams": 0.22,
+              "quality_signals.red_pajama_v2.rps_doc_frac_chars_top_4gram": 0.18
+            },
+            "row_any_numeric_min": [
+              {
+                "paths": [
+                  "quality_signals.fasttext.fineweb_edu_approx",
+                  "quality_signals.fasttext.dclm"
+                ],
+                "min": 0.01
+              },
+              {
+                "paths": [
+                  "eai_taxonomy.technical_correctness.primary.code",
+                  "eai_taxonomy.technical_correctness.secondary.code"
+                ],
+                "min": 3
+              }
+            ],
+            "row_any_label_contains": [
+              {
+                "paths": [
+                  "eai_taxonomy.document_type_v1.primary.label",
+                  "eai_taxonomy.document_type_v1.secondary.label",
+                  "eai_taxonomy.document_type_v2.primary.label",
+                  "eai_taxonomy.document_type_v2.secondary.label"
+                ],
+                "contains": [
+                  "educational",
+                  "reference",
+                  "encyclopedic",
+                  "knowledge",
+                  "tutorial",
+                  "article",
+                  "technical",
+                  "explanation"
+                ]
+              },
+              {
+                "paths": [
+                  "eai_taxonomy.missing_content.primary.label",
+                  "eai_taxonomy.missing_content.secondary.label"
+                ],
+                "contains": [
+                  "no missing content"
+                ]
+              }
+            ],
+            "row_disallowed_values": {
+              "eai_taxonomy.extraction_artifacts.primary.label": [
+                "Severe Artifacts"
+              ]
+            },
+            "dedup_scope": "global",
+            "source_replacement_for": "nvidia/Nemotron-CC-v2"
+          }
+        },
+        {
+          "name": "txt360_bestofweb_english_cc",
+          "dataset_name": "LLM360/TxT360",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 1250000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 300,
+          "min_alpha_ratio": 0.6,
+          "max_repeat_char_run": 32,
+          "max_line_length": 1600,
+          "max_url_count": 5,
+          "filters": {
+            "language": "en",
+            "script": "Latn",
+            "english_confidence_min": 0.9,
+            "latin_letter_ratio_min": 0.78,
+            "jsonl_prefixes": [
+              "v1.1/TxT360_BestOfWeb/cc_1001-inf/",
+              "v1.1/TxT360_BestOfWeb/cc_101-1000/"
+            ],
+            "jsonl_files": [
+              "v1.1/TxT360_BestOfWeb/cc_1001-inf/1001-30000000.chunk0_part_000.jsonl",
+              "v1.1/TxT360_BestOfWeb/cc_101-1000/101-1000.chunk0_part_000.jsonl",
+              "v1.1/TxT360_BestOfWeb/cc_101-1000/101-1000.chunk0_part_001.jsonl"
+            ],
+            "row_allowed_values": {
+              "meta.lang": "en"
+            },
+            "row_numeric_min": {
+              "meta.lang_score": 0.9
+            },
+            "dedup_scope": "global",
+            "source_replacement_for": "nvidia/Nemotron-CC-v2"
+          }
+        },
+        {
+          "name": "zyda2_novelty_heavy_sample",
+          "dataset_name": "Zyphra/Zyda-2",
+          "dataset_config": "sample-100BT",
+          "split": "train",
+          "streaming": true,
+          "repo_parquet_prefix": "sample/100BT/",
+          "target_tokens": 1250000000,
+          "text_column": "text",
+          "id_column": "nemo_id",
+          "loader": "text",
+          "min_chars": 280,
+          "min_alpha_ratio": 0.58,
+          "max_repeat_char_run": 34,
+          "max_line_length": 1700,
+          "max_url_count": 6,
+          "filters": {
+            "language": "en",
+            "script": "Latn",
+            "latin_letter_ratio_min": 0.76,
+            "quality_score_band": "zyda2_crossdeduped_filtered",
+            "dedup_scope": "global",
+            "source_replacement_for": "nvidia/Nemotron-CC-v2"
+          }
+        },
+        {
+          "name": "ultra_fineweb_en_v14_recent_capped",
+          "dataset_name": "openbmb/Ultra-FineWeb",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 500000000,
+          "text_column": "content",
+          "id_column": "uid",
+          "loader": "text",
+          "min_chars": 260,
+          "min_alpha_ratio": 0.58,
+          "max_repeat_char_run": 34,
+          "max_line_length": 1700,
+          "max_url_count": 6,
+          "filters": {
+            "language": "en",
+            "script": "Latn",
+            "latin_letter_ratio_min": 0.76,
+            "quality_score_band": "ultra_fineweb_en_v1_4_recent",
+            "parquet_prefixes": [
+              "data/ultrafineweb_en_v1_4/CC-MAIN-2025-26/",
+              "data/ultrafineweb_en_v1_4/CC-MAIN-2025-21/",
+              "data/ultrafineweb_en_v1_4/CC-MAIN-2025-18/",
+              "data/ultrafineweb_en_v1_4/CC-MAIN-2025-13/",
+              "data/ultrafineweb_en_v1_4/CC-MAIN-2025-08/",
+              "data/ultrafineweb_en_v1_4/CC-MAIN-2025-05/"
+            ],
+            "row_numeric_min": {
+              "score": 0.5
+            },
+            "dedup_scope": "global",
+            "audit_required": true,
+            "source_replacement_for": "nvidia/Nemotron-CC-v2"
+          }
+        }
+      ]
+    },
+    {
+      "name": "reference_encyclopedic",
+      "target_tokens": 3000000000,
+      "share": 0.06,
+      "purpose": "Explicit Wikipedia/reference knowledge for factual grounding.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.06
+      },
+      "sources": [
+        {
+          "name": "finewiki_english_structured",
+          "dataset_name": "HuggingFaceFW/finewiki",
+          "dataset_config": "en",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 2400000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.55,
+          "max_repeat_char_run": 36,
+          "max_line_length": 2400,
+          "max_url_count": 4,
+          "filters": {
+            "drop_redirects": true,
+            "drop_disambiguation": true,
+            "drop_stubs": true,
+            "preserve_tables_math_infoboxes": true,
+            "chunk_long_documents": true,
+            "chunk_target_chars": 4096,
+            "chunk_max_chars": 8192,
+            "dedup_against_web": true
+          }
+        },
+        {
+          "name": "common_pile_wikimedia_filtered",
+          "dataset_name": "common-pile/wikimedia_filtered",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 600000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.55,
+          "max_repeat_char_run": 36,
+          "max_line_length": 2400,
+          "max_url_count": 4,
+          "filters": {
+            "reference_only": true,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "academic_stem_science",
+      "target_tokens": 5000000000,
+      "share": 0.1,
+      "purpose": "Academic STEM, science, physics, papers, and technical PDFs.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.1
+      },
+      "sources": [
+        {
+          "name": "pes2o_stem",
+          "dataset_name": "allenai/peS2o",
+          "split": "train",
+          "streaming": true,
+          "trust_remote_code": true,
+          "target_tokens": 2500000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 600,
+          "min_alpha_ratio": 0.5,
+          "max_repeat_char_run": 40,
+          "max_line_length": 3200,
+          "max_url_count": 6,
+          "filters": {
+            "subject_buckets": ["math", "physics", "computer_science", "statistics", "chemistry", "materials_science"],
+            "strip_references_if_dominant": true,
+            "preserve_equations_captions_headings": true
+          }
+        },
+        {
+          "name": "proof_pile2_arxiv_science",
+          "dataset_name": "EleutherAI/proof-pile-2",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 1350000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 400,
+          "min_alpha_ratio": 0.4,
+          "max_repeat_char_run": 40,
+          "max_line_length": 3200,
+          "max_url_count": 6,
+          "filters": {
+            "subject_buckets": ["math", "physics", "cs", "statistics"],
+            "preserve_latex": true,
+            "chunk_long_documents": true,
+            "chunk_target_chars": 4096,
+            "chunk_max_chars": 8192,
+            "dedup_against_pes2o": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "common_pile_pubmed_oa_filtered",
+          "dataset_name": "common-pile/pubmed_filtered",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 500000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 500,
+          "min_alpha_ratio": 0.5,
+          "max_repeat_char_run": 40,
+          "max_line_length": 3200,
+          "max_url_count": 6,
+          "filters": {
+            "license_allow": ["CC-BY", "CC-BY-SA", "CC0"],
+            "biomedical_cap_share": 0.04,
+            "chunk_long_documents": true,
+            "chunk_target_chars": 4096,
+            "chunk_max_chars": 8192,
+            "strip_gene_table_spam": true
+          }
+        },
+        {
+          "name": "finepdfs_english_edu_ocr_technical",
+          "dataset_name": "HuggingFaceFW/finepdfs",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 615000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 800,
+          "min_alpha_ratio": 0.45,
+          "max_repeat_char_run": 40,
+          "max_line_length": 3600,
+          "max_url_count": 6,
+          "filters": {
+            "full_doc_lid": "eng_Latn",
+            "ocr_quality": "high",
+            "edu_or_dclm_quality": "high",
+            "chunk_long_documents": true,
+            "chunk_target_chars": 4096,
+            "chunk_max_chars": 8192,
+            "drop_headers_footers_page_numbers": true
+          }
+        },
+        {
+          "name": "openstax_science_math",
+          "dataset_name": "crumb/openstax-text",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 35000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 500,
+          "min_alpha_ratio": 0.55,
+          "max_repeat_char_run": 40,
+          "max_line_length": 3200,
+          "max_url_count": 4,
+          "filters": {
+            "subjects": ["physics", "chemistry", "biology", "math", "statistics"],
+            "file_name_include_any": [
+              "apbiology",
+              "apcollegephysics",
+              "algebra",
+              "trigonometry",
+              "anatomy",
+              "physiology",
+              "astronomy",
+              "biology",
+              "calculus",
+              "chemistry",
+              "college-algebra",
+              "college_physics",
+              "conceptsbiology",
+              "contemporarymathematics",
+              "elementaryalgebra",
+              "intermediatealgebra",
+              "introductorystatistics",
+              "microbiology",
+              "organicchemistry",
+              "physics",
+              "prealgebra",
+              "precalculus",
+              "statistics",
+              "universityphysics"
+            ],
+            "file_name_exclude_any": [
+              "calculo",
+              "fisica",
+              "fizyka",
+              "mikroekonomia",
+              "psychologia",
+              "precalculo",
+              "introduccion"
+            ],
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "math_proof_symbolic",
+      "target_tokens": 6000000000,
+      "share": 0.12,
+      "purpose": "Math, proof, symbolic, algebra, geometry, and equation-rich web.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.08
+      },
+      "sources": [
+        {
+          "name": "nemotron_cc_math_4plus",
+          "dataset_name": "nvidia/Nemotron-CC-Math-v1",
+          "dataset_config": "4plus",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 2800000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 120,
+          "min_alpha_ratio": 0.25,
+          "max_repeat_char_run": 32,
+          "max_line_length": 3200,
+          "max_url_count": 4,
+          "filters": {
+            "math_score_min": 4,
+            "code_ratio_max": 0.15,
+            "preserve_latex": true
+          }
+        },
+        {
+          "name": "finemath_4plus_reduced",
+          "dataset_name": "HuggingFaceTB/finemath",
+          "dataset_config": "finemath-4plus",
+          "split": "train",
+          "streaming": true,
+          "repo_parquet_prefix": "finemath-4plus/",
+          "target_tokens": 1200000000,
+          "text_column": "text",
+          "id_column": "url",
+          "loader": "text",
+          "min_chars": 120,
+          "min_alpha_ratio": 0.25,
+          "max_repeat_char_run": 32,
+          "max_line_length": 2400,
+          "max_url_count": 4,
+          "filters": {
+            "dedup_against": ["nemotron_cc_math_4plus", "openwebmath", "megamath"]
+          }
+        },
+        {
+          "name": "openwebmath_equation_rich",
+          "dataset_name": "open-web-math/open-web-math",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 800000000,
+          "text_column": "text",
+          "id_column": "url",
+          "loader": "text",
+          "min_chars": 120,
+          "min_alpha_ratio": 0.25,
+          "max_repeat_char_run": 32,
+          "max_line_length": 3200,
+          "max_url_count": 4,
+          "filters": {
+            "preserve_math_notation": true,
+            "chunk_long_documents": true,
+            "chunk_target_chars": 4096,
+            "chunk_max_chars": 8192,
+            "drop_forum_junk": true
+          }
+        },
+        {
+          "name": "proof_pile2_math_proofs",
+          "dataset_name": "EleutherAI/proof-pile-2",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 700000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 240,
+          "min_alpha_ratio": 0.35,
+          "max_repeat_char_run": 36,
+          "max_line_length": 3200,
+          "max_url_count": 4,
+          "filters": {
+            "proof_heavy": true,
+            "chunk_long_documents": true,
+            "chunk_target_chars": 4096,
+            "chunk_max_chars": 8192,
+            "formal_language_ratio_max": 0.2
+          }
+        },
+        {
+          "name": "megamath_web_proof_selected",
+          "dataset_name": "LLM360/MegaMath",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 500000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 120,
+          "min_alpha_ratio": 0.25,
+          "max_repeat_char_run": 32,
+          "max_line_length": 3200,
+          "max_url_count": 4,
+          "filters": {
+            "subsets": ["web_math", "proof_like"],
+            "exclude_code_subsets": true,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "open_textbooks_educational_reference",
+      "target_tokens": 3000000000,
+      "share": 0.06,
+      "purpose": "Clean textbook-style educational reference prose.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.06
+      },
+      "sources": [
+        {
+          "name": "openstax_textbooks",
+          "dataset_name": "crumb/openstax-text",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 35000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 500,
+          "min_alpha_ratio": 0.55,
+          "max_repeat_char_run": 40,
+          "max_line_length": 3200,
+          "max_url_count": 4,
+          "filters": {
+            "file_name_exclude_any": [
+              "calculo",
+              "fisica",
+              "fizyka",
+              "mikroekonomia",
+              "psychologia",
+              "precalculo",
+              "introduccion"
+            ],
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "common_corpus_educational_reference",
+          "dataset_name": "PleIAs/common_corpus",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 1765000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 400,
+          "min_alpha_ratio": 0.55,
+          "max_repeat_char_run": 40,
+          "max_line_length": 3200,
+          "max_url_count": 4,
+          "filters": {
+            "slices": ["educational", "reference", "government_explainer"],
+            "chunk_long_documents": true,
+            "chunk_target_chars": 4096,
+            "chunk_max_chars": 8192,
+            "license_review_required": true
+          }
+        },
+        {
+          "name": "common_pile_educational_filtered",
+          "dataset_name": "common-pile/comma_v0.1_training_dataset",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 1200000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 400,
+          "min_alpha_ratio": 0.55,
+          "max_repeat_char_run": 40,
+          "max_line_length": 3200,
+          "max_url_count": 4,
+          "filters": {
+            "slices": ["educational_materials", "oer", "reference"],
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "long_form_books",
+      "target_tokens": 2000000000,
+      "share": 0.04,
+      "purpose": "Long-form English coherence and prose without old-book overexposure.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.04
+      },
+      "sources": [
+        {
+          "name": "pg19_books_reduced",
+          "dataset_name": "deepmind/pg19",
+          "split": "train",
+          "streaming": true,
+          "trust_remote_code": true,
+          "target_tokens": 800000000,
+          "text_column": "text",
+          "id_column": "short_book_title",
+          "loader": "text",
+          "min_chars": 1200,
+          "min_alpha_ratio": 0.65,
+          "max_repeat_char_run": 40,
+          "max_line_length": 2400,
+          "max_url_count": 2,
+          "filters": {
+            "dedup_against": ["common_pile_project_gutenberg_filtered"]
+          }
+        },
+        {
+          "name": "common_pile_project_gutenberg_filtered",
+          "dataset_name": "common-pile/project_gutenberg_filtered",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 700000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 1200,
+          "min_alpha_ratio": 0.65,
+          "max_repeat_char_run": 40,
+          "max_line_length": 2400,
+          "max_url_count": 2,
+          "filters": {
+            "chunk_long_documents": true,
+            "chunk_target_chars": 4096,
+            "chunk_max_chars": 8192,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "common_corpus_books_wikisource",
+          "dataset_name": "PleIAs/common_corpus",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 500000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 1200,
+          "min_alpha_ratio": 0.65,
+          "max_repeat_char_run": 40,
+          "max_line_length": 2400,
+          "max_url_count": 2,
+          "filters": {
+            "slices": ["books", "wikisource"],
+            "chunk_long_documents": true,
+            "chunk_target_chars": 4096,
+            "chunk_max_chars": 8192,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "knowledge_qa_explanations",
+      "target_tokens": 2000000000,
+      "share": 0.04,
+      "purpose": "StackExchange-style accepted answers and high-quality explainers.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.04
+      },
+      "sources": [
+        {
+          "name": "common_pile_stackexchange_filtered",
+          "dataset_name": "common-pile/stackexchange_filtered",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 1200000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 160,
+          "min_alpha_ratio": 0.48,
+          "max_repeat_char_run": 36,
+          "max_line_length": 2800,
+          "max_url_count": 4,
+          "filters": {
+            "accepted_or_high_score_answer": true,
+            "code_ratio_max": 0.1,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "roots_en_no_code_stackexchange",
+          "dataset_name": "bigscience-data/roots_en_no_code_stackexchange",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 500000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 160,
+          "min_alpha_ratio": 0.48,
+          "max_repeat_char_run": 36,
+          "max_line_length": 2800,
+          "max_url_count": 4,
+          "filters": {
+            "code_ratio_max": 0.05,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "fineweb_explainer_mined",
+          "dataset_name": "HuggingFaceFW/fineweb-edu",
+          "dataset_config": "sample-100BT",
+          "split": "train",
+          "streaming": true,
+          "repo_parquet_prefix": "sample/100BT/",
+          "target_tokens": 300000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.58,
+          "max_repeat_char_run": 36,
+          "max_line_length": 1800,
+          "max_url_count": 6,
+          "filters": {
+            "patterns": ["explain", "why", "how", "tutorial", "guide"],
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "synthetic_educational_prose",
+      "target_tokens": 2000000000,
+      "share": 0.04,
+      "purpose": "Capped synthetic textbook/explainer supplement.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.04
+      },
+      "sources": [
+        {
+          "name": "cosmopedia_v2_capped",
+          "dataset_name": "HuggingFaceTB/smollm-corpus",
+          "dataset_config": "cosmopedia-v2",
+          "split": "train",
+          "streaming": true,
+          "repo_parquet_prefix": "cosmopedia-v2/",
+          "target_tokens": 1500000000,
+          "text_column": "text",
+          "id_column": "prompt",
+          "loader": "text",
+          "min_chars": 180,
+          "min_alpha_ratio": 0.52,
+          "max_repeat_char_run": 36,
+          "max_line_length": 2200,
+          "max_url_count": 4,
+          "filters": {
+            "synthetic_flag": true,
+            "quality_score_band": "high",
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "synthetic_textbook_explainer_selected",
+          "dataset_name": "HuggingFaceTB/smollm-corpus",
+          "dataset_config": "cosmopedia-v2",
+          "split": "train",
+          "streaming": true,
+          "repo_parquet_prefix": "cosmopedia-v2/",
+          "target_tokens": 500000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 180,
+          "min_alpha_ratio": 0.52,
+          "max_repeat_char_run": 36,
+          "max_line_length": 2200,
+          "max_url_count": 4,
+          "filters": {
+            "synthetic_flag": true,
+            "synthetic_domains": ["textbook", "explainer", "course_notes", "reference"],
+            "exclude_code_blocks": true,
+            "keep_explanatory_prose_only": true,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "reserve_balancing_pool",
+      "target_tokens": 1000000000,
+      "share": 0.02,
+      "purpose": "Only fills underrepresented subjects after filtering audits.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "requires_manual_bucket_assignment": true,
+        "max_single_source_share": 0.02
+      },
+      "sources": [
+        {
+          "name": "reserve_underrepresented_stem",
+          "dataset_name": "allenai/peS2o",
+          "split": "train",
+          "streaming": true,
+          "trust_remote_code": true,
+          "target_tokens": 400000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 600,
+          "min_alpha_ratio": 0.5,
+          "max_repeat_char_run": 40,
+          "max_line_length": 3200,
+          "max_url_count": 6,
+          "filters": {
+            "use_only_if_underrepresented": ["physics", "chemistry", "materials_science", "statistics"]
+          }
+        },
+        {
+          "name": "reserve_underrepresented_reference",
+          "dataset_name": "HuggingFaceFW/finewiki",
+          "dataset_config": "en",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 300000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.55,
+          "max_repeat_char_run": 36,
+          "max_line_length": 2400,
+          "max_url_count": 4,
+          "filters": {
+            "use_only_if_underrepresented": ["reference", "civics", "humanities"],
+            "chunk_long_documents": true,
+            "chunk_target_chars": 4096,
+            "chunk_max_chars": 8192
+          }
+        },
+        {
+          "name": "reserve_underrepresented_math",
+          "dataset_name": "nvidia/Nemotron-CC-Math-v1",
+          "dataset_config": "4plus",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 300000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 120,
+          "min_alpha_ratio": 0.25,
+          "max_repeat_char_run": 32,
+          "max_line_length": 3200,
+          "max_url_count": 4,
+          "filters": {
+            "use_only_if_underrepresented": ["geometry", "algebra", "proof"]
+          }
+        }
+      ]
+    }
+  ]
+}

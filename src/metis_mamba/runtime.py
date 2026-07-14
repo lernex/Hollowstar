@@ -6,22 +6,14 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from safetensors.torch import load_file as load_safetensors
-from safetensors.torch import save_file as save_safetensors
+from safetensors.torch import load_model as load_safetensors_model
+from safetensors.torch import save_model as save_safetensors_model
 
 from .config import MetisMambaConfig
-
-
-def _require_mamba():
-    try:
-        from mamba_ssm.models.config_mamba import MambaConfig
-        from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
-    except ImportError as exc:
-        raise RuntimeError(
-            "mamba-ssm is required for Metis-1.3 training/inference. "
-            "Install the GPU training dependencies first."
-        ) from exc
-    return MambaConfig, MambaLMHeadModel
+from .checkpoint_compat import filter_state_dict_for_model
+from .fp8 import build_fp8_recipe
+from .hybrid_runtime import load_hybrid_exported_model
+from .model import MetisMoRLMHeadModel, MetisMoRRewardModel
 
 
 def parse_torch_dtype(dtype_name: str | None) -> torch.dtype:
@@ -44,17 +36,47 @@ def build_model(
     *,
     device: torch.device | str | None = None,
     dtype: torch.dtype | None = None,
+    use_fp8: bool = False,
+    fp8_recipe=None,
+    fp8_group=None,
 ):
     config.validate()
-    MambaConfig, MambaLMHeadModel = _require_mamba()
-    mamba_config = MambaConfig(**config.to_mamba_config_dict())
-    model = MambaLMHeadModel(
-        mamba_config,
-        device=device,
-        dtype=dtype,
+    if use_fp8 and fp8_recipe is None:
+        fp8_recipe = build_fp8_recipe()
+    model = MetisMoRLMHeadModel(
+        config,
+        use_fp8=use_fp8,
+        fp8_recipe=fp8_recipe,
+        fp8_group=fp8_group,
     )
+    if device is not None or dtype is not None:
+        model = model.to(device=device, dtype=dtype)
     model.config = config
     model.model_family = config.model_type
+    return model
+
+
+def build_reward_model(
+    config: MetisMambaConfig,
+    *,
+    device: torch.device | str | None = None,
+    dtype: torch.dtype | None = None,
+    use_fp8: bool = False,
+    fp8_recipe=None,
+    fp8_group=None,
+):
+    config.validate()
+    if use_fp8 and fp8_recipe is None:
+        fp8_recipe = build_fp8_recipe()
+    model = MetisMoRRewardModel(
+        config,
+        use_fp8=use_fp8,
+        fp8_recipe=fp8_recipe,
+        fp8_group=fp8_group,
+    )
+    if device is not None or dtype is not None:
+        model = model.to(device=device, dtype=dtype)
+    model.config = config
     return model
 
 
@@ -62,10 +84,20 @@ def load_checkpoint_model(
     checkpoint_path: str | Path,
     device: torch.device,
 ):
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config = MetisMambaConfig.from_dict(checkpoint["model_config"])
     model = build_model(config)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    filtered_state, _conversions = filter_state_dict_for_model(model, checkpoint["model_state_dict"])
+    missing, unexpected = model.load_state_dict(filtered_state, strict=False)
+    allowed_missing = {"lm_head.impl.weight", "lm_head.weight"} if config.tie_embeddings else set()
+    real_missing = sorted(name for name in missing if name not in allowed_missing)
+    if real_missing or unexpected:
+        raise RuntimeError(
+            "Unexpected checkpoint load result: "
+            f"missing={real_missing}, unexpected={sorted(unexpected)}, conversions={len(_conversions)}"
+        )
+    if config.tie_embeddings:
+        model.tie_weights()
     model.to(device)
     model.eval()
     return model
@@ -76,10 +108,16 @@ def load_exported_model(
     device: torch.device,
 ):
     model_dir = Path(model_dir)
-    config = MetisMambaConfig.from_dict(json.loads((model_dir / "config.json").read_text()))
+    raw_config = json.loads((model_dir / "config.json").read_text())
+    if raw_config.get("model_type") == "metis_mamba2_hybrid":
+        return load_hybrid_exported_model(model_dir, device)
+    config = MetisMambaConfig.from_dict(raw_config)
     model = build_model(config)
-    state_dict = load_safetensors(str(model_dir / "model.safetensors"), device="cpu")
-    model.load_state_dict(state_dict)
+    missing, unexpected = load_safetensors_model(model, str(model_dir / "model.safetensors"), device="cpu")
+    if missing or unexpected:
+        raise RuntimeError(
+            f"Unexpected export load result for {model_dir}: missing={missing}, unexpected={unexpected}"
+        )
     model.to(device)
     model.eval()
     return model
@@ -91,18 +129,33 @@ def export_checkpoint_to_dir(
     output_dir: str | Path,
     model_only_filename: str = "model.safetensors",
 ) -> dict[str, Any]:
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config = MetisMambaConfig.from_dict(checkpoint["model_config"])
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    export_dtype = parse_torch_dtype(config.torch_dtype)
+    model = build_model(config, device="cpu", dtype=export_dtype)
     state_dict = {
-        name: tensor.detach().to(dtype=parse_torch_dtype(config.torch_dtype)).cpu()
+        name: tensor.detach().to(dtype=export_dtype).cpu()
         for name, tensor in checkpoint["model_state_dict"].items()
     }
-    save_safetensors(state_dict, str(output_dir / model_only_filename))
+    filtered_state, _conversions = filter_state_dict_for_model(model, state_dict)
+    missing, unexpected = model.load_state_dict(filtered_state, strict=False)
+    allowed_missing = {"lm_head.impl.weight", "lm_head.weight"} if config.tie_embeddings else set()
+    real_missing = sorted(name for name in missing if name not in allowed_missing)
+    if real_missing or unexpected:
+        raise RuntimeError(
+            "Unexpected checkpoint export load result: "
+            f"missing={real_missing}, unexpected={sorted(unexpected)}, conversions={len(_conversions)}"
+        )
+    if config.tie_embeddings:
+        model.tie_weights()
+    (output_dir / "config.json").write_text(json.dumps(config.to_dict(), indent=2) + "\n", encoding="utf-8")
+    save_safetensors_model(model, str(output_dir / model_only_filename))
     return {
         "config": config.to_dict(),
         "model_path": str(output_dir / model_only_filename),
+        "conversions": _conversions,
     }
 
 

@@ -1,0 +1,55 @@
+{
+  "seed": 42,
+  "stage": "pretrain",
+  "profile": "metis15_proofpile_arxiv_chunked_rebuild",
+  "target_train_tokens": 1350000000,
+  "notes": [
+    "Clean rebuild for Proof-Pile-2 arXiv after discovering full-paper document units were too large.",
+    "Long papers are chunked into passage-scale normalized docs before tokenizer sampling and packing."
+  ],
+  "global_filters": {
+    "language": "en",
+    "english_confidence_min": 0.9,
+    "script": "Latn",
+    "global_exact_dedup": true,
+    "global_near_dedup": true
+  },
+  "buckets": [
+    {
+      "name": "academic_stem_science",
+      "target_tokens": 1350000000,
+      "share": 0.027,
+      "purpose": "arXiv math, physics, CS, and statistics text from Proof-Pile-2, chunked to avoid full-paper overcompression.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.1
+      },
+      "sources": [
+        {
+          "name": "proof_pile2_arxiv_science",
+          "dataset_name": "EleutherAI/proof-pile-2",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 1350000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 400,
+          "min_alpha_ratio": 0.4,
+          "max_repeat_char_run": 40,
+          "max_line_length": 3200,
+          "max_url_count": 6,
+          "filters": {
+            "subject_buckets": ["math", "physics", "cs", "statistics"],
+            "preserve_latex": true,
+            "chunk_long_documents": true,
+            "chunk_target_chars": 4096,
+            "chunk_max_chars": 8192,
+            "dedup_against_pes2o": true,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    }
+  ]
+}

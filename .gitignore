@@ -13,3 +13,6 @@ checkpoints/
 artifacts/
 .hf/
 *.log
+
+# Model weights are published to Hugging Face, not GitHub.
+*.safetensors

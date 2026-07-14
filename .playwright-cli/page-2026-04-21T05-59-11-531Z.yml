@@ -1,0 +1,117 @@
+- generic [ref=e2]:
+  - navigation [ref=e3]:
+    - generic [ref=e7]:
+      - 'img "Account color: Unset" [ref=e8]'
+      - navigation "Global" [ref=e9]:
+        - generic [ref=e10]:
+          - generic [ref=e11]:
+            - link "AWS Console Home" [ref=e12] [cursor=pointer]:
+              - /url: https://us-east-1.console.aws.amazon.com/console/home?region=us-east-1
+              - img
+            - link "Skip to Main Content" [ref=e13] [cursor=pointer]:
+              - /url: "#c"
+            - button "Services" [ref=e16] [cursor=pointer]:
+              - img [ref=e17]
+          - generic [ref=e30]:
+            - generic [ref=e31]:
+              - img "Search" [ref=e32]:
+                - generic [ref=e33]:
+                  - img
+              - generic [ref=e34]:
+                - searchbox
+                - combobox "Search" [ref=e35]
+              - button "Ask Amazon Q" [ref=e36]:
+                - img "Ask Amazon Q" [ref=e37]
+              - generic: "[Option+S]"
+            - status [ref=e39]
+          - generic [ref=e40]:
+            - link "CloudShell" [ref=e42] [cursor=pointer]:
+              - /url: https://us-east-1.console.aws.amazon.com/cloudshell/home?region=us-east-1
+              - img
+            - generic "Notifications" [ref=e43] [cursor=pointer]:
+              - button "Notifications (none available)" [ref=e47]:
+                - generic [ref=e48]:
+                  - img
+              - generic [ref=e50]:
+                - img
+            - list [ref=e53]:
+              - listitem [ref=e54]:
+                - button "Help & support" [ref=e56] [cursor=pointer]:
+                  - img "Support" [ref=e58]
+              - listitem [ref=e61]:
+                - button "Settings" [ref=e63] [cursor=pointer]:
+                  - generic [ref=e66]:
+                    - img
+              - listitem [ref=e67]:
+                - combobox "Regions (United States (N. Virginia))" [ref=e69] [cursor=pointer]:
+                  - generic [ref=e71]: United States (N. Virginia)
+                  - generic [ref=e72]:
+                    - img
+              - listitem [ref=e73]:
+                - button "Lernex" [ref=e75] [cursor=pointer]:
+                  - generic [ref=e79]:
+                    - 'generic "Account color: Unset" [ref=e81]':
+                      - generic [ref=e82]: Lernex (1510-2563-3969)
+                      - generic [ref=e83]:
+                        - img
+                    - generic [ref=e85]: Lernex
+      - generic:
+        - generic:
+          - list
+  - generic [ref=e88]:
+    - alert
+    - main [ref=e89]:
+      - generic [ref=e90]:
+        - generic:
+          - generic:
+            - generic:
+              - list
+        - generic [ref=e94]:
+          - heading "CloudShell" [level=3] [ref=e96]:
+            - generic [ref=e98]:
+              - img [ref=e99]
+              - generic [ref=e101]: CloudShell
+          - generic [ref=e103]:
+            - group [ref=e107]:
+              - button "CloudShell Actions" [ref=e112] [cursor=pointer]:
+                - text: Actions
+                - generic [ref=e113]:
+                  - img
+            - generic "Preferences" [ref=e115]:
+              - button "Preferences" [ref=e116] [cursor=pointer]:
+                - generic [ref=e117]:
+                  - img
+        - generic [ref=e120]:
+          - group "Pane 1" [ref=e121]:
+            - list [ref=e122]:
+              - tab "Terminal 824dc1bd-513b-43b4-bdfe-f72dfc0bfdf1" [ref=e123]:
+                - generic [ref=e124]: us-east-1
+                - text: ×
+            - text: 
+            - button "Add new tab" [ref=e132] [cursor=pointer]:
+              - generic [ref=e134]:
+                - img
+          - tabpanel "Terminal 824dc1bd-513b-43b4-bdfe-f72dfc0bfdf1" [ref=e136]:
+            - generic [ref=e308]:
+              - generic: CloudShell terminal input
+              - textbox "CloudShell terminal input" [active] [ref=e309]: ~ $ aws configure export-credentials --format env-no-export || env | grep "^AWS_" || aws sts get-caller-identity
+              - generic [ref=e311]:
+                - generic:
+                  - generic: ~ $ aws configure export-credentials --format env-no-export || env | grep "^AWS_" || aws sts get-caller-identity
+  - contentinfo [ref=e143]:
+    - generic [ref=e147]:
+      - generic [ref=e148]:
+        - button "Feedback" [ref=e149] [cursor=pointer]
+        - button "Console Mobile App" [ref=e151] [cursor=pointer]:
+          - img [ref=e153]
+          - generic [ref=e156]: Console Mobile App
+      - generic [ref=e158]: © 2026, Amazon Web Services, Inc. or its affiliates.
+      - list [ref=e160]:
+        - listitem [ref=e161]:
+          - link "Privacy" [ref=e162] [cursor=pointer]:
+            - /url: https://aws.amazon.com/privacy/
+        - listitem [ref=e163]:
+          - link "Terms" [ref=e164] [cursor=pointer]:
+            - /url: https://aws.amazon.com/terms/
+        - listitem [ref=e165]:
+          - button "Cookie preferences" [ref=e166] [cursor=pointer]

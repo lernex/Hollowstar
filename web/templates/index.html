@@ -36,11 +36,6 @@
             <p class="subtle" id="modelDescription">{{ default_checkpoint_meta.description if default_checkpoint_meta else "Train a checkpoint to unlock the chat surface." }}</p>
           </div>
 
-          <label>
-            <span>System prompt</span>
-            <textarea id="systemPrompt" rows="4">{{ default_system_prompt }}</textarea>
-          </label>
-
           <div class="range-grid">
             <label>
               <span>Temperature</span>
@@ -76,6 +71,17 @@
         </header>
 
         <section id="chatLog" class="chat-log"></section>
+
+        <section class="raw-panel">
+          <div class="raw-panel-header">
+            <div>
+              <p class="eyebrow">Raw Model Output</p>
+              <h3>Unfiltered stream</h3>
+            </div>
+            <span id="rawStatus" class="raw-status">Waiting</span>
+          </div>
+          <pre id="rawOutput" class="raw-output"></pre>
+        </section>
 
         <section class="composer">
           <label class="composer-label" for="userInput">Your message</label>

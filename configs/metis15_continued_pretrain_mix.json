@@ -1,0 +1,749 @@
+{
+  "seed": 42,
+  "stage": "continued_pretrain",
+  "profile": "metis15_10b_bucketed_cpt_v1",
+  "target_train_tokens": 10000000000,
+  "notes": [
+    "Metis-1.5 continued pretrain is a 10B STEM, knowledge, math, and reasoning-document midtrain.",
+    "This stage stays document-like instead of chat-wrapped; instruction/literature task rows are converted to plain text before tokenization.",
+    "All fallback is same-bucket only, with English, non-code, global dedup, and benchmark decontamination required before training."
+  ],
+  "global_filters": {
+    "language": "en",
+    "english_confidence_min": 0.9,
+    "paragraph_english_ratio_min": 0.85,
+    "script": "Latn",
+    "code_ratio_max": 0.15,
+    "global_exact_dedup": true,
+    "global_near_dedup": true,
+    "benchmark_decontam": [
+      "mmlu",
+      "mmlu_pro",
+      "arc",
+      "hellaswag",
+      "openbookqa",
+      "sciq",
+      "truthfulqa",
+      "gpqa",
+      "gsm8k",
+      "math",
+      "aime",
+      "amc",
+      "olympiadbench",
+      "minerva_math",
+      "svamp",
+      "asdiv",
+      "ifeval",
+      "mt_bench",
+      "arena_hard",
+      "rewardbench"
+    ]
+  },
+  "caps": {
+    "same_bucket_fallback_only": true,
+    "max_single_dataset_share": 0.25,
+    "synthetic_text_max_share": 0.08,
+    "biomedical_max_share": 0.04,
+    "code_examples_max_share": 0.02
+  },
+  "buckets": [
+    {
+      "name": "high_quality_general_replay",
+      "target_tokens": 1200000000,
+      "share": 0.12,
+      "purpose": "Preserve general English, commonsense, and chat-adjacent language after heavy STEM concentration.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.6
+      },
+      "sources": [
+        {
+          "name": "cpt_dclm_hq_replay",
+          "dataset_name": "mlfoundations/dclm-baseline-1.0",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 600000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 240,
+          "min_alpha_ratio": 0.62,
+          "max_repeat_char_run": 32,
+          "max_line_length": 1800,
+          "max_url_count": 6,
+          "filters": {
+            "quality_score_band": "top_deciles",
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_fineweb_edu_replay",
+          "dataset_name": "HuggingFaceFW/fineweb-edu",
+          "dataset_config": "sample-100BT",
+          "split": "train",
+          "streaming": true,
+          "repo_parquet_prefix": "sample/100BT/",
+          "target_tokens": 600000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.6,
+          "max_repeat_char_run": 32,
+          "max_line_length": 1800,
+          "max_url_count": 6,
+          "filters": {
+            "fineweb_edu_score_min": 3,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "academic_stem",
+      "target_tokens": 2000000000,
+      "share": 0.2,
+      "purpose": "Academic science, physics, math, CS, and selected biomedical literacy.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.4
+      },
+      "sources": [
+        {
+          "name": "cpt_pes2o_stem",
+          "dataset_name": "allenai/peS2o",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 930000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 400,
+          "min_alpha_ratio": 0.5,
+          "max_repeat_char_run": 40,
+          "max_line_length": 3000,
+          "max_url_count": 6,
+          "filters": {
+            "subjects": ["physics", "mathematics", "computer_science", "chemistry", "biology", "engineering"],
+            "strip_bibliography": true,
+            "preserve_equations_captions_headings": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_arxiv_math_physics_cs",
+          "dataset_name": "EleutherAI/proof-pile-2",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 700000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 400,
+          "min_alpha_ratio": 0.45,
+          "max_repeat_char_run": 48,
+          "max_line_length": 3200,
+          "max_url_count": 6,
+          "filters": {
+            "subsources": ["arxiv"],
+            "subjects": ["math", "physics", "cs", "stat"],
+            "preserve_latex": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_openstax_stem",
+          "dataset_name": "crumb/openstax-text",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 15000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 260,
+          "min_alpha_ratio": 0.58,
+          "max_repeat_char_run": 32,
+          "max_line_length": 2200,
+          "max_url_count": 4,
+          "filters": {
+            "subjects": ["physics", "chemistry", "biology", "math", "statistics"],
+            "file_name_include_any": [
+              "apbiology",
+              "apcollegephysics",
+              "algebra",
+              "trigonometry",
+              "anatomy",
+              "physiology",
+              "astronomy",
+              "biology",
+              "calculus",
+              "chemistry",
+              "college-algebra",
+              "college_physics",
+              "conceptsbiology",
+              "contemporarymathematics",
+              "elementaryalgebra",
+              "intermediatealgebra",
+              "introductorystatistics",
+              "microbiology",
+              "organicchemistry",
+              "physics",
+              "prealgebra",
+              "precalculus",
+              "statistics",
+              "universityphysics"
+            ],
+            "file_name_exclude_any": [
+              "calculo",
+              "fisica",
+              "fizyka",
+              "mikroekonomia",
+              "psychologia",
+              "precalculo",
+              "introduccion",
+              "american",
+              "government",
+              "business",
+              "economics",
+              "accounting",
+              "law",
+              "marketing",
+              "management",
+              "finance",
+              "sociology",
+              "anthropology",
+              "history",
+              "writing",
+              "philosophy",
+              "political",
+              "success",
+              "entrepreneurship"
+            ],
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_pmc_pubmed_oa",
+          "dataset_name": "common-pile/pubmed_filtered",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 200000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 400,
+          "min_alpha_ratio": 0.5,
+          "max_repeat_char_run": 48,
+          "max_line_length": 3000,
+          "max_url_count": 6,
+          "filters": {
+            "licenses": ["cc-by", "cc-by-sa", "cc0"],
+            "biomedical_cap_bucket_share": 0.1,
+            "strip_references": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_finepdfs_academic_technical",
+          "dataset_name": "HuggingFaceFW/finepdfs",
+          "dataset_config": "eng_Latn",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 155000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 500,
+          "min_alpha_ratio": 0.5,
+          "max_repeat_char_run": 44,
+          "max_line_length": 2600,
+          "max_url_count": 6,
+          "filters": {
+            "ocr_quality_score_min": 0.85,
+            "edu_score_min": 3,
+            "drop_headers_footers": true,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "math_proof_documents",
+      "target_tokens": 2000000000,
+      "share": 0.2,
+      "purpose": "Math web, proof prose, equations, derivations, and symbolic exposition.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.4
+      },
+      "sources": [
+        {
+          "name": "cpt_nemotron_cc_math_4plus",
+          "dataset_name": "nvidia/Nemotron-CC-Math-v1",
+          "dataset_config": "4plus",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 800000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.38,
+          "max_repeat_char_run": 48,
+          "max_line_length": 3400,
+          "max_url_count": 6,
+          "filters": {
+            "math_score_min": 4,
+            "preserve_latex_equations": true,
+            "code_ratio_max": 0.12,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_proof_pile_2_math",
+          "dataset_name": "EleutherAI/proof-pile-2",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 500000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 350,
+          "min_alpha_ratio": 0.42,
+          "max_repeat_char_run": 48,
+          "max_line_length": 3400,
+          "max_url_count": 5,
+          "filters": {
+            "proof_heavy": true,
+            "preserve_latex": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_finemath_4plus",
+          "dataset_name": "HuggingFaceTB/finemath",
+          "dataset_config": "finemath-4plus",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 300000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.42,
+          "max_repeat_char_run": 48,
+          "max_line_length": 3000,
+          "max_url_count": 5,
+          "filters": {
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_openwebmath",
+          "dataset_name": "open-web-math/open-web-math",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 300000000,
+          "text_column": "text",
+          "id_column": "url",
+          "loader": "text",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.42,
+          "max_repeat_char_run": 48,
+          "max_line_length": 3200,
+          "max_url_count": 6,
+          "filters": {
+            "preserve_math_notation": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_megamath_web_proof",
+          "dataset_name": "LLM360/MegaMath",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 100000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.4,
+          "max_repeat_char_run": 48,
+          "max_line_length": 3200,
+          "max_url_count": 5,
+          "filters": {
+            "subsets": ["web_math", "proof_like"],
+            "drop_code_subsets": true,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "verifiable_math_problem_solution_prose",
+      "target_tokens": 1200000000,
+      "share": 0.12,
+      "purpose": "Verifier-backed problem and solution prose, packed as documents rather than chat turns.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.4
+      },
+      "sources": [
+        {
+          "name": "cpt_openr1_math_verified",
+          "dataset_name": "open-r1/OpenR1-Math-220k",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 400000000,
+          "text_column": "solution",
+          "id_column": "uuid",
+          "loader": "template",
+          "text_template": "Problem:\\n{problem}\\n\\nSolution:\\n{solution}\\n\\nAnswer:\\n{answer}",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.38,
+          "max_repeat_char_run": 48,
+          "max_line_length": 3200,
+          "max_url_count": 4,
+          "filters": {
+            "require_math_verify": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_numinamath_cot",
+          "dataset_name": "AI-MO/NuminaMath-CoT",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 300000000,
+          "text_column": "solution",
+          "id_column": "source",
+          "loader": "template",
+          "text_template": "Problem:\\n{problem}\\n\\nSolution:\\n{solution}",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.38,
+          "max_repeat_char_run": 48,
+          "max_line_length": 3200,
+          "max_url_count": 4,
+          "filters": {
+            "competition_math": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_openmathinstruct_2_verified_sample",
+          "dataset_name": "nvidia/OpenMathInstruct-2",
+          "dataset_config": "default",
+          "split": "train_1M",
+          "streaming": true,
+          "target_tokens": 300000000,
+          "text_column": "generated_solution",
+          "id_column": "problem_source",
+          "loader": "template",
+          "text_template": "Problem:\\n{problem}\\n\\nSolution:\\n{generated_solution}\\n\\nExpected answer:\\n{expected_answer}",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.38,
+          "max_repeat_char_run": 48,
+          "max_line_length": 3200,
+          "max_url_count": 4,
+          "filters": {
+            "sampled_subset": true,
+            "verification_required": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_numinamath_tir_plain_text",
+          "dataset_name": "AI-MO/NuminaMath-TIR",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 200000000,
+          "text_column": "solution",
+          "id_column": "source",
+          "loader": "template",
+          "text_template": "Problem:\\n{problem}\\n\\nSolution:\\n{solution}",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.38,
+          "max_repeat_char_run": 48,
+          "max_line_length": 3200,
+          "max_url_count": 4,
+          "filters": {
+            "drop_tool_code": true,
+            "code_ratio_max": 0.05,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "reference_wiki_stackexchange",
+      "target_tokens": 1200000000,
+      "share": 0.12,
+      "purpose": "Reference facts plus answer-style explanations.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.4
+      },
+      "sources": [
+        {
+          "name": "cpt_finewiki_reference",
+          "dataset_name": "HuggingFaceFW/finewiki",
+          "dataset_config": "en",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 400000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.55,
+          "max_repeat_char_run": 36,
+          "max_line_length": 2400,
+          "max_url_count": 4,
+          "filters": {
+            "preserve_tables_math_infoboxes": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_stackexchange_non_code_explanations",
+          "dataset_name": "common-pile/stackexchange_filtered",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 400000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 220,
+          "min_alpha_ratio": 0.5,
+          "max_repeat_char_run": 40,
+          "max_line_length": 2600,
+          "max_url_count": 5,
+          "filters": {
+            "exclude_stackoverflow": true,
+            "accepted_answer_or_high_score": true,
+            "code_ratio_max": 0.08,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_common_reference_education",
+          "dataset_name": "PleIAs/common_corpus",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 400000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 260,
+          "min_alpha_ratio": 0.58,
+          "max_repeat_char_run": 36,
+          "max_line_length": 2400,
+          "max_url_count": 4,
+          "filters": {
+            "slices": ["encyclopedic", "educational", "government_explainer"],
+            "license_review_required": true,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "finepdfs_technical_ocr",
+      "target_tokens": 800000000,
+      "share": 0.08,
+      "purpose": "Long OCR-clean technical and reference PDFs.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.8
+      },
+      "sources": [
+        {
+          "name": "cpt_finepdfs_english_edu_ocr",
+          "dataset_name": "HuggingFaceFW/finepdfs",
+          "dataset_config": "eng_Latn",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 800000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 500,
+          "min_alpha_ratio": 0.5,
+          "max_repeat_char_run": 44,
+          "max_line_length": 2600,
+          "max_url_count": 6,
+          "filters": {
+            "ocr_quality_score_min": 0.9,
+            "edu_score_min": 3,
+            "dclm_quality_score_min": 3,
+            "drop_headers_footers": true,
+            "drop_page_numbers": true,
+            "drop_reference_spam": true,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "science_instruction_literature_text",
+      "target_tokens": 600000000,
+      "share": 0.06,
+      "purpose": "Scientific task/literature rows converted to plain language documents, not chat.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.5
+      },
+      "sources": [
+        {
+          "name": "cpt_sciriff_plain_text",
+          "dataset_name": "allenai/SciRIFF",
+          "dataset_config": "4096",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 300000000,
+          "text_column": "input",
+          "id_column": "_instance_id",
+          "loader": "template",
+          "text_template": "Task:\\n{input}\\n\\nResponse:\\n{output}",
+          "min_chars": 180,
+          "min_alpha_ratio": 0.5,
+          "max_repeat_char_run": 36,
+          "max_line_length": 2400,
+          "max_url_count": 4,
+          "filters": {
+            "science_literature_tasks": true,
+            "drop_chat_wrappers": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_sciinstruct_plain_text",
+          "dataset_name": "zd21/SciInstruct",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 300000000,
+          "text_column": "summary",
+          "id_column": "id",
+          "loader": "template",
+          "text_template": "Task:\\n{content}\\n\\nResponse:\\n{summary}",
+          "min_chars": 180,
+          "min_alpha_ratio": 0.5,
+          "max_repeat_char_run": 36,
+          "max_line_length": 2400,
+          "max_url_count": 4,
+          "filters": {
+            "language": "en",
+            "drop_non_latin": true,
+            "subjects": ["physics", "chemistry", "math", "formal_proofs"],
+            "drop_chat_wrappers": true,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "long_form_book_replay",
+      "target_tokens": 500000000,
+      "share": 0.05,
+      "purpose": "Long-form coherence replay from books.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.6
+      },
+      "sources": [
+        {
+          "name": "cpt_pg19_books",
+          "dataset_name": "deepmind/pg19",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 250000000,
+          "text_column": "text",
+          "id_column": "short_book_title",
+          "loader": "text",
+          "min_chars": 600,
+          "min_alpha_ratio": 0.6,
+          "max_repeat_char_run": 36,
+          "max_line_length": 2600,
+          "max_url_count": 4,
+          "filters": {
+            "dedup_against_common_pile_books": true
+          }
+        },
+        {
+          "name": "cpt_common_pile_books",
+          "dataset_name": "common-pile/project_gutenberg_filtered",
+          "split": "train",
+          "streaming": true,
+          "target_tokens": 250000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 600,
+          "min_alpha_ratio": 0.6,
+          "max_repeat_char_run": 36,
+          "max_line_length": 2600,
+          "max_url_count": 4,
+          "filters": {
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "hard_general_decontaminated",
+      "target_tokens": 500000000,
+      "share": 0.05,
+      "purpose": "High-quality hard educational examples that survive contamination filters.",
+      "fallback_policy": {
+        "same_bucket_only": true,
+        "max_single_source_share": 0.6
+      },
+      "sources": [
+        {
+          "name": "cpt_dclm_hard_education",
+          "dataset_name": "HuggingFaceTB/dclm-edu",
+          "split": "train",
+          "streaming": true,
+          "repo_parquet_prefix": "data/",
+          "target_tokens": 250000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 260,
+          "min_alpha_ratio": 0.62,
+          "max_repeat_char_run": 32,
+          "max_line_length": 2200,
+          "max_url_count": 5,
+          "filters": {
+            "edu_score_min": 4,
+            "benchmark_clean_required": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "cpt_fineweb_edu_hard",
+          "dataset_name": "HuggingFaceFW/fineweb-edu",
+          "dataset_config": "sample-100BT",
+          "split": "train",
+          "streaming": true,
+          "repo_parquet_prefix": "sample/100BT/",
+          "target_tokens": 250000000,
+          "text_column": "text",
+          "id_column": "id",
+          "loader": "text",
+          "min_chars": 260,
+          "min_alpha_ratio": 0.62,
+          "max_repeat_char_run": 32,
+          "max_line_length": 2200,
+          "max_url_count": 5,
+          "filters": {
+            "fineweb_edu_score_min": 4,
+            "benchmark_clean_required": true,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    }
+  ]
+}

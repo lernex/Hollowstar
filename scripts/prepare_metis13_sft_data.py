@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -39,19 +40,46 @@ class SourceSpec:
     streaming: bool = True
     keep_think: bool = False
     use_custom_instructions: bool = True
+    allowed_languages: tuple[str, ...] = ()
+    allowed_domains: tuple[str, ...] = ()
+    excluded_domains: tuple[str, ...] = ()
+    max_turns: int | None = None
+    skip_toxic: bool = False
+    skip_redacted: bool = False
+    prompt_column: str = "problem"
+    response_column: str = "solution_wocode"
+    s3_uri: str | None = None
+    bucket: str | None = None
+    target_examples: int | None = None
+    max_examples: int | None = None
+    filters: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "SourceSpec":
+        filters = raw.get("filters", {})
         return cls(
             name=raw["name"],
             dataset_name=raw["dataset_name"],
             split=raw["split"],
-            weight=float(raw["weight"]),
+            weight=float(raw.get("weight", raw.get("target_examples", 1.0))),
             format=raw["format"],
             dataset_config=raw.get("dataset_config"),
             streaming=bool(raw.get("streaming", True)),
             keep_think=bool(raw.get("keep_think", False)),
             use_custom_instructions=bool(raw.get("use_custom_instructions", True)),
+            allowed_languages=tuple(raw.get("allowed_languages", filters.get("allowed_languages", ()))),
+            allowed_domains=tuple(raw.get("allowed_domains", filters.get("allowed_domains", ()))),
+            excluded_domains=tuple(raw.get("excluded_domains", filters.get("excluded_domains", ()))),
+            max_turns=int(raw["max_turns"]) if raw.get("max_turns") is not None else None,
+            skip_toxic=bool(raw.get("skip_toxic", False)),
+            skip_redacted=bool(raw.get("skip_redacted", False)),
+            prompt_column=raw.get("prompt_column", raw.get("input_column", "problem")),
+            response_column=raw.get("response_column", raw.get("output_column", "solution_wocode")),
+            s3_uri=raw.get("s3_uri"),
+            bucket=raw.get("bucket"),
+            target_examples=raw.get("target_examples"),
+            max_examples=raw.get("max_examples"),
+            filters=filters,
         )
 
 
@@ -101,6 +129,56 @@ def normalize_role(role: str) -> str:
     return role
 
 
+def language_allowed(language: Any, allowed_languages: tuple[str, ...]) -> bool:
+    if not allowed_languages:
+        return True
+    if language is None:
+        return False
+    normalized = str(language).strip().lower()
+    return normalized in {value.strip().lower() for value in allowed_languages}
+
+
+def domain_allowed(row: dict[str, Any], spec: SourceSpec) -> bool:
+    if not spec.allowed_domains and not spec.excluded_domains:
+        return True
+    candidates = []
+    for key in ("domain", "domains", "category", "task_category", "subject", "source"):
+        value = row.get(key)
+        if value is None:
+            continue
+        if isinstance(value, list):
+            candidates.extend(str(item).strip().lower() for item in value)
+        else:
+            candidates.append(str(value).strip().lower())
+    allowed = {value.strip().lower() for value in spec.allowed_domains}
+    excluded = {value.strip().lower() for value in spec.excluded_domains}
+    if excluded and any(candidate in excluded for candidate in candidates):
+        return False
+    if allowed and not any(candidate in allowed for candidate in candidates):
+        return False
+    return True
+
+
+def resolve_repo_path(path: str) -> Path:
+    resolved = Path(path).expanduser()
+    if resolved.is_absolute():
+        return resolved
+    return Path(__file__).resolve().parents[1] / resolved
+
+
+def download_s3_file(s3_uri: str, local_path: Path) -> None:
+    if not s3_uri.startswith("s3://"):
+        raise ValueError(f"Expected s3:// URI for local SFT fallback, got {s3_uri!r}")
+    bucket_and_key = s3_uri.removeprefix("s3://")
+    bucket, _, key = bucket_and_key.partition("/")
+    if not bucket or not key:
+        raise ValueError(f"Expected s3://bucket/key URI for local SFT fallback, got {s3_uri!r}")
+    import boto3
+
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    boto3.client("s3").download_file(bucket, key, str(local_path))
+
+
 def extract_reasoning(answer: str) -> tuple[str, str]:
     thought_match = THOUGHT_RE.search(answer)
     solution_match = SOLUTION_RE.search(answer)
@@ -144,10 +222,20 @@ def alpha_ratio(text: str) -> float:
     return sum(char.isalpha() for char in meaningful) / len(meaningful)
 
 
+def latin_letter_ratio(text: str) -> float:
+    letters = [char for char in text if char.isalpha()]
+    if not letters:
+        return 1.0
+    latin_letters = sum(("a" <= char.lower() <= "z") for char in letters)
+    return latin_letters / len(letters)
+
+
 def looks_like_low_quality(text: str, *, min_alpha_ratio: float, max_urls: int, max_code_fences: int) -> bool:
     if not text.strip():
         return True
     if alpha_ratio(text) < min_alpha_ratio:
+        return True
+    if latin_letter_ratio(text) < 0.65:
         return True
     if REPEAT_CHAR_RE.search(text):
         return True
@@ -292,14 +380,78 @@ def iter_source_examples(
     max_urls: int,
     max_code_fences: int,
 ) -> Iterator[dict[str, Any]]:
+    if spec.format == "local_messages_jsonl":
+        local_path = resolve_repo_path(spec.dataset_name)
+        refresh_from_s3 = os.environ.get("METIS_REFRESH_LOCAL_SFT_S3", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if spec.s3_uri and (refresh_from_s3 or not local_path.exists()):
+            print(f"[{spec.name}] Hydrating local SFT JSONL from {spec.s3_uri} into {local_path}.", flush=True)
+            download_s3_file(spec.s3_uri, local_path)
+        print(f"[{spec.name}] Loading local SFT JSONL from {local_path}.", flush=True)
+        with local_path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if "messages" in row:
+                    messages = row["messages"]
+                else:
+                    messages = [
+                        {"role": "user", "content": row.get("user", "")},
+                        {"role": "assistant", "content": row.get("assistant", "")},
+                    ]
+                try:
+                    yield from iter_pairs_from_messages(
+                        messages,
+                        custom_instructions=str(row.get("custom_instructions", "")),
+                        source_name=spec.name,
+                        keep_think=spec.keep_think,
+                        max_history_turns=max_history_turns,
+                        max_user_chars=max_user_chars,
+                        max_assistant_chars=max_assistant_chars,
+                        max_think_chars=max_think_chars,
+                        max_answer_chars=max_answer_chars,
+                        min_user_chars=min_user_chars,
+                        min_assistant_chars=min_assistant_chars,
+                        min_user_alpha_ratio=min_user_alpha_ratio,
+                        min_assistant_alpha_ratio=min_assistant_alpha_ratio,
+                        max_urls=max_urls,
+                        max_code_fences=max_code_fences,
+                    )
+                except KeyError as error:
+                    raise ValueError(f"Malformed local SFT row {line_number} in {local_path}: {error}") from error
+        return
+
+    force_local = os.environ.get("METIS_LOCAL_DATASETS", "").strip().lower() in {"1", "true", "yes", "on"}
+    prefer_streaming = os.environ.get("METIS_PREFER_STREAMING_POSTTRAIN", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    resolved_streaming = spec.streaming if prefer_streaming else (False if force_local else spec.streaming)
+    print(
+        f"[{spec.name}] Loading post-train dataset via "
+        f"{'streaming' if resolved_streaming else 'generic local eager'} path.",
+        flush=True,
+    )
     dataset = load_dataset(
         spec.dataset_name,
         name=spec.dataset_config,
         split=spec.split,
-        streaming=spec.streaming,
+        streaming=resolved_streaming,
     )
 
     for row in dataset:
+        if spec.allowed_languages and not language_allowed(row.get("language") or row.get("lang"), spec.allowed_languages):
+            continue
+        if not domain_allowed(row, spec):
+            continue
+
         if spec.format == "smoltalk_messages":
             messages = row.get("messages") or []
             chat_kwargs = row.get("chat_template_kwargs") or {}
@@ -307,6 +459,106 @@ def iter_source_examples(
             yield from iter_pairs_from_messages(
                 messages,
                 custom_instructions=custom_instructions,
+                source_name=spec.name,
+                keep_think=spec.keep_think,
+                max_history_turns=max_history_turns,
+                max_user_chars=max_user_chars,
+                max_assistant_chars=max_assistant_chars,
+                max_think_chars=max_think_chars,
+                max_answer_chars=max_answer_chars,
+                min_user_chars=min_user_chars,
+                min_assistant_chars=min_assistant_chars,
+                min_user_alpha_ratio=min_user_alpha_ratio,
+                min_assistant_alpha_ratio=min_assistant_alpha_ratio,
+                max_urls=max_urls,
+                max_code_fences=max_code_fences,
+            )
+            continue
+
+        if spec.format in {"messages", "tulu_messages"}:
+            messages = row.get("messages") or row.get("conversation") or row.get("conversations") or []
+            custom_instructions = row.get("system", "") if spec.use_custom_instructions else ""
+            yield from iter_pairs_from_messages(
+                messages,
+                custom_instructions=custom_instructions,
+                source_name=spec.name,
+                keep_think=spec.keep_think,
+                max_history_turns=max_history_turns,
+                max_user_chars=max_user_chars,
+                max_assistant_chars=max_assistant_chars,
+                max_think_chars=max_think_chars,
+                max_answer_chars=max_answer_chars,
+                min_user_chars=min_user_chars,
+                min_assistant_chars=min_assistant_chars,
+                min_user_alpha_ratio=min_user_alpha_ratio,
+                min_assistant_alpha_ratio=min_assistant_alpha_ratio,
+                max_urls=max_urls,
+                max_code_fences=max_code_fences,
+            )
+            continue
+
+        if spec.format in {"prompt_response", "input_output", "sciriff_io"}:
+            prompt = collapse_whitespace(str(row.get(spec.prompt_column, "")))
+            response = collapse_whitespace(str(row.get(spec.response_column, "")))
+            if not prompt or not response:
+                continue
+            yield from iter_pairs_from_messages(
+                [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": response},
+                ],
+                custom_instructions="",
+                source_name=spec.name,
+                keep_think=spec.keep_think,
+                max_history_turns=max_history_turns,
+                max_user_chars=max_user_chars,
+                max_assistant_chars=max_assistant_chars,
+                max_think_chars=max_think_chars,
+                max_answer_chars=max_answer_chars,
+                min_user_chars=min_user_chars,
+                min_assistant_chars=min_assistant_chars,
+                min_user_alpha_ratio=min_user_alpha_ratio,
+                min_assistant_alpha_ratio=min_assistant_alpha_ratio,
+                max_urls=max_urls,
+                max_code_fences=max_code_fences,
+            )
+            continue
+
+        if spec.format == "wildchat_conversation":
+            if spec.skip_toxic and bool(row.get("toxic")):
+                continue
+            if spec.skip_redacted and bool(row.get("redacted")):
+                continue
+
+            raw_messages = row.get("conversation") or []
+            if spec.allowed_languages:
+                if any(
+                    item.get("language") is not None
+                    and not language_allowed(item.get("language"), spec.allowed_languages)
+                    for item in raw_messages
+                ):
+                    continue
+
+            conversation_turns = row.get("turn")
+            if conversation_turns is None:
+                conversation_turns = sum(
+                    1
+                    for item in raw_messages
+                    if normalize_role(str(item.get("role", ""))) == "assistant"
+                )
+            if spec.max_turns is not None and int(conversation_turns) > spec.max_turns:
+                continue
+
+            messages = [
+                {
+                    "role": normalize_role(str(item.get("role", ""))),
+                    "content": item.get("content", ""),
+                }
+                for item in raw_messages
+            ]
+            yield from iter_pairs_from_messages(
+                messages,
+                custom_instructions="",
                 source_name=spec.name,
                 keep_think=spec.keep_think,
                 max_history_turns=max_history_turns,
@@ -351,6 +603,33 @@ def iter_source_examples(
             )
             continue
 
+        if spec.format == "templategsm_solution":
+            prompt = collapse_whitespace(str(row.get(spec.prompt_column, "")))
+            response = collapse_whitespace(str(row.get(spec.response_column, "")))
+            if not prompt or not response:
+                continue
+            yield from iter_pairs_from_messages(
+                [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": response},
+                ],
+                custom_instructions="",
+                source_name=spec.name,
+                keep_think=spec.keep_think,
+                max_history_turns=max_history_turns,
+                max_user_chars=max_user_chars,
+                max_assistant_chars=max_assistant_chars,
+                max_think_chars=max_think_chars,
+                max_answer_chars=max_answer_chars,
+                min_user_chars=min_user_chars,
+                min_assistant_chars=min_assistant_chars,
+                min_user_alpha_ratio=min_user_alpha_ratio,
+                min_assistant_alpha_ratio=min_assistant_alpha_ratio,
+                max_urls=max_urls,
+                max_code_fences=max_code_fences,
+            )
+            continue
+
         if spec.format == "chatml_text_think":
             custom_instructions, messages = parse_chatml_text(row.get("text", ""))
             yield from iter_pairs_from_messages(
@@ -379,7 +658,16 @@ def load_mixture(path: Path) -> tuple[int, int, list[SourceSpec]]:
     payload = json.loads(path.read_text())
     seed = int(payload.get("seed", 42))
     max_history_turns = int(payload.get("max_history_turns", 2))
-    sources = [SourceSpec.from_dict(item) for item in payload["sources"]]
+    raw_sources = payload.get("sources")
+    if raw_sources is None:
+        raw_sources = []
+        for bucket in payload.get("buckets") or []:
+            for source in bucket.get("sources") or []:
+                item = dict(source)
+                item.setdefault("bucket", bucket.get("name"))
+                item.setdefault("weight", source.get("target_examples", source.get("weight", 1.0)))
+                raw_sources.append(item)
+    sources = [SourceSpec.from_dict(item) for item in raw_sources]
     return seed, max_history_turns, sources
 
 
@@ -427,6 +715,17 @@ def main() -> None:
         )
         for source in sources
     ]
+    source_buckets = [source.bucket or source.name for source in sources]
+    planned_bucket_counts = Counter(source_buckets[index] for index in schedule)
+    bucket_counts = Counter()
+
+    def same_bucket_indices(source_index: int) -> list[int]:
+        bucket = source_buckets[source_index]
+        return [
+            index
+            for index, candidate_bucket in enumerate(source_buckets)
+            if candidate_bucket == bucket
+        ]
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -438,22 +737,22 @@ def main() -> None:
     accepted = 0
     duplicates = 0
     exhausted = Counter()
+    dead_sources: set[int] = set()
     split_counts = Counter()
     source_counts = Counter()
     seen_hashes: set[str] = set()
 
     try:
         with train_tmp_path.open("w", encoding="utf-8") as train_handle, val_tmp_path.open("w", encoding="utf-8") as val_handle:
-            for source_index in schedule:
-                if accepted >= args.total_examples:
-                    break
-
+            def consume_source(source_index: int) -> bool:
+                nonlocal accepted, duplicates
                 iterator = iterators[source_index]
                 try:
                     example = next(iterator)
                 except StopIteration:
                     exhausted[sources[source_index].name] += 1
-                    continue
+                    dead_sources.add(source_index)
+                    return False
 
                 signature = (
                     example["messages"][0]["content"].strip().lower()
@@ -463,7 +762,7 @@ def main() -> None:
                 digest = hashlib.sha1(signature.encode("utf-8")).hexdigest()
                 if digest in seen_hashes:
                     duplicates += 1
-                    continue
+                    return True
                 seen_hashes.add(digest)
 
                 payload = json.dumps(example["messages"], ensure_ascii=False, sort_keys=True)
@@ -474,6 +773,7 @@ def main() -> None:
                 accepted += 1
                 split_counts[target_split] += 1
                 source_counts[example["source"]] += 1
+                bucket_counts[source_buckets[source_index]] += 1
 
                 if accepted == 1 or accepted % args.progress_interval == 0:
                     print(
@@ -482,6 +782,43 @@ def main() -> None:
                         f"latest_source={example['source']} duplicates={duplicates}",
                         flush=True,
                     )
+                return True
+
+            def consume_with_bucket_fallback(source_index: int) -> bool:
+                for candidate_index in same_bucket_indices(source_index):
+                    if candidate_index in dead_sources:
+                        continue
+                    if consume_source(candidate_index):
+                        return True
+                return False
+
+            for source_index in schedule:
+                if accepted >= args.total_examples:
+                    break
+                consume_with_bucket_fallback(source_index)
+
+            if accepted < args.total_examples:
+                for bucket, planned_count in planned_bucket_counts.items():
+                    while accepted < args.total_examples and bucket_counts[bucket] < planned_count:
+                        fallback_order = sorted(
+                            [
+                                index
+                                for index, candidate_bucket in enumerate(source_buckets)
+                                if candidate_bucket == bucket and index not in dead_sources
+                            ],
+                            key=lambda index: sources[index].weight,
+                            reverse=True,
+                        )
+                        if not fallback_order:
+                            break
+                        advanced = False
+                        accepted_before = accepted
+                        for source_index in fallback_order:
+                            if accepted >= args.total_examples or bucket_counts[bucket] >= planned_count:
+                                break
+                            advanced = consume_source(source_index) or advanced
+                        if accepted == accepted_before:
+                            break
 
         train_tmp_path.replace(train_path)
         val_tmp_path.replace(val_path)
@@ -499,6 +836,8 @@ def main() -> None:
         "duplicates": duplicates,
         "exhausted_sources": dict(exhausted),
         "source_counts": dict(source_counts),
+        "planned_bucket_counts": dict(planned_bucket_counts),
+        "bucket_counts": dict(bucket_counts),
         "max_history_turns": max_history_turns,
         "max_user_chars": args.max_user_chars,
         "max_assistant_chars": args.max_assistant_chars,
@@ -515,6 +854,7 @@ def main() -> None:
     }
     (output_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(meta, indent=2), flush=True)
+    os._exit(0)
 
 
 if __name__ == "__main__":

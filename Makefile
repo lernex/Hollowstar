@@ -30,13 +30,20 @@ METIS11_H100_DTYPE ?= bf16
 METIS11_H100_COMPILE_MODE ?= default
 METIS12_SHARED_ROOT ?= $(PWD)/.runpod/metis12
 METIS13_SHARED_ROOT ?= $(PWD)/.runpod/metis13
+METIS15_MANIFEST ?= configs/metis15_manifest.json
+METIS15_DATA_DIR ?= data/metis15_base
+METIS15_CONTINUED_DATA_DIR ?= data/metis15_continued_pretrain
+METIS15_BASE_OUT ?= checkpoints/metis15_base
+METIS15_CONTINUED_OUT ?= checkpoints/metis15_continued_pretrain
+METIS15_S3_ROOT ?= s3://lernex-metis-artifacts-151025633969-us-east-1/metis15
+METIS15_SMOKE_RECIPES ?= fp8,fp8_block,nvfp4,bf16
 
 ifneq (,$(wildcard $(ENV_FILE)))
 include $(ENV_FILE)
 export HF_TOKEN
 endif
 
-.PHONY: help setup tokenizer prepare train generate chat-data sft chat chat-fast app base full-chat fast standard overnight metis-tokenizer metis-data metis-base metis-think-data metis-think metis-full metis11-tokenizer metis11-data metis11-base metis11-chat-data metis11-chat metis11-think-data metis11-think metis11-full metis11-h100-base metis11-h100-chat metis11-h100-think metis11-h100-full metis11-h100-pod metis12-cpu-prep metis12-gpu-full metis13-cpu-memory-prep metis13-cpu-compute-prep metis13-cpu-prep metis13-gpu-full metis100-base metis100-full hf-upload-metis11-base hf-upload-metis11-chat hf-upload-metis11-think clean-bench
+.PHONY: help setup tokenizer prepare train generate chat-data sft chat chat-fast app base full-chat fast standard overnight metis-tokenizer metis-data metis-base metis-think-data metis-think metis-full metis11-tokenizer metis11-data metis11-base metis11-chat-data metis11-chat metis11-think-data metis11-think metis11-full metis11-h100-base metis11-h100-chat metis11-h100-think metis11-h100-full metis11-h100-pod metis12-cpu-prep metis12-gpu-full metis13-cpu-memory-prep metis13-cpu-compute-prep metis13-cpu-prep metis13-gpu-full metis15-validate-data-plan metis15-tokenizer-assets-aws metis15-cpu-prep-aws metis15-blackwell-smoke metis15-training-contracts metis15-rtx-benchmark-matrix metis15-megatron-profile metis15-a100-pretrain metis15-a100-continued-pretrain metis15-rtx-pretrain metis15-rtx-fp8-pretrain metis15-rtx-continued-pretrain metis15-neuron-pretrain metis15-full metis15-p5-pretrain metis100-base metis100-full hf-upload-metis11-base hf-upload-metis11-chat hf-upload-metis11-think clean-bench
 
 help:
 	@echo "Targets:"
@@ -74,6 +81,18 @@ help:
 	@echo "  make metis13-cpu-compute-prep - run the compute-heavy data-build pod for Metis-1.3"
 	@echo "  make metis13-cpu-prep         - run both Metis-1.3 CPU halves sequentially on one pod"
 	@echo "  make metis13-gpu-full    - run the Mamba2-hybrid BF16 GPU flow for Metis-1.3"
+	@echo "  make metis15-validate-data-plan - validate Metis-1.5 bucket totals, caps, and release targets"
+	@echo "  make metis15-tokenizer-assets-aws - run Metis-1.5 CPU prep through the 32k tokenizer upload"
+	@echo "  make metis15-cpu-prep-aws - run the Metis-1.5 CPU prep flow with its sparse-MoE manifest"
+	@echo "  make metis15-blackwell-smoke - legacy exact-shape FP8/NVFP4 kernel smoke on RTX PRO 6000"
+	@echo "  make metis15-rtx-benchmark-matrix - run the RTX PRO 6000 optimization benchmark matrix"
+	@echo "  make metis15-megatron-profile - print the native-vs-Megatron MoE optimization profile"
+	@echo "  make metis15-a100-pretrain - launch the Metis-1.5 8xA100 BF16 expert-parallel baseline"
+	@echo "  make metis15-neuron-pretrain - launch Metis-1.5 on AWS Trainium/Neuron static expert parallelism"
+	@echo "  make metis15-rtx-pretrain - legacy alias for the current Metis-1.5 BF16 pretrain launcher"
+	@echo "  make metis15-rtx-fp8-pretrain - launch Metis-1.5 with expert-only H100 FP8"
+	@echo "  make metis15-rtx-continued-pretrain - continue Metis-1.5 pretraining from the base checkpoint in BF16"
+	@echo "  make metis15-full      - run the full Metis-1.5 base -> think pipeline through DPO and release export"
 	@echo "  make metis100-base   - train a ~104M experimental Metis base model"
 	@echo "  make metis100-full   - run tokenizer + data + 100M base training"
 	@echo "  make base        - run setup -> tokenizer -> prepare -> train"
@@ -200,6 +219,48 @@ metis13-cpu-prep:
 
 metis13-gpu-full:
 	METIS13_SHARED_ROOT="$(METIS13_SHARED_ROOT)" ./scripts/runpod_metis13_gpu.sh
+
+metis15-validate-data-plan:
+	$(PYTHON) scripts/validate_metis15_data_plan.py --manifest $(METIS15_MANIFEST)
+
+metis15-tokenizer-assets-aws:
+	METIS15_MANIFEST="$(METIS15_MANIFEST)" METIS15_S3_ROOT="$(METIS15_S3_ROOT)" METIS15_PREP_MODE="aws" METIS15_STOP_AFTER_STAGE="tokenizer_assets" ./scripts/metis15_cpu_prep.sh
+
+metis15-cpu-prep-aws:
+	METIS15_MANIFEST="$(METIS15_MANIFEST)" METIS15_S3_ROOT="$(METIS15_S3_ROOT)" METIS15_PREP_MODE="aws" ./scripts/metis15_cpu_prep.sh
+
+metis15-blackwell-smoke:
+	$(PYTHON) scripts/smoke_metis15_blackwell_kernels.py --recipes "$(METIS15_SMOKE_RECIPES)" --nvfp4-disable-rht --nvfp4-disable-2d-quantization --nvfp4-disable-stochastic-rounding
+
+metis15-training-contracts:
+	$(PYTHON) scripts/smoke_metis15_training_contracts.py
+
+metis15-rtx-benchmark-matrix:
+	METIS15_MANIFEST="$(METIS15_MANIFEST)" METIS15_DATA_DIR="$(METIS15_DATA_DIR)" ./scripts/metis15_rtx_benchmark_matrix.sh
+
+metis15-megatron-profile:
+	$(PY) scripts/metis15_megatron_super_profile.py --manifest "$(METIS15_MANIFEST)" --check-imports
+
+metis15-a100-pretrain:
+	METIS15_MANIFEST="$(METIS15_MANIFEST)" METIS15_S3_ROOT="$(METIS15_S3_ROOT)" METIS15_DATA_DIR="$(METIS15_DATA_DIR)" METIS15_OUT_DIR="$(METIS15_BASE_OUT)" METIS15_FP8=0 METIS15_NVFP4=0 METIS15_FP8_EXPERT_PRECISION=bf16 METIS15_MOE_DISPATCH_MODE=bucketed ./scripts/metis15_pretrain.sh
+
+metis15-neuron-pretrain:
+	METIS15_MANIFEST="$(METIS15_MANIFEST)" METIS15_S3_ROOT="$(METIS15_S3_ROOT)" METIS15_DATA_DIR="$(METIS15_DATA_DIR)" METIS15_OUT_DIR="$(METIS15_BASE_OUT)_neuron" ./scripts/metis15_neuron_pretrain.sh
+
+metis15-rtx-pretrain: metis15-a100-pretrain
+
+metis15-rtx-fp8-pretrain:
+	METIS15_MANIFEST="$(METIS15_MANIFEST)" METIS15_S3_ROOT="$(METIS15_S3_ROOT)" METIS15_DATA_DIR="$(METIS15_DATA_DIR)" METIS15_OUT_DIR="$(METIS15_BASE_OUT)" METIS15_FP8=1 METIS15_NVFP4=0 METIS15_FP8_EXPERT_PRECISION=fp8 METIS15_MOE_DISPATCH_MODE=bucketed ./scripts/metis15_pretrain.sh
+
+metis15-a100-continued-pretrain:
+	METIS15_MANIFEST="$(METIS15_MANIFEST)" METIS15_TRAIN_STAGE="continued_pretrain" METIS15_S3_ROOT="$(METIS15_S3_ROOT)" METIS15_S3_PRETRAIN_URI="$(METIS15_S3_ROOT)/pretrain-shards/continued" METIS15_S3_CHECKPOINTS_URI="$(METIS15_S3_ROOT)/checkpoints/continued" METIS15_DATA_DIR="$(METIS15_CONTINUED_DATA_DIR)" METIS15_OUT_DIR="$(METIS15_CONTINUED_OUT)" METIS15_INIT_CHECKPOINT="$(METIS15_BASE_OUT)/best.pt" METIS15_FP8=0 METIS15_NVFP4=0 METIS15_FP8_EXPERT_PRECISION=bf16 METIS15_MOE_DISPATCH_MODE=bucketed ./scripts/metis15_pretrain.sh
+
+metis15-rtx-continued-pretrain: metis15-a100-continued-pretrain
+
+metis15-full:
+	METIS15_MANIFEST="$(METIS15_MANIFEST)" METIS15_S3_ROOT="$(METIS15_S3_ROOT)" METIS15_DATA_DIR="$(METIS15_DATA_DIR)" METIS15_BASE_OUT="$(METIS15_BASE_OUT)" METIS15_FP8=0 METIS15_NVFP4=0 METIS15_FP8_EXPERT_PRECISION=bf16 METIS15_MOE_DISPATCH_MODE=bucketed ./scripts/metis15_full.sh
+
+metis15-p5-pretrain: metis15-rtx-pretrain
 
 metis100-base:
 	$(PY) scripts/train.py --data-dir data/metis_base --tokenizer-path artifacts/metis_tokenizer/tokenizer.json --out-dir checkpoints/metis100_base --max-steps 3000 --batch-size 2 --grad-accum-steps 8 --block-size 512 --n-layer 20 --n-head 8 --n-embd 640 --lr 2e-4 --eval-interval 250

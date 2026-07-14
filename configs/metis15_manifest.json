@@ -1,0 +1,411 @@
+{
+  "name": "Metis-1.5",
+  "family": "Metis",
+  "description": "Metis-1.5 is the first sparse Metis model: a single LatentMoE decoder with one 512d latent route per token, 32 routed experts, top-4 routing, 1 BF16 shared expert, and native 8-way expert parallel training for the Google Cloud TPU v6e-8 JAX/libTPU lane.",
+  "model": {
+    "name": "Metis-1.5",
+    "architecture": "metis_single_latent_moe_decoder",
+    "model_type": "metis_single_latent_moe",
+    "vocab_size": 32768,
+    "block_size": 1024,
+    "d_model": 1536,
+    "n_layer": 19,
+    "n_heads": 24,
+    "n_kv_heads": 8,
+    "head_dim": 64,
+    "intermediate_size": 4096,
+    "hidden_act": "swiglu",
+    "tie_embeddings": true,
+    "rms_norm": true,
+    "residual_in_fp32": false,
+    "fused_add_norm": false,
+    "pad_vocab_size_multiple": 16,
+    "initializer_range": 0.02,
+    "torch_dtype": "bfloat16",
+    "attention_bias": false,
+    "mlp_bias": false,
+    "attention_dropout": 0.0,
+    "rope_theta": 10000.0,
+    "attention_backend": "jax_causal_attention_reference",
+    "training_mode": "static_dense_pretrain",
+    "mor_enabled": false,
+    "mor_train_router": false,
+    "mor_runtime_mode": "disabled",
+    "mor_max_depth": 3,
+    "mor_router_hidden_dim": 384,
+    "mor_router_aux_loss_coef": 0.0,
+    "mor_router_entropy_coef": 0.0,
+    "mor_router_z_loss_coef": 0.0,
+    "mor_target_avg_depth": 1.0,
+    "ffn_type": "single_latent_moe",
+    "moe_num_experts": 32,
+    "moe_top_k": 4,
+    "moe_shared_experts": 1,
+    "moe_num_heads": 1,
+    "moe_expert_intermediate_size": 1024,
+    "moe_router_latent_size": 512,
+    "moe_routed_latent_size": 512,
+    "moe_activation": "squared_relu",
+    "moe_router_temperature": 1.0,
+    "moe_aux_loss_coef": 0.0001,
+    "moe_router_score": "sigmoid",
+    "moe_single_latent_router_input": "hidden",
+    "moe_balance_strategy": "aux_loss_free_bias",
+    "moe_balance_bias_update_rate": 0.001,
+    "moe_balance_bias_clamp": 5.0,
+    "moe_balance_scale_by_token_fraction": true,
+    "moe_backend": "jax_static_sort_pack",
+    "moe_dispatch_mode": "static_sort_pack",
+    "moe_static_capacity": 0,
+    "moe_capacity_factor": 0.0,
+    "moe_capacity_alignment": 128,
+    "moe_torch_grouped_min_m": 8,
+    "moe_overflow_mode": "fallback",
+    "moe_fused_combine": true,
+    "moe_graphable": true,
+    "moe_memory_efficient_permutation": true,
+    "moe_token_dispatcher_type": "alltoall",
+    "moe_flex_dispatcher_backend": "none",
+    "moe_overlap_expert_parallel_comm": false,
+    "moe_delay_wgrad_compute": false,
+    "moe_router_fusion": false,
+    "moe_permute_fusion": true,
+    "moe_expert_parallel_size": 8,
+    "moe_expert_parallel_init_seed": 271828,
+    "low_precision_mode": "none",
+    "fp8_expert_precision": "bf16",
+    "nvfp4_disable_rht": true,
+    "nvfp4_disable_2d_quantization": true,
+    "nvfp4_disable_stochastic_rounding": true,
+    "nvfp4_keep_embeddings_bf16": true,
+    "nvfp4_keep_qkv_bf16": true,
+    "nvfp4_keep_latent_moe_projections_bf16": true,
+    "nvfp4_keep_lm_head_bf16": true,
+    "nvfp4_qkv_precision": "bf16",
+    "nvfp4_latent_moe_projection_precision": "bf16",
+    "nvfp4_lm_head_precision": "bf16",
+    "nvfp4_final_expert_layers": 0,
+    "nvfp4_final_expert_precision": "fp8_block",
+    "fp8_pad_multiple": 64,
+    "estimated_params": 898051168,
+    "estimated_active_params": 340208736,
+    "estimated_active_transformer_params": 289877088
+  },
+  "tokenizer": {
+    "vocab_size": 32768,
+    "source": "train_metis15_tokenizer",
+    "artifact_dir": "artifacts/metis15_hf_assets",
+    "sample_docs": 12000000,
+    "min_frequency": 2,
+    "progress_interval": 5000
+  },
+  "data_manifests": {
+    "pretrain_best_research": "configs/metis15_pretrain_mix.json",
+    "pretrain_release_clean": "configs/metis15_pretrain_mix.json",
+    "continued_pretrain": "configs/metis15_continued_pretrain_mix.json",
+    "chat_sft": "configs/metis15_chat_mix.json",
+    "reasoning_sft": "configs/metis15_reasoning_mix.json",
+    "preference": "configs/metis15_preference_mix.json"
+  },
+  "selected_data_strategy": {
+    "pretrain": "best_research",
+    "continued_pretrain": true,
+    "post_training": "think_only",
+    "chat": "internal_alignment_stage_only",
+    "think": "short_visible_reasoning_v1",
+    "preference": "reward_model_then_dpo_v1",
+    "note": "Metis-1.5 releases only base and think variants. The data plan is a 50B bucketed base pretrain, 10B bucketed CPT/midtrain, then chat SFT as an internal bridge into a single think post-training path."
+  },
+  "optimizer": {
+    "name": "muon_adamw",
+    "adamw_eps": 1e-08,
+    "hybrid_adamw_impl": "loop",
+    "master_weights": true,
+    "muon_beta": 0.95,
+    "muon_ns_steps": 5,
+    "muon_lr_scale": 1.0,
+    "muon_scale_mode": "match_rms_adamw",
+    "muon_nesterov": true,
+    "include_routed_experts": false,
+    "policy": {
+      "adamw": [
+        "token_embeddings",
+        "lm_head",
+        "rmsnorm_layernorm_weights",
+        "router_gate_networks",
+        "mor_recursion_router_control",
+        "moe_router_embeddings_and_biases",
+        "latent_moe_router_projection",
+        "positional_scalars_biases"
+      ],
+      "muon": [
+        "attention_qkv_o_matrices",
+        "dense_mlp_matrices",
+        "shared_expert_matrices",
+        "latent_moe_routed_payload_down_up_projections"
+      ],
+      "ablation_only": [
+        "routed_expert_up_gate_down_matrices"
+      ]
+    }
+  },
+  "data_prep": {
+    "pretrain_max_docs": 70000000,
+    "continued_max_docs": 16000000,
+    "requires_bucket_validation": true,
+    "requires_same_bucket_fallback": true,
+    "requires_global_dedup": true,
+    "requires_english_lid": true,
+    "requires_benchmark_decontam": true,
+    "validation_script": "scripts/validate_metis15_data_plan.py"
+  },
+  "hardware": {
+    "target_cluster": "google_cloud_tpu_v6e_8_chip_jax_static_expert_parallel",
+    "accelerator": "Google Cloud TPU v6e-8",
+    "world_size": 8,
+    "preferred_precision": "bf16_jax_libtpu_expert_parallel",
+    "fallback_precision": "bf16",
+    "attention_backend": "jax_causal_attention_reference",
+    "runtime": "JAX/libTPU",
+    "remat_layers": true,
+    "launcher_script": "scripts/metis15_jax_tpu_v6e_pretrain.sh",
+    "trainer_script": "scripts/train_metis15_jax_tpu.py",
+    "bootstrap_script": "scripts/metis15_jax_tpu_v6e_bootstrap.sh",
+    "preflight_script": "scripts/metis15_jax_tpu_v6e_preflight.py",
+    "local_readiness_script": "scripts/metis15_jax_tpu_v6e_local_readiness.sh",
+    "sharding_report_script": "scripts/metis15_jax_tpu_v6e_sharding_report.py",
+    "compile_probe_script": "scripts/metis15_jax_tpu_v6e_compile_probe.sh",
+    "perf_sweep_script": "scripts/metis15_jax_tpu_v6e_perf_sweep.sh",
+    "quality_canary_script": "scripts/metis15_jax_tpu_v6e_quality_canary.sh",
+    "log_analyzer_script": "scripts/analyze_metis15_jax_tpu_logs.py",
+    "sweep_summary_script": "scripts/summarize_metis15_jax_tpu_sweep.py",
+    "requirements_file": "requirements-jax-tpu-train.txt",
+    "gcs_checkpoint_sync": true,
+    "gcs_data_env": "METIS15_JAX_DATA_GCS_URI",
+    "gcs_checkpoint_env": "METIS15_JAX_GCS_CHECKPOINT_DIR",
+    "flash_attention_source": "not_applicable_on_tpu",
+    "flash_attention_cuda_min": "not_applicable_on_tpu",
+    "flash_attention_cuda_recommended": "not_applicable_on_tpu",
+    "stability": {
+      "qk_clip": {
+        "enabled": true,
+        "threshold": 100.0,
+        "alpha": 0.5,
+        "interval": 1,
+        "warmup_steps": 0
+      },
+      "ce_logits_dtype": "float32",
+      "expert_capacity_factor": 4.0,
+      "expert_activation_safety": "clamp",
+      "moe_balance_strategy": "aux_loss_free_bias"
+    },
+    "throughput": {
+      "fixed_shapes_required": true,
+      "profile_components_default": true,
+      "perf_warmup_steps_default": 3,
+      "compile_probe_requires_jax_log_compiles": true,
+      "sweep_dimensions": [
+        "local_batch_size",
+        "grad_accum_steps",
+        "block_size",
+        "expert_capacity_factor",
+        "remat_mode",
+        "dtype",
+        "expert_execution"
+      ],
+      "grad_sync_mode": "jax_spmd_replicated_nonexpert_state_plus_expert_axis_shards",
+      "grad_sync_bucket_mb": 0,
+      "tpu_premapped_buffer_size_env": "METIS15_JAX_TPU_PREMAPPED_BUFFER_SIZE",
+      "safe_promotion_gate": "scripts/summarize_metis15_jax_tpu_sweep.py plus fixed-batch JAX quality canary must pass before promoting a tok/s setting"
+    },
+    "fp8": {
+      "enabled": false,
+      "format": "HYBRID",
+      "margin": 0,
+      "amax_history_len": 16,
+      "amax_compute_algo": "max"
+    },
+    "mxfp8": {
+      "enabled": false
+    },
+    "nvfp4": {
+      "enabled": false,
+      "master_weights": "bf16",
+      "recipe": "NVFP4BlockScaling",
+      "disable_rht": true,
+      "disable_2d_quantization": true,
+      "disable_stochastic_rounding": true,
+      "higher_precision_modules": [
+        "embeddings",
+        "lm_head",
+        "router",
+        "latent_down",
+        "latent_up",
+        "attention_qkv_o",
+        "shared_expert"
+      ],
+      "fp8_block_modules": [
+        "routed_expert_fc1",
+        "routed_expert_fc2"
+      ]
+    },
+    "launcher": {
+      "jax_processes_per_host": 1,
+      "jax_devices_per_host": 8,
+      "omp_num_threads": 8,
+      "jax_platforms": "tpu,cpu"
+    }
+  },
+  "pretrain": {
+    "training_mode": "static_dense_pretrain",
+    "target_train_tokens": 50000000000,
+    "gates": [
+      {
+        "label": "gate_10b",
+        "tokens": 10000000000
+      },
+      {
+        "label": "gate_25b",
+        "tokens": 25000000000
+      },
+      {
+        "label": "gate_40b",
+        "tokens": 40000000000
+      },
+      {
+        "label": "gate_50b",
+        "tokens": 50000000000
+      }
+    ],
+    "val_ratio": 0.01,
+    "base_lr": 0.00015,
+    "warmup_ratio": 0.03,
+    "weight_decay": 0.1,
+    "optimizer_beta1": 0.9,
+    "optimizer_beta2": 0.95,
+    "local_batch_size": 8,
+    "grad_accum_steps": 8,
+    "log_interval": 20,
+    "eval_interval": 1000,
+    "checkpoint_interval": 2500
+  },
+  "continued_pretrain": {
+    "training_mode": "dynamic_token_mor",
+    "mor": {
+      "enabled": true,
+      "train_router": true,
+      "runtime_mode": "dynamic_token",
+      "compute_mode": "static_packed_hard",
+      "max_depth": 3,
+      "router_hidden_dim": 384,
+      "router_temperature": 1.0,
+      "packed_depth_capacity_factor": 0.75,
+      "packed_depth_capacity_alignment": 128,
+      "router_aux_loss_coef_start": 0.01,
+      "router_aux_loss_coef": 0.02,
+      "router_aux_loss_coef_end": 0.02,
+      "router_entropy_coef": 0.002,
+      "router_z_loss_coef": 0.0001,
+      "target_avg_depth_start": 1.05,
+      "target_avg_depth": 1.65,
+      "target_avg_depth_end": 1.65,
+      "target_avg_depth_warmup_tokens": 1000000000,
+      "disable_depth_stack": false,
+      "disable_token_packing": false,
+      "disable_token_scatter": false,
+      "moe_balance_scale_by_token_fraction": true
+    },
+    "target_train_tokens": 10000000000,
+    "gates": [
+      {
+        "label": "cpt_gate_2b",
+        "tokens": 2000000000
+      },
+      {
+        "label": "cpt_gate_5b",
+        "tokens": 5000000000
+      },
+      {
+        "label": "cpt_gate_8b",
+        "tokens": 8000000000
+      },
+      {
+        "label": "cpt_gate_10b",
+        "tokens": 10000000000
+      }
+    ],
+    "val_ratio": 0.01,
+    "base_lr": 7e-05,
+    "warmup_ratio": 0.03,
+    "weight_decay": 0.1,
+    "optimizer_beta1": 0.9,
+    "optimizer_beta2": 0.95,
+    "local_batch_size": 6,
+    "grad_accum_steps": 6,
+    "checkpoint_interval": 2500
+  },
+  "chat_sft": {
+    "max_length": 1024,
+    "target_examples": 1200000,
+    "epochs": 1.2,
+    "base_lr": 4e-05,
+    "warmup_ratio": 0.03,
+    "local_batch_size": 2,
+    "grad_accum_steps": 4,
+    "checkpoint_interval": 250
+  },
+  "reasoning_sft": {
+    "max_length": 1024,
+    "target_examples": 600000,
+    "epochs": 1.0,
+    "base_lr": 3e-05,
+    "warmup_ratio": 0.04,
+    "local_batch_size": 2,
+    "grad_accum_steps": 4,
+    "checkpoint_interval": 250,
+    "recommended_max_think_chars": 512,
+    "recommended_max_answer_chars": 384
+  },
+  "preference_optimization": {
+    "target_pairs": 300000,
+    "reward_model_examples": 400000,
+    "bootstrap_target_pairs": 246000,
+    "bootstrap_reward_model_examples": 328000,
+    "on_policy_in_target": true,
+    "on_policy_custom_negative_share": 0.18,
+    "on_policy_chat_negative_share": 0.1,
+    "on_policy_think_negative_share": 0.08,
+    "epochs": 1.0,
+    "base_lr": 1.2e-05,
+    "warmup_ratio": 0.05,
+    "local_batch_size": 1,
+    "grad_accum_steps": 8,
+    "checkpoint_interval": 250,
+    "method": "RM_then_DPO",
+    "beta": 0.1
+  },
+  "release": {
+    "namespace": "Lernex",
+    "repos": {
+      "base": "Lernex/Metis-1.5-base",
+      "think": "Lernex/Metis-1.5-think"
+    }
+  },
+  "runtime_notes": {
+    "architecture": {
+      "routed_experts": 32,
+      "top_k": 4,
+      "shared_experts": 1,
+      "moe_heads": 1,
+      "latent_dim": 512,
+      "expert_hidden": 1024,
+      "activation": "squared_relu",
+      "routing": "Each token is projected once from 1536d into one 512d latent vector. The router selects top-4 experts once per token, routed experts operate in the 512d latent space, and the combined latent output is projected back to the full token channel. The shared expert stays full-dim and BF16.",
+      "expert_parallel": "The Google TPU v6e-8 JAX/libTPU lane shards the 32 routed experts across the 8-chip expert mesh, so each chip owns 4 routed experts per layer. Routed token assignments are statically sort-packed into fixed expert-capacity arrays; router, attention, latent projections, shared experts, embeddings, and LM head stay replicated in the first single-host expert-parallel proof.",
+      "nemotron_megatron_alignment": "Native Metis keeps the bring-up dispatcher as static JAX sort-pack plus shard_map expert execution. True TPU throughput promotion requires the v6e compile logs to prove the layout avoids ragged dispatch, excessive resharding, and HBM pressure before any tok/s setting is promoted.",
+      "balance_strategy": "Aux-loss-free bias routing with a 1e-3 non-gradient bias update for top-k selection plus a tiny 1e-4 standard balance aux loss for telemetry and gentle pressure.",
+      "mor_strategy": "Base pretraining stays static dense. Continued pretraining switches to hard static-packed token MoR with a 1..3 recursion budget, a 1.05->1.65 average-depth warmup over the first 1B CPT tokens, fixed-capacity depth packing/scatter for recursive passes, and MoE balance-bias updates scaled by recursive active-token fraction.",
+      "active_budget": "The H100 launch gate is the compute audit, not the old active-param estimate: rough_total_param_apps_per_token must stay at or below 450M before paid training."
+    }
+  }
+}

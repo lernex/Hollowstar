@@ -1,0 +1,9 @@
+datasets>=2.19,<4
+huggingface_hub>=0.29
+tqdm>=4.66
+numpy>=1.26
+safetensors>=0.4
+tokenizers>=0.15
+torch>=2.2
+transformers>=4.51,<5
+lm-eval>=0.4.8

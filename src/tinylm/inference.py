@@ -25,7 +25,7 @@ def load_tokenizer(tokenizer_path: str | Path) -> Tokenizer:
 
 
 def load_model(checkpoint_path: str | Path, device: torch.device) -> GPTLanguageModel:
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     config = GPTConfig(**checkpoint["model_config"])
     model = GPTLanguageModel(config)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -73,8 +73,6 @@ def build_chat_prompt(
     system_prompt: str | None = None,
 ) -> str:
     parts: list[str] = []
-    if system_prompt and system_prompt.strip():
-        parts.append(f"System: {system_prompt.strip()}")
     for turn in turns:
         role = turn["role"].strip().capitalize()
         content = turn["content"].strip()
@@ -97,24 +95,19 @@ def build_bounded_chat_prompt(
         if content:
             turn_lines.append(f"{role}: {content}")
 
-    system_line = f"System: {system_prompt.strip()}" if system_prompt and system_prompt.strip() else None
     budget = max(24, block_size - reply_budget)
     selected: list[str] = []
 
     for line in reversed(turn_lines):
         trial = [line] + selected
-        parts = [system_line] if system_line else []
-        parts.extend(trial)
-        candidate = "\n".join(parts + ["Assistant: "])
+        candidate = "\n".join(trial + ["Assistant: "])
         token_count = len(tokenizer.encode(candidate, add_special_tokens=False).ids) + 1
         if token_count <= budget or not selected:
             selected = trial
         else:
             break
 
-    parts = [system_line] if system_line else []
-    parts.extend(selected)
-    return "\n".join(parts + ["Assistant: "])
+    return "\n".join(selected + ["Assistant: "])
 
 
 def extract_assistant_reply(full_text: str) -> str:

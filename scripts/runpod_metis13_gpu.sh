@@ -10,6 +10,7 @@ Environment variables:
   METIS13_PYTHON_BIN                Explicit Python binary to use for training.
   METIS13_SKIP_ENV_SETUP            Set to 1 to skip pip/framework setup and use a prebuilt image env.
   METIS13_FORCE_UNLOCK              Set to 1 to clear a stale GPU training lock on the shared volume.
+  METIS13_NPROC                     torchrun processes / GPUs to use. Default: 1
   METIS13_UPLOAD_RELEASES           If set to 1 and HF_TOKEN exists, upload base/chat/think releases.
   METIS13_BASE_LOCAL_BATCH_SIZE     Override base local batch size.
   METIS13_BASE_GRAD_ACCUM_STEPS     Override base grad accumulation.
@@ -17,6 +18,11 @@ Environment variables:
   METIS13_CHAT_GRAD_ACCUM_STEPS     Override chat grad accumulation.
   METIS13_THINK_LOCAL_BATCH_SIZE    Override think local batch size.
   METIS13_THINK_GRAD_ACCUM_STEPS    Override think grad accumulation.
+  METIS13_COMPILE                   Set to 1 to enable torch.compile. Default: 0
+  METIS13_COMPILE_MODE              torch.compile mode. Default: max-autotune
+  METIS13_TF32                      Set to 0 to disable TF32 speedups. Default: 1
+  METIS13_MATMUL_PRECISION          Float32 matmul precision. Default: high
+  METIS13_SFT_NUM_WORKERS           DataLoader workers for SFT tokenized JSONL. Default: 4
 EOF
   exit 0
 fi
@@ -48,6 +54,7 @@ RELEASES_ROOT="$SHARED_ROOT/releases/metis13"
 STATE_ROOT="$SHARED_ROOT/state"
 LOCK_DIR="$STATE_ROOT/metis13_gpu_train.lock"
 HOST_NAME="$(hostname -s 2>/dev/null || hostname || echo unknown)"
+NPROC="${METIS13_NPROC:-1}"
 
 timestamp() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -55,6 +62,34 @@ timestamp() {
 
 log() {
   printf '[%s] %s\n' "$(timestamp)" "$*"
+}
+
+require_nonempty_file() {
+  local path="$1"
+  local label="$2"
+  if [[ ! -s "$path" ]]; then
+    echo "Missing or empty $label at $path" >&2
+    exit 1
+  fi
+  log "Verified $label at $path."
+}
+
+require_release_dir() {
+  local dir="$1"
+  local label="$2"
+  local required=(
+    "model.safetensors"
+    "config.json"
+    "generation_config.json"
+    "tokenizer.json"
+    "tokenizer_config.json"
+    "special_tokens_map.json"
+    "README.md"
+  )
+  local filename
+  for filename in "${required[@]}"; do
+    require_nonempty_file "$dir/$filename" "$label artifact $filename"
+  done
 }
 
 acquire_lock() {
@@ -161,8 +196,14 @@ print(value)
 PY
 }
 
-BASE_STEPS="$(json_get "$PLAN_PATH" pretrain steps)"
-BASE_WARMUP="$(json_get "$PLAN_PATH" pretrain warmup_steps)"
+run_train() {
+  if [[ "$NPROC" -gt 1 ]]; then
+    "$PY" -m torch.distributed.run --standalone --nproc_per_node="$NPROC" "$@"
+  else
+    "$PY" "$@"
+  fi
+}
+
 CHAT_WARMUP="$(json_get "$PLAN_PATH" chat_sft warmup_steps)"
 THINK_WARMUP="$(json_get "$PLAN_PATH" reasoning_sft warmup_steps)"
 
@@ -174,17 +215,48 @@ CHAT_EPOCHS="$(json_get configs/metis13_manifest.json chat_sft epochs)"
 CHAT_MAX_LENGTH="$(json_get configs/metis13_manifest.json chat_sft max_length)"
 THINK_EPOCHS="$(json_get configs/metis13_manifest.json reasoning_sft epochs)"
 THINK_MAX_LENGTH="$(json_get configs/metis13_manifest.json reasoning_sft max_length)"
+BASE_TARGET_TOKENS="$(json_get configs/metis13_manifest.json pretrain target_train_tokens)"
+BASE_BLOCK_SIZE="$(json_get configs/metis13_manifest.json model block_size)"
+BASE_WARMUP_RATIO="$(json_get configs/metis13_manifest.json pretrain warmup_ratio)"
 
-BASE_LOCAL_BATCH="${METIS13_BASE_LOCAL_BATCH_SIZE:-$(json_get configs/metis13_manifest.json pretrain local_batch_size)}"
-BASE_GRAD_ACCUM="${METIS13_BASE_GRAD_ACCUM_STEPS:-$(json_get configs/metis13_manifest.json pretrain grad_accum_steps)}"
-CHAT_LOCAL_BATCH="${METIS13_CHAT_LOCAL_BATCH_SIZE:-$(json_get configs/metis13_manifest.json chat_sft local_batch_size)}"
-CHAT_GRAD_ACCUM="${METIS13_CHAT_GRAD_ACCUM_STEPS:-$(json_get configs/metis13_manifest.json chat_sft grad_accum_steps)}"
-THINK_LOCAL_BATCH="${METIS13_THINK_LOCAL_BATCH_SIZE:-$(json_get configs/metis13_manifest.json reasoning_sft local_batch_size)}"
-THINK_GRAD_ACCUM="${METIS13_THINK_GRAD_ACCUM_STEPS:-$(json_get configs/metis13_manifest.json reasoning_sft grad_accum_steps)}"
+BASE_LOCAL_BATCH="${METIS13_BASE_LOCAL_BATCH_SIZE:-16}"
+BASE_GRAD_ACCUM="${METIS13_BASE_GRAD_ACCUM_STEPS:-4}"
+CHAT_LOCAL_BATCH="${METIS13_CHAT_LOCAL_BATCH_SIZE:-16}"
+CHAT_GRAD_ACCUM="${METIS13_CHAT_GRAD_ACCUM_STEPS:-2}"
+THINK_LOCAL_BATCH="${METIS13_THINK_LOCAL_BATCH_SIZE:-8}"
+THINK_GRAD_ACCUM="${METIS13_THINK_GRAD_ACCUM_STEPS:-3}"
+COMPILE_FLAG="${METIS13_COMPILE:-0}"
+COMPILE_MODE="${METIS13_COMPILE_MODE:-max-autotune}"
+TF32_FLAG="${METIS13_TF32:-1}"
+MATMUL_PRECISION="${METIS13_MATMUL_PRECISION:-high}"
+SFT_NUM_WORKERS="${METIS13_SFT_NUM_WORKERS:-4}"
 
 BASE_CHECKPOINT_INTERVAL="${METIS13_BASE_CHECKPOINT_INTERVAL:-1000}"
 CHAT_CHECKPOINT_INTERVAL="${METIS13_CHAT_CHECKPOINT_INTERVAL:-250}"
 THINK_CHECKPOINT_INTERVAL="${METIS13_THINK_CHECKPOINT_INTERVAL:-125}"
+
+BASE_STEPS="$("$PY" - <<'PY' "$BASE_TARGET_TOKENS" "$BASE_BLOCK_SIZE" "$BASE_LOCAL_BATCH" "$BASE_GRAD_ACCUM" "$NPROC"
+import math
+import sys
+
+target_tokens = int(sys.argv[1])
+block_size = int(sys.argv[2])
+local_batch = int(sys.argv[3])
+grad_accum = int(sys.argv[4])
+world_size = int(sys.argv[5])
+tokens_per_step = local_batch * grad_accum * block_size * world_size
+print(max(1, math.ceil(target_tokens / tokens_per_step)))
+PY
+)"
+BASE_WARMUP="$("$PY" - <<'PY' "$BASE_STEPS" "$BASE_WARMUP_RATIO"
+import math
+import sys
+
+max_steps = int(sys.argv[1])
+warmup_ratio = float(sys.argv[2])
+print(max(1, math.ceil(max_steps * warmup_ratio)))
+PY
+)"
 
 BASE_RUN="$RUNS_ROOT/base"
 CHAT_RUN="$RUNS_ROOT/chat"
@@ -195,7 +267,7 @@ THINK_RELEASE="$RELEASES_ROOT/think"
 EVAL_REPORT="$RELEASES_ROOT/eval_comparison.json"
 
 log "Training Metis-1.3 base model."
-"$PY" scripts/train_mamba_lm.py \
+run_train scripts/train_mamba_lm.py \
   --resume \
   --manifest configs/metis13_manifest.json \
   --data-dir "$PRETRAIN_DIR" \
@@ -209,7 +281,12 @@ log "Training Metis-1.3 base model."
   --eval-iters 20 \
   --checkpoint-interval "$BASE_CHECKPOINT_INTERVAL" \
   --dtype bf16 \
-  --fused-adamw
+  --fused-adamw \
+  --matmul-precision "$MATMUL_PRECISION" \
+  $([[ "$TF32_FLAG" == "1" ]] && printf '%s' "--tf32") \
+  $([[ "$COMPILE_FLAG" == "1" ]] && printf '%s %s' "--compile --compile-mode" "$COMPILE_MODE")
+require_nonempty_file "$BASE_RUN/latest.pt" "base latest checkpoint"
+require_nonempty_file "$BASE_RUN/best.pt" "base best checkpoint"
 
 log "Exporting base release."
 "$PY" scripts/export_mamba_checkpoint.py \
@@ -219,9 +296,10 @@ log "Exporting base release."
   --out-dir "$BASE_RELEASE" \
   --stage-name base \
   --repo-id "Lernex/Metis-1.3-base"
+require_release_dir "$BASE_RELEASE" "base release"
 
 log "Training Metis-1.3 chat SFT."
-"$PY" scripts/train_mamba_sft.py \
+run_train scripts/train_mamba_sft.py \
   --resume \
   --base-checkpoint "$BASE_RUN/best.pt" \
   --train-jsonl "$CHAT_DIR/train.jsonl" \
@@ -237,7 +315,13 @@ log "Training Metis-1.3 chat SFT."
   --eval-interval 150 \
   --checkpoint-interval "$CHAT_CHECKPOINT_INTERVAL" \
   --dtype bf16 \
-  --fused-adamw
+  --fused-adamw \
+  --num-workers "$SFT_NUM_WORKERS" \
+  --matmul-precision "$MATMUL_PRECISION" \
+  $([[ "$TF32_FLAG" == "1" ]] && printf '%s' "--tf32") \
+  $([[ "$COMPILE_FLAG" == "1" ]] && printf '%s %s' "--compile --compile-mode" "$COMPILE_MODE")
+require_nonempty_file "$CHAT_RUN/latest.pt" "chat latest checkpoint"
+require_nonempty_file "$CHAT_RUN/best.pt" "chat best checkpoint"
 
 log "Exporting chat release."
 "$PY" scripts/export_mamba_checkpoint.py \
@@ -247,9 +331,10 @@ log "Exporting chat release."
   --out-dir "$CHAT_RELEASE" \
   --stage-name chat \
   --repo-id "Lernex/Metis-1.3-chat"
+require_release_dir "$CHAT_RELEASE" "chat release"
 
 log "Training Metis-1.3 reasoning SFT."
-"$PY" scripts/train_mamba_sft.py \
+run_train scripts/train_mamba_sft.py \
   --resume \
   --base-checkpoint "$CHAT_RUN/best.pt" \
   --train-jsonl "$REASONING_DIR/train.jsonl" \
@@ -265,7 +350,13 @@ log "Training Metis-1.3 reasoning SFT."
   --eval-interval 100 \
   --checkpoint-interval "$THINK_CHECKPOINT_INTERVAL" \
   --dtype bf16 \
-  --fused-adamw
+  --fused-adamw \
+  --num-workers "$SFT_NUM_WORKERS" \
+  --matmul-precision "$MATMUL_PRECISION" \
+  $([[ "$TF32_FLAG" == "1" ]] && printf '%s' "--tf32") \
+  $([[ "$COMPILE_FLAG" == "1" ]] && printf '%s %s' "--compile --compile-mode" "$COMPILE_MODE")
+require_nonempty_file "$THINK_RUN/latest.pt" "think latest checkpoint"
+require_nonempty_file "$THINK_RUN/best.pt" "think best checkpoint"
 
 log "Exporting think release."
 "$PY" scripts/export_mamba_checkpoint.py \
@@ -275,6 +366,7 @@ log "Exporting think release."
   --out-dir "$THINK_RELEASE" \
   --stage-name think \
   --repo-id "Lernex/Metis-1.3-think"
+require_release_dir "$THINK_RELEASE" "think release"
 
 log "Running evaluation suite."
 "$PY" scripts/eval_model_suite.py \
@@ -283,6 +375,7 @@ log "Running evaluation suite."
   --model chat="$CHAT_RELEASE" \
   --model think="$THINK_RELEASE" \
   --output-path "$EVAL_REPORT"
+require_nonempty_file "$EVAL_REPORT" "evaluation report"
 
 if [[ "${METIS13_UPLOAD_RELEASES:-0}" == "1" && -n "${HF_TOKEN:-}" ]]; then
   log "Uploading release folders to Hugging Face."

@@ -10,6 +10,7 @@ from tokenizers import Tokenizer, decoders, models, normalizers, pre_tokenizers,
 from tokenizers.trainers import BpeTrainer
 
 from data_mixture import DatasetMixture
+from jsonl_artifacts import iter_jsonl_texts
 
 
 def log_progress(message: str) -> None:
@@ -64,6 +65,8 @@ def main() -> None:
     parser.add_argument("--streaming", action="store_true")
     parser.add_argument("--text-column", default="text")
     parser.add_argument("--jsonl-path", default=None)
+    parser.add_argument("--jsonl-dir", default=None)
+    parser.add_argument("--jsonl-glob", default="*.jsonl*")
     parser.add_argument("--jsonl-text-field", default="text")
     parser.add_argument("--output-dir", default="artifacts/tokenizer")
     parser.add_argument("--progress-interval", type=int, default=5000)
@@ -87,12 +90,21 @@ def main() -> None:
 
     source_counts: dict[str, int] = {}
 
-    if args.jsonl_path:
+    if args.jsonl_path or args.jsonl_dir:
         mixture = None
 
         def training_iterator():
             yielded = 0
-            for text in build_jsonl_iterator(args.jsonl_path, args.jsonl_text_field):
+            if args.jsonl_path:
+                iterator = build_jsonl_iterator(args.jsonl_path, args.jsonl_text_field)
+            else:
+                iterator = iter_jsonl_texts(
+                    jsonl_dir=args.jsonl_dir,
+                    glob_pattern=args.jsonl_glob,
+                    text_field=args.jsonl_text_field,
+                    max_rows=args.max_samples,
+                )
+            for text in iterator:
                 yielded += 1
                 if yielded == 1 or yielded % args.progress_interval == 0:
                     log_progress(
@@ -156,9 +168,11 @@ def main() -> None:
     tokenizer.save(str(tokenizer_path))
 
     meta = {
-        "source_mode": "jsonl" if args.jsonl_path else ("mixture" if mixture is not None else "single_dataset"),
+        "source_mode": "jsonl" if (args.jsonl_path or args.jsonl_dir) else ("mixture" if mixture is not None else "single_dataset"),
         "mixture_config": args.mixture_config,
         "jsonl_path": args.jsonl_path,
+        "jsonl_dir": args.jsonl_dir,
+        "jsonl_glob": args.jsonl_glob,
         "vocab_size": args.vocab_size,
         "min_frequency": args.min_frequency,
         "max_samples": args.max_samples,
@@ -167,7 +181,7 @@ def main() -> None:
         "special_tokens": {token: tokenizer.token_to_id(token) for token in special_tokens},
         "tokenizer_path": str(tokenizer_path),
     }
-    if args.jsonl_path:
+    if args.jsonl_path or args.jsonl_dir:
         meta["jsonl_text_field"] = args.jsonl_text_field
     elif mixture is not None:
         meta["mixture"] = mixture.summary()

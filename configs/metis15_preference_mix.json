@@ -1,0 +1,315 @@
+{
+  "seed": 42,
+  "stage": "preference_optimization",
+  "profile": "metis15_400k_rm_300k_dpo_bucketed_v1",
+  "target_reward_pairs": 400000,
+  "target_dpo_pairs": 300000,
+  "bootstrap_target_pairs": 328000,
+  "on_policy_target_pairs": {
+    "reward_model": 72000,
+    "dpo": 54000,
+    "chat_share": 0.10,
+    "think_share": 0.08
+  },
+  "notes": [
+    "The bootstrap preference mix intentionally excludes on-policy generated negatives; the AWS launcher mines those after chat and think checkpoints exist.",
+    "Final target is 400K reward-model pairs and 300K DPO pairs. Bootstrap pairs provide 82%; on-policy Metis-generated negatives provide 18%.",
+    "Nectar is capped at 10% final share and can never refill other buckets."
+  ],
+  "global_filters": {
+    "language": "en",
+    "english_confidence_min": 0.9,
+    "drop_code": true,
+    "drop_multilingual": true,
+    "max_chosen_rejected_length_ratio": 2.5,
+    "benchmark_decontam": [
+      "mmlu",
+      "mmlu_pro",
+      "gsm8k",
+      "math",
+      "aime",
+      "amc",
+      "olympiadbench",
+      "gpqa",
+      "ifeval",
+      "mt_bench",
+      "rewardbench",
+      "arena_hard"
+    ]
+  },
+  "caps": {
+    "same_bucket_fallback_only": true,
+    "max_single_source_share": 0.25,
+    "nectar_max_share": 0.10,
+    "helpsteer3_share": 0.12,
+    "on_policy_share": 0.18,
+    "code_examples_max_share": 0.05,
+    "single_teacher_family_max_share": 0.35
+  },
+  "buckets": [
+    {
+      "name": "helpsteer3_filtered_english_non_code",
+      "target_pairs": 48000,
+      "final_reward_pairs": 48000,
+      "final_dpo_pairs": 36000,
+      "final_share": 0.12,
+      "purpose": "Human annotated HelpSteer3 preference pairs, filtered to English non-code general/STEM.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "pref_helpsteer3_english_non_code",
+          "dataset_name": "nvidia/HelpSteer3",
+          "dataset_config": "preference",
+          "split": "train",
+          "streaming": true,
+          "target_pairs": 48000,
+          "format": "helpsteer3_preference",
+          "use_for": ["reward_model", "dpo"],
+          "filters": {
+            "allowed_languages": ["English", "english", "en"],
+            "allowed_domains": ["General", "STEM"],
+            "excluded_domains": ["Code", "Multilingual", "code", "python"],
+            "drop_ties": true,
+            "drop_code": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "skywork_reward_preference",
+      "target_pairs": 72000,
+      "final_reward_pairs": 72000,
+      "final_dpo_pairs": 54000,
+      "final_share": 0.18,
+      "purpose": "Curated Skywork preference pairs with v0.2 contamination cleanup.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "pref_skywork_reward_v02",
+          "dataset_name": "Skywork/Skywork-Reward-Preference-80K-v0.2",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_pairs": 72000,
+          "format": "skywork_preference",
+          "use_for": ["reward_model", "dpo"],
+          "filters": {
+            "drop_code": true,
+            "drop_multilingual": true,
+            "pair_margin_required": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "ultrafeedback_cleaned",
+      "target_pairs": 48000,
+      "final_reward_pairs": 48000,
+      "final_dpo_pairs": 36000,
+      "final_share": 0.12,
+      "purpose": "Cleaned UltraFeedback binarized pairs, capped and length-bias filtered.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "pref_ultrafeedback_cleaned_argilla",
+          "dataset_name": "argilla/ultrafeedback-binarized-preferences-cleaned",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_pairs": 48000,
+          "format": "cleaned_preference",
+          "use_for": ["reward_model", "dpo"],
+          "filters": {
+            "allowed_languages": ["English", "en"],
+            "drop_code": true,
+            "prefer_moderate_verbosity": true,
+            "min_rating_margin": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "tulu_olmo_preference_mixes",
+      "target_pairs": 60000,
+      "final_reward_pairs": 60000,
+      "final_dpo_pairs": 45000,
+      "final_share": 0.15,
+      "purpose": "Open post-training preference ecosystem, capped below one-quarter of final data.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "pref_smoltalk_tulu3_no_think",
+          "dataset_name": "HuggingFaceTB/smoltalk2",
+          "dataset_config": "Preference",
+          "split": "llama_3.1_tulu_3_8b_preference_mixture_no_think",
+          "streaming": true,
+          "target_pairs": 25000,
+          "format": "prompt_chosen_rejected",
+          "use_for": ["reward_model", "dpo"],
+          "filters": {
+            "drop_code": true,
+            "drop_multilingual": true
+          }
+        },
+        {
+          "name": "pref_smoltalk_tulu3_think",
+          "dataset_name": "HuggingFaceTB/smoltalk2",
+          "dataset_config": "Preference",
+          "split": "tulu_3_8b_pref_mix_Qwen3_32B_Qwen3_0.6B_think",
+          "streaming": true,
+          "target_pairs": 25000,
+          "format": "prompt_chosen_rejected",
+          "use_for": ["reward_model", "dpo"],
+          "filters": {
+            "drop_code": true,
+            "drop_multilingual": true,
+            "strip_or_limit_think": true
+          }
+        },
+        {
+          "name": "pref_olmo2_7b_preference_mix",
+          "dataset_name": "allenai/olmo-2-1124-7b-preference-mix",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_pairs": 10000,
+          "format": "prompt_chosen_rejected",
+          "use_for": ["reward_model", "dpo"],
+          "filters": {
+            "drop_code": true,
+            "drop_multilingual": true,
+            "min_rating_margin": 0.25
+          }
+        }
+      ]
+    },
+    {
+      "name": "nectar_filtered_capped",
+      "target_pairs": 40000,
+      "final_reward_pairs": 40000,
+      "final_dpo_pairs": 30000,
+      "final_share": 0.10,
+      "purpose": "Nectar remains only as a capped supplement.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "pref_nectar_filtered_capped",
+          "dataset_name": "berkeley-nest/Nectar",
+          "split": "train",
+          "streaming": true,
+          "target_pairs": 40000,
+          "max_pairs": 40000,
+          "format": "nectar_ranked",
+          "use_for": ["reward_model", "dpo"],
+          "filters": {
+            "allowed_languages": ["English", "en"],
+            "drop_code": true,
+            "max_turns": 8,
+            "pairing": "top_vs_bottom_or_top_vs_sampled_negative",
+            "high_confidence_only": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "math_science_correctness_preferences",
+      "target_pairs": 40000,
+      "final_reward_pairs": 40000,
+      "final_dpo_pairs": 30000,
+      "final_share": 0.10,
+      "purpose": "Correctness-driven math/science preferences where correctness beats style.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "pref_openr1_math_verify",
+          "dataset_name": "open-r1/OpenR1-Math-220k",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_pairs": 30000,
+          "format": "openr1_math_verify_preference",
+          "use_for": ["reward_model", "dpo"],
+          "filters": {
+            "chosen_requires_correctness": true,
+            "rejected_requires_incorrectness": true,
+            "drop_code": true
+          }
+        },
+        {
+          "name": "pref_science_helpfulness_tulu",
+          "dataset_name": "HuggingFaceTB/smoltalk2",
+          "dataset_config": "Preference",
+          "split": "llama_3.1_tulu_3_8b_preference_mixture_no_think",
+          "streaming": true,
+          "target_pairs": 10000,
+          "format": "prompt_chosen_rejected",
+          "use_for": ["reward_model", "dpo"],
+          "filters": {
+            "prefer_science_or_math": true,
+            "drop_code": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "safety_helpfulness_pairs",
+      "target_pairs": 20000,
+      "final_reward_pairs": 20000,
+      "final_dpo_pairs": 15000,
+      "final_share": 0.05,
+      "purpose": "Small safety/helpfulness preference slice.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "pref_helpsteer3_safety_helpfulness",
+          "dataset_name": "nvidia/HelpSteer3",
+          "dataset_config": "preference",
+          "split": "train",
+          "streaming": true,
+          "target_pairs": 20000,
+          "format": "helpsteer3_preference",
+          "use_for": ["reward_model", "dpo"],
+          "filters": {
+            "allowed_languages": ["English", "english", "en"],
+            "allowed_domains": ["General"],
+            "excluded_domains": ["Code", "Multilingual", "code", "python"],
+            "drop_ties": true,
+            "drop_code": true,
+            "prefer_safety_helpfulness": true
+          }
+        }
+      ]
+    }
+  ],
+  "on_policy_generation": {
+    "enabled": true,
+    "included_in_target_pairs": true,
+    "reward_model_pairs": 72000,
+    "dpo_pairs": 54000,
+    "reward_chat_pairs": 40000,
+    "reward_think_pairs": 32000,
+    "dpo_chat_pairs": 30000,
+    "dpo_think_pairs": 24000,
+    "seed_sources": ["chat_sft", "reasoning_sft"],
+    "negative_policy": [
+      "Generate rejected answers from the current chat checkpoint that are plausible but too vague, verbose, or under-specified.",
+      "Generate rejected answers from the current think checkpoint that reason visibly but land on the wrong final answer or malformed format.",
+      "Keep chosen answers from cleaned bootstrap pairs or verified math/science solutions.",
+      "Drop generated pairs where both answers are bad, non-English, code-heavy, unsafe, or benchmark-contaminated."
+    ]
+  }
+}

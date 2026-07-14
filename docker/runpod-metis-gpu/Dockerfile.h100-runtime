@@ -1,0 +1,29 @@
+FROM lernex/metis-gpu:metis15-h100-single-latent-v1
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    METIS_IMAGE_ROOT=/opt/metis \
+    METIS13_SKIP_ENV_SETUP=1 \
+    METIS15_SKIP_ENV_SETUP=1 \
+    TORCH_CUDA_ARCH_LIST=9.0a \
+    NVTE_CUDA_ARCHS=90a
+
+COPY . "$METIS_IMAGE_ROOT"
+
+WORKDIR $METIS_IMAGE_ROOT
+RUN pip install -e . && \
+    python - <<'PY'
+import torch
+import transformer_engine
+
+assert hasattr(torch, "_grouped_mm"), "PyTorch grouped GEMM op is required"
+print("torch", torch.__version__)
+print("cuda", torch.version.cuda)
+print("grouped_mm", torch._C._jit_get_schemas_for_operator("aten::_grouped_mm")[0])
+print("transformer_engine", getattr(transformer_engine, "__version__", "unknown"))
+PY
+
+RUN python scripts/train_mamba_lm.py --help >/dev/null
+
+WORKDIR /opt/metis

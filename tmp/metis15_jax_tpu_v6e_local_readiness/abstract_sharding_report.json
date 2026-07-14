@@ -1,0 +1,22 @@
+{
+  "abstract_full_shape": {
+    "continued_pretrain_capacity": 3072,
+    "embed_spec": "P()",
+    "experts_per_chip": 4,
+    "layer0_expert_w1_spec": "P('expert', None, None)",
+    "layer0_router_bias_spec": "P('expert',)",
+    "layer0_router_spec": "P(None, 'expert')",
+    "mor_router_w1_spec": "P()",
+    "param_count": 898051168,
+    "pretrain_capacity": 4096
+  },
+  "device_count": 1,
+  "devices": [
+    "cpu:0"
+  ],
+  "jax_version": "0.10.1",
+  "manifest": "/Users/giulianno/Documents/10M model/configs/metis15_manifest.json",
+  "runtime_tiny": {
+    "available": false
+  }
+}

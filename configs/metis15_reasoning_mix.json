@@ -1,0 +1,383 @@
+{
+  "seed": 42,
+  "max_history_turns": 2,
+  "stage": "reasoning_sft",
+  "profile": "metis15_600k_reasoning_sft_bucketed_v1",
+  "target_examples": 600000,
+  "notes": [
+    "Reasoning SFT target is 600K filtered examples, centered on verified math, science, proof, symbolic, and compact multi-step reasoning.",
+    "TemplateGSM is capped at 25K examples and is no longer a pillar.",
+    "Code-heavy OpenThoughts/OpenMath rows are filtered or downweighted because Metis-1.5 is English-only and non-code focused."
+  ],
+  "global_filters": {
+    "language": "en",
+    "english_confidence_min": 0.9,
+    "drop_large_code_blocks": true,
+    "max_code_fences": 0,
+    "benchmark_decontam": [
+      "gsm8k",
+      "math",
+      "aime",
+      "amc",
+      "olympiadbench",
+      "minerva_math",
+      "svamp",
+      "asdiv",
+      "gpqa",
+      "mmlu",
+      "mmlu_pro",
+      "ifeval",
+      "mt_bench"
+    ]
+  },
+  "caps": {
+    "same_bucket_fallback_only": true,
+    "max_single_source_share": 0.25,
+    "templategsm_max_examples": 25000,
+    "code_examples_max_share": 0.02,
+    "single_teacher_family_max_share": 0.35
+  },
+  "buckets": [
+    {
+      "name": "math_reasoning_medium_hard",
+      "target_examples": 170000,
+      "share": 0.2833333333,
+      "purpose": "Verifier-backed medium/hard math reasoning.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "reason_openr1_math_verified",
+          "dataset_name": "open-r1/OpenR1-Math-220k",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 100000,
+          "format": "messages",
+          "keep_think": true,
+          "use_custom_instructions": false,
+          "filters": {
+            "require_math_verify": true,
+            "difficulty": "medium_hard",
+            "drop_code": true
+          }
+        },
+        {
+          "name": "reason_numinamath_cot_medium",
+          "dataset_name": "AI-MO/NuminaMath-CoT",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 50000,
+          "format": "messages",
+          "keep_think": true,
+          "use_custom_instructions": false,
+          "filters": {
+            "competition_math": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "reason_numinamath15_medium_verified",
+          "dataset_name": "AI-MO/NuminaMath-1.5",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 20000,
+          "format": "prompt_response",
+          "prompt_column": "problem",
+          "response_column": "solution",
+          "keep_think": false,
+          "filters": {
+            "problem_is_valid": "Yes",
+            "solution_is_valid": "Yes",
+            "competition_math": true,
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "hard_math_olympiad_competition",
+      "target_examples": 120000,
+      "share": 0.2,
+      "purpose": "Harder olympiad and competition-style math.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "reason_openthoughts3_math",
+          "dataset_name": "open-thoughts/OpenThoughts3-1.2M",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 40000,
+          "format": "open_thoughts_conversations",
+          "keep_think": true,
+          "use_custom_instructions": false,
+          "allowed_domains": ["math"],
+          "filters": {
+            "exclude_domains": ["code"],
+            "teacher_family": "qwq_32b"
+          }
+        },
+        {
+          "name": "reason_openmathinstruct2_sampled",
+          "dataset_name": "nvidia/OpenMathInstruct-2",
+          "dataset_config": "default",
+          "split": "train_1M",
+          "streaming": true,
+          "target_examples": 60000,
+          "format": "prompt_response",
+          "prompt_column": "problem",
+          "response_column": "generated_solution",
+          "keep_think": false,
+          "filters": {
+            "sampled_subset": true,
+            "verification_required": true,
+            "drop_code": true
+          }
+        },
+        {
+          "name": "reason_numinamath_cot_olympiad",
+          "dataset_name": "AI-MO/NuminaMath-CoT",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 10000,
+          "format": "messages",
+          "keep_think": true,
+          "use_custom_instructions": false,
+          "filters": {
+            "competition_math": true,
+            "dedup_scope": "global"
+          }
+        },
+        {
+          "name": "reason_numinamath15_olympiad_verified",
+          "dataset_name": "AI-MO/NuminaMath-1.5",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 10000,
+          "format": "prompt_response",
+          "prompt_column": "problem",
+          "response_column": "solution",
+          "keep_think": false,
+          "filters": {
+            "problem_is_valid": "Yes",
+            "solution_is_valid": "Yes",
+            "source": ["olympiads"],
+            "dedup_scope": "global"
+          }
+        }
+      ]
+    },
+    {
+      "name": "proof_symbolic_formalish",
+      "target_examples": 70000,
+      "share": 0.1166666667,
+      "purpose": "Proof style, symbolic reasoning, and formal-ish explanations without forcing Lean behavior.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "reason_s1k_proof_symbolic",
+          "dataset_name": "simplescaling/s1K",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 25000,
+          "format": "prompt_response",
+          "prompt_column": "question",
+          "response_column": "attempt",
+          "keep_think": false,
+          "filters": {
+            "cot_type": ["math", "proof"],
+            "drop_code": true
+          }
+        },
+        {
+          "name": "reason_bespoke_stratos_proof",
+          "dataset_name": "bespokelabs/Bespoke-Stratos-17k",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 20000,
+          "format": "open_thoughts_conversations",
+          "keep_think": true,
+          "use_custom_instructions": true,
+          "filters": {
+            "hard_reasoning_spice": true,
+            "drop_code": true
+          }
+        },
+        {
+          "name": "reason_openmathinstruct2_proof_sample",
+          "dataset_name": "nvidia/OpenMathInstruct-2",
+          "dataset_config": "default",
+          "split": "train_1M",
+          "streaming": true,
+          "target_examples": 25000,
+          "format": "prompt_response",
+          "prompt_column": "problem",
+          "response_column": "generated_solution",
+          "keep_think": false,
+          "filters": {
+            "prefer_problem_sources": ["proof", "olympiad", "aops"],
+            "drop_code": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "science_reasoning",
+      "target_examples": 90000,
+      "share": 0.15,
+      "purpose": "Scientific reasoning and scientific literature instruction.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "reason_openthoughts3_science",
+          "dataset_name": "open-thoughts/OpenThoughts3-1.2M",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 60000,
+          "format": "open_thoughts_conversations",
+          "keep_think": true,
+          "use_custom_instructions": false,
+          "allowed_domains": ["science"],
+          "filters": {
+            "exclude_domains": ["code"],
+            "teacher_family": "qwq_32b"
+          }
+        },
+        {
+          "name": "reason_sciriff_science_tasks",
+          "dataset_name": "allenai/SciRIFF",
+          "dataset_config": "4096",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 30000,
+          "format": "sciriff_io",
+          "prompt_column": "input",
+          "response_column": "output",
+          "keep_think": false,
+          "filters": {
+            "science_literature_tasks": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "general_multistep_reasoning",
+      "target_examples": 100000,
+      "share": 0.1666666667,
+      "purpose": "General non-code multi-step reasoning and compact think behavior.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "reason_smoltalk_reasoning_qwen",
+          "dataset_name": "HuggingFaceTB/smoltalk2",
+          "dataset_config": "SFT",
+          "split": "smoltalk_everyday_convs_reasoning_Qwen3_32B_think",
+          "streaming": true,
+          "target_examples": 50000,
+          "format": "smoltalk_messages",
+          "keep_think": true,
+          "use_custom_instructions": false
+        },
+        {
+          "name": "reason_openthoughts3_general_noncode",
+          "dataset_name": "open-thoughts/OpenThoughts3-1.2M",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 50000,
+          "format": "open_thoughts_conversations",
+          "keep_think": true,
+          "use_custom_instructions": false,
+          "excluded_domains": ["code"],
+          "filters": {
+            "teacher_family": "qwq_32b",
+            "drop_code": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "tiny_hard_curated",
+      "target_examples": 25000,
+      "share": 0.0416666667,
+      "purpose": "Small hard reasoning spice, not bulk.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "reason_bespoke_stratos_hard",
+          "dataset_name": "bespokelabs/Bespoke-Stratos-17k",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 17000,
+          "format": "open_thoughts_conversations",
+          "keep_think": true,
+          "use_custom_instructions": true,
+          "filters": {
+            "hard_reasoning_spice": true,
+            "drop_code": true
+          }
+        },
+        {
+          "name": "reason_s1k_hard_sample",
+          "dataset_name": "simplescaling/s1K",
+          "dataset_config": "default",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 8000,
+          "format": "prompt_response",
+          "prompt_column": "question",
+          "response_column": "attempt",
+          "keep_think": false,
+          "filters": {
+            "hard_reasoning_spice": true,
+            "drop_code": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "simple_arithmetic_gsm_style",
+      "target_examples": 25000,
+      "share": 0.0416666667,
+      "purpose": "Small arithmetic/format sanity slice only.",
+      "fallback_policy": {
+        "same_bucket_only": true
+      },
+      "sources": [
+        {
+          "name": "reason_templategsm_capped",
+          "dataset_name": "math-ai/TemplateGSM",
+          "dataset_config": "templategsm-1000-1k",
+          "split": "train",
+          "streaming": true,
+          "target_examples": 25000,
+          "max_examples": 25000,
+          "format": "templategsm_solution",
+          "keep_think": false,
+          "prompt_column": "problem",
+          "response_column": "solution_wocode"
+        }
+      ]
+    }
+  ]
+}

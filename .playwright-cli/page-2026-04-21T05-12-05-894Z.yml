@@ -1,0 +1,17 @@
+- generic [active] [ref=e1]:
+  - main [ref=e4]:
+    - generic [ref=e7]:
+      - button "Provide feedback" [ref=e10] [cursor=pointer]
+      - button "Multi-session disabled" [ref=e17] [cursor=pointer]:
+        - text: Multi-session disabled
+        - generic [ref=e18]:
+          - img
+      - button "Language English" [ref=e25] [cursor=pointer]:
+        - text: English
+        - generic [ref=e26]:
+          - img
+    - link "Amazon Web Services Marketing" [ref=e32]:
+      - /url: https://aws.amazon.com/vmware/?sc_icampaign=aware_vmware-workloads_2026&sc_ichannel=ha&sc_iplace=signin&trk=2312c4f0-9dc6-4408-b5ba-4c6e501c2f1d
+      - img "Amazon Web Services Marketing" [ref=e33]
+    - generic [ref=e35]: © 2026 Amazon Web Services, Inc. or its affiliates. All rights reserved.
+  - alert [ref=e36]

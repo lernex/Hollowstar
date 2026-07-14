@@ -14,6 +14,8 @@ from tokenizers import Tokenizer
 from tqdm import tqdm
 
 from data_mixture import DatasetMixture
+from jsonl_artifacts import iter_jsonl_records
+from normalized_shard_mixture import NormalizedShardMixture
 
 
 def split_name(doc_id: str, val_ratio: float) -> str:
@@ -47,10 +49,32 @@ def iter_jsonl_rows(
             }
 
 
+def iter_jsonl_dir_rows(
+    path: str | Path,
+    *,
+    glob_pattern: str,
+    text_field: str,
+    id_field: str,
+    source_field: str,
+    max_docs: int | None,
+) -> Iterator[dict[str, str]]:
+    count = 0
+    for row in iter_jsonl_records(jsonl_dir=path, glob_pattern=glob_pattern, max_rows=max_docs):
+        count += 1
+        yield {
+            "source": str(row.get(source_field, "jsonl")),
+            "doc_id": str(row.get(id_field, count)),
+            "text": str(row.get(text_field, "")),
+        }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare binary token files from a streaming text dataset.")
     parser.add_argument("--mixture-config", default=None)
+    parser.add_argument("--normalized-root", default=None)
     parser.add_argument("--jsonl-path", default=None)
+    parser.add_argument("--jsonl-dir", default=None)
+    parser.add_argument("--jsonl-glob", default="*.jsonl*")
     parser.add_argument("--jsonl-text-field", default="text")
     parser.add_argument("--jsonl-id-field", default="doc_id")
     parser.add_argument("--jsonl-source-field", default="source")
@@ -107,10 +131,29 @@ def main() -> None:
             max_docs=args.max_docs,
         )
         progress_total = args.max_docs
+    elif args.jsonl_dir:
+        mixture = None
+        row_iterator = iter_jsonl_dir_rows(
+            args.jsonl_dir,
+            glob_pattern=args.jsonl_glob,
+            text_field=args.jsonl_text_field,
+            id_field=args.jsonl_id_field,
+            source_field=args.jsonl_source_field,
+            max_docs=args.max_docs,
+        )
+        progress_total = args.max_docs
     elif args.mixture_config:
         if args.max_docs is None:
             raise ValueError("--max-docs is required when using --mixture-config.")
-        mixture = DatasetMixture(args.mixture_config, total_examples=args.max_docs)
+        if args.normalized_root:
+            mixture = NormalizedShardMixture(
+                args.mixture_config,
+                args.normalized_root,
+                total_examples=args.max_docs,
+                glob_pattern=args.jsonl_glob,
+            )
+        else:
+            mixture = DatasetMixture(args.mixture_config, total_examples=args.max_docs)
         row_iterator = iter(mixture)
         progress_total = args.max_docs
     else:
@@ -223,10 +266,25 @@ def main() -> None:
 
         flush_batch()
 
+    if target_train_tokens is not None and counts["train_tokens"] < target_train_tokens:
+        raise RuntimeError(
+            "Prepared fewer train tokens than requested: "
+            f"{counts['train_tokens']:,}/{target_train_tokens:,}. "
+            "Check normalized source exhaustion, same-bucket fallback, or token estimates."
+        )
+    if target_val_tokens is not None and counts["val_tokens"] < target_val_tokens:
+        raise RuntimeError(
+            "Prepared fewer validation tokens than requested: "
+            f"{counts['val_tokens']:,}/{target_val_tokens:,}. "
+            "Check normalized source exhaustion, same-bucket fallback, or token estimates."
+        )
+
     meta = {
-        "source_mode": "jsonl" if args.jsonl_path else ("mixture" if mixture is not None else "single_dataset"),
+        "source_mode": "jsonl_dir" if args.jsonl_dir else ("jsonl" if args.jsonl_path else ("mixture" if mixture is not None else "single_dataset")),
         "mixture_config": args.mixture_config,
         "jsonl_path": args.jsonl_path,
+        "jsonl_dir": args.jsonl_dir,
+        "jsonl_glob": args.jsonl_glob,
         "tokenizer_path": args.tokenizer_path,
         "text_column": args.text_column,
         "id_column": args.id_column,
@@ -242,7 +300,7 @@ def main() -> None:
         "val_bin": str(val_path),
         "source_counts": source_counts,
     }
-    if args.jsonl_path:
+    if args.jsonl_path or args.jsonl_dir:
         meta["jsonl_text_field"] = args.jsonl_text_field
         meta["jsonl_id_field"] = args.jsonl_id_field
         meta["jsonl_source_field"] = args.jsonl_source_field

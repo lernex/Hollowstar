@@ -6,6 +6,15 @@ tqdm>=4.66
 numpy>=1.26
 requests>=2.31
 huggingface_hub>=0.29
-transformers>=4.51
+transformers>=4.51,<5
 safetensors>=0.4
 einops>=0.8
+packaging>=24.0
+psutil>=5.9
+ninja>=1.11
+boto3>=1.34
+awscli>=1.32
+zstandard>=0.22
+liger-kernel==0.8.0
+# Transformer Engine is installed separately from source in the Metis GPU Docker
+# image so it matches the Runpod torch build and avoids ABI-mismatched wheels.

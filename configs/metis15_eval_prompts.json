@@ -1,0 +1,82 @@
+{
+  "prompts": [
+    {
+      "id": "base-fact-1",
+      "group": "base",
+      "prompt": "The capital of Japan is",
+      "max_new_tokens": 32
+    },
+    {
+      "id": "base-math-1",
+      "group": "base",
+      "prompt": "48 + 37 =",
+      "max_new_tokens": 24
+    },
+    {
+      "id": "base-writing-1",
+      "group": "base",
+      "prompt": "Write two vivid sentences about a lighthouse in a storm:\n",
+      "max_new_tokens": 96
+    },
+    {
+      "id": "chat-greeting-1",
+      "group": "chat",
+      "prompt": "User: Hi. Can you help me make a study plan for tomorrow?\nAssistant:",
+      "max_new_tokens": 140
+    },
+    {
+      "id": "chat-followup-1",
+      "group": "chat",
+      "prompt": "User: I keep procrastinating on math homework.\nAssistant: Let's make it smaller and easier to start.\nUser: What would that look like tonight?\nAssistant:",
+      "max_new_tokens": 180
+    },
+    {
+      "id": "chat-explain-1",
+      "group": "chat",
+      "prompt": "User: Explain the difference between weather and climate in plain English.\nAssistant:",
+      "max_new_tokens": 180
+    },
+    {
+      "id": "chat-identity-1",
+      "group": "chat",
+      "prompt": "User: Who are you?\nAssistant:",
+      "max_new_tokens": 96
+    },
+    {
+      "id": "chat-identity-2",
+      "group": "chat",
+      "prompt": "User: Are you ChatGPT?\nAssistant:",
+      "max_new_tokens": 96
+    },
+    {
+      "id": "chat-creative-1",
+      "group": "chat",
+      "prompt": "User: Give me a short, warm bedtime story opening about a fox who collects lost buttons.\nAssistant:",
+      "max_new_tokens": 180
+    },
+    {
+      "id": "think-math-1",
+      "group": "think",
+      "prompt": "User: A train leaves at 2:15 PM and arrives 1 hour 47 minutes later. What time does it arrive?\nAssistant:",
+      "max_new_tokens": 180
+    },
+    {
+      "id": "think-math-2",
+      "group": "think",
+      "prompt": "User: If 6 notebooks cost $18, how much do 10 notebooks cost at the same rate?\nAssistant:",
+      "max_new_tokens": 180
+    },
+    {
+      "id": "think-logic-1",
+      "group": "think",
+      "prompt": "User: Maya is older than Ben. Ben is older than Luis. Who is the youngest?\nAssistant:",
+      "max_new_tokens": 140
+    },
+    {
+      "id": "think-writing-1",
+      "group": "think",
+      "prompt": "User: Write a four-line poem about early spring, then briefly explain the image you chose.\nAssistant:",
+      "max_new_tokens": 220
+    }
+  ]
+}

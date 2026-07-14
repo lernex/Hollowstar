@@ -1,0 +1,28 @@
+FROM lernex/metis-gpu:metis15-h100-single-latent-v1
+
+RUN pip install "liger-kernel==0.8.0" && \
+    python - <<'PY'
+import torch
+import transformer_engine.pytorch as te
+from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+try:
+    import flash_attn_interface  # noqa: F401
+    flash_attn_source = "flash_attn_interface"
+except ImportError:
+    flash_attn_source = "not-installed"
+
+assert torch.__version__.startswith("2.8.0"), torch.__version__
+print("torch", torch.__version__)
+print("transformer_engine", getattr(te, "__file__", "missing"))
+print("flash_attn_interface", flash_attn_source)
+print("liger", LigerFusedLinearCrossEntropyLoss)
+PY
+
+COPY . "$METIS_IMAGE_ROOT"
+
+WORKDIR $METIS_IMAGE_ROOT
+RUN pip install -e . && \
+    python scripts/train_mamba_lm.py --help >/dev/null && \
+    python scripts/train_mamba_sft.py --help >/dev/null && \
+    python scripts/train_mamba_reward.py --help >/dev/null && \
+    python scripts/train_mamba_dpo.py --help >/dev/null
