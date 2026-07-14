@@ -3,24 +3,24 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>TinyLM Studio</title>
+    <title>Metis · Local Playground</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
   </head>
   <body>
-    <div class="shell">
-      <aside class="rail">
+    <div class="app">
+      <aside class="sidebar">
         <div class="brand">
-          <p class="eyebrow">Local Model Playground</p>
-          <h1>TinyLM Studio</h1>
-          <p class="subtle">
-            A calmer way to probe your checkpoints, compare runs, and see whether the model is
-            actually learning to talk.
-          </p>
+          <div class="brand-mark">M</div>
+          <div>
+            <h1>Metis</h1>
+            <p class="eyebrow">Local Playground</p>
+          </div>
         </div>
 
-        <section class="controls">
-          <label>
-            <span>Model</span>
+        <div class="field">
+          <label for="checkpoint">Model</label>
+          <div class="select-wrap">
             <select id="checkpoint">
               {% for checkpoint in checkpoints %}
               <option value="{{ checkpoint.value }}" {% if checkpoint.value == default_checkpoint %}selected{% endif %}>
@@ -28,73 +28,70 @@
               </option>
               {% endfor %}
             </select>
-          </label>
-
-          <div class="model-card" id="modelCard">
-            <p class="model-kicker" id="modelTagline">{{ default_checkpoint_meta.tagline if default_checkpoint_meta else "Checkpoint" }}</p>
-            <h3 id="modelName">{{ default_checkpoint_meta.label if default_checkpoint_meta else "No model found" }}</h3>
-            <p class="subtle" id="modelDescription">{{ default_checkpoint_meta.description if default_checkpoint_meta else "Train a checkpoint to unlock the chat surface." }}</p>
           </div>
+        </div>
 
-          <div class="range-grid">
-            <label>
-              <span>Temperature</span>
-              <input id="temperature" type="range" min="0" max="1.5" step="0.05" value="0.8" />
-              <strong id="temperatureValue">0.80</strong>
-            </label>
-            <label>
-              <span>Top-k</span>
-              <input id="topK" type="range" min="1" max="100" step="1" value="40" />
-              <strong id="topKValue">40</strong>
-            </label>
-            <label>
-              <span>Max new tokens</span>
-              <input id="maxTokens" type="range" min="16" max="200" step="8" value="96" />
-              <strong id="maxTokensValue">96</strong>
-            </label>
-          </div>
+        <div class="model-card">
+          <p class="model-kicker" id="modelTagline">{{ default_checkpoint_meta.tagline if default_checkpoint_meta else "Checkpoint" }}</p>
+          <h3 id="modelName">{{ default_checkpoint_meta.label if default_checkpoint_meta else "No model found" }}</h3>
+          <p class="model-desc" id="modelDescription">{{ default_checkpoint_meta.description if default_checkpoint_meta else "Load a checkpoint to start chatting." }}</p>
+        </div>
 
-          <div class="actions">
-            <button id="seedPrompt" class="ghost" type="button">Load test prompt</button>
-            <button id="clearChat" class="ghost" type="button">Clear chat</button>
+        <div class="sliders">
+          <div class="slider">
+            <div class="slider-top"><label for="temperature">Temperature</label><strong id="temperatureValue">0.20</strong></div>
+            <input id="temperature" type="range" min="0" max="1.5" step="0.05" value="0.2" />
           </div>
-        </section>
+          <div class="slider">
+            <div class="slider-top"><label for="topK">Top-k</label><strong id="topKValue">40</strong></div>
+            <input id="topK" type="range" min="1" max="100" step="1" value="40" />
+          </div>
+          <div class="slider">
+            <div class="slider-top"><label for="maxTokens">Max new tokens</label><strong id="maxTokensValue">256</strong></div>
+            <input id="maxTokens" type="range" min="16" max="512" step="8" value="256" />
+          </div>
+        </div>
+
+        <div class="sidebar-actions">
+          <button id="seedPrompt" class="ghost" type="button">Sample prompt</button>
+          <button id="clearChat" class="ghost" type="button">Clear chat</button>
+        </div>
+
+        <p class="sidebar-foot">Runs fully on your Mac · CPU · no network</p>
       </aside>
 
       <main class="workspace">
-        <header class="masthead">
-          <div>
-            <p class="eyebrow">Conversation Surface</p>
-            <h2>Talk to the checkpoint, not the terminal.</h2>
+        <header class="topbar">
+          <div class="topbar-title">
+            <h2 id="topbarModel">Metis 1.5 Think</h2>
+            <p class="subtle" id="topbarSub">A small local model — keep prompts simple.</p>
           </div>
-          <div class="status" id="statusPill">Ready</div>
+          <div class="status" id="statusPill"><span class="dot"></span><span id="statusText">Ready</span></div>
         </header>
 
         <section id="chatLog" class="chat-log"></section>
 
-        <section class="raw-panel">
-          <div class="raw-panel-header">
-            <div>
-              <p class="eyebrow">Raw Model Output</p>
-              <h3>Unfiltered stream</h3>
-            </div>
-            <span id="rawStatus" class="raw-status">Waiting</span>
-          </div>
-          <pre id="rawOutput" class="raw-output"></pre>
-        </section>
-
         <section class="composer">
-          <label class="composer-label" for="userInput">Your message</label>
-          <textarea
-            id="userInput"
-            rows="4"
-            placeholder="Ask something basic first. Tiny models usually reveal their strengths and weirdness quickly."
-          ></textarea>
-          <div class="composer-bar">
-            <p class="hint">
-              Tip: compare the `fast` checkpoint against any future chat-tuned checkpoint and watch how the style shifts.
-            </p>
-            <button id="sendButton" type="button">Send</button>
+          <div class="composer-box">
+            <textarea
+              id="userInput"
+              rows="1"
+              placeholder="Message Metis…  (Enter to send · Shift+Enter for newline)"
+            ></textarea>
+            <button id="sendButton" type="button" aria-label="Send">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6 3 10l12 2-12 2z"/></svg>
+            </button>
+          </div>
+          <div class="composer-foot">
+            <button id="rawToggle" class="raw-toggle" type="button" aria-expanded="false">Raw output</button>
+            <span class="hint" id="genStat"></span>
+          </div>
+          <div id="rawDrawer" class="raw-drawer" hidden>
+            <div class="raw-head">
+              <span class="eyebrow">Unfiltered model stream</span>
+              <span id="rawStatus" class="raw-status">Waiting</span>
+            </div>
+            <pre id="rawOutput" class="raw-output"></pre>
           </div>
         </section>
       </main>

@@ -45,6 +45,12 @@ def main() -> None:
 
         cfg, train_cfg = load_manifest_config(args.manifest, stage=args.stage)
         local_batch_size = args.local_batch_size or train_cfg.local_batch_size
+        capacity_batch_size = local_batch_size
+        if cfg.expert_execution in {"data_parallel", "pmap_data"}:
+            if local_batch_size % 8 != 0:
+                failures.append("data-parallel local_batch_size must be divisible by 8 TPU devices.")
+            else:
+                capacity_batch_size = local_batch_size // 8
         cfg.validate(local_batch_size=local_batch_size)
         print(
             "  model: "
@@ -53,7 +59,7 @@ def main() -> None:
         )
         print(
             "  v6e layout: "
-            f"world=8 experts_per_rank={cfg.experts_per_rank} capacity={cfg.capacity_for_batch(local_batch_size)} "
+            f"world=8 experts_per_rank={cfg.experts_per_rank} capacity={cfg.capacity_for_batch(capacity_batch_size)} "
             f"stage={args.stage}"
         )
         if args.stage == "pretrain" and cfg.mor_enabled:
@@ -84,8 +90,11 @@ def main() -> None:
     hardware = manifest.get("hardware", {})
     if hardware.get("runtime") != "JAX/libTPU":
         failures.append("manifest hardware.runtime must be JAX/libTPU.")
-    if hardware.get("target_cluster") != "google_cloud_tpu_v6e_8_chip_jax_static_expert_parallel":
-        failures.append("manifest target_cluster must be the JAX v6e-8 expert-parallel lane.")
+    if hardware.get("target_cluster") not in {
+        "google_cloud_tpu_v6e_8_chip_jax_static_expert_parallel",
+        "google_cloud_tpu_v6e_8_chip_jax_data_parallel",
+    }:
+        failures.append("manifest target_cluster must be a supported JAX v6e-8 lane.")
     if hardware.get("requirements_file") != "requirements-jax-tpu-train.txt":
         failures.append("manifest must point at requirements-jax-tpu-train.txt.")
     if hardware.get("local_readiness_script") != "scripts/metis15_jax_tpu_v6e_local_readiness.sh":
@@ -104,8 +113,8 @@ def main() -> None:
         failures.append("manifest gcs_checkpoint_env must be METIS15_JAX_GCS_CHECKPOINT_DIR.")
     if hardware.get("gcs_data_env") != "METIS15_JAX_DATA_GCS_URI":
         failures.append("manifest gcs_data_env must be METIS15_JAX_DATA_GCS_URI.")
-    if not hardware.get("remat_layers", False):
-        failures.append("hardware.remat_layers must stay enabled for the full v6e JAX lane.")
+    if not hardware.get("remat_layers", False) and not hardware.get("remat_attention", False):
+        failures.append("hardware must enable either full-layer remat or attention-only remat for the full v6e JAX lane.")
     throughput = hardware.get("throughput", {})
     if not throughput.get("compile_probe_requires_jax_log_compiles", False):
         failures.append("throughput.compile_probe_requires_jax_log_compiles must be true.")
@@ -119,8 +128,12 @@ def main() -> None:
         "block_size",
         "expert_capacity_factor",
         "remat_mode",
+        "attention_remat",
         "dtype",
+        "attention_backend",
+        "moe_backend",
         "expert_execution",
+        "optimizer",
     }
     if set(throughput.get("sweep_dimensions", [])) != expected_sweep_dims:
         failures.append("throughput.sweep_dimensions must list the JAX v6e tuning knobs.")
@@ -131,12 +144,12 @@ def main() -> None:
     if not model.get("moe_graphable"):
         failures.append("model.moe_graphable must be true for the JAX lane.")
     optimizer = manifest.get("optimizer", {})
-    if optimizer.get("name") != "muon_adamw":
-        failures.append("manifest optimizer.name must be muon_adamw.")
-    if optimizer.get("include_routed_experts"):
-        failures.append("routed experts must stay on AdamW by default.")
-    if optimizer.get("muon_scale_mode") != "match_rms_adamw":
-        failures.append("Muon scale mode must stay match_rms_adamw.")
+    if optimizer.get("name") not in {"adamuon", "muon_adamw"}:
+        failures.append("manifest optimizer.name must be adamuon or muon_adamw.")
+    if optimizer.get("name") == "adamuon" and not optimizer.get("include_routed_experts"):
+        failures.append("AdaMuon data-parallel mode must include routed expert matrices.")
+    if optimizer.get("name") == "muon_adamw" and optimizer.get("muon_scale_mode") != "match_rms_adamw":
+        failures.append("Muon scale mode must stay match_rms_adamw for the legacy hybrid path.")
     gcs_checkpoint_dir = os.environ.get("METIS15_JAX_GCS_CHECKPOINT_DIR", "")
     if gcs_checkpoint_dir:
         if not gcs_checkpoint_dir.startswith("gs://"):

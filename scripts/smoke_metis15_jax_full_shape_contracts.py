@@ -18,7 +18,7 @@ def main() -> None:
         count_params,
         init_params,
         load_manifest_config,
-        muon_mask,
+        optimizer_matrix_mask,
         parameter_partition_specs,
     )
 
@@ -42,12 +42,12 @@ def main() -> None:
         or abs(cpt_cfg.mor_router_aux_loss_coef - 0.02) > 1e-9
     ):
         raise AssertionError("CPT MoR target/aux warmup schedule did not load from the manifest.")
-    if not pre_cfg.remat_layers or not cpt_cfg.remat_layers:
-        raise AssertionError("Full Metis-1.5 v6e configs must keep remat_layers enabled.")
-    if pre_train.grad_accum_steps != 8 or cpt_train.grad_accum_steps != 6:
+    if not (pre_cfg.remat_layers or pre_cfg.remat_attention) or not (cpt_cfg.remat_layers or cpt_cfg.remat_attention):
+        raise AssertionError("Full Metis-1.5 v6e configs must enable full-layer or attention-only remat.")
+    if pre_train.grad_accum_steps != 8 or cpt_train.grad_accum_steps != 8:
         raise AssertionError("Manifest grad_accum_steps did not load correctly.")
-    expected_pre_steps = 50_000_000_000 // (8 * 8 * pre_cfg.block_size)
-    expected_cpt_steps = 10_000_000_000 // (6 * 6 * cpt_cfg.block_size)
+    expected_pre_steps = 50_000_000_000 // (64 * 8 * pre_cfg.block_size)
+    expected_cpt_steps = 10_000_000_000 // (8 * 8 * cpt_cfg.block_size)
     if pre_train.max_steps != expected_pre_steps or cpt_train.max_steps != expected_cpt_steps:
         raise AssertionError(
             f"Effective train steps must include grad accumulation: pre={pre_train.max_steps}, cpt={cpt_train.max_steps}"
@@ -61,38 +61,37 @@ def main() -> None:
         # The manifest estimate includes historical implementation details; keep this as telemetry,
         # not a failure, while the shape checks below guard the live JAX contract.
         pass
-    if pre_cfg.moe_num_experts != 32 or pre_cfg.experts_per_rank != 4:
-        raise AssertionError("Full Metis-1.5 must shard 32 routed experts as 4 experts per v6e chip.")
-    expected_pre_capacity = 4096
-    expected_cpt_capacity = 3072
-    if pre_cfg.capacity_for_batch(pre_train.local_batch_size) != expected_pre_capacity:
-        raise AssertionError("Pretrain capacity must stay fixed at 4096 for local_batch_size=8.")
-    if cpt_cfg.capacity_for_batch(cpt_train.local_batch_size) != expected_cpt_capacity:
-        raise AssertionError("CPT capacity must stay fixed at 3072 for local_batch_size=6.")
-    expected_cpt_depth_capacity = 4608
-    if cpt_cfg.mor_depth_capacity_for_batch(cpt_train.local_batch_size) != expected_cpt_depth_capacity:
-        raise AssertionError("CPT packed MoR depth capacity must stay fixed at 4608 for local_batch_size=6.")
+    if pre_cfg.moe_num_experts != 32 or pre_cfg.experts_per_rank != 32:
+        raise AssertionError("Full Metis-1.5 data-parallel mode must keep all 32 routed experts on each chip.")
+    # capacity = ceil(per_chip_tokens * top_k * capacity_factor / num_experts), 128-aligned.
+    # With capacity_factor 2.0: pretrain 8*1024*4*2/32 = 2048, CPT 1*1024*4*2/32 = 256.
+    expected_pre_capacity = 2048
+    expected_cpt_capacity = 256
+    pre_capacity_batch = pre_train.local_batch_size // 8
+    cpt_capacity_batch = cpt_train.local_batch_size // 8
+    if pre_cfg.capacity_for_batch(pre_capacity_batch) != expected_pre_capacity:
+        raise AssertionError("Pretrain capacity must stay fixed at 2048 for global local_batch_size=64 at cf=2.0.")
+    if cpt_cfg.capacity_for_batch(cpt_capacity_batch) != expected_cpt_capacity:
+        raise AssertionError("CPT capacity must stay fixed at 256 for global local_batch_size=8 at cf=2.0.")
+    expected_cpt_depth_capacity = 768
+    if cpt_cfg.mor_depth_capacity_for_batch(cpt_capacity_batch) != expected_cpt_depth_capacity:
+        raise AssertionError("CPT packed MoR depth capacity must stay fixed at 768 for global local_batch_size=8.")
 
-    mask = muon_mask(pre_shapes)
-    muon_count = sum(1 for leaf in jax.tree_util.tree_leaves(mask) if bool(leaf))
-    adamw_count = sum(1 for leaf in jax.tree_util.tree_leaves(mask) if not bool(leaf))
-    if muon_count <= 0 or adamw_count <= 0:
-        raise AssertionError("Expected both Muon and AdamW parameter groups.")
+    mask = optimizer_matrix_mask(pre_shapes, pre_train.optimizer)
+    matrix_count = sum(1 for leaf in jax.tree_util.tree_leaves(mask) if bool(leaf))
+    aux_count = sum(1 for leaf in jax.tree_util.tree_leaves(mask) if not bool(leaf))
+    if matrix_count <= 0 or aux_count <= 0:
+        raise AssertionError("Expected both AdaMuon matrix leaves and auxiliary vector/scalar leaves.")
+    if not bool(mask["embed"]) or not bool(mask["layers"][0]["expert_w1"]) or not bool(mask["layers"][0]["expert_w2"]):
+        raise AssertionError("AdaMuon must include embeddings and routed expert matrices.")
     specs = parameter_partition_specs(cpt_shapes)
-    layer0 = specs["layers"][0]
-    if "expert" not in repr(layer0["expert_w1"]) or "expert" not in repr(layer0["expert_w2"]):
-        raise AssertionError("Routed expert tensors must shard over the expert axis.")
-    if "None, 'expert'" not in repr(layer0["router"]) or "'expert'" not in repr(layer0["router_bias"]):
-        raise AssertionError("Layer router outputs and biases must shard over the expert axis.")
-    if "expert" in repr(specs["mor_router"]["w1"]) or "expert" in repr(specs["mor_router"]["w2"]):
-        raise AssertionError("MoR depth router must stay replicated; it is not an expert-axis tensor.")
     if "expert" in repr(specs["embed"]):
-        raise AssertionError("Embeddings must stay replicated in the first v6e expert-parallel layout.")
+        raise AssertionError("Embeddings must stay replicated in the v6e layout.")
 
     print(
         "metis15_jax_full_shape_contracts_ok "
         f"params={param_count} pre_steps={pre_train.max_steps} cpt_steps={cpt_train.max_steps} "
-        f"experts_per_chip={pre_cfg.experts_per_rank} muon_leaves={muon_count} adamw_leaves={adamw_count}",
+        f"experts_per_chip={pre_cfg.experts_per_rank} adamuon_matrix_leaves={matrix_count} adam_aux_leaves={aux_count}",
         flush=True,
     )
 

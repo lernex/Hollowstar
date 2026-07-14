@@ -17,8 +17,18 @@ from analyze_metis15_jax_tpu_logs import audit, parse_log, percentile
 
 
 RUN_ID_RE = re.compile(
-    r"bs(?P<batch>\d+)_ga(?P<accum>\d+)_blk(?P<block>[^_]+)_cf(?P<capacity>[^_]+)_"
-    r"remat(?P<remat>[^_]+)_dt(?P<dtype>[^_]+)_(?P<expert_execution>reference|shard_map)$"
+    r"bs(?P<batch>\d+)_ga(?P<accum>\d+)"
+    r"(?:_gai(?P<grad_accum_impl>[^_]+))?"
+    r"_blk(?P<block>[^_]+)_cf(?P<capacity>[^_]+)"
+    r"(?:_opt(?P<optimizer>[^_]+))?"
+    r"(?:_ap(?P<adamuon_matrix_policy>all|no_embed_head))?"
+    r"(?:_ns(?P<muon_ns_steps>[^_]+))?"
+    r"_remat(?P<remat>[^_]+)_dt(?P<dtype>[^_]+)"
+    r"(?:_wdt(?P<weight_dtype>[^_]+))?"
+    r"(?:_cedt(?P<ce_logits_dtype>[^_]+))?"
+    r"(?:_ce(?P<ce_loss_impl>[^_]+))?"
+    r"_(?P<expert_execution>reference|shard_map|pmap_data|data_parallel)"
+    r"(?:_bsh(?P<batch_sharding>[^_]+))?$"
 )
 
 
@@ -129,14 +139,30 @@ def main() -> None:
             f"export METIS15_JAX_GRAD_ACCUM_STEPS={parsed.get('accum', '')}",
             f"export METIS15_JAX_EXPERT_EXECUTION={parsed.get('expert_execution', '')}",
         ]
+        if parsed.get("optimizer") not in (None, "", "manifest"):
+            lines.append(f"export METIS15_JAX_OPTIMIZER={parsed.get('optimizer', '')}")
+        if parsed.get("adamuon_matrix_policy") not in (None, "", "manifest"):
+            lines.append(f"export METIS15_JAX_ADAMUON_MATRIX_POLICY={parsed.get('adamuon_matrix_policy', '')}")
+        if parsed.get("grad_accum_impl") not in (None, "", "manifest"):
+            lines.append(f"export METIS15_JAX_GRAD_ACCUM_IMPL={parsed.get('grad_accum_impl', '')}")
+        if parsed.get("batch_sharding") not in (None, "", "manifest"):
+            lines.append(f"export METIS15_JAX_BATCH_SHARDING={parsed.get('batch_sharding', '')}")
         if parsed.get("block") not in (None, "", "manifest"):
             lines.append(f"export METIS15_JAX_BLOCK_SIZE={parsed.get('block', '')}")
         if parsed.get("capacity") not in (None, "", "manifest"):
             lines.append(f"export METIS15_JAX_EXPERT_CAPACITY_FACTOR={parsed.get('capacity', '')}")
+        if parsed.get("muon_ns_steps") not in (None, "", "manifest"):
+            lines.append(f"export METIS15_JAX_MUON_NS_STEPS={parsed.get('muon_ns_steps', '')}")
         if parsed.get("remat") not in (None, "", "manifest"):
             lines.append(f"export METIS15_JAX_REMAT_MODE={parsed.get('remat', '')}")
         if parsed.get("dtype") not in (None, "", "manifest"):
             lines.append(f"export METIS15_JAX_DTYPE={parsed.get('dtype', '')}")
+        if parsed.get("weight_dtype") not in (None, "", "manifest"):
+            lines.append(f"export METIS15_JAX_WEIGHT_DTYPE={parsed.get('weight_dtype', '')}")
+        if parsed.get("ce_logits_dtype") not in (None, "", "manifest"):
+            lines.append(f"export METIS15_JAX_CE_LOGITS_DTYPE={parsed.get('ce_logits_dtype', '')}")
+        if parsed.get("ce_loss_impl") not in (None, "", "manifest"):
+            lines.append(f"export METIS15_JAX_CE_LOSS_IMPL={parsed.get('ce_loss_impl', '')}")
         args.write_best_env.write_text("\n".join(lines) + "\n", encoding="utf-8")
         print(f"best_env={args.write_best_env}")
 

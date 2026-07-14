@@ -62,7 +62,8 @@ def main() -> None:
         "param_count": count_params(pre_shapes),
         "pretrain_capacity": pre_cfg.capacity_for_batch(pre_train.local_batch_size),
         "continued_pretrain_capacity": cpt_cfg.capacity_for_batch(cpt_train.local_batch_size),
-        "experts_per_chip": pre_cfg.experts_per_rank,
+        "experts_per_chip": pre_cfg.moe_num_experts if pre_cfg.moe_expert_parallel_size == 1 else pre_cfg.experts_per_rank,
+        "promoted_parallelism": "data_parallel" if pre_cfg.moe_expert_parallel_size == 1 else "expert_parallel",
         "layer0_expert_w1_spec": repr(specs["layers"][0]["expert_w1"]),
         "layer0_router_spec": repr(specs["layers"][0]["router"]),
         "layer0_router_bias_spec": repr(specs["layers"][0]["router_bias"]),
@@ -73,14 +74,18 @@ def main() -> None:
 
     if abstract["param_count"] != 898_051_168:
         failures.append(f"unexpected full-shape param count: {abstract['param_count']}")
-    if abstract["experts_per_chip"] != 4:
-        failures.append(f"expected 4 experts/chip, got {abstract['experts_per_chip']}")
-    if not _spec_contains(specs["layers"][0]["expert_w1"], "expert"):
-        failures.append("routed expert weights are not expert-axis sharded.")
-    if not _spec_contains(specs["layers"][0]["router"], "expert"):
-        failures.append("layer router output dimension is not expert-axis sharded.")
-    if not _spec_contains(specs["layers"][0]["router_bias"], "expert"):
-        failures.append("layer router bias is not expert-axis sharded.")
+    if pre_cfg.moe_expert_parallel_size == 1:
+        if abstract["experts_per_chip"] != 32:
+            failures.append(f"expected 32 local experts/chip, got {abstract['experts_per_chip']}")
+    else:
+        if abstract["experts_per_chip"] != 4:
+            failures.append(f"expected 4 sharded experts/chip, got {abstract['experts_per_chip']}")
+        if not _spec_contains(specs["layers"][0]["expert_w1"], "expert"):
+            failures.append("routed expert weights are not expert-axis sharded.")
+        if not _spec_contains(specs["layers"][0]["router"], "expert"):
+            failures.append("layer router output dimension is not expert-axis sharded.")
+        if not _spec_contains(specs["layers"][0]["router_bias"], "expert"):
+            failures.append("layer router bias is not expert-axis sharded.")
     if _spec_contains(specs["mor_router"]["w1"], "expert") or _spec_contains(specs["mor_router"]["w2"], "expert"):
         failures.append("MoR control router must stay replicated.")
     if _spec_contains(specs["embed"], "expert"):

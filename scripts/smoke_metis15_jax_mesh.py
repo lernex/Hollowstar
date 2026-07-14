@@ -38,7 +38,7 @@ def main() -> None:
         init_params,
         make_jit_train_step,
         make_repeated_batch,
-        muon_mask,
+        optimizer_matrix_mask,
         restore_training_checkpoint,
         save_training_checkpoint,
         shard_batch_for_v6e,
@@ -86,11 +86,12 @@ def main() -> None:
         grad_accum_steps=2,
         learning_rate=3e-3,
         weight_decay=0.01,
+        optimizer="adamuon",
         muon_ns_steps=2,
     )
     opt_state = init_optimizer_state(sharded_params)
     opt_state = shard_optimizer_state_for_v6e(opt_state, sharded_params, mesh)
-    mask = muon_mask(sharded_params)
+    mask = optimizer_matrix_mask(sharded_params, train_cfg.optimizer)
     step_fn = make_jit_train_step(cfg_shard, train_cfg, mask, expert_mesh=mesh)
     losses: list[float] = []
     for _ in range(args.steps):

@@ -11,9 +11,13 @@ LOCAL_BATCH_SIZE="${METIS15_JAX_CANARY_LOCAL_BATCH_SIZE:-${METIS15_JAX_LOCAL_BAT
 GRAD_ACCUM_STEPS="${METIS15_JAX_CANARY_GRAD_ACCUM_STEPS:-${METIS15_JAX_GRAD_ACCUM_STEPS:-}}"
 BLOCK_SIZE="${METIS15_JAX_CANARY_BLOCK_SIZE:-${METIS15_JAX_BLOCK_SIZE:-}}"
 CAPACITY_FACTOR="${METIS15_JAX_CANARY_CAPACITY_FACTOR:-${METIS15_JAX_EXPERT_CAPACITY_FACTOR:-}}"
+OPTIMIZER="${METIS15_JAX_CANARY_OPTIMIZER:-${METIS15_JAX_OPTIMIZER:-adamuon}}"
+ADAMUON_MATRIX_POLICY="${METIS15_JAX_CANARY_ADAMUON_MATRIX_POLICY:-${METIS15_JAX_ADAMUON_MATRIX_POLICY:-all}}"
 REMAT_MODE="${METIS15_JAX_CANARY_REMAT_MODE:-${METIS15_JAX_REMAT_MODE:-manifest}}"
 DTYPE="${METIS15_JAX_CANARY_DTYPE:-${METIS15_JAX_DTYPE:-}}"
-EXPERT_EXECUTION="${METIS15_JAX_CANARY_EXPERT_EXECUTION:-${METIS15_JAX_EXPERT_EXECUTION:-shard_map}}"
+WEIGHT_DTYPE="${METIS15_JAX_CANARY_WEIGHT_DTYPE:-${METIS15_JAX_WEIGHT_DTYPE:-}}"
+CE_LOGITS_DTYPE="${METIS15_JAX_CANARY_CE_LOGITS_DTYPE:-${METIS15_JAX_CE_LOGITS_DTYPE:-}}"
+EXPERT_EXECUTION="${METIS15_JAX_CANARY_EXPERT_EXECUTION:-${METIS15_JAX_EXPERT_EXECUTION:-data_parallel}}"
 TINY_CONFIG="${METIS15_JAX_CANARY_TINY_CONFIG:-0}"
 SYNTHETIC="${METIS15_JAX_CANARY_SYNTHETIC:-1}"
 REQUIRE_TPU="${METIS15_JAX_CANARY_REQUIRE_TPU:-}"
@@ -37,8 +41,12 @@ echo "  log: $TRAIN_LOG"
 echo "  max steps: $MAX_STEPS"
 echo "  block size: ${BLOCK_SIZE:-manifest}"
 echo "  capacity factor: ${CAPACITY_FACTOR:-manifest}"
+echo "  optimizer: $OPTIMIZER"
+echo "  AdaMuon matrix policy: $ADAMUON_MATRIX_POLICY"
 echo "  remat mode: $REMAT_MODE"
 echo "  dtype: ${DTYPE:-manifest}"
+echo "  weight dtype: ${WEIGHT_DTYPE:-manifest}"
+echo "  CE logits dtype: ${CE_LOGITS_DTYPE:-manifest}"
 echo "  expert execution: $EXPERT_EXECUTION"
 echo "  tiny config: $TINY_CONFIG"
 echo "  synthetic: $SYNTHETIC"
@@ -69,6 +77,8 @@ cmd=(
   --checkpoint-interval 0
   --skip-checkpoint
   --expert-execution "$EXPERT_EXECUTION"
+  --optimizer "$OPTIMIZER"
+  --adamuon-matrix-policy "$ADAMUON_MATRIX_POLICY"
 )
 if [[ "$TINY_CONFIG" == "1" ]]; then
   cmd+=(--tiny-config)
@@ -95,6 +105,12 @@ elif [[ "$REMAT_MODE" != "manifest" ]]; then
 fi
 if [[ -n "$DTYPE" ]]; then
   cmd+=(--dtype "$DTYPE")
+fi
+if [[ -n "$WEIGHT_DTYPE" ]]; then
+  cmd+=(--weight-dtype "$WEIGHT_DTYPE")
+fi
+if [[ -n "$CE_LOGITS_DTYPE" ]]; then
+  cmd+=(--ce-logits-dtype "$CE_LOGITS_DTYPE")
 fi
 if [[ "$SYNTHETIC" == "1" ]]; then
   cmd+=(--synthetic-data)

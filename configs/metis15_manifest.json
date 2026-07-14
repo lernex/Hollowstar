@@ -1,7 +1,7 @@
 {
   "name": "Metis-1.5",
   "family": "Metis",
-  "description": "Metis-1.5 is the first sparse Metis model: a single LatentMoE decoder with one 512d latent route per token, 32 routed experts, top-4 routing, 1 BF16 shared expert, and native 8-way expert parallel training for the Google Cloud TPU v6e-8 JAX/libTPU lane.",
+  "description": "Metis-1.5 is the first sparse Metis model: a single LatentMoE decoder with one 512d latent route per token, 32 routed experts, top-4 routing, 1 BF16 shared expert, and native 8-way data-parallel training for the Google Cloud TPU v6e-8 JAX/libTPU lane.",
   "model": {
     "name": "Metis-1.5",
     "architecture": "metis_single_latent_moe_decoder",
@@ -22,10 +22,13 @@
     "pad_vocab_size_multiple": 16,
     "initializer_range": 0.02,
     "torch_dtype": "bfloat16",
+    "jax_dtype": "bfloat16",
+    "weight_dtype": "float32",
     "attention_bias": false,
     "mlp_bias": false,
     "attention_dropout": 0.0,
     "rope_theta": 10000.0,
+    "rope_convention": "neox",
     "attention_backend": "jax_causal_attention_reference",
     "training_mode": "static_dense_pretrain",
     "mor_enabled": false,
@@ -64,13 +67,14 @@
     "moe_fused_combine": true,
     "moe_graphable": true,
     "moe_memory_efficient_permutation": true,
-    "moe_token_dispatcher_type": "alltoall",
+    "moe_token_dispatcher_type": "local",
+    "expert_execution": "data_parallel",
     "moe_flex_dispatcher_backend": "none",
     "moe_overlap_expert_parallel_comm": false,
     "moe_delay_wgrad_compute": false,
     "moe_router_fusion": false,
     "moe_permute_fusion": true,
-    "moe_expert_parallel_size": 8,
+    "moe_expert_parallel_size": 1,
     "moe_expert_parallel_init_seed": 271828,
     "low_precision_mode": "none",
     "fp8_expert_precision": "bf16",
@@ -117,34 +121,30 @@
     "note": "Metis-1.5 releases only base and think variants. The data plan is a 50B bucketed base pretrain, 10B bucketed CPT/midtrain, then chat SFT as an internal bridge into a single think post-training path."
   },
   "optimizer": {
-    "name": "muon_adamw",
+    "name": "adamuon",
     "adamw_eps": 1e-08,
-    "hybrid_adamw_impl": "loop",
+    "hybrid_adamw_impl": "disabled",
     "master_weights": true,
     "muon_beta": 0.95,
     "muon_ns_steps": 5,
     "muon_lr_scale": 1.0,
     "muon_scale_mode": "match_rms_adamw",
     "muon_nesterov": true,
-    "include_routed_experts": false,
+    "include_routed_experts": true,
     "policy": {
-      "adamw": [
+      "adam_aux": [
+        "rmsnorm_layernorm_weights",
+        "router_biases",
+        "positional_scalars_biases",
+        "other_vector_or_scalar_tensors_where_matrix_orthogonalization_is_not_defined"
+      ],
+      "adamuon": [
         "token_embeddings",
         "lm_head",
-        "rmsnorm_layernorm_weights",
-        "router_gate_networks",
-        "mor_recursion_router_control",
-        "moe_router_embeddings_and_biases",
-        "latent_moe_router_projection",
-        "positional_scalars_biases"
-      ],
-      "muon": [
         "attention_qkv_o_matrices",
         "dense_mlp_matrices",
         "shared_expert_matrices",
-        "latent_moe_routed_payload_down_up_projections"
-      ],
-      "ablation_only": [
+        "latent_moe_routed_payload_down_up_projections",
         "routed_expert_up_gate_down_matrices"
       ]
     }
@@ -160,14 +160,17 @@
     "validation_script": "scripts/validate_metis15_data_plan.py"
   },
   "hardware": {
-    "target_cluster": "google_cloud_tpu_v6e_8_chip_jax_static_expert_parallel",
+    "target_cluster": "google_cloud_tpu_v6e_8_chip_jax_data_parallel",
     "accelerator": "Google Cloud TPU v6e-8",
     "world_size": 8,
-    "preferred_precision": "bf16_jax_libtpu_expert_parallel",
+    "preferred_precision": "bf16_jax_libtpu_data_parallel",
     "fallback_precision": "bf16",
     "attention_backend": "jax_causal_attention_reference",
     "runtime": "JAX/libTPU",
-    "remat_layers": true,
+    "weight_dtype": "float32",
+    "grad_accum_impl": "scan",
+    "remat_layers": false,
+    "remat_attention": true,
     "launcher_script": "scripts/metis15_jax_tpu_v6e_pretrain.sh",
     "trainer_script": "scripts/train_metis15_jax_tpu.py",
     "bootstrap_script": "scripts/metis15_jax_tpu_v6e_bootstrap.sh",
@@ -194,8 +197,8 @@
         "interval": 1,
         "warmup_steps": 0
       },
-      "ce_logits_dtype": "float32",
-      "expert_capacity_factor": 4.0,
+      "ce_logits_dtype": "bfloat16",
+      "expert_capacity_factor": 2.0,
       "expert_activation_safety": "clamp",
       "moe_balance_strategy": "aux_loss_free_bias"
     },
@@ -210,10 +213,14 @@
         "block_size",
         "expert_capacity_factor",
         "remat_mode",
+        "attention_remat",
         "dtype",
-        "expert_execution"
+        "attention_backend",
+        "moe_backend",
+        "expert_execution",
+        "optimizer"
       ],
-      "grad_sync_mode": "jax_spmd_replicated_nonexpert_state_plus_expert_axis_shards",
+      "grad_sync_mode": "jax_pmap_full_data_parallel_lax_pmean_gradients",
       "grad_sync_bucket_mb": 0,
       "tpu_premapped_buffer_size_env": "METIS15_JAX_TPU_PREMAPPED_BUFFER_SIZE",
       "safe_promotion_gate": "scripts/summarize_metis15_jax_tpu_sweep.py plus fixed-batch JAX quality canary must pass before promoting a tok/s setting"
@@ -283,8 +290,9 @@
     "weight_decay": 0.1,
     "optimizer_beta1": 0.9,
     "optimizer_beta2": 0.95,
-    "local_batch_size": 8,
+    "local_batch_size": 64,
     "grad_accum_steps": 8,
+    "grad_accum_impl": "scan",
     "log_interval": 20,
     "eval_interval": 1000,
     "checkpoint_interval": 2500
@@ -340,8 +348,9 @@
     "weight_decay": 0.1,
     "optimizer_beta1": 0.9,
     "optimizer_beta2": 0.95,
-    "local_batch_size": 6,
-    "grad_accum_steps": 6,
+    "local_batch_size": 8,
+    "grad_accum_steps": 8,
+    "grad_accum_impl": "scan",
     "checkpoint_interval": 2500
   },
   "chat_sft": {
@@ -401,8 +410,8 @@
       "expert_hidden": 1024,
       "activation": "squared_relu",
       "routing": "Each token is projected once from 1536d into one 512d latent vector. The router selects top-4 experts once per token, routed experts operate in the 512d latent space, and the combined latent output is projected back to the full token channel. The shared expert stays full-dim and BF16.",
-      "expert_parallel": "The Google TPU v6e-8 JAX/libTPU lane shards the 32 routed experts across the 8-chip expert mesh, so each chip owns 4 routed experts per layer. Routed token assignments are statically sort-packed into fixed expert-capacity arrays; router, attention, latent projections, shared experts, embeddings, and LM head stay replicated in the first single-host expert-parallel proof.",
-      "nemotron_megatron_alignment": "Native Metis keeps the bring-up dispatcher as static JAX sort-pack plus shard_map expert execution. True TPU throughput promotion requires the v6e compile logs to prove the layout avoids ragged dispatch, excessive resharding, and HBM pressure before any tok/s setting is promoted.",
+      "expert_parallel": "The Google TPU v6e-8 JAX/libTPU lane now uses full data parallelism for Metis-1.5: every TPU chip keeps all 32 routed experts locally, runs static sort-packed routing and expert execution on its local batch shard, then synchronizes gradients once per optimizer step with lax.pmean.",
+      "nemotron_megatron_alignment": "Native Metis keeps the bring-up dispatcher as static JAX sort-pack, but the promoted throughput branch disables shard_map expert parallelism. True TPU throughput promotion requires the v6e compile logs to prove the data-parallel layout improves utilization without loss collapse, excessive HBM pressure, or expert-drop regressions.",
       "balance_strategy": "Aux-loss-free bias routing with a 1e-3 non-gradient bias update for top-k selection plus a tiny 1e-4 standard balance aux loss for telemetry and gentle pressure.",
       "mor_strategy": "Base pretraining stays static dense. Continued pretraining switches to hard static-packed token MoR with a 1..3 recursion budget, a 1.05->1.65 average-depth warmup over the first 1B CPT tokens, fixed-capacity depth packing/scatter for recursive passes, and MoE balance-bias updates scaled by recursive active-token fraction.",
       "active_budget": "The H100 launch gate is the compute audit, not the old active-param estimate: rough_total_param_apps_per_token must stay at or below 450M before paid training."

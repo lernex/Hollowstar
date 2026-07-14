@@ -8,11 +8,25 @@ LOG_ROOT="${METIS15_JAX_COMPILE_LOG_ROOT:-$ROOT_DIR/tmp/metis15_jax_tpu_v6e_comp
 MAX_STEPS="${METIS15_JAX_COMPILE_MAX_STEPS:-3}"
 LOCAL_BATCH_SIZE="${METIS15_JAX_COMPILE_LOCAL_BATCH_SIZE:-${METIS15_JAX_LOCAL_BATCH_SIZE:-}}"
 GRAD_ACCUM_STEPS="${METIS15_JAX_COMPILE_GRAD_ACCUM_STEPS:-${METIS15_JAX_GRAD_ACCUM_STEPS:-}}"
+GRAD_ACCUM_IMPL="${METIS15_JAX_COMPILE_GRAD_ACCUM_IMPL:-${METIS15_JAX_GRAD_ACCUM_IMPL:-}}"
 BLOCK_SIZE="${METIS15_JAX_COMPILE_BLOCK_SIZE:-${METIS15_JAX_BLOCK_SIZE:-}}"
 CAPACITY_FACTOR="${METIS15_JAX_COMPILE_CAPACITY_FACTOR:-${METIS15_JAX_EXPERT_CAPACITY_FACTOR:-}}"
+OPTIMIZER="${METIS15_JAX_COMPILE_OPTIMIZER:-${METIS15_JAX_OPTIMIZER:-adamuon}}"
+ADAMUON_MATRIX_POLICY="${METIS15_JAX_COMPILE_ADAMUON_MATRIX_POLICY:-${METIS15_JAX_ADAMUON_MATRIX_POLICY:-all}}"
+MUON_NS_STEPS="${METIS15_JAX_COMPILE_MUON_NS_STEPS:-${METIS15_JAX_MUON_NS_STEPS:-}}"
+QK_CLIP_INTERVAL="${METIS15_JAX_COMPILE_QK_CLIP_INTERVAL:-${METIS15_JAX_QK_CLIP_INTERVAL:-}}"
+QK_CLIP_WARMUP_STEPS="${METIS15_JAX_COMPILE_QK_CLIP_WARMUP_STEPS:-${METIS15_JAX_QK_CLIP_WARMUP_STEPS:-}}"
 REMAT_MODE="${METIS15_JAX_COMPILE_REMAT_MODE:-${METIS15_JAX_REMAT_MODE:-manifest}}"
+REMAT_ATTENTION="${METIS15_JAX_COMPILE_REMAT_ATTENTION:-${METIS15_JAX_REMAT_ATTENTION:-manifest}}"
+ATTENTION_BACKEND="${METIS15_JAX_COMPILE_ATTENTION_BACKEND:-${METIS15_JAX_ATTENTION_BACKEND:-manifest}}"
+MOE_BACKEND="${METIS15_JAX_COMPILE_MOE_BACKEND:-${METIS15_JAX_MOE_BACKEND:-manifest}}"
 DTYPE="${METIS15_JAX_COMPILE_DTYPE:-${METIS15_JAX_DTYPE:-}}"
-EXPERT_EXECUTION="${METIS15_JAX_COMPILE_EXPERT_EXECUTION:-${METIS15_JAX_EXPERT_EXECUTION:-shard_map}}"
+WEIGHT_DTYPE="${METIS15_JAX_COMPILE_WEIGHT_DTYPE:-${METIS15_JAX_WEIGHT_DTYPE:-}}"
+CE_LOGITS_DTYPE="${METIS15_JAX_COMPILE_CE_LOGITS_DTYPE:-${METIS15_JAX_CE_LOGITS_DTYPE:-}}"
+CE_LOSS_IMPL="${METIS15_JAX_COMPILE_CE_LOSS_IMPL:-${METIS15_JAX_CE_LOSS_IMPL:-}}"
+EXPERT_EXECUTION="${METIS15_JAX_COMPILE_EXPERT_EXECUTION:-${METIS15_JAX_EXPERT_EXECUTION:-data_parallel}}"
+BATCH_SHARDING="${METIS15_JAX_COMPILE_BATCH_SHARDING:-${METIS15_JAX_BATCH_SHARDING:-replicated}}"
+MESH_SHAPE="${METIS15_JAX_COMPILE_MESH_SHAPE:-${METIS15_JAX_MESH_SHAPE:-1x8}}"
 TINY_CONFIG="${METIS15_JAX_COMPILE_TINY_CONFIG:-0}"
 REQUIRE_TPU="${METIS15_JAX_COMPILE_REQUIRE_TPU:-}"
 REQUIRE_COMPILE_LOG="${METIS15_JAX_COMPILE_REQUIRE_LOG:-1}"
@@ -37,9 +51,23 @@ echo "  log: $TRAIN_LOG"
 echo "  max steps: $MAX_STEPS"
 echo "  block size: ${BLOCK_SIZE:-manifest}"
 echo "  capacity factor: ${CAPACITY_FACTOR:-manifest}"
+echo "  optimizer: $OPTIMIZER"
+echo "  AdaMuon matrix policy: $ADAMUON_MATRIX_POLICY"
+echo "  grad accum impl: ${GRAD_ACCUM_IMPL:-manifest}"
 echo "  remat mode: $REMAT_MODE"
+echo "  attention remat: $REMAT_ATTENTION"
+echo "  attention backend: $ATTENTION_BACKEND"
+echo "  MoE backend: $MOE_BACKEND"
+echo "  muon ns steps: ${MUON_NS_STEPS:-manifest}"
+echo "  qk clip interval: ${QK_CLIP_INTERVAL:-manifest}"
+echo "  qk clip warmup steps: ${QK_CLIP_WARMUP_STEPS:-manifest}"
 echo "  dtype: ${DTYPE:-manifest}"
+echo "  weight dtype: ${WEIGHT_DTYPE:-manifest}"
+echo "  CE logits dtype: ${CE_LOGITS_DTYPE:-manifest}"
+echo "  CE loss impl: ${CE_LOSS_IMPL:-manifest}"
 echo "  expert execution: $EXPERT_EXECUTION"
+echo "  batch sharding: $BATCH_SHARDING"
+echo "  mesh shape: $MESH_SHAPE"
 echo "  tiny config: $TINY_CONFIG"
 echo "  require TPU: $REQUIRE_TPU"
 echo "  JAX_LOG_COMPILES: $JAX_LOG_COMPILES"
@@ -69,6 +97,10 @@ cmd=(
   --skip-checkpoint
   --synthetic-data
   --expert-execution "$EXPERT_EXECUTION"
+  --batch-sharding "$BATCH_SHARDING"
+  --mesh-shape "$MESH_SHAPE"
+  --optimizer "$OPTIMIZER"
+  --adamuon-matrix-policy "$ADAMUON_MATRIX_POLICY"
 )
 if [[ "$TINY_CONFIG" == "1" ]]; then
   cmd+=(--tiny-config)
@@ -79,11 +111,23 @@ fi
 if [[ -n "$GRAD_ACCUM_STEPS" ]]; then
   cmd+=(--grad-accum-steps "$GRAD_ACCUM_STEPS")
 fi
+if [[ -n "$GRAD_ACCUM_IMPL" ]]; then
+  cmd+=(--grad-accum-impl "$GRAD_ACCUM_IMPL")
+fi
 if [[ -n "$BLOCK_SIZE" ]]; then
   cmd+=(--block-size "$BLOCK_SIZE")
 fi
 if [[ -n "$CAPACITY_FACTOR" ]]; then
   cmd+=(--expert-capacity-factor "$CAPACITY_FACTOR")
+fi
+if [[ -n "$MUON_NS_STEPS" ]]; then
+  cmd+=(--muon-ns-steps "$MUON_NS_STEPS")
+fi
+if [[ -n "$QK_CLIP_INTERVAL" ]]; then
+  cmd+=(--qk-clip-interval "$QK_CLIP_INTERVAL")
+fi
+if [[ -n "$QK_CLIP_WARMUP_STEPS" ]]; then
+  cmd+=(--qk-clip-warmup-steps "$QK_CLIP_WARMUP_STEPS")
 fi
 if [[ "$REMAT_MODE" == "on" ]]; then
   cmd+=(--remat-layers)
@@ -93,8 +137,31 @@ elif [[ "$REMAT_MODE" != "manifest" ]]; then
   echo "Unsupported remat mode: $REMAT_MODE (use manifest, on, off)" >&2
   exit 1
 fi
+if [[ "$REMAT_ATTENTION" == "on" || "$REMAT_ATTENTION" == "1" || "$REMAT_ATTENTION" == "true" ]]; then
+  cmd+=(--remat-attention)
+elif [[ "$REMAT_ATTENTION" == "off" || "$REMAT_ATTENTION" == "0" || "$REMAT_ATTENTION" == "false" ]]; then
+  cmd+=(--no-remat-attention)
+elif [[ "$REMAT_ATTENTION" != "manifest" ]]; then
+  echo "Unsupported attention remat mode: $REMAT_ATTENTION (use manifest, on/off, 1/0, true/false)" >&2
+  exit 1
+fi
+if [[ "$ATTENTION_BACKEND" != "manifest" ]]; then
+  cmd+=(--attention-backend "$ATTENTION_BACKEND")
+fi
+if [[ "$MOE_BACKEND" != "manifest" ]]; then
+  cmd+=(--moe-backend "$MOE_BACKEND")
+fi
 if [[ -n "$DTYPE" ]]; then
   cmd+=(--dtype "$DTYPE")
+fi
+if [[ -n "$WEIGHT_DTYPE" ]]; then
+  cmd+=(--weight-dtype "$WEIGHT_DTYPE")
+fi
+if [[ -n "$CE_LOGITS_DTYPE" ]]; then
+  cmd+=(--ce-logits-dtype "$CE_LOGITS_DTYPE")
+fi
+if [[ -n "$CE_LOSS_IMPL" ]]; then
+  cmd+=(--ce-loss-impl "$CE_LOSS_IMPL")
 fi
 
 mkdir -p "$OUT_DIR"

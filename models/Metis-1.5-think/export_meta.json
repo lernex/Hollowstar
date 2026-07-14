@@ -1,0 +1,7 @@
+{
+  "params": 898051168,
+  "source_step": 70,
+  "dtype": "bfloat16",
+  "n_tensors": 268,
+  "format": "metis_jax_safetensors_v1"
+}

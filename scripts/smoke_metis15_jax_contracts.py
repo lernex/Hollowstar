@@ -31,8 +31,7 @@ def main() -> None:
         make_jit_train_step,
         make_repeated_batch,
         manifest_fingerprint,
-        muon_mask,
-        parameter_partition_specs,
+        optimizer_matrix_mask,
         qk_clip_with_optimizer_state,
         restore_training_checkpoint,
         save_training_checkpoint,
@@ -43,20 +42,22 @@ def main() -> None:
     import jax.numpy as jnp
 
     cfg = tiny_config(mor=args.mor)
+    cfg = cfg.__class__(**{**cfg.__dict__, "expert_execution": "data_parallel"})
     cfg.validate(local_batch_size=2)
     key = jax.random.PRNGKey(20260602)
     params = init_params(key, cfg)
-    mask = muon_mask(params)
-    opt_state = init_optimizer_state(params)
     train_cfg = JaxMetisTrainConfig(
         stage="continued_pretrain" if args.mor else "pretrain",
         local_batch_size=2,
         grad_accum_steps=2,
         learning_rate=3e-3,
         weight_decay=0.01,
+        optimizer="adamuon",
         muon_ns_steps=2,
         max_steps=args.steps,
     )
+    mask = optimizer_matrix_mask(params, train_cfg.optimizer)
+    opt_state = init_optimizer_state(params)
     micro_np = make_repeated_batch(batch_size=2, block_size=cfg.block_size, vocab_size=cfg.vocab_size)
     batch_np = stack_microbatches([micro_np, micro_np])
     batch = {key: jnp.asarray(value) for key, value in batch_np.items()}
@@ -131,20 +132,12 @@ def main() -> None:
     elif max(abs(value) for value in mor_coefs) > 1e-9:
         raise AssertionError("Pretraining MoR aux coefficient must stay disabled.")
 
-    muon_leaves = [leaf for leaf in jax.tree_util.tree_leaves(mask) if bool(getattr(leaf, "shape", ()) == ())]
-    muon_count = sum(1 for leaf in jax.tree_util.tree_leaves(mask) if bool(leaf))
-    adamw_count = sum(1 for leaf in jax.tree_util.tree_leaves(mask) if not bool(leaf))
-    if muon_count <= 0 or adamw_count <= 0 or not muon_leaves:
-        raise AssertionError("Expected both Muon and AdamW leaves in JAX optimizer mask.")
-    specs = parameter_partition_specs(params)
-    if "expert" not in repr(specs["layers"][0]["expert_w1"]):
-        raise AssertionError("Routed expert weights must be sharded over the expert axis.")
-    if "expert" not in repr(specs["layers"][0]["router"]):
-        raise AssertionError("Router output dimension must be sharded over the expert axis.")
-    if "expert" in repr(specs["embed"]):
-        raise AssertionError("Embeddings should stay replicated in the first v6e layout.")
-    if args.mor and ("expert" in repr(specs["mor_router"]["w1"]) or "expert" in repr(specs["mor_router"]["w2"])):
-        raise AssertionError("MoR depth router must stay replicated; only routed MoE experts use the expert axis.")
+    matrix_count = sum(1 for leaf in jax.tree_util.tree_leaves(mask) if bool(leaf))
+    aux_count = sum(1 for leaf in jax.tree_util.tree_leaves(mask) if not bool(leaf))
+    if matrix_count <= 0 or aux_count <= 0:
+        raise AssertionError("Expected both AdaMuon matrix leaves and auxiliary vector/scalar leaves.")
+    if not bool(mask["embed"]) or not bool(mask["layers"][0]["expert_w1"]) or not bool(mask["layers"][0]["expert_w2"]):
+        raise AssertionError("AdaMuon must cover embeddings and routed expert matrices in the DP lane.")
     clip_cfg = cfg.__class__(**{**cfg.__dict__, "qk_clip_threshold": 1e-8})
     before_momentum = opt_state.muon_momentum["layers"][0]["q"]
     before_norm = jnp.linalg.norm(before_momentum.astype(jnp.float32))
@@ -155,14 +148,14 @@ def main() -> None:
         expected_norm = before_norm * float(clip_metrics["qk_clip_min_scale"])
         after_norm = jnp.linalg.norm(clipped_opt_state.muon_momentum["layers"][0]["q"].astype(jnp.float32))
         if not bool(jnp.isclose(after_norm, expected_norm, rtol=2e-3, atol=1e-7)):
-            raise AssertionError("QK clip did not mirror the scale into Muon momentum state.")
+            raise AssertionError("QK clip did not mirror the scale into AdaMuon momentum state.")
     if jnp.linalg.norm(clipped_params["layers"][0]["q"].astype(jnp.float32)) >= jnp.linalg.norm(params["layers"][0]["q"].astype(jnp.float32)):
         raise AssertionError("Forced QK clip did not reduce Q parameter norm.")
 
     print(
         "metis15_jax_contracts_ok "
         f"mor={int(args.mor)} params={count_params(params)} start_loss={losses[0]:.6f} "
-        f"end_loss={losses[-1]:.6f} muon_leaves={muon_count} adamw_leaves={adamw_count}",
+        f"end_loss={losses[-1]:.6f} adamuon_matrix_leaves={matrix_count} adam_aux_leaves={aux_count}",
         flush=True,
     )
 

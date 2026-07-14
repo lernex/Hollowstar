@@ -824,16 +824,50 @@ class MetisRotaryEmbedding(nn.Module):
         return emb.cos().to(dtype=dtype), emb.sin().to(dtype=dtype)
 
 
-def rotate_half(x: torch.Tensor) -> torch.Tensor:
+def rotate_half_legacy_metis14(x: torch.Tensor) -> torch.Tensor:
+    """Metis-1.4 historical rotation: GPT-J interleaved pairing.
+
+    NOTE: MetisRotaryEmbedding builds cos/sin with the NeoX half-split layout
+    (cat(freqs, freqs)), so combining it with this interleaved rotation gives
+    each (x_{2i}, x_{2i+1}) pair two different angles — not a pure rotation and
+    the q.k relative-position property does not hold exactly. Metis-1.4
+    checkpoints were trained with this behavior, so it is preserved behind
+    rope_convention='legacy_metis14' for checkpoint compatibility only. Do not
+    use it for new training runs.
+    """
     first = x[..., ::2]
     second = x[..., 1::2]
     return torch.stack((-second, first), dim=-1).flatten(start_dim=-2)
 
 
-def apply_rotary_pos_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+def rotate_half_neox(x: torch.Tensor) -> torch.Tensor:
+    """NeoX/Llama half-split rotation, matching the half-split cos/sin tables.
+
+    Channel pair (i, i + head_dim/2) shares one frequency, so the transform is
+    a pure rotation. This matches jax_metis._rotate_half exactly; Metis-1.5
+    weights trained in the JAX lane must be served with this convention.
+    """
+    half = x.shape[-1] // 2
+    return torch.cat((-x[..., half:], x[..., :half]), dim=-1)
+
+
+# Backward-compatible alias for any external imports of the old name.
+rotate_half = rotate_half_legacy_metis14
+
+
+def apply_rotary_pos_emb(
+    x: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    convention: str = "legacy_metis14",
+) -> torch.Tensor:
     cos = cos.unsqueeze(1)
     sin = sin.unsqueeze(1)
-    return (x * cos) + (rotate_half(x) * sin)
+    if convention == "neox":
+        return (x * cos) + (rotate_half_neox(x) * sin)
+    if convention == "legacy_metis14":
+        return (x * cos) + (rotate_half_legacy_metis14(x) * sin)
+    raise ValueError(f"Unknown rope convention: {convention}")
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -963,6 +997,7 @@ class MetisSelfAttention(nn.Module):
             **_precision_kwargs_for_value(config, "bf16", use_fp8=use_fp8),
         )
         self.rotary_emb = MetisRotaryEmbedding(self.head_dim, base=config.rope_theta)
+        self.rope_convention = getattr(config, "rope_convention", "legacy_metis14")
         self.te_attention = None
         if config.te_dot_product_attention:
             self.te_attention = build_dot_product_attention(
@@ -1068,8 +1103,8 @@ class MetisSelfAttention(nn.Module):
         value_states = value_states.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
         cos, sin = self.rotary_emb(position_ids, dtype=hidden_states.dtype)
-        query_states = apply_rotary_pos_emb(query_states, cos, sin)
-        key_states = apply_rotary_pos_emb(key_states, cos, sin)
+        query_states = apply_rotary_pos_emb(query_states, cos, sin, convention=self.rope_convention)
+        key_states = apply_rotary_pos_emb(key_states, cos, sin, convention=self.rope_convention)
 
         if attention_mask is not None:
             self._bump_counter("attention_mask_passed_calls")

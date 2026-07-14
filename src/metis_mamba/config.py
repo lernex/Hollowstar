@@ -29,6 +29,10 @@ class MetisMambaConfig:
     mlp_bias: bool = False
     attention_dropout: float = 0.0
     rope_theta: float = 10000.0
+    # "neox" is the correct half-split rotation (matches the JAX lane; required
+    # for Metis-1.5 weights). "legacy_metis14" preserves the historical mixed
+    # convention that Metis-1.4 checkpoints were trained with.
+    rope_convention: str = "legacy_metis14"
     attention_backend: str = "auto"
     training_mode: str = "dynamic_token_mor"
     mor_enabled: bool = True
@@ -304,6 +308,8 @@ class MetisMambaConfig:
                 raise ValueError("moe_expert_parallel_init_seed cannot be negative.")
         if self.rope_theta <= 0:
             raise ValueError("rope_theta must be positive.")
+        if self.rope_convention not in {"neox", "legacy_metis14"}:
+            raise ValueError("rope_convention must be one of: neox, legacy_metis14.")
         if self.mor_max_depth <= 0:
             raise ValueError("mor_max_depth must be positive.")
         if self.mor_router_hidden_dim <= 0:

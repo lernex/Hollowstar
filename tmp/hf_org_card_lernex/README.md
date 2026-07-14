@@ -10,52 +10,41 @@ pinned: false
 
 <img
   src="https://huggingface.co/spaces/Lernex/README/resolve/main/assets/lernex-org-banner.jpg"
-  alt="Lernex turns learning material into adaptive study paths and compact AI systems"
+  alt="Lernex — custom AI models built to teach one person at a time"
   width="100%"
 />
 
-_Welcome to the official Lernex organization on Hugging Face._
+**[Lernex](https://www.lernex.net/) is AI learning that adapts to you.** Bring class notes, a half-finished assignment, a practice test, or a topic you're just curious about — it all becomes one learning path that remembers where you've been.
 
-[Lernex](https://www.lernex.net/) is an AI-personalized learning platform built around a simple idea: studying should adapt to the learner, the material, and the moment. Lernex turns notes, PDFs, slides, classroom material, questions, and learner goals into lessons, quizzes, flashcards, explanations, study paths, feedback, and memory-aware tutoring.
+No two people learn the same way. Lernex stops pretending they do.
 
-This organization is where Lernex publishes the Metis model line and related open research artifacts. Metis models are compact, efficient language models built for the specific jobs inside a learning product: tutoring, explanations, writing support, practice generation, concise reasoning, and fast product loops that cannot depend on oversized systems for every interaction.
+## Why we train our own models
 
-## What Lernex Is Building
+Here's the uncomfortable part of most "personalized learning" apps: they're a ChatGPT call in a trench coat. Wrap an API, bolt on a streak counter, call it personalized. Lernex is the other thing — we're actually training the models that do the teaching.
 
-- **A continuous learning companion**: Lernex is designed so a learner does not restart from zero every time they open a different class, generated lesson, quiz, flashcard set, or study path.
-- **Adaptive study material**: Source material can become structured lessons, checks for understanding, retrieval-friendly notes, and targeted practice.
-- **Personalized learning paths**: Lernex uses learner goals, progress, confusion signals, and prior activity to shape what should come next.
-- **Fast learning workflows**: Learning tools should feel responsive enough for everyday studying, not like heavyweight one-off AI demos.
+Off-the-shelf models don't fit the job. The big proprietary ones are too slow and too expensive to run on every lesson, hint, and quiz a learner touches. The open ones are cheap but built to be everything to everyone, so they're rarely great at the one thing we need. So we build our own.
 
-## Why We Build Models
+**Metis** is that model line: trained from scratch on Lernex's own data and schemas, designed to do one job absurdly well — teach a single person. Not the average student. **You.**
 
-Education products need a different model shape than general chat products. Some proprietary models are powerful but expensive or slow for high-frequency learning loops. Some open models are affordable but miss the tutoring, instruction-following, reasoning, or product-specific behavior Lernex needs.
+We're after hyper-compact, efficient models and the exotic architectures the frontier labs are too cautious to ship — small enough to run constantly, sharp enough to genuinely tutor, weird enough to get us somewhere the wrappers can't follow. And we open-source all of it. Try it, break it, tell us where it's wrong. That feedback _is_ the point.
 
-Metis is our answer to that mismatch: build compact models that are useful where learning quality matters, efficient enough to run often, and honest about the tradeoffs between size, reasoning, latency, and cost.
+## Latest: Metis-1.5
 
-## Featured Models
+- **[Metis-1.5 Base](https://huggingface.co/Lernex/Metis-1.5-base)** — pretrained foundation for the 1.5 line.
+- **[Metis-1.5 Think](https://huggingface.co/Lernex/Metis-1.5-think)** — the reasoning variant, for when showing the work matters.
 
-- **[Metis-1.4 Base](https://huggingface.co/Lernex/Metis-1.4-base)** - current base release for the Metis-1.4 line.
-- **[Metis-1.4 Chat](https://huggingface.co/Lernex/Metis-1.4-chat)** - conversational variant for tutoring, writing, explanations, and learning support.
-- **[Metis-1.4 Think](https://huggingface.co/Lernex/Metis-1.4-think)** - reasoning-oriented variant for compact step-by-step problem solving.
-- **[Metis-1.3 Base](https://huggingface.co/Lernex/Metis-1.3-base)**, **[Chat](https://huggingface.co/Lernex/Metis-1.3-chat)**, and **[Think](https://huggingface.co/Lernex/Metis-1.3-think)** - earlier hybrid Mamba-attention research releases.
+The whole family lives in our [collections](https://hf.co/collections/Lernex/metis-15) — including the 1.4 and 1.3 generations, if you're into a little model archaeology.
 
-## Research Direction
+## What we're betting on
 
-- **Compact tutoring models**: smaller models that can still explain clearly, generate useful practice, and behave consistently in learning contexts.
-- **Efficient reasoning**: model variants that spend compute where step-by-step problem solving matters instead of making every request expensive.
-- **Product-shaped evaluation**: evaluating models on whether they help learners understand, practice, revise, and move forward, not only on broad benchmark prestige.
-- **Deployment practicality**: keeping model size, serving cost, latency, and memory footprint in view from the start.
-
-## How This Connects to Lernex
-
-Lernex uses AI to help learners bring messy material into a system that can teach from it. The long-term goal is not just a better chatbot; it is one learning relationship that carries context across generated lessons, study paths, practice, feedback, and review.
-
-The Metis line supports that goal by giving Lernex a model family it can tune around real learning workflows instead of treating every AI job as the same generic chat problem.
+- **Compact by conviction.** A model that teaches you all day can't cost a fortune per click. Size, latency, and serving cost are in the design from line one.
+- **Exotic on purpose.** We try the architectures bigger labs file under "too risky." Efficiency this aggressive doesn't come from playing it safe.
+- **Built to teach one person.** Custom data, custom schemas, shaped around how someone actually learns — not scraped from the internet and hoped for the best.
+- **Open by default.** Weights out in the open so anyone can poke at them. Real feedback beats a benchmark screenshot every time.
 
 ## Resources
 
 - Website: [lernex.net](https://www.lernex.net/)
-- Company page: [lernex.net/company](https://www.lernex.net/company)
+- Company: [lernex.net/company](https://www.lernex.net/company)
 - Product feedback: [feedback@lernex.net](mailto:feedback@lernex.net)
-- Business contact: [business@lernex.net](mailto:business@lernex.net)
+- Business: [business@lernex.net](mailto:business@lernex.net)

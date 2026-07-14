@@ -1,0 +1,20 @@
+{
+  "source_mode": "jsonl",
+  "mixture_config": null,
+  "jsonl_path": "/workspace/metis15_cpu_prep/samples/metis15_tokenizer_sample.jsonl",
+  "jsonl_dir": null,
+  "jsonl_glob": "*.jsonl*",
+  "vocab_size": 32768,
+  "min_frequency": 2,
+  "max_samples": 12000000,
+  "streaming": false,
+  "text_column": "text",
+  "special_tokens": {
+    "<pad>": 0,
+    "<bos>": 1,
+    "<eos>": 2,
+    "<unk>": 3
+  },
+  "tokenizer_path": "/workspace/metis15_cpu_prep/artifacts/metis15_hf_assets/tokenizer.json",
+  "jsonl_text_field": "text"
+}
