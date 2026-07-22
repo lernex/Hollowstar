@@ -1,0 +1,20 @@
+Bootstrap: docker
+From: python:3.12-slim-bookworm
+
+%files
+    requirements-metis16-data.txt /opt/metis/requirements-metis16-data.txt
+    pyproject.toml /opt/metis/pyproject.toml
+    src /opt/metis/src
+
+%post
+    python -m pip install --no-cache-dir --upgrade pip
+    python -m pip install --no-cache-dir -r /opt/metis/requirements-metis16-data.txt
+    python -m pip install --no-cache-dir --no-deps --editable /opt/metis
+
+%environment
+    export PYTHONPATH=/opt/metis/src
+    export PYTHONUNBUFFERED=1
+    export HF_HUB_DISABLE_TELEMETRY=1
+
+%runscript
+    exec python -m metis_data.cli "$@"

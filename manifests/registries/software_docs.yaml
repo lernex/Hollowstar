@@ -1,0 +1,20 @@
+schema: metis.canonical-web-registry/v1
+selection: software_docs
+cutoff_start: '2025-01-01'
+cutoff_end: '2026-06-30'
+require_canonical_domain: true
+require_license_capture: true
+seeds:
+  - {id: python, url: 'https://docs.python.org/3/', product: Python, version: current}
+  - {id: pytorch, url: 'https://docs.pytorch.org/docs/stable/', product: PyTorch, version: stable}
+  - {id: typescript, url: 'https://www.typescriptlang.org/docs/', product: TypeScript, version: current}
+  - {id: nodejs, url: 'https://nodejs.org/docs/latest/api/', product: Node.js, version: latest}
+  - {id: react, url: 'https://react.dev/reference/react', product: React, version: current}
+  - {id: nextjs, url: 'https://nextjs.org/docs', product: Next.js, version: current}
+  - {id: cuda, url: 'https://docs.nvidia.com/cuda/', product: CUDA, version: current}
+  - {id: rocm, url: 'https://rocm.docs.amd.com/en/latest/', product: ROCm, version: latest}
+  - {id: rust, url: 'https://doc.rust-lang.org/stable/', product: Rust, version: stable}
+  - {id: go, url: 'https://go.dev/doc/', product: Go, version: current}
+  - {id: postgres, url: 'https://www.postgresql.org/docs/current/', product: PostgreSQL, version: current}
+  - {id: kubernetes, url: 'https://kubernetes.io/docs/', product: Kubernetes, version: current}
+

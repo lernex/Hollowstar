@@ -1,0 +1,101 @@
+sources:
+  - id: finepdfs_edu_english
+    label: FinePDFs-Edu English educational and technical PDFs
+    category: science
+    phase_tokens: {phase_a: 32000000000, phase_b: 10000000000, phase_c: 3000000000}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: huggingface, repo_id: HuggingFaceFW/finepdfs-edu, revision: 9cfabe2127faca99b3d5c4dc6d1fcb397399ebde, gated: false, allow_patterns: [data/eng_Latn/**]}
+    license: {status: reviewed, expression: ODC-By-1.0}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.40, compressed_bytes_per_token: 0.78}
+    processing: {quality_profile: pdf_technical_v1, dedup_namespace: global_pdf_web, priority: 92}
+
+  - id: pes2o
+    label: peS2o open scientific papers
+    category: science
+    phase_tokens: {phase_a: 16000000000, phase_b: 4000000000, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: huggingface, repo_id: allenai/peS2o, revision: 636a503e44a3ca1b58e01fb61eab0825cd574de0, gated: false, allow_patterns: ['**/*.jsonl.gz']}
+    license: {status: per_record_required, expression: per-paper-license}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.35, compressed_bytes_per_token: 0.70}
+    processing: {quality_profile: scientific_paper_v1, dedup_namespace: global_science, priority: 92}
+
+  - id: s2orc_arxiv_unique
+    label: S2ORC and arXiv unique papers and preprints
+    category: science
+    phase_tokens: {phase_a: 12000000000, phase_b: 3000000000, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: canonical_registry, registry: manifests/registries/science_sources.yaml, selector: s2orc_arxiv}
+    license: {status: per_record_required, expression: open-access-only}
+    acquisition: {driver: canonical_http, candidate_multiplier: 1.55, compressed_bytes_per_token: 0.72}
+    processing: {quality_profile: scientific_paper_v1, dedup_namespace: global_science, priority: 88}
+
+  - id: pmc_open_access
+    label: PubMed Central Open Access biomedical papers
+    category: science
+    phase_tokens: {phase_a: 8000000000, phase_b: 2000000000, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: canonical_registry, registry: manifests/registries/science_sources.yaml, selector: pmc_oa}
+    license: {status: per_record_required, expression: NLM-PMC-OA-license-field}
+    acquisition: {driver: canonical_http, candidate_multiplier: 1.45, compressed_bytes_per_token: 0.72}
+    processing: {quality_profile: biomedical_paper_v1, dedup_namespace: global_science, priority: 90}
+
+  - id: proof_pile2_science
+    label: Proof-Pile-2 science subset
+    category: science
+    phase_tokens: {phase_a: 4000000000, phase_b: 1000000000, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: huggingface, repo_id: EleutherAI/proof-pile-2, revision: 901a9273a770e9d4138c5ddd91802f9c5c6cdc4b, gated: false, allow_patterns: ['**/*.jsonl.zst']}
+    license: {status: per_record_required, expression: per-component}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.55, compressed_bytes_per_token: 0.65}
+    processing: {quality_profile: scientific_paper_v1, dedup_namespace: global_math_science, priority: 84}
+
+  - id: openstax
+    label: Complete OpenStax open textbooks
+    category: science
+    phase_tokens: {phase_a: 4000000000, phase_b: 1000000000, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: canonical_registry, registry: manifests/registries/science_sources.yaml, selector: openstax}
+    license: {status: reviewed, expression: per-book-CC-license}
+    acquisition: {driver: canonical_git, candidate_multiplier: 1.25, compressed_bytes_per_token: 0.78}
+    processing: {quality_profile: textbook_v1, dedup_namespace: global_science_reference, priority: 96}
+
+  - id: metis_freshscience_2025_26
+    label: Recent papers and scientific developments
+    category: science
+    phase_tokens: {phase_a: 6000000000, phase_b: 3000000000, phase_c: 1000000000}
+    provenance: {generated: false, transformed: false, fresh: true, freshness_bucket: science}
+    access: {type: canonical_registry, registry: manifests/registries/science_sources.yaml, selector: fresh_2025_26}
+    license: {status: per_record_required, expression: open-access-only}
+    acquisition: {driver: canonical_http, candidate_multiplier: 1.80, compressed_bytes_per_token: 0.82}
+    processing: {quality_profile: fresh_science_v1, dedup_namespace: global_science, priority: 100}
+
+  - id: metis_freshdocs_2025_26
+    label: Current specifications, APIs, manuals, and standards
+    category: science
+    phase_tokens: {phase_a: 5000000000, phase_b: 4000000000, phase_c: 1000000000}
+    provenance: {generated: false, transformed: false, fresh: true, freshness_bucket: official_documentation}
+    access: {type: canonical_web_registry, registry: manifests/registries/official_docs.yaml}
+    license: {status: per_record_required, expression: canonical-source-license}
+    acquisition: {driver: canonical_web, candidate_multiplier: 1.70, compressed_bytes_per_token: 0.88}
+    processing: {quality_profile: official_docs_v1, dedup_namespace: global_docs, priority: 100}
+
+  - id: stable_rfcs_specs
+    label: Stable RFCs and foundational specifications
+    category: science
+    phase_tokens: {phase_a: 2000000000, phase_b: 1000000000, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: canonical_registry, registry: manifests/registries/official_docs.yaml, selector: stable_specs}
+    license: {status: per_record_required, expression: canonical-source-license}
+    acquisition: {driver: canonical_web, candidate_multiplier: 1.25, compressed_bytes_per_token: 0.90}
+    processing: {quality_profile: official_docs_v1, dedup_namespace: global_docs, priority: 94}
+
+  - id: patents_engineering_reports
+    label: Public patents and engineering reports
+    category: science
+    phase_tokens: {phase_a: 1000000000, phase_b: 1000000000, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: canonical_registry, registry: manifests/registries/science_sources.yaml, selector: patents_reports}
+    license: {status: public_domain_or_reviewed, expression: jurisdiction-specific}
+    acquisition: {driver: canonical_http, candidate_multiplier: 1.80, compressed_bytes_per_token: 0.78}
+    processing: {quality_profile: engineering_report_v1, dedup_namespace: global_science, priority: 72}
+

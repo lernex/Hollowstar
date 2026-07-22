@@ -1,0 +1,71 @@
+sources:
+  - id: nemotron_specialized_fact_seeking
+    label: Nemotron Specialized v1.2 grounded fact-seeking data
+    category: synthetic
+    phase_tokens: {phase_a: 5000000000, phase_b: 10000000000, phase_c: 0}
+    provenance: {generated: true, transformed: true, fresh: false}
+    access: {type: huggingface, repo_id: nvidia/Nemotron-Pretraining-Specialized-v1.2, revision: 807afc1fa65c441d46ebc7d9b95295a35499a527, gated: false, allow_patterns: [Nemotron-Pretraining-Fact-Seeking/**]}
+    license: {status: reviewed, expression: CC-BY-4.0}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.25, compressed_bytes_per_token: 0.78}
+    processing: {quality_profile: grounded_synthetic_v1, dedup_namespace: synthetic_grounded, priority: 96}
+
+  - id: nemotron_v21_dqa
+    label: Nemotron-CC-v2.1 high-quality document-grounded QA
+    category: synthetic
+    phase_tokens: {phase_a: 4000000000, phase_b: 4000000000, phase_c: 0}
+    provenance: {generated: true, transformed: true, fresh: false}
+    access: {type: huggingface, repo_id: nvidia/Nemotron-CC-v2.1, revision: ba6f2aaef7ada865bb08fc08640ca292150097db, gated: manual, allow_patterns: [High-Quality-DQA/**]}
+    license: {status: requires_acceptance, expression: NVIDIA-Data-Agreement-for-Model-Training}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.20, compressed_bytes_per_token: 0.75}
+    processing: {quality_profile: grounded_synthetic_v1, dedup_namespace: synthetic_grounded, priority: 95}
+
+  - id: nemotron_specialized_reasoning_scicode
+    label: Nemotron specialized logic, algorithms, STEM reasoning, and scientific code
+    category: synthetic
+    phase_tokens: {phase_a: 4000000000, phase_b: 8000000000, phase_c: 0}
+    provenance: {generated: true, transformed: true, fresh: false}
+    access: {type: huggingface, repo_id: nvidia/Nemotron-Pretraining-Specialized-v1.2, revision: 807afc1fa65c441d46ebc7d9b95295a35499a527, gated: false, allow_patterns: [Nemotron-Pretraining-Generative/**]}
+    license: {status: requires_review, expression: CC-BY-4.0-plus-generator-distribution-review}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.45, compressed_bytes_per_token: 0.78}
+    processing: {quality_profile: verified_reasoning_v1, dedup_namespace: synthetic_reasoning, priority: 88}
+
+  - id: nemotron_wiki_rewrite
+    label: Nemotron Wiki structured factual explanations
+    category: synthetic
+    phase_tokens: {phase_a: 3000000000, phase_b: 3000000000, phase_c: 0}
+    provenance: {generated: true, transformed: true, fresh: false}
+    access: {type: derived, parents: [finewiki]}
+    license: {status: inherited, expression: CC-BY-SA-compatible-output-review}
+    acquisition: {driver: derived_after_download, candidate_multiplier: 1.35, compressed_bytes_per_token: 0.78}
+    processing: {quality_profile: grounded_synthetic_v1, dedup_namespace: synthetic_grounded, priority: 85}
+
+  - id: cosmopedia_v2
+    label: Cosmopedia v2 synthetic textbooks and explainers
+    category: synthetic
+    phase_tokens: {phase_a: 4000000000, phase_b: 4000000000, phase_c: 0}
+    provenance: {generated: true, transformed: true, fresh: false}
+    access: {type: huggingface, repo_id: HuggingFaceTB/cosmopedia-v2, revision: 3ba9d605774198c5868892d7a8deda78031a781f, gated: false, allow_patterns: ['**/*.parquet']}
+    license: {status: reviewed, expression: apache-2.0}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.45, compressed_bytes_per_token: 0.75}
+    processing: {quality_profile: textbook_synthetic_v1, dedup_namespace: synthetic_grounded, priority: 82}
+
+  - id: metis_textbook_synthetic
+    label: Source-grounded Metis lessons and worked explanations
+    category: synthetic
+    phase_tokens: {phase_a: 3000000000, phase_b: 9000000000, phase_c: 0}
+    provenance: {generated: true, transformed: true, fresh: false}
+    access: {type: derived, parents: [openstax, finepdfs_edu_english, stable_rfcs_specs]}
+    license: {status: inherited, expression: parent-record-license}
+    acquisition: {driver: derived_after_download, candidate_multiplier: 1.50, compressed_bytes_per_token: 0.78}
+    processing: {quality_profile: grounded_synthetic_v1, dedup_namespace: synthetic_grounded, priority: 94}
+
+  - id: metis_verified_reasoning
+    label: Verified derivations, corrections, counterexamples, and repairs
+    category: synthetic
+    phase_tokens: {phase_a: 2000000000, phase_b: 7000000000, phase_c: 0}
+    provenance: {generated: true, transformed: true, fresh: false}
+    access: {type: derived, parents: [nemotron_cc_math_4plus, proof_pile2_math, openstax]}
+    license: {status: inherited, expression: parent-record-license}
+    acquisition: {driver: derived_after_download, candidate_multiplier: 1.55, compressed_bytes_per_token: 0.78}
+    processing: {quality_profile: verified_reasoning_v1, dedup_namespace: synthetic_reasoning, priority: 98}
+

@@ -1,0 +1,42 @@
+schema: metis.portage-profile/v1
+name: tiny
+manifest: manifests/metis-1.6.yaml
+storage:
+  lustre_root: ${METIS_TINY_ROOT:-.metis-tiny}
+  minimum_free_tb: 0
+  recommended_free_tb: 0
+  safety_free_tb: 0
+  final_token_dtype: uint16
+  final_shard_tokens: 1024
+  directories:
+    cache: cache
+    raw: raw
+    normalized: normalized
+    eligible: eligible
+    dedup: dedup
+    contamination: contamination
+    tokenizer: tokenizer
+    token_counts: token-counts
+    selected: selected
+    release: releases/tiny
+    state: state/tiny
+    logs: logs/tiny
+scheduler:
+  mode: local
+  download: {target_bytes_per_task: 1048576, max_concurrent: 2}
+  normalize: {tasks: 2, workers: 2}
+  exact_dedup: {tasks: 2, find_tasks: 2}
+  minhash: {tasks: 2, workers: 2, num_buckets: 4, hashes_per_bucket: 2, n_grams: 3, target_similarity_operating_region: 0.8}
+  tokenize: {tasks: 2, workers: 2}
+runtime:
+  python: python3
+  environment_dir: .metis-runtime
+  require_apptainer_for_compute: false
+  hf_home: cache/huggingface
+  temp_dir: cache/tmp
+gates:
+  fail_closed: true
+  require_hf_auth_for_gated_sources: false
+  require_contamination_index: false
+  require_license_ledger: false
+  require_final_tokenizer_counts: true

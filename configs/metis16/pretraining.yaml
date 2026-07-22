@@ -1,0 +1,41 @@
+schema: metis.pretraining-contract/v1
+model: metis-1.6
+data_release: metis-1.6-data-r1
+require_verified_release: true
+token_dtype: uint16
+tokenizer_vocabulary_size: 65536
+sequence_length: 4096
+total_train_tokens: 1000000000000
+token_counter: globally_emitted_non_padding_tokens
+resume_state:
+  require_global_token_cursor: true
+  require_phase: true
+  require_shard_order_seed: true
+  require_shard_and_offset: true
+phases:
+  - id: phase_a
+    start_token: 0
+    end_token_exclusive: 700000000000
+    data_directory: phase-a
+    learning_rate_segment: warmup_then_broad_cosine
+  - id: phase_b
+    start_token: 700000000000
+    end_token_exclusive: 950000000000
+    data_directory: phase-b
+    learning_rate_segment: capability_intensification
+  - id: phase_c
+    start_token: 950000000000
+    end_token_exclusive: 1000000000000
+    data_directory: phase-c
+    learning_rate_segment: final_decay_cooldown
+ordering:
+  cross_phase_shuffle: forbidden
+  deterministic_shard_shuffle_within_phase: true
+  seed: 16062026
+  preserve_document_boundaries_in_index: true
+  pack_across_documents: true
+  insert_eos_between_documents: true
+optimizer_values:
+  status: must_be_locked_after_portage_throughput_and_stability_probe
+  note: This contract fixes data order and phase boundaries, not an unmeasured base learning rate or global batch.
+

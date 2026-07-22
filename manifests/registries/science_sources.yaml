@@ -1,0 +1,16 @@
+schema: metis.science-registry/v1
+sources:
+  s2orc_arxiv:
+    - {id: s2orc, url: 'https://allenai.org/data/s2orc', license_policy: open-access-only}
+    - {id: arxiv, url: 'https://info.arxiv.org/help/bulk_data_s3.html', license_policy: per-paper}
+  pmc_oa:
+    - {id: pmc_oa_file_list, url: 'https://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_file/', license_policy: manifest-license-field}
+  openstax:
+    - {id: openstax_books, url: 'https://openstax.org/subjects', license_policy: per-book-cc}
+  fresh_2025_26:
+    - {id: arxiv_recent, url: 'https://export.arxiv.org/', license_policy: per-paper, start: '2025-01-01', end: '2026-06-30'}
+    - {id: europe_pmc_recent, url: 'https://europepmc.org/', license_policy: open-access-only, start: '2025-01-01', end: '2026-06-30'}
+  patents_reports:
+    - {id: patentsview, url: 'https://patentsview.org/download/data-download-tables', license_policy: public-data}
+    - {id: nasa_ntrs, url: 'https://ntrs.nasa.gov/', license_policy: public-domain-or-record-license}
+

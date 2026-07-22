@@ -19,7 +19,11 @@ dependencies = [
   "huggingface_hub>=0.29",
   "transformers>=4.51",
   "safetensors>=0.4",
+  "PyYAML>=6.0",
 ]
+
+[project.scripts]
+metis-data = "metis_data.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

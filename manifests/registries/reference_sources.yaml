@@ -1,0 +1,20 @@
+schema: metis.reference-registry/v1
+sources:
+  wikimedia:
+    - {id: wikipedia_en, url: 'https://dumps.wikimedia.org/enwiki/', license: CC-BY-SA-4.0}
+    - {id: wikibooks_en, url: 'https://dumps.wikimedia.org/enwikibooks/', license: CC-BY-SA-4.0}
+    - {id: wikisource_en, url: 'https://dumps.wikimedia.org/enwikisource/', license: CC-BY-SA-4.0}
+  public_domain_books:
+    - {id: pg19, url: 'https://storage.googleapis.com/deepmind-gutenberg/', license: public-domain-review-required}
+    - {id: gutenberg, url: 'https://www.gutenberg.org/ebooks/offline_catalogs.html', license: public-domain-review-required}
+  common_pile:
+    - {id: common_pile, url: 'https://huggingface.co/collections/common-pile/common-pile-v01', license: per-component}
+  stackexchange:
+    - {id: stackexchange, url: 'https://archive.org/details/stackexchange', license: CC-BY-SA}
+  open_law:
+    - {id: pile_of_law, url: 'https://huggingface.co/datasets/pile-of-law/pile-of-law', license: per-component}
+    - {id: freelaw, url: 'https://free.law/projects/', license: per-source}
+  government:
+    - {id: govinfo, url: 'https://www.govinfo.gov/bulkdata', license: US-public-domain}
+    - {id: eurlex, url: 'https://eur-lex.europa.eu/content/help/data-reuse/reuse-contents-eurlex-details.html', license: EU-reuse-policy}
+

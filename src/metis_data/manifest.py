@@ -1,0 +1,225 @@
+from __future__ import annotations
+
+import fnmatch
+import json
+import re
+from dataclasses import dataclass
+from decimal import Decimal
+from pathlib import Path
+from typing import Any, Iterable
+
+from .config import load_yaml, repository_root
+
+
+PHASES = ("phase_a", "phase_b", "phase_c")
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    manifest: dict[str, Any]
+    errors: tuple[str, ...]
+    warnings: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+    def require_valid(self) -> dict[str, Any]:
+        if self.errors:
+            joined = "\n - ".join(self.errors)
+            raise ValueError(f"Metis data manifest validation failed:\n - {joined}")
+        return self.manifest
+
+
+def default_manifest_path() -> Path:
+    return repository_root() / "manifests" / "metis-1.6.yaml"
+
+
+def total_phase_tokens(item: dict[str, Any]) -> int:
+    return sum(int(item.get("phase_tokens", {}).get(phase, 0)) for phase in PHASES)
+
+
+def load_manifest(path: str | Path | None = None) -> dict[str, Any]:
+    manifest_path = Path(path or default_manifest_path()).expanduser().resolve()
+    manifest = load_yaml(manifest_path)
+    sources: list[dict[str, Any]] = []
+    for relative in manifest.get("source_files", []):
+        source_path = (manifest_path.parent / relative).resolve()
+        source_payload = load_yaml(source_path)
+        for source in source_payload.get("sources", []):
+            source = dict(source)
+            source["_manifest_file"] = str(source_path)
+            sources.append(source)
+    manifest["sources"] = sources
+    manifest["_path"] = str(manifest_path)
+    return manifest
+
+
+def _sum_by_phase(items: Iterable[dict[str, Any]]) -> dict[str, int]:
+    return {
+        phase: sum(int(item.get("phase_tokens", {}).get(phase, 0)) for item in items)
+        for phase in PHASES
+    }
+
+
+def validate_manifest(path: str | Path | None = None) -> ValidationResult:
+    manifest = load_manifest(path)
+    errors: list[str] = []
+    warnings: list[str] = []
+    schedule = manifest.get("schedule", {})
+    target = int(schedule.get("target_tokens", 0))
+    if manifest.get("schema") != "metis.data-manifest/v1":
+        errors.append("schema must be metis.data-manifest/v1")
+    if target != 1_000_000_000_000:
+        errors.append(f"schedule.target_tokens must be exactly 1T, got {target:,}")
+
+    phases = schedule.get("phases", {})
+    scheduled_by_phase = {phase: int(phases.get(phase, {}).get("target_tokens", 0)) for phase in PHASES}
+    if scheduled_by_phase != {
+        "phase_a": 700_000_000_000,
+        "phase_b": 250_000_000_000,
+        "phase_c": 50_000_000_000,
+    }:
+        errors.append(f"phase schedule must be 700B/250B/50B, got {scheduled_by_phase}")
+    unique = int(schedule.get("unique_target_tokens", 0))
+    replay = int(schedule.get("replay_target_tokens", 0))
+    if unique + replay != target:
+        errors.append("unique_target_tokens + replay_target_tokens must equal target_tokens")
+    for phase in PHASES:
+        phase_payload = phases.get(phase, {})
+        if int(phase_payload.get("unique_tokens", 0)) + int(phase_payload.get("replay_tokens", 0)) != scheduled_by_phase[phase]:
+            errors.append(f"{phase} unique_tokens + replay_tokens does not match phase target")
+
+    categories = manifest.get("categories", [])
+    category_ids = {item.get("id") for item in categories}
+    category_by_phase = _sum_by_phase(categories)
+    if category_by_phase != scheduled_by_phase:
+        errors.append(f"category phase totals {category_by_phase} do not match schedule {scheduled_by_phase}")
+
+    sources = manifest.get("sources", [])
+    source_ids = [str(source.get("id", "")) for source in sources]
+    if len(source_ids) != len(set(source_ids)):
+        errors.append("source ids must be unique")
+    source_by_phase = _sum_by_phase(sources)
+    if source_by_phase != scheduled_by_phase:
+        errors.append(f"source phase totals {source_by_phase} do not match schedule {scheduled_by_phase}")
+
+    by_category: dict[str, list[dict[str, Any]]] = {category: [] for category in category_ids}
+    for source in sources:
+        source_id = str(source.get("id", "<missing>"))
+        category = source.get("category")
+        if category not in category_ids:
+            errors.append(f"{source_id}: unknown category {category!r}")
+            continue
+        by_category[category].append(source)
+        if total_phase_tokens(source) <= 0:
+            errors.append(f"{source_id}: source target must be positive")
+        for key in ("provenance", "access", "license", "acquisition", "processing"):
+            if not isinstance(source.get(key), dict):
+                errors.append(f"{source_id}: missing {key} mapping")
+        access = source.get("access", {})
+        if access.get("type") == "huggingface":
+            if not access.get("repo_id"):
+                errors.append(f"{source_id}: Hugging Face source missing repo_id")
+            if not HEX40.match(str(access.get("revision", ""))):
+                errors.append(f"{source_id}: Hugging Face revision must be a pinned 40-character commit")
+        for component in access.get("components", []):
+            if not HEX40.match(str(component.get("revision", ""))):
+                errors.append(f"{source_id}: component revision must be a pinned 40-character commit")
+        if int(source.get("phase_tokens", {}).get("phase_c", 0)) and source.get("provenance", {}).get("generated"):
+            errors.append(f"{source_id}: generated data is forbidden in phase_c")
+        license_status = source.get("license", {}).get("status")
+        if not license_status or license_status == "unresolved":
+            errors.append(f"{source_id}: unresolved license status")
+
+    for category in categories:
+        category_id = category["id"]
+        expected = {phase: int(category.get("phase_tokens", {}).get(phase, 0)) for phase in PHASES}
+        actual = _sum_by_phase(by_category.get(category_id, []))
+        if actual != expected:
+            errors.append(f"category {category_id}: source totals {actual} do not match {expected}")
+
+    freshness = manifest.get("freshness_layer", {})
+    fresh_sources = [source for source in sources if source.get("provenance", {}).get("fresh")]
+    fresh_total = sum(total_phase_tokens(source) for source in fresh_sources)
+    if fresh_total != int(freshness.get("target_tokens", 0)) or fresh_total != 90_000_000_000:
+        errors.append(f"freshness layer must be exactly 90B embedded tokens, got {fresh_total:,}")
+    expected_fresh_buckets = {key: int(value) for key, value in freshness.get("buckets", {}).items()}
+    actual_fresh_buckets: dict[str, int] = {}
+    for source in fresh_sources:
+        bucket = str(source.get("provenance", {}).get("freshness_bucket", ""))
+        actual_fresh_buckets[bucket] = actual_fresh_buckets.get(bucket, 0) + total_phase_tokens(source)
+    if actual_fresh_buckets != expected_fresh_buckets:
+        errors.append(f"fresh bucket totals {actual_fresh_buckets} do not match {expected_fresh_buckets}")
+
+    vocab = int(manifest.get("tokenizer", {}).get("vocabulary_size_including_special_tokens", 0))
+    if vocab != 65_536:
+        errors.append(f"tokenizer vocabulary including special tokens must be 65,536, got {vocab:,}")
+
+    excluded = {str(item.get("id", "")).lower() for item in manifest.get("hard_exclusions", [])}
+    for source in sources:
+        blobs = [source.get("id", ""), source.get("access", {}).get("repo_id", "")]
+        if any(str(blob).lower() in excluded for blob in blobs):
+            errors.append(f"excluded benchmark/content appears as a training source: {source.get('id')}")
+
+    generated_tokens = sum(
+        total_phase_tokens(source)
+        for source in sources
+        if source.get("provenance", {}).get("generated") or source.get("provenance", {}).get("transformed")
+    )
+    if target and generated_tokens / target > 0.15:
+        errors.append(f"explicitly generated/transformed share {generated_tokens / target:.1%} exceeds 15% cap")
+    if target and generated_tokens / target > 0.12:
+        warnings.append(f"explicitly generated/transformed share is {generated_tokens / target:.1%}; review before release")
+
+    return ValidationResult(manifest=manifest, errors=tuple(errors), warnings=tuple(warnings))
+
+
+def candidate_plan(manifest: dict[str, Any]) -> dict[str, Any]:
+    rows = []
+    for source in manifest["sources"]:
+        final_tokens = total_phase_tokens(source)
+        acquisition = source["acquisition"]
+        multiplier = Decimal(str(acquisition.get("candidate_multiplier", 1.0)))
+        candidate_tokens = int(Decimal(final_tokens) * multiplier)
+        bytes_per_token = Decimal(str(acquisition.get("compressed_bytes_per_token", 0.8)))
+        rows.append(
+            {
+                "id": source["id"],
+                "category": source["category"],
+                "driver": acquisition["driver"],
+                "final_exposure_tokens": final_tokens,
+                "candidate_tokens": candidate_tokens,
+                "planned_download_bytes": int(Decimal(candidate_tokens) * bytes_per_token),
+                "phase_tokens": source["phase_tokens"],
+                "fresh": bool(source["provenance"].get("fresh")),
+            }
+        )
+    return {
+        "release": manifest["release"],
+        "target_tokens": manifest["schedule"]["target_tokens"],
+        "planned_candidate_tokens": sum(row["candidate_tokens"] for row in rows),
+        "planned_download_bytes": sum(row["planned_download_bytes"] for row in rows),
+        "sources": rows,
+    }
+
+
+def matches_any(path: str, patterns: Iterable[str]) -> bool:
+    normalized = path.lstrip("/")
+    for pattern in patterns:
+        normalized_pattern = str(pattern).lstrip("/")
+        if fnmatch.fnmatch(normalized, normalized_pattern):
+            return True
+        # Python's fnmatch treats the slash in ``**/`` literally, whereas
+        # Hugging Face allow-patterns commonly use it to mean "at any depth",
+        # including the repository root.  Keep our resolver consistent so a
+        # root-level ``data.parquet`` is not silently omitted by
+        # ``**/*.parquet``.
+        if normalized_pattern.startswith("**/") and fnmatch.fnmatch(normalized, normalized_pattern[3:]):
+            return True
+    return False
+
+
+def dump_json(payload: Any) -> str:
+    return json.dumps(payload, indent=2, sort_keys=True) + "\n"

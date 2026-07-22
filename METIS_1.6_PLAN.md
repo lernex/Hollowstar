@@ -1,24 +1,32 @@
 # Metis-1.6 — MoRE Architecture & Training Plan
 
-Status: design draft. Supersedes 1.5 (single-latent MoE, dense). Folds in the 1.5
-post-mortem findings (`METIS_1.6_NOTES.md`).
+Status: architecture draft; **pretraining data manifest v1.0 locked at 1T tokens**.
+Supersedes 1.5 (single-latent MoE, dense). Folds in the 1.5 post-mortem findings
+(`METIS_1.6_NOTES.md`). The canonical data recipe and executable release gates
+live in `manifests/metis-1.6.yaml` and `docs/metis16_pretraining_data_plan.md`.
 
 ## 0. North star
-**MoRE = per-token, two-axis adaptive compute:** dynamic recursion **depth** (Mixture-of-Recursions)
-× dynamic expert **width** (adaptive-k MoE). Hard tokens get more of both; easy tokens get less —
-nothing over- or under-shot. Goal: 1.5's efficiency instincts, but with real reasoning depth, ~6× the
-training data (**300B tokens, locked** — budget analysis in §6 shows this fits even in the
-conservative-precision case), and a deliberate strategic bet — **a tool-using reasoner, not an
+**MoRE = per-token, three-axis dynamic routing:** recursion **depth** (how many passes), expert
+**width** (how many experts per pass), and expert **pathway** (which experts at each pass). Depth and
+width are the two compute-budget axes; pathway dynamically changes the composition of that compute.
+Hard tokens get more depth and width, while every continuing token can re-route as its recurrent
+hidden state evolves — nothing over- or under-shot. Goal: 1.5's efficiency instincts, but with real
+reasoning depth, **1T final-tokenizer-measured pretraining exposures, locked** (the fused additions
+below and the Portage topology still require a fresh throughput probe),
+and a deliberate strategic bet — **a tool-using reasoner, not an
 encyclopedia** (§1.5). Backbone shifts to **hybrid Mamba-2 + attention** for cheap O(n) long-context/RAG.
 
 ## 1. Architecture (what MoRE is)
 
-Two routers decide a token's compute envelope:
+Three dynamic decisions, implemented by the continuation router and the per-pass expert router, determine
+each token's compute and processing path:
 
-1. **Depth (token-depth MoR).** A depth router maps each token to a recursion-depth bucket. The
-   **recursive block** (weight-shared) is re-applied that many times. Bucketed and **capped**:
-   1 pass (no recursion) … up to 5 passes (4 recursions), **target mean ≈2 passes**. *Capped +
-   bucketed is essential* — it's what lets us compile it (see §4). Convention (pinned, matches
+1. **Depth (per-pass continuation MoR).** Every token receives the first pass. After pass `r`, a
+   continuation router decides whether that token halts or enters pass `r+1`, conditioned on its
+   current recurrent state, retrieved depth memory, and prior route metadata. The active set is
+   monotonic (`A_{r+1} ⊆ A_r`) and packed at every pass. Depth remains **capped** at 5 passes
+   (4 recursions), with **target mean ≈2 passes**. The cap and monotonic packed schedule are what
+   keep execution bounded and compilable (see §4). Convention (pinned, matches
    Ouro's `F^(t)`, arXiv 2510.25741): **depth = passes = recursions + 1**; `depth=1` is the
    non-looped base case. Ouro's own data (§2 Decisions) shows diminishing returns exactly in this
    range — the big win is depth 1→2, real-but-shrinking gains to ~4, and their trained ceiling was
@@ -30,9 +38,194 @@ Two routers decide a token's compute envelope:
    picks **k** for the token (min 1 routed + 1 always-on shared = 2 total; max 8 routed) and then the
    top-k experts. Budget-steered to **avg ≈ 4 routed + 1 shared**. k can vary across a token's own
    recursion steps.
+3. **Pathway (per-pass expert identity).** The expert router is re-evaluated from the token's updated
+   recurrent hidden state at every pass, so the selected expert coalition can change even when `k`
+   stays constant. Shared physical weights therefore do not imply repeated identical computation:
+   successive passes can specialize into stages such as parse → manipulate → verify → revise.
 
 Per-token compute ≈ Σ_steps k(step). Experts specialize **by reasoning stage** (parse → manipulate →
 verify), because routing is re-decided each pass — a qualitative win, not just efficiency.
+
+### Naming boundary for the paper (locked)
+
+**MoRE-Core names the three-axis conditional-computation mechanism:** per-pass adaptive continuation
+(depth), variable expert count (width), and per-pass expert re-routing (pathway), operating on an
+evolving recurrent state through a weight-shared stack. Do not redefine MoRE as every component in
+Metis-1.6; that would blur the novel claim and incorrectly absorb independently sourced techniques.
+
+**MoRE-RM is the paper's named native extension:** MoRE-Core plus the dual-use, expert-aware
+recurrent depth memory and the per-pass continuation controller that consumes it. This belongs in
+the MoRE paper because it is designed around MoRE's evolving state and route history, but it is not
+required for the clean three-axis definition or its 2³ causal ablation.
+
+**Metis-1.6 is the complete model family:** MoRE-RM + the hybrid Mamba-2/attention backbone +
+recursion-aware mHC + concatenated N-gram conditional memory. mHC and N-gram memory are
+complementary integrations rather than MoRE inventions and must be cited and ablated as such. In
+the paper, report `Full MoRE-Core`, `MoRE-RM`, and `Full Metis-1.6` separately.
+
+### Fused recursion-aware mHC residual path (locked)
+
+The single residual stream is replaced by **four persistent manifold-constrained Hyper-Connection
+(mHC) streams**. Every Mamba-2 mixer, attention mixer, and shared/routed-expert sublayer reads a
+learned mixture of the streams, executes the expensive sublayer once, and writes its output back
+across all four streams. The residual mixing matrix is projected to the doubly stochastic manifold
+(Sinkhorn-normalized), preserving bounded signal propagation across physical layers and recursion.
+
+The mHC controller is **recursion-aware**: shared controller projections receive a learned pass
+embedding and small pass-specific biases/gates, allowing pass 1 through pass 5 to use different
+residual topologies without duplicating the Mamba, attention, or expert weights. This is a required
+**fused path**, with fused read/mix/write kernels, selective recomputation, and packed-active-token
+support; an unfused four-stream implementation is not an acceptable production endpoint.
+
+### Dual-use expert-aware recurrent depth memory (locked)
+
+Each active token writes typed memory entries at the two attention anchors and the end of every
+completed pass. An entry contains a learned state representation plus its pass/anchor identity,
+weighted expert-coalition embedding, routed `k`, expert-router entropy/confidence, and continuation
+confidence. At later passes, every current mHC stream attends over only that token's valid entries.
+
+The retrieved memory has **two simultaneous consumers**:
+
+1. **Representation path:** gated fusion back into the current mHC streams before the attention/MoE
+   path, so computation can recover, compare, verify, or revise earlier reasoning states.
+2. **Routing path:** the continuation, adaptive-`k`, and expert-identity heads jointly consume the
+   current state, retrieved memory, learned state-difference features, and route history. No fixed
+   cosine threshold or hand-written halt rule decides depth.
+
+Memory is bounded by `R_max=5`, stored and addressed in the packed token layout, and masked per
+token. The production implementation keeps all valid typed anchors rather than heuristically
+discarding intermediate states. Gates initialize near zero, but remain fully trainable end to end.
+
+### Concatenated N-gram conditional memory (locked)
+
+This is **not the tokenizer itself**. The 65,536-token BPE remains the tokenizer; a deterministic
+canonicalization/compression map over its token IDs supplies suffix **2-gram and 3-gram** keys to a
+separate learned conditional-memory table. Multiple independent prime-sized hash tables reduce
+collisions. Their retrieved vectors are **concatenated, then projected once**, preserving N-gram
+order/hash-head identity instead of destroying it through averaging.
+
+Allocate **0.45–0.60B additional stored parameters** to this memory while retaining all **128 routed
+experts + 1 shared expert**. This raises total stored parameters from ~2.94B to **~3.39–3.54B** while
+adding only the retrieved rows, projection, gates, and memory traffic to active computation. Use
+separate sparse-embedding optimizer settings (Adam-style states, higher embedding LR, no weight
+decay) rather than applying the dense-matrix AdaMuon policy blindly.
+
+Retrieve each token's N-gram rows once and cache them across recursion passes. Inject them through
+branch-specific, pass-aware gates at two points: after approximately physical block 2 and after the
+first attention anchor. The same static vector is never added unconditionally on every pass; the
+current recurrent state decides whether and how strongly to use it.
+
+Together the architecture has four complementary capacity primitives: static local memory
+(N-grams), persistent multi-stream workspace (mHC), iterative reasoning memory (depth attention),
+and conditional computation (MoRE depth × width × pathway).
+
+### Expected quality effects and falsification criteria
+
+These are architectural hypotheses, not promised benchmark deltas:
+
+- **mHC:** preserve several simultaneous candidate features instead of repeatedly compressing all
+  computation into one residual stream; improve gradient/signal stability through up to five uses
+  of shared weights; permit pass-specific processing topology. Expected effect: broader reasoning
+  representations, fewer destructive overwrites, and more reliable benefit from later passes.
+- **Recurrent depth memory:** give later passes direct access to earlier intermediate results and
+  route context instead of requiring the recurrent hidden state to carry everything losslessly.
+  Expected effect: better verification/revision, multi-step consistency, and recovery of useful
+  partial work rather than repeated reconstruction.
+- **Per-pass continuation:** allocate another pass using evidence produced by the current pass,
+  rather than predicting the whole depth budget before reasoning begins. Expected effect: less
+  under-thinking on unexpectedly hard tokens and less redundant looping after convergence.
+- **Expert-aware routing memory:** distinguish states produced by different expert coalitions and
+  use prior route success/confidence in the next decision. Expected effect: stronger stage-wise
+  specialization and more deliberate recruitment of complementary or verification experts.
+- **N-gram memory:** retrieve recurring entities, phrases, code fragments, and local syntactic
+  patterns directly, freeing early Mamba/attention/expert capacity for contextual reasoning.
+  Expected effect: lower perplexity, better local/closed-book knowledge and code exactness, and
+  more effective depth for reasoning and long-context attention.
+
+The combined target is not merely additive: static lookup handles memorized local structure, mHC
+keeps multiple live features, recurrent memory preserves work across passes, and MoRE chooses the
+next computation. The plan must falsify the thesis if later passes stop improving loss/accuracy,
+mHC streams collapse to identical representations, depth memory bypasses later experts, N-gram
+hash collisions dominate rare patterns, or continuation confidence is not calibrated. Required
+telemetry includes per-pass quality gain, stream diversity/CKA, memory-attention entropy and anchor
+mass, gradients through later experts, expert-route transition matrices, halt calibration, N-gram
+hit/collision frequency, and matched-compute quality against the pre-addition MoRE core.
+
+### Paper ablation contract
+
+The core claim requires the complete **2³ factorial** below. Here, `dynamic expert identity` means
+**re-routing between recursion passes**. In the `No` condition, pass 1 still routes each token, but
+its ranked expert list is cached and reused at later passes; variable `k` selects prefixes of that
+cached ranking. This isolates pathway dynamics without replacing learned MoE routing with arbitrary
+fixed experts.
+
+| Variant | Adaptive depth | Variable expert count | Per-pass expert re-routing |
+|---|---:|---:|---:|
+| Fixed LoopMoE, cached path | No | No | No |
+| Fixed LoopMoE, re-routed path | No | No | Yes |
+| Fixed-depth variable-`k`, cached path | No | Yes | No |
+| Fixed-depth variable-`k`, re-routed path | No | Yes | Yes |
+| Adaptive MoR + fixed-`k`, cached path | Yes | No | No |
+| Adaptive MoR + fixed-`k`, re-routed path | Yes | No | Yes |
+| Adaptive depth + variable-`k`, cached path | Yes | Yes | No |
+| **Full MoRE-Core** | **Yes** | **Yes** | **Yes** |
+
+Use fixed depth equal to the full model's measured mean-depth compute and fixed `k=4`; additionally
+report threshold-matched and quality-matched operating points. The factorial is accompanied by four
+external anchors: vanilla one-pass fixed-top-`k` MoE, one-pass dense, fixed-depth dense looping, and
+adaptive MoR + dense FFN. Dense controls are reported in **two matching regimes**. The
+active-compute-matched dense FFN matches the MoRE variant's active FFN parameters/FLOPs per pass and
+is the primary efficiency control. The stored-parameter-matched dense FFN matches the complete MoE
+parameter bank while holding the backbone fixed; because every dense parameter executes for every
+token, it is an intentionally much more expensive capacity control, not a compute-fair baseline.
+Report both loss-versus-token and loss-versus-training-FLOP so the total-parameter-matched dense
+model cannot receive roughly five times the active compute and be presented as an equal-budget
+comparison. A conventionally proportioned dense model scaled through width/depth may be added as a
+secondary scaling-law anchor, but it does not replace the same-backbone controls.
+
+The complete Metis integrations receive a second, conditional ablation ladder on top of Full
+MoRE-Core:
+
+| Component question | Required variants |
+|---|---|
+| Residual topology | standard residual; recursion-unaware mHC; recursion-aware mHC |
+| Recurrent memory | none; Nanbeige-style value-only; representation-only; router-only; dual-use |
+| Route metadata | state-only memory; +`k`/confidence; +expert-coalition identity |
+| Depth decision | upfront bucket; per-pass continuation |
+| Conditional memory | none; averaged N-grams; concatenated N-grams |
+| N-gram placement | input-only; one early injection; locked two-point gated injection |
+| Loop topology | full-stack recursion; LoopSplit, matched for effective depth/compute |
+
+Do not run every cross-product at full scale. Run the 2³ MoRE factorial and component ladder on a
+shared proxy configuration with identical data order, tokenizer, optimizer, active-FLOP budget, and
+training-token budget; promote only the decisive baseline, Full MoRE-Core, MoRE-RM, and Full
+Metis-1.6 to the Praxis/Logos scaling comparison. Report loss versus tokens and FLOPs, downstream
+quality, wall-clock, router/stream/memory health, and confidence intervals across seeds.
+Parameter-matched and
+active-compute-matched comparisons are both required because N-gram storage and recurrence change
+different scaling axes.
+
+**Recommended proxy manifest:** 10 physical layers (8 Mamba + 2 attention), `d_model=1792`, latent
+width `896`, expert intermediate `448`, 96 routed + 1 shared expert, dynamic `k=1–8` with mean near
+4, and the same `R_max=5`. This is approximately **1.5B core stored / 0.29B core active per pass**
+before the lightweight controllers; use a **0.25–0.35B** N-gram table only in the integration ladder.
+It is roughly half-Praxis class without naively halving every width, which would shrink matrix
+capacity much faster than twofold.
+
+Use a multi-fidelity token budget: screen the full eight-cell MoRE factorial at **10B tokens** with
+at least two seeds, then continue every cell to **50B** if allocation permits; otherwise continue
+Full MoRE-Core, the strongest non-full interaction baselines, and the external anchors to 50B. Run
+the Metis component ladder first at 10B and promote decisive variants to 50B. A single 50B run per
+cell is useful but cannot substitute for seed variance; publish both the 10B multi-seed evidence and
+50B confirmation. The proxy uses the same sampled corpus mixture and curriculum logic as the 1T
+release, not literally the first contiguous 50B tokens.
+
+Here a **seed** means one independent training replicate: different initialization, routing noise,
+dropout/stochastic decisions, and shuffled sample order. Use paired seeds across variants—seed A of
+every variant shares the same data order, as does seed B—so architectural differences are not
+confounded with easier batches. Two seeds is the minimum screen for detecting an unstable or lucky
+run; **three seeds is the preferred paper standard** for promoted 50B comparisons and permits
+meaningful uncertainty intervals. It does not mean training on two different corpora.
 
 ### Worked example (`2x + 3 = 11, so x = 4`)
 Matches the spec: `2x`→depth4, k=[2,2,1,1] (6 calls); `+`→depth2 (2); `3`→depth3 (4); `so`→depth1
@@ -45,7 +238,7 @@ don't try. Metis-1.6 is built to **reason, then research**: minimal parametric f
 reasoning + **faithful retrieval-grounding** + **abstention**. It distrusts its own memory — for
 anything factual it calls **web search / RAG**, reasons over the results, and grounds its answer in
 sources. This directly kills 1.5's #1 failure (confident fabrication), plays to MoRE's reasoning
-strength, and is why 300B tokens (not trillions) suffices.
+strength. The 1T schedule is intentionally knowledge-dense rather than a raw crawl mirror.
 
 - **Not "zero knowledge"** — enough to *formulate queries, comprehend results, and know when to
   search*. Drop only long-tail-fact *memorization*; keep reasoning + reading-comprehension + grounding.
@@ -68,13 +261,13 @@ strength, and is why 300B tokens (not trillions) suffices.
   exactly the right target for this thesis: we were never trying to buy knowledge with recursion,
   and the one paper that measured this says that's the correct read of what recursion actually does.
 
-## 2. Specs (target)
+## 2. Specs (Praxis target and family scaling)
 
-| Field | 1.5 | **1.6 (target)** |
+| Field | 1.5 | **Metis-1.6 Praxis** |
 |---|---|---|
-| Architecture | single-latent MoE, dense | **MoRE** (token-depth MoR × adaptive-k MoE) |
+| Architecture | single-latent MoE, dense | **MoRE** (per-pass continuation × adaptive-k × expert re-routing) + recursion-aware mHC + recurrent depth memory + N-gram conditional memory |
 | Backbone | transformer (attention) | **hybrid Mamba-2 + attention** (O(n) long-context for RAG) |
-| Vocab | 32,768 | **65,536** (new BPE) |
+| Vocab | 32,768 | **65,536** (new BPE; canonicalized ID sidecar for N-gram hashing) |
 | Pretrain context | 1024 | **4096** (packed stream; add EOS separators + doc masking / SSD state reset) |
 | Final context | 1024 | **131k** (NoPE attention; single-jump post-training extension, not staged — §5) |
 | `d_model` | 1536 | **2048** |
@@ -83,9 +276,12 @@ strength, and is why 300B tokens (not trillions) suffices.
 | Experts | 32 | **128 routed + 1 shared** (fine-grained, **G=16** — confirmed by scaling laws) |
 | Expert intermediate (`d_expert`) | 1024 | **512** |
 | top_k | 4 (fixed) | **dynamic 1–8 routed + 1 shared** (avg ≈ 4+1) |
-| Recursion depth | (cut) | **1–5 passes, bucketed/capped** (0–4 recursions), target mean ≈2 |
-| PT tokens | 50B | **300B, locked** (spot-priced — §6; fits even the conservative-precision case) |
-| Params | 0.9B total / 340M active | **~2.94B total / ~0.464B active per pass** (avg k); ~0.41B at min k, ~0.54B at max k |
+| Residual topology | standard single stream | **4-stream recursion-aware mHC**, fused around every mixer and expert sublayer |
+| Recurrent memory | none | **dual-use expert-aware depth memory** at both attention anchors + pass end |
+| Conditional memory | none | **0.45–0.60B concatenated 2/3-gram parameters**, two gated injection points |
+| Recursion depth | (cut) | **1–5 passes, per-pass continue/halt, monotonic packed active set**, target mean ≈2 |
+| PT tokens | 50B | **1T, locked** (700B foundation + 250B capability build + 50B premium cooldown) |
+| Params | 0.9B total / 340M active | **~3.39–3.54B stored / ~0.464B core active per pass** (avg k), plus lightweight mHC/depth-memory/N-gram projections and retrieved rows |
 
 **Param estimate (active, non-embedding, per pass):** mixers **~316M** — 10 Mamba-2 × ~29.5M
 (**expand 2.0**, restored to the paper-default: d_inner 4096, 64 heads, ngroups 8, d_state 128:
@@ -93,8 +289,10 @@ in_proj+out_proj ≈ 29.5M/block) + 2 attention × 10.5M (QKVO, 32Q/8KV×64) —
 (12 × 2 × 2048×1024) + router **3.1M** (12 × 2048×128) + active experts **94.4M** at avg k
 (5 × 12 × 1.573M; SwiGLU 1024↔512) = **~0.464B active** at avg k (4 routed + 1 shared);
 **~0.407B at min k** (1 routed + 1 shared) — **~0.539B at max k** (8 routed + 1 shared).
-**Total:** experts 128 × 12 × 1.573M ≈ 2.42B + shared 0.019B + mixers 0.316B + latent/router
-0.053B + tied embedding 0.134B (65,536 × 2048) ≈ **~2.94B**.
+**Core total:** experts 128 × 12 × 1.573M ≈ 2.42B + shared 0.019B + mixers 0.316B + latent/router
+0.053B + tied embedding 0.134B (65,536 × 2048) ≈ **~2.94B**. Add **0.45–0.60B N-gram
+conditional memory** plus small mHC/depth-memory/controller parameters for a planning total of
+**~3.39–3.54B stored**; the final manifest must report the exact controller/projection delta.
 *Provenance (this spec went through several revisions in one sitting — recorded so the numbers
 don't look inconsistent across the doc):* 18 layers/expand-1.5/0.61B active → cut to 14
 layers/expand-1.0/0.396B active (to hit a ~0.4B active target without touching the just-validated
@@ -107,13 +305,67 @@ save compute was judged too risky relative to just trading physical layers for i
 is untouched) is a free way to buy back total params with ~zero active-compute cost, but a
 2-per-cent-of-benchmark-accuracy gain (per the closest real reference, OLMoE's 32→64-expert
 ablation, itself a bigger jump than what was on the table here) wasn't judged worth the systems
-complexity — **kept at 128 experts, ~2.94B total**, prioritizing physical Mamba-2/attention layers
-and the restored expand=2.0 over a marginal total-param bump.
+complexity — **kept at 128 experts**. Storage flexibility is now spent instead on the complementary
+0.45–0.60B N-gram memory, bringing the architecture to ~3.39–3.54B stored while preserving the
+physical Mamba-2/attention layers and restored expand=2.0.
+
+### Metis-1.6 family contract
+
+`Praxis` and `Logos` are **size classes of the same Metis-1.6 generation**, not different
+architectures. They use the same 65,536-token tokenizer, verified 1T-exposure pretraining release,
+phase boundaries and data order, MoRE/mHC/depth-memory/N-gram mechanisms, loss definitions,
+curriculum, context extension, and post-training sequence. Width/depth/expert counts, batch and
+parallelism schedules, optimizer hyperparameters, and N-gram table capacity scale by class.
+
+| Field | **Praxis** | **Logos target** |
+|---|---:|---:|
+| Stored parameters | ~3.39–3.54B | **12.0B** (table slots tuned after exact controller count) |
+| Core active/pass @ avg `k` | ~0.464B | **~1.183B** before control/memory projections; ~1.2B with controllers |
+| `d_model` | 2,048 | **2,560** |
+| Physical layers | 12 (10 Mamba + 2 attention) | **20 (17 Mamba + 3 attention)** |
+| Attention indices (0-based) | ~4, ~8 | **5, 10, 15** |
+| Attention geometry | 32Q / 8KV × 64 | **40Q / 10KV × 64** |
+| Mamba inner geometry | 4,096; 64 heads; 8 groups | **5,120; 80 heads; 10 groups** |
+| Latent width | 1,024 | **1,024** |
+| Routed experts | 128 | **192** |
+| Shared experts | 1 | **1** |
+| Expert intermediate | 512 | **768** |
+| Dynamic routed `k` | 1–8, mean ~4 | **1–8, mean ~4** |
+| N-gram memory | 0.45–0.60B | **~1.60–1.70B initial range**, tuned to the exact 12B manifest |
+| Recursion | 1–5, mean ~2 | **1–5, mean ~2** |
+
+**Why Logos uses `d_model=2560` but keeps latent 1,024:** shared width and MoE bottleneck width solve
+different problems. Wider shared Mamba/attention/mHC state gives every token a richer recurrent
+workspace, while the latent only needs to preserve the subspace required by the expert bank. NVIDIA
+Nemotron 3 Super provides a strong precedent: `d_model=4096`, latent `1024`, expert intermediate
+`2688`. Logos therefore keeps Praxis's 1,024 latent, raises the expert intermediate from 512 to
+**768**, and keeps 192 routed experts. The 768 dimension is a multiple of 128 for the target FP8
+GEMMs and shifts capacity from the shared-to-expert bottleneck into the nonlinear expert transform.
+Buying only more routed identities would add stored specialization without raising active capacity
+at fixed mean `k≈4`, reduce tokens per expert GEMM, and break the clean `EP=192 × replica 2`
+mapping if the count does not divide the 384-APU allocation.
+
+**Logos sizing derivation (planning estimate):** each routed expert in a layer is
+`3 × 1024 × 768 = 2.3593M` parameters. Across 20 layers and 192 routed experts this is **9.060B**;
+the shared expert contributes **0.047B**. Scaling the locked Praxis mixer geometry gives
+approximately **0.833B mixers**, plus **0.105B latent projections**, **0.010B expert routers**, and
+**0.168B tied embeddings**, for a **~10.222B core stored** estimate. At mean routed `k=4`, the
+active experts contribute **0.236B/pass**, producing **~1.183B core active/pass before the mHC,
+memory, continuation, and fusion controllers**. Those controllers should bring the real active
+manifest close to the A1.2B target. The remaining **~1.778B** to the 12B stored target is their
+envelope plus the N-gram tables; tune deterministic table slots only after exact controller counts
+are instantiated. `Logos-A1.2B` remains a rounded active-class label, and the manifest must publish
+both core-active and all-control-active counts rather than hiding the delta.
 
 **Decisions (locked):**
-- **Total params ~2.94B**, **~0.464B active per *pass*** (avg k) — FLOPs/token ≈
-  6 × (0.464B × avg depth + 0.134B lm_head) + a small (~2%) attention-quadratic buffer at 4096 ctx
-  ≈ **6.5 GF/token** @ target mean depth 2 (see §6 for the full budget this produces).
+- **Total stored params ~3.39–3.54B**, retaining 128 routed experts; **~0.464B core active per
+  *pass*** (avg k) plus mHC/depth-memory/N-gram control work. The previous **6.5 GF/token** estimate
+  is the base-core lower bound, not the final fused-architecture measurement. §6 carries it only as
+  a reference until the fused single-GPU probe supplies real tokens/sec and MFU.
+- **Recursion-aware 4-stream mHC, dual-use expert-aware recurrent depth memory, per-pass
+  continuation routing, and 0.45–0.60B concatenated 2/3-gram memory are locked architecture**, not
+  optional post-hoc experiments. Their internal sizes and kernel layouts may be tuned without
+  removing the capabilities.
 - **Hybrid ratio: 10 Mamba-2 + 2 full attention (16.7% of mixers), attention at block indices ~4 and
   ~8; block 0 and block 11 are Mamba-2.** Research consensus (Waleffe et al. 2406.07887: loss
   minimized at ~8% attention, evenly dispersed, Mamba-first enables NoPE; Jamba ablation: 1:3 vs 1:7
@@ -183,10 +435,15 @@ and the restored expand=2.0 over a marginal total-param bump.
 - Training-time depth strategy: **MoR-style packed** (GPU-native — §4, §6); revisit only if the
   packed path fails parity.
 
-## 3. The central risk: dynamic compute on a static-graph TPU
+## 3. The central systems risk: packed dynamic compute across expert-parallel ROCm ranks
 
-This is the make-or-break, and the reason MoR was cut from 1.5. XLA/TPU compile **static shapes**;
-per-token dynamic depth + k is data-dependent ragged control flow. Two ways to realize it:
+This remains the make-or-break issue. The original failure mode was XLA/TPU static shapes; Portage
+removes that specific constraint but adds a harder distributed one: per-token continuation,
+variable `k`, expert re-routing, mHC streams, and typed memory create ragged traffic across up to
+192 EP ranks. The implementation must make dynamic compute cheaper in measured wall-clock while
+providing useful Slingshot evidence, not merely move the saved FLOPs into dispatch overhead.
+
+The historical two execution forms remain useful references:
 
 - **(a) Envelope + mask** — run max depth and max k for everyone, mask the inactive. Trivial to
   compile and train, **but saves no compute** (you pay the maximum). Useful only for *adaptive
@@ -197,46 +454,53 @@ per-token dynamic depth + k is data-dependent ragged control flow. Two ways to r
 
 We already have the machinery from the 1.5 codebase: `mor_compute_mode="static_packed_hard"`,
 `_decoder_layer_packed_queries`, `_pack_assignments_cumsum`, and `mor_pack_active/valid/overflow`
-metrics. **1.6's core engineering job is productionizing the packed path** and proving it both trains
-and yields wall-clock savings on the GPU. (Section kept for history: the packing machinery was
-designed under TPU constraints; on the RTX PRO 6000 the dynamic-compute win is native — the packed
-path ports, minus the XLA static-shape gymnastics.)
+metrics. **1.6's core engineering job is productionizing the packed path in fused HIP/ROCm kernels**,
+integrating it with expert all-to-all, and proving both numerical parity and wall-clock benefit from
+1 APU through EP=192. The TPU machinery remains a correctness reference; the RTX PRO 6000 remains
+a CUDA canary/fallback, while Portage §6B is the launch target.
 
-## 4. Training the discrete decisions (depth + k)
+## 4. Training the discrete decisions (continuation + k + pathway)
 
-**Depth — two strategies, pick with the hardware (§6):**
+**Depth — per-pass continuation is the production strategy:**
 
-- **Ouro-style (recommended baseline; best for TPU): fixed-depth train + early-exit inference.**
+- **Ouro-style diagnostic baseline (best for TPU): fixed-depth train + early-exit inference.**
   Train every token at the *full* max depth — static shapes, **no packing needed during training** —
   and learn **early-exit gates** that make depth adaptive *at inference only*. Ouro's proven two-stage
   recipe: Stage I entropy-regularized depth exploration (uniform-prior KL); Stage II gate trained on
   observed per-step loss improvement; at inference exit when CDF(t) > threshold q. Lowest engineering
-  risk, fully static on TPU. Cost: ~R× training compute per token (prohibitive at 300B — see §6).
-- **MoR-style (for GPU / compute-constrained): packed adaptive-depth during training.** Per-token
-  depth router + recursion-wise packing so training only pays each token's chosen depth — saves
-  training compute, but needs the dynamic/packed path (hard on TPU, native on GPU).
+  risk, fully static on TPU. It remains an ablation and fallback, not the target architecture. Cost:
+  ~R× training compute per token (prohibitive at 1T — see §6).
+- **MoRE production path (GPU): packed per-pass continuation during training and inference.** After
+  each pass, the continuation head reads the current mHC streams, recurrent depth memory, and route
+  history. Hard continue decisions produce a monotonic active set for the next packed pass; training
+  uses a differentiable continuation estimator plus hard-path straight-through/parity checks. The
+  model never commits to a complete depth bucket from its initial state.
 
 **k (adaptive width)** is capacity-based MoE regardless (solved in 1.5): predict per-token k, compute
 top-`k_max`, mask down to k.
 
 Common to both:
 
-- **Soft-expected → hard at inference.** Where a decision must stay differentiable, train with expected
-  outputs (depth = Σ_d p_d · block_d; experts weighted by router probs) and switch to hard at inference —
-  the `soft_fixed_depth` ↔ `static_packed_hard` split 1.5 prototyped.
+- **Soft survival objective + hard packed execution.** Let each pass predict a continuation hazard;
+  cumulative survival probabilities define the differentiable expected loss across exits. Execute
+  the hard monotonic packed path with a straight-through estimator during the routed phase, and
+  maintain a soft-envelope reference for numerical/gradient parity. Experts remain weighted by
+  router probabilities in the soft reference and top-`k` in the hard path.
 - **Compute-budget control.** Aux loss targeting an *average* depth and *average* k (**mean depth
   ≈ 2**, mean routed-k ≈ 4) so the model doesn't collapse to all-min (free, dumb) or all-max
   (expensive). This is the steering wheel for the efficiency/quality tradeoff. Mean depth 2 (not
   the earlier 2.5) is directly evidenced by Ouro's own per-step accuracy curve (§2 Decisions) —
   the biggest gain is 1→2, real-but-smaller gains to ~4, marginal beyond that.
-- **Dual load balancing.** Separate aux losses for **expert load** (per recursion step) and **depth
-  distribution**. Anchor router scores by construction — 1.5's sigmoid router with a gameable aux
-  loss collapsed (drops hit 38%); **use softmax scores + z-loss** on both routers from day one.
+- **Separate control regularization.** Use aux-loss-free bias balancing plus a small telemetry loss
+  for **expert load** at every pass; use softmax logits + z-loss for expert identity. The continuation
+  head instead receives survival-profile, compute-budget, entropy-floor, and calibration losses—do
+  not force a Bernoulli halt decision into the expert-router loss. Monitor halt rate and correctness
+  conditioned on pass, route-history entropy, and expert utilization after memory reads.
 - **Curriculum / ramp.** Warm-start **dense** (depth 1, fixed k) for the first ~5–10% of tokens so
   the backbone learns basic LM, then ramp in adaptive depth/k. Always-init both routers (even in the
   dense phase) so checkpoints stay stage-flip compatible — a 1.5 lesson.
 - **k-predictor design.** Token-choice adaptive-k: predict a per-token k (small head → integer bucket
-  1–5, or a learned probability threshold over expert scores so k emerges naturally). For static
+  1–8, or a learned probability threshold over expert scores so k emerges naturally). For static
   compile: always compute top-`k_max`, mask down to the chosen k.
 
 ## 5. Data & post-training (fold in every 1.5 lesson)
@@ -244,13 +508,14 @@ Common to both:
 The 1.5 eval (`METIS_1.6_NOTES.md`) said the bottleneck was tokens + post-training choices, not
 architecture. So:
 
-- **300B PT tokens, locked** — the smaller active size (~0.464B) + cheap spot GPU-hours are being
-  spent on *more tokens*, not saved; §6's budget table shows this fits even in the conservative
-  precision/MFU case while preserving the required 30–40% post-training/RL reserve. Since facts
-  come from retrieval (§1.5), **bias the mix toward reasoning / math / code / reading-comprehension
-  / instruction** over encyclopedic crawl — enough world model to *research*, not to *memorize*.
-  English-filtered, deduped, benchmark-decontaminated; new 65,536 vocab; packed at 4096 with EOS
-  separators + doc masking.
+- **1T PT exposures, locked** — measured only with the final Metis tokenizer after filtering,
+  cross-source deduplication, and benchmark decontamination. The source of truth is
+  `manifests/metis-1.6.yaml`: 525B web, 160B code, 85B math, 125B science/technical,
+  70B synthetic pedagogical/factual, 25B books/reference/legal, and 10B translated/native
+  multilingual. The 90B freshness layer (35B web + 35B software + 10B science + 10B official
+  documentation) is inside the trillion. Target 875B unique tokens plus 125B controlled replay;
+  no generated data is eligible for Phase C. New 65,536-vocab byte-level BPE; packed at 4096 with
+  EOS separators, document boundaries, and Mamba state reset at document boundaries.
 - **Keep `<think>` chain-of-thought traces** in SFT (`keep_think=True` on OpenThoughts/OpenR1/
   Bespoke-Stratos/s1K). 1.5-think emitted *zero* CoT because prep stripped them — the single biggest
   post-training miss. MoRE's depth axis is the natural substrate for reasoning; pair it with visible CoT.
@@ -316,7 +581,8 @@ where and which parts are our own addition):**
      half (every mechanism described is about matching the teacher's full probability distribution,
      which a DPO-style preference margin doesn't require). None of that literature examined a
      **recursive (MoRE) or MoE** student, so it's not known whether Metis-1.6's effective capacity
-     (up to ~2.3B via max-depth recursion; ~2.94B total stored params) mitigates this the way raw
+     (up to ~2.3B core capacity exposure via max-depth recursion; ~3.39–3.54B total stored including
+     static N-gram memory) mitigates this the way raw
      dense active-params would predict — this is genuinely untested territory, not just for us but
      for anyone. **Decision: proceed anyway** — betting on MoRE's capacity being real is the point of
      testing a novel architecture, not something provable in advance. **Cheap mitigations kept in
@@ -427,7 +693,12 @@ Two more things every one of these papers do that we should copy:
   our scale — size this against our actual long-document length distribution once the data
   pipeline (§7) is built, not a borrowed ratio.
 
-## 6. Compute plan — RTX PRO 6000 Blackwell on Azure (1× probe → 2× for the full run)
+## 6. Historical 300B Azure sizing — superseded for the 1T Portage run
+
+> **Superseded 2026-07-21.** The section below is retained as architecture/precision research
+> history only. It is not the current Metis-1.6 launch plan, does not size the 1T schedule, and its
+> Azure cost table must not be used for Portage reservations. The current operational contract is
+> §6A and `docs/metis16_pretraining_data_plan.md`.
 
 **Hardware:** **RTX PRO 6000 Blackwell Workstation Edition** (GB202, **sm_120** — a distinct target
 from datacenter sm_100; expect software-lag potholes) — 96 GB GDDR7 @ ~1.79 TB/s, PCIe 5.0 x16
@@ -460,8 +731,10 @@ quantization overhead (RHT, 2D scaling) can even make it *slower* than FP8 (nano
 - **MXFP8 (E4M3)** — all linear GEMMs by default: routed+shared experts (grouped), latent down/up,
   attention QKVO, Mamba in_proj and **out_proj** (Nemotron 3 finding: out_proj *underflows in NVFP4*
   — MXFP8 explicitly, never FP4).
-- **BF16** — embeddings/lm_head, norms, depth gates, residual stream.
+- **BF16** — token/N-gram embeddings and lm_head, norms, mHC streams, recurrent-depth-memory values,
+  continuation gates, and residual state.
 - **FP32** — **router logits + softmax/top-k** (DeepSeek/Megatron practice; it's 2048×128 — free),
+  mHC Sinkhorn projection and depth-attention logits/softmax,
   Mamba-2 SSD scan/conv/dt internals (fused-kernel default — don't touch), master weights, AdaMuon
   states, CE-loss accumulation (**chunk the 65,536-wide logits** — full bf16 logits at 4096 ctx ≈
   0.5 GB/seq).
@@ -473,11 +746,13 @@ quantization overhead (RHT, 2D scaling) can even make it *slower* than FP8 (nano
   faster; Nemotron 3 Super saw no gain switching NVFP4→MXFP8 at 19T tokens, so staying MXFP8 is
   not a quality sacrifice.
 
-**Throughput & wall-clock (@ target mean depth 2, corrected 0.464B active):**
-- FLOPs/token ≈ 6 × (0.464B × 2 + 0.134B lm_head) + ~2% attention-quadratic buffer at 4096 ctx
+**Base-core throughput reference (@ target mean depth 2, corrected 0.464B active):**
+- Before mHC/depth-memory/N-gram overhead, FLOPs/token ≈ 6 × (0.464B × 2 + 0.134B lm_head) + ~2% attention-quadratic buffer at 4096 ctx
   (2 attn layers × ~2 average effective applications) ≈ **6.5 GF/token** → 300B ≈ **1.95 × 10²¹
-  FLOPs total**.
-- **Precision paths, using the corrected peaks (1000 TF FP8 dense / 2000 TF FP4 dense):**
+  FLOPs total**. The new architecture adds little dense parameter compute but meaningful residual
+  bandwidth, depth-memory attention, projections, and sparse lookup traffic. Until the fused probe,
+  use **+10–30% wall-clock** as a planning range—not as a measured result.
+- **Base-core precision paths, using the corrected peaks (1000 TF FP8 dense / 2000 TF FP4 dense):**
 
   | Path | Peak dense | MFU | Effective TF | tok/s (1 GPU) |
   |---|---|---|---|---|
@@ -496,7 +771,7 @@ quantization overhead (RHT, 2D scaling) can even make it *slower* than FP8 (nano
   (`NC288ds_xl_RTXPRO6000BSE_v6`), SR-IOV vGPU. **Spot is required** — PAYG is 5× the cost.
 - *(Context only, not usable — GPU credits are Azure-locked):* Verda ~$0.66 spot, Nebius ~$0.95
   preemptible, Vast.ai from ~$1.03 — all cheaper, but off the table given the credit constraint.
-- **Budget table, 300B tokens, at $1.10/GPU-hr spot** (GPU-hrs = 1.95×10²¹ / (eff TF × 3.6×10¹⁵)):
+- **Base-core budget table, 300B tokens, at $1.10/GPU-hr spot** (GPU-hrs = 1.95×10²¹ / (eff TF × 3.6×10¹⁵)):
 
   | Path | Effective TF | GPU-hrs (300B) | Cost @ $1.10 | % of $5,000 |
   |---|---|---|---|---|
@@ -506,22 +781,24 @@ quantization overhead (RHT, 2D scaling) can even make it *slower* than FP8 (nano
   | NVFP4 mid | 500 | 1,083 | **$1,192** | 23.8% |
   | NVFP4 optimistic | 600 | 903 | **$993** | 19.9% |
 
-- **Verdict: 300B tokens is locked, GO on spot pricing — even the worst case fits.** MXFP8-
-  conservative (no NVFP4 required) costs $2,980, leaving **$2,020 (40.4%) for post-training/RL** —
-  right at the top of the required 30–40% reserve. Every better-than-worst-case outcome (better
-  MFU, or NVFP4 landing) only grows that reserve — NVFP4-mid alone frees ~77% of the budget for
-  post-training. This is a materially better position than earlier in this design pass, when 300B
-  *depended* on NVFP4 working out — now it's pure upside, not a requirement.
+- **Architecture-adjusted planning range:** applying +10/+20/+30% to the conservative MXFP8 core
+  case yields approximately **$3,278 / $3,576 / $3,874**, leaving **$1,722 / $1,424 / $1,126** of
+  the $5,000 budget before post-training. Therefore the historical 300B proposal fit that old
+  budget, but it is no longer the active Metis-1.6 token schedule; the old claim of a
+  guaranteed 40% RL reserve is retired until the fused path is measured. Better MFU or NVFP4 grows
+  the reserve; an unfused implementation that falls outside this range blocks the full run.
 - Calendar time at a representative middle scenario (300 TF, MXFP8-mid): **~75 days on 1 GPU,
-  ~38 days on the 2-GPU VM** (same total dollar cost either way — 2 GPUs just runs it in roughly
-  half the wall-clock). **Preemption-safe checkpointing is mandatory on spot** (frequent async
-  orbax-style saves + auto-resume — infra exists from 1.3/1.5).
+  ~38 days on the 2-GPU VM before the +10–30% architecture range**, or roughly 83–98 / 42–49 days.
+  Same total dollar cost either way—2 GPUs primarily reduce calendar time. **Preemption-safe
+  checkpointing is mandatory on spot** (frequent async saves + auto-resume).
 
-**Multi-GPU over PCIe (2× on Azure) — data-parallel only, and it's fine:**
-- The wire carries **gradients of TOTAL params (~2.94B), not active (0.464B)** — over a big batch
-  every expert gets tokens, so the full grad buffer ships. bf16 grads = **5.9 GB**; a 2-GPU
-  exchange moves that once per optimizer step ≈ **0.1–0.2 s** at realistic NCCL-over-PCIe
-  (25–50 GB/s eff.) — small relative to a real compute step.
+**Multi-GPU over PCIe (2× on Azure) — data-parallel core + replicated sparse memory:**
+- The dense/MoE core still communicates gradients for **~2.94B parameters**, not only the active
+  0.464B, because a large accumulated batch reaches every expert: **~5.9 GB bf16** per step. The
+  0.45–0.60B N-gram table is replicated but uses custom sparse touched-row synchronization; do not
+  materialize/all-reduce another dense 0.9–1.2 GB gradient buffer. If sparse synchronization is not
+  correct and faster in measurement, shard the table lookup rather than silently accepting dense
+  traffic.
 - **Amortize via grad accumulation:** at a large accumulated global batch, comms are a low
   single-digit-% overhead, overlappable with backward → effectively free. Comm per optimizer step
   is fixed; make the step big.
@@ -535,66 +812,247 @@ quantization overhead (RHT, 2D scaling) can even make it *slower* than FP8 (nano
   interconnect — not a cross-VM bridge). Budget ~1.2 kW GPU power for the pair.
 
 **Memory per GPU (96 GB):**
-- 1× pure-DP: fp32 masters 11.8 + AdaMuon ~23.5 + quantized compute weights ~3.5 (MXFP8 experts +
-  bf16 rest) + bf16 grads 5.9 ≈ **~45 GB static** → ~51 GB for activations at 4096 (remat the
-  recursion loop; chunked CE) — very comfortable.
-- 2× with ZeRO-1: sharded masters+opt ~17.6 + weights 3.5 + grads 5.9 ≈ **~27 GB static** → large
-  activation headroom → bigger microbatches → better MFU.
-- Full training checkpoint ≈ 35–45 GB (masters + opt states + quantized weights) — write async;
+- The original ~2.94B core occupied **~45 GB static** in 1× pure DP. A BF16 0.45–0.60B N-gram
+  table plus FP32 master/Adam states adds approximately **6.3–8.4 GB**, before sparse-gradient
+  transients and small controller weights: plan **~52–55 GB static**. Four mHC streams and typed
+  depth memory increase activation pressure substantially, so aggressive selective rematerialization
+  and measured microbatch sizing are mandatory; “very comfortable” is no longer assumed.
+- 2× with ZeRO-1 and sharded N-gram optimizer states plans roughly **~31–34 GB static per GPU** plus
+  sparse-gradient transients, leaving the preferred activation headroom for the fused architecture.
+- Full training checkpoint planning range becomes approximately **42–55 GB**—write async;
   spot preemption makes checkpoint cadence a correctness requirement, not a nicety.
-- **Scale context:** 300B = 6× 1.5's 50B — but facts come from *retrieval*, not parameters (§1.5), so
-  the tokens buy reasoning / comprehension / grounding, not encyclopedic recall.
+- **Scale context (historical):** 300B was 6× 1.5's 50B. The current 1T Portage schedule is 20×
+  Metis-1.5's 50B and is governed by the measured-token release contract in §6A.
 
-**De-risk order:** prove MXFP8 throughput + the packed MoRE path on a single card first (NVFP4 A/B
-after — it's upside, not a gate); confirm the 2-GPU VM's real-world scaling before committing to
-the full multi-week run. 300B tokens is locked regardless of the outcome (§6 budget table above) —
-what the probe decides is calendar time and how much of the reserve gets spent on RL vs banked.
+**De-risk order:** prove the complete fused architecture—packed continuation, recursion-aware mHC,
+typed recurrent memory, and cached N-gram lookup—on one card before extrapolating the base-core
+table. Then confirm sparse table synchronization and 2-GPU scaling; NVFP4 remains upside, not a
+gate. This probe still decides the training topology and honest calendar estimate, but not the
+now-locked 1T data schedule.
+
+## 6A. Portage data and training launch plan — current
+
+Metis-1.6 now uses **exactly 1,000,000,000,000 final-tokenizer-measured training exposures**. The
+release contract is declarative in `manifests/metis-1.6.yaml`; detailed source rows are under
+`manifests/sources/`. The three phases are fixed at **700B / 250B / 50B**. The first 875B exposures
+are unique after global exact and near-duplicate removal. Phase B contains 75B controlled replay,
+and Phase C is a 50B premium cooldown made entirely from high-priority, non-generated records.
+
+The embedded freshness layer is **90B**, not an addition to the trillion: 35B fresh general web,
+35B fresh software, 10B recent open science, and 10B current official documentation. Every target
+is enforced after filtering, global deduplication, benchmark decontamination, and counting with the
+accepted 65,536-token Metis tokenizer. Published source-token estimates never satisfy a target.
+
+The operator interface is the restartable Portage data factory:
+
+1. `./ops/bootstrap.sh --profile portage`
+2. `./metisctl doctor --profile portage`
+3. only after every production gate passes, `./metisctl submit download --profile portage`
+4. after acquisition finishes, `./metisctl submit build --profile portage`
+5. `./metisctl status --profile portage`, `./metisctl report --profile portage`, or
+   `./metisctl resume --profile portage` after a failed task
+
+The packaged Hugging Face resolver/downloader is implemented. Production launch remains red until
+the HPE-approved Common Crawl, GitHub/repository, canonical-source, and derived-data materializers
+produce local payloads; a URL, repository index, or generation recipe is never counted as downloaded
+training text. The license-review attestation and real Lustre/Slurm/account settings are separate
+fail-closed gates. Keep HPE-specific configuration and credentials outside the generic repository.
+
+The Slurm graph resolves pinned sources, hydrates candidates, normalizes canonical records, applies
+fail-closed quality and license gates, runs global exact and MinHash deduplication, builds a separate
+evaluation-only contamination index, trains and validates the tokenizer, performs exact source and
+phase selection, writes 1,000 one-billion-token uint16 shards, rehashes them, and emits `RELEASE.json`.
+Training must refuse to start without that verified release. The operational and data details live in
+`docs/metis16_pretraining_data_plan.md`.
+
+## 6B. Portage model-training topology — current
+
+**Portage is the primary Metis-1.6 training platform; Azure RTX PRO 6000 is fallback/canary only.**
+The operating allocation is 512 AMD Instinct MI300A APUs on HPE Cray EX255a with Slingshot-11.
+The public system record reports 129,024 aggregate CPU+GPU cores, which is exactly 512 ×
+(24 Zen 4 CPU cores + 228 CDNA 3 GPU compute units), and HPE identifies Portage as its real-world
+HPC/AI benchmarking system. Each MI300A supplies 128 GB coherent HBM3 and ~5.3 TB/s local peak
+bandwidth. Sources: `https://top500.org/site/51014/`, HPE's 2025 Portage announcement, and AMD's
+MI300A data sheet. Exact reservation, Slingshot group layout, node/NIC mapping, software modules,
+filesystem paths, and job limits remain live site facts and must be captured before launch.
+
+### Simultaneous family allocation
+
+| Run | APUs | Likely nodes at 4 APUs/node | Logical expert topology | Purpose |
+|---|---:|---:|---|---|
+| **Metis-1.6 Praxis** | **128** | **32** | **EP=128, expert replica count=1** | one routed expert per APU; maximum cross-node routing exposure |
+| **Metis-1.6 Logos** | **384** | **96** | **EP=192, expert replica count=2** | two 192-APU expert replicas; one routed expert per APU per replica |
+
+Do not inflate Logos to 384 experts merely to mirror the device count. The 192-expert, two-replica
+layout preserves compute-efficient 768-wide experts, hits the 12B/A1.2B model target, uses all 384
+APUs, and adds both expert all-to-all and cross-replica gradient synchronization—the communication
+surfaces needed for the Slingshot study. No tensor or pipeline parallelism is planned initially;
+the model states fit comfortably in 128 GB/APU. Shared experts and dense Mamba/attention/controller
+weights are replicated within the logical data groups; routed experts are partitioned by EP rank.
+N-gram tables start replicated per rank because deterministic rows and optimizer states fit; a
+sharded-table lane is a measured systems ablation, not an unverified launch dependency.
+
+Concretely, the 384 APU allocation contains **two independent 192-rank expert-parallel groups**.
+Within each group, rank `e` owns routed expert `e`, so every one of the 192 experts has two physical
+copies across the job. Each replica dispatches its own token shard with a 192-way all-to-all/all-to-
+all-v; corresponding expert copies then synchronize gradients across the two replicas. Dense,
+shared-expert, controller, and embedding gradients use their appropriate data-parallel groups. Thus
+`EP=192, replica=2` uses all 384 APUs and creates both the expert-dispatch traffic and replica-sync
+traffic relevant to the Slingshot study; it does not leave 192 APUs idle.
+
+### ROCm precision and kernel contract
+
+The CUDA/Transformer-Engine MXFP8/NVFP4 implementation assumptions in historical §6 do not transfer
+unchanged to MI300A; the **math and architecture do**. Portage's production target is **FP8-first**:
+use native CDNA 3 FP8 for every numerically validated, throughput-positive GEMM, with a BF16 reference
+lane for parity and fallback. NVFP4 is not a Portage target.
+
+- **FP8 by default where supported:** routed/shared expert GEMMs; latent down/up projections;
+  attention Q/K/V/O projections; Mamba input/output projections; recurrent-memory Q/K/V/output;
+  mHC controller projections; N-gram fusion projections; and the LM-head matrix multiplication if
+  the loss path remains high precision. Every exact shape must be benchmarked because library
+  alignment/layout restrictions and small grouped GEMMs can erase the nominal FP8 advantage.
+- **BF16 where state or reductions are sensitive:** embeddings and retrieved table rows, residual
+  and mHC streams, Mamba recurrent state/scan tensors, normalization and gates, attention state when
+  the installed FP8 attention kernel lacks parity, activation outputs between GEMMs, and initially
+  gradients/collectives. FP8 collectives are enabled only if Portage's installed RCCL stack supports
+  them and end-to-end tests beat BF16 communication without quality loss.
+- **FP32:** master weights and optimizer states; router/continuation logits; Sinkhorn normalization;
+  depth-attention logits, softmax and reductions; loss/logit accumulation; and numerically sensitive
+  Mamba parameters or reductions identified by parity tests.
+
+Fused kernels must be HIP/ROCm-native (hipBLASLt/Composable Kernel or the validated site stack), and
+the packed active-token path may not fall back silently to host or unfused Python loops. “BF16
+reference lane” means the oracle used to validate FP8, not the intended precision of the full run.
+
+### Dynamic execution and dropless routing contract
+
+MI300A/HIP supports runtime control flow, dynamic kernel launches, compaction, gather/scatter, and
+variable-count collectives; MoRE does **not** require token dropping. HIP execution graphs are an
+optional launch-overhead optimization, not a requirement for dynamic execution. Capture stable
+segments or a small set of bounded-shape pass buckets; execute changing dispatch/compaction regions
+with streams or update/re-instantiate graph templates when topology changes.
+
+Production routing is **dropless**. Use exact packed token counts with RCCL all-to-all-v where the
+site stack performs well, or preallocated bounded buffers plus validity masks and a deterministic
+overflow slow path. Active-token compaction is not token dropout: a halted token preserves its final
+state and simply skips later recurrent passes. Track three distinct quantities and never conflate
+them: training-data token dropout (none), MoE overflow drop rate (target exactly zero), and learned
+continuation halting (intended MoRE behavior).
+
+mHC, recurrent depth memory, and packed continuation therefore work on AMD hardware. The porting
+constraint is that CUDA-specific Transformer Engine, CUTLASS, Triton-CUDA, and CUDA-graph kernels do
+not run unchanged; equivalent HIP/ROCm kernels must be implemented and fused. The risk is lost
+efficiency or missing optimized shapes, not architectural incompatibility.
+
+Before model work, record `rocminfo`, ROCm/PyTorch/hipBLASLt/CK versions, Slurm topology, visible
+APUs, NUMA/HBM placement, `fi_info`, RCCL/OFI/Cray-MPICH modules, Lustre mounts, and scheduler limits.
+Run single-APU GEMM/attention/Mamba canaries, then intra-node collectives, then multi-node RCCL
+all-reduce and all-to-all sweeps. Checkpoint/resume, deterministic token accounting, and optimizer
+state restoration must pass before the two long jobs start.
+
+### Slingshot research matrix
+
+The interconnect study and model training share one instrumentation contract. Before the full runs,
+sweep short fixed-token jobs over:
+
+- Praxis EP sizes **4, 8, 16, 32, 64, 128**; Logos EP sizes **12, 24, 48, 96, 192**, with expert
+  replica count adjusted to consume the selected allocation.
+- Topology-aware contiguous placement versus randomized/cross-group expert placement.
+- Expert dispatch with overlap on/off, dropless versus bounded-capacity packing, and controlled
+  router-balance distributions.
+- Fixed depths 1/2/5 and adaptive continuation; fixed `k` 1/4/8 and learned variable `k`.
+- Uniform synthetic routes, learned routes, and intentionally skewed routes as labeled network
+  stress tests—never mix intentionally skewed stress routing into the production checkpoint.
+
+For every point capture tokens/s, achieved BF16/FP8 throughput, MFU, per-layer all-to-all bytes and
+time, dispatch/combine latency p50/p95/p99, RCCL collective timelines, Slingshot link/NIC counters,
+congestion and retransmission indicators, expert token-count CV/max-min, straggler gap, overlap
+efficiency, packed-token padding/overflow/drop rate, HBM bandwidth, power, and loss parity. The
+production 1T runs use the fastest numerically correct topology found; the deliberately inefficient
+placements remain separate research evidence for the Slingshot paper.
+
+### Two-model comparability contract
+
+Praxis and Logos consume the same immutable 1T release and 700B/250B/50B phase boundaries. Use the
+same tokenizer, document boundaries, curriculum events, objective, and evaluation checkpoints.
+Record tokens—not steps—as the comparison axis; global batch and learning-rate scale by active
+class. Publish matched-token, matched-FLOP, and matched-wall-clock comparisons so the family scaling
+result does not confuse larger active capacity with more data or compute. Simultaneous execution
+must isolate each job's Slingshot counters and placement; if the jobs share fabric groups, record
+cross-job interference as an explicit experimental condition.
 
 ## 7. Suggested build order
-1. Implement + unit-test the **packed MoRE block** (depth + adaptive-k) on tiny configs, CPU/1-chip.
-2. Verify **parity**: soft-expected (train) vs hard-packed (infer) agree; routers don't collapse
-   (softmax + z-loss); compute-budget aux loss hits target mean depth/k.
-3. Throughput-prove the packed path on the RTX PRO 6000 (does it actually beat dense-envelope wall-clock?).
-4. Tokenizer + 300B-token data pipeline (with the §5 fixes baked in — hybrid short/long SFT tagging
+1. Implement + unit-test the **four-stream recursion-aware mHC wrapper** around Mamba, attention,
+   and MoE, including Sinkhorn constraints, pass conditioning, recomputation, and fused HIP/ROCm
+   kernels, while retaining the Azure/CUDA canary backend.
+2. Implement the **typed expert-aware recurrent depth memory + per-pass continuation router** in the
+   packed token layout; prove monotonic active sets, masking, route metadata, and representation/router
+   dual use through pass 5.
+3. Implement the **canonicalized concatenated 2/3-gram memory**, cached per sequence across passes,
+   with branch/pass-aware gates, sparse optimizer states, and replicated/sharded Portage table modes.
+4. Verify **parity and health**: soft survival/envelope vs hard packed execution; Sinkhorn marginal
+   error; non-collapsed streams/experts/halts; target mean depth/k; gradients through later experts;
+   memory gates and N-gram collisions.
+5. Freeze executable **Praxis and Logos manifests** from §2, including exact controller counts,
+   N-gram table slots, active-parameter audit, optimizer memory, and checkpoint schema.
+6. Execute the §6B Portage bring-up and Slingshot scaling matrix; throughput-prove the **complete
+   fused path** from 1 APU → 1 node → multi-node EP before reserving all 512 APUs. Reject any
+   extrapolation based only on component microbenchmarks.
+7. Tokenizer + **1T-token Portage data pipeline** (with the §5 fixes baked in — hybrid short/long SFT tagging
    scheme decided early since it constrains data collection, not just training recipe).
-5. Curriculum PT run (dense warm-start → ramp) on the big allocation.
-6. **Context extension**: single jump 4096→~164-200k (modest overshoot; deploy at 131k), 80/20
+8. Launch simultaneous Praxis-128 and Logos-384 curriculum PT runs
+   (depth-1/fixed-k/near-zero memory gates warm-start → staged joint ramp); all components exist from
+   initialization so the optimizer/checkpoint contract never changes mid-run.
+9. **Context extension**: single jump 4096→~164-200k (modest overshoot; deploy at 131k), 80/20
    old/new data mix, 90/10-ish long/short sequence mix — size exact ratios against real long-doc
    data once collected (§5).
-7. Post-training (§5, final order): cold-start SFT → overall SFT (hybrid short/long mix) → DPD →
+10. Post-training (§5, final order): cold-start SFT → overall SFT (hybrid short/long mix) → DPD →
    multi-domain RLVR (GSPO + DAPO stabilizers + 10–90% on-policy filtering; STEM → coding →
    agentic, dynamic-thinking-length reward layered throughout) → pairwise RM/human-preference →
    eval (reuse `eval_metis.py`) → publish.
 
 ## 8. Open questions for you
-- ✅ Params ~2.94B total / 0.464B active (Mamba **expand 2.0**, the paper default, restored) ·
+- ✅ Params **~3.39–3.54B stored / ~0.464B core active per pass plus fused control/memory work**;
+  128 routed + 1 shared expert retained; **0.45–0.60B additional concatenated 2/3-gram memory** ·
   ✅ Tokenizer: new 65,536 · ✅ Recursion: full-stack loop (Ouro-style), **depth = passes =
-  recursions+1**, target mean 2, max 5 · ✅ PT context 4096 · ✅ Extension target 131k ·
+  recursions+1**, per-pass continuation, target mean 2, max 5 · ✅ **four-stream recursion-aware
+  fused mHC** · ✅ **dual-use expert-aware recurrent depth memory** · ✅ PT context 4096 ·
+  ✅ Extension target 131k ·
   ✅ **Hybrid ratio: 10 Mamba-2 + 2 attention @ ~4/~8 (12 layers)** · ✅ **G=16 granularity
-  (128×512) confirmed** · ✅ Optimizer: AdaMuon — all locked.
-- ✅ Hardware: **RTX PRO 6000 Blackwell on Azure, 1× probe → 2× (`NC288ds_xl`) for the full run**
-  (Azure caps at 2 GPU/VM; committed to Azure for the compute credits) → **MoR-style packed
-  adaptive-depth training**, **MXFP8 main lane** (NVFP4 = gated experiment on expert GEMMs, high
-  upside if the sm_120 grouped-GEMM kernel risk resolves — its FP4 peak ≈ H100's FP8 peak) +
-  fp32 masters.
-- ✅ **300B PT tokens, locked** — §6's budget table shows this fits even in the conservative
-  MXFP8/20%-MFU case ($2,980 of $5,000, leaving the required 30–40% reserve for post-training/RL).
-  No longer contingent on NVFP4 landing — that's now pure upside.
+  (128×512) confirmed** · ✅ Core optimizer: AdaMuon; N-gram tables: separate sparse Adam-style
+  policy — all locked.
+- ✅ Data preparation platform: **HPE Portage + Lustre + Slurm**, using pinned manifests,
+  restartable arrays, and an immutable verified release. Keep the site-specific profile private and
+  credentials out of Git. Exact partition/account/reservation values remain site configuration and
+  must be supplied by the HPE account owner.
+- ✅ Primary training allocation: **Praxis on 128 MI300A APUs (EP=128, one expert replica)** and
+  **Logos on 384 MI300A APUs (EP=192, two expert replicas)**, running simultaneously after the
+  staged Portage/RCCL/Slingshot canaries. Azure RTX PRO 6000 is fallback/canary, not the launch plan.
+- ✅ Logos planning class: **20 layers, d_model 2560, latent 1024, 192 routed + 1 shared expert,
+  d_expert 768, ~10.222B core stored, ~1.183B core active/pass before controllers, and ~1.60–1.70B
+  N-gram memory**;
+  tune table slots against exact controller counts to land at 12.0B stored.
+- ✅ **1T PT exposures, locked** — 700B broad foundation, 250B capability intensification, 50B
+  premium cooldown; 875B unique plus 125B controlled replay; 90B embedded freshness; no generated
+  data in Phase C. The historical Azure/300B cost table in §6 is not a launch estimate.
 - Per-pass LoRA/gate on the shared looped attention (Zamba2 finding) — implement as config flag; A/B.
-- Depth gate mechanism: Ouro's two-stage early-exit vs a halting head (ACT/PonderNet) — A/B.
+- Continuation estimator inside the locked per-pass halting architecture: cumulative hazard vs
+  ACT/PonderNet-style relaxation — A/B for calibration, quality, and hard-packed gradient health.
 - ✅ **Post-training pipeline locked** (research-verified 2026-07-06, §5): cold-start SFT (hybrid
   short/long, tagged) → overall SFT → **DPD** (Nanbeige4-3B, arXiv 2512.06266) → multi-domain RLVR
   on **GSPO** (not GRPO — MoE-specific stability argument, arXiv 2507.18071) + DAPO-derived
   no-KL/loss-masking + 10–90% on-policy filtering (STEM → coding → agentic) with
   **dynamic-thinking-length reward layered on top** (DAST-style, reusing the same pass-rate number)
   → pairwise RM last. Two real open items inside this: (a) GSPO's stability claim is demonstrated at
-  Qwen3-30B-A3B scale, not our 0.464B-active scale — worth an early small-scale sanity check; (b)
-  exact λ for the length-shaping term, and exact GSPO clip ranges, need tuning, not just adoption.
+  Qwen3-30B-A3B scale, not either our Praxis-A0.46B or Logos-A1.2B scale—worth early class-specific
+  sanity checks; (b) exact λ for the length-shaping term, and exact GSPO clip ranges, need tuning,
+  not just adoption.
 - ✅ **Context extension locked as single-jump, not staged** (research-verified 2026-07-06, §5):
   4096 → ~164-200k (modest overshoot) → deploy 131k, over ~10–15B tokens, mixing in a small
   fraction of base-length sequences and an ~80/20 old/new data split. Exact overshoot ratio and
   short-sequence fraction need sizing against real long-document data once collected, not just
   borrowed from Nemotron's ratios at a much larger target length.
-- RL costing — no longer decides token count (300B is locked), but still decides how much of the
-  ~$1.0–2.0k reserve goes to which post-training stage (DPD data collection vs which RLVR domain
-  gets the most rollouts vs agentic-RL depth).
+- Exact Portage Slingshot group/NIC placement, measured end-to-end tokens/second, final BF16/FP8
+  choice, and post-training allocation remain open operational inputs. They do not change the
+  locked family architecture or 1T data release contract.

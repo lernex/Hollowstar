@@ -1,0 +1,99 @@
+schema: metis.portage-profile/v1
+name: portage
+manifest: manifests/metis-1.6.yaml
+
+storage:
+  lustre_root: ${METIS_LUSTRE_ROOT:-auto}
+  minimum_free_tb: 25
+  recommended_free_tb: 40
+  safety_free_tb: 5
+  raw_retention: until_release_verified
+  normalized_format: jsonl.zst
+  final_token_dtype: uint16
+  final_shard_tokens: 1000000000
+  directories:
+    cache: cache
+    raw: raw
+    normalized: normalized
+    eligible: eligible
+    dedup: dedup
+    contamination: contamination
+    tokenizer: tokenizer
+    token_counts: token-counts
+    selected: selected
+    release: releases/metis-1.6-data-r1
+    state: state/metis-1.6-data-r1
+    logs: logs/metis-1.6-data-r1
+
+scheduler:
+  mode: slurm
+  account: ${METIS_SLURM_ACCOUNT:-auto}
+  partition: ${METIS_SLURM_PARTITION:-auto}
+  qos: ${METIS_SLURM_QOS:-auto}
+  max_array_size: 1000
+  download:
+    cpus_per_task: 4
+    memory_gb: 16
+    time: '24:00:00'
+    max_concurrent: 24
+    target_bytes_per_task: 20000000000
+  normalize:
+    tasks: 2000
+    workers: 400
+    cpus_per_task: 4
+    memory_gb: 32
+    time: '24:00:00'
+  exact_signature: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
+  exact_find: {cpus_per_task: 4, memory_gb: 64, time: '24:00:00', max_concurrent: 256}
+  exact_filter: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
+  minhash_signature: {cpus_per_task: 8, memory_gb: 48, time: '48:00:00', max_concurrent: 400}
+  minhash_buckets: {cpus_per_task: 8, memory_gb: 96, time: '48:00:00', max_concurrent: 20}
+  minhash_cluster: {cpus_per_task: 32, memory_gb: 512, time: '72:00:00'}
+  minhash_filter: {cpus_per_task: 8, memory_gb: 48, time: '48:00:00', max_concurrent: 400}
+  decontam_index: {cpus_per_task: 8, memory_gb: 64, time: '12:00:00'}
+  decontam_filter: {cpus_per_task: 8, memory_gb: 48, time: '24:00:00', max_concurrent: 400}
+  tokenizer_sample: {cpus_per_task: 16, memory_gb: 128, time: '24:00:00'}
+  tokenizer_train: {cpus_per_task: 64, memory_gb: 512, time: '48:00:00'}
+  token_count: {cpus_per_task: 8, memory_gb: 48, time: '48:00:00', max_concurrent: 400}
+  select: {cpus_per_task: 32, memory_gb: 512, time: '72:00:00'}
+  pack: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 200}
+  verify: {cpus_per_task: 16, memory_gb: 64, time: '48:00:00'}
+  release: {cpus_per_task: 2, memory_gb: 8, time: '02:00:00'}
+  exact_dedup:
+    tasks: 2000
+    find_tasks: 256
+  minhash:
+    tasks: 2000
+    workers: 400
+    num_buckets: 20
+    hashes_per_bucket: 10
+    n_grams: 5
+    target_similarity_operating_region: 0.82
+  tokenize:
+    tasks: 2000
+    workers: 400
+
+runtime:
+  python: python3
+  environment_dir: .metis-runtime
+  apptainer_image: containers/metis-data.sif
+  require_apptainer_for_compute: false
+  hf_home: cache/huggingface
+  temp_dir: cache/tmp
+  download_retries: 8
+  request_timeout_seconds: 900
+  # Set true only after the site-approved Common Crawl, GitHub/repository,
+  # and canonical-registry materializers pass the tiny end-to-end build.
+  dynamic_materializers_enabled: false
+
+gates:
+  fail_closed: true
+  require_hf_auth_for_gated_sources: true
+  require_contamination_index: true
+  require_license_ledger: true
+  # Set true only after the recorded source terms and per-record license policy
+  # have been reviewed for this run and HPE account.
+  license_review_complete: false
+  require_final_tokenizer_counts: true
+  maximum_generated_share: 0.15
+  minimum_unique_tokens: 875000000000

@@ -10,6 +10,30 @@ The pipeline is:
 4. Train a roughly 10M-parameter causal language model with PyTorch
 5. Sample text from a saved checkpoint
 
+## Metis-1.6 Portage data factory
+
+Metis-1.6's production data recipe is separate from the local teaching flow below. It locks exactly
+1T final-tokenizer-measured exposures across 700B/250B/50B phases, including a 90B freshness layer.
+The exact recipe and operational gates are documented in
+[`docs/metis16_pretraining_data_plan.md`](docs/metis16_pretraining_data_plan.md); the machine-readable
+source of truth is [`manifests/metis-1.6.yaml`](manifests/metis-1.6.yaml).
+
+Portage operator interface:
+
+```bash
+export METIS_LUSTRE_ROOT=/hpe/assigned/path/metis-1.6
+./ops/bootstrap.sh --profile portage
+./metisctl doctor --profile portage
+./metisctl submit download --profile portage
+./metisctl status --profile portage
+./metisctl report --profile portage
+./metisctl submit build --profile portage
+```
+
+The production doctor remains fail-closed until the HPE-approved dynamic Common Crawl,
+GitHub/repository, canonical-source, and derived-data materializers have been connected. A resolved
+URL/WARC/repository selection plan is not treated as downloaded training data.
+
 ## Why this setup
 
 This is intentionally simple and educational, not production-scale:

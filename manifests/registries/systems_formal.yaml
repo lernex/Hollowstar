@@ -1,0 +1,13 @@
+schema: metis.canonical-git-registry/v1
+resolve_revisions_on_first_run: true
+require_allowlisted_license: true
+repositories:
+  - {id: lean4, url: 'https://github.com/leanprover/lean4.git', license: Apache-2.0}
+  - {id: mathlib4, url: 'https://github.com/leanprover-community/mathlib4.git', license: Apache-2.0}
+  - {id: coq, url: 'https://github.com/coq/coq.git', license: LGPL-2.1}
+  - {id: metamath, url: 'https://github.com/metamath/set.mm.git', license: CC0-1.0}
+  - {id: afp, url: 'https://github.com/isabelle-prover/mirror-afp-devel.git', license: BSD-3-Clause}
+  - {id: triton, url: 'https://github.com/triton-lang/triton.git', license: MIT}
+  - {id: pytorch, url: 'https://github.com/pytorch/pytorch.git', license: BSD-3-Clause}
+  - {id: cuda_samples, url: 'https://github.com/NVIDIA/cuda-samples.git', license: BSD-3-Clause}
+

@@ -1,0 +1,444 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "Lernex Pre-Seed Readiness Roadmap",
+    "description": "A dated operating plan from July 14 to November 19, 2026, plus a researched investor target list and fit-adjusted probability ranges.",
+    "generatedAt": "2026-07-14T15:32:29-06:00",
+    "cards": [
+      {
+        "id": "days_available",
+        "description": "Calendar days from July 14 through the November 19 birthday milestone.",
+        "dataset": "summary",
+        "sourceId": "report_assumptions",
+        "metrics": [
+          { "label": "Days to readiness date", "field": "days_available", "format": "number" }
+        ]
+      },
+      {
+        "id": "retention_bar",
+        "description": "Minimum and stretch number of external learners with verified four-week retained behavior by November 19.",
+        "dataset": "summary",
+        "sourceId": "report_assumptions",
+        "metrics": [
+          { "label": "Minimum W4-retained learners", "field": "minimum_w4_retained", "format": "number" },
+          { "label": "Stretch", "field": "stretch_w4_retained", "format": "number" }
+        ]
+      },
+      {
+        "id": "round_target",
+        "description": "Recommended fundraising target under the assumed November evidence scenario.",
+        "dataset": "summary",
+        "sourceId": "report_assumptions",
+        "metrics": [
+          { "label": "Target round", "field": "target_round", "format": "currency" },
+          { "label": "Minimum close", "field": "minimum_close", "format": "currency" }
+        ]
+      }
+    ],
+    "charts": [
+      {
+        "id": "learner_evidence_target",
+        "title": "External learner evidence target",
+        "subtitle": "Cumulative activated learners and verified four-week retained learners, July 20-November 19, 2026. These are operating targets, not observed results.",
+        "type": "line",
+        "dataset": "learner_targets",
+        "sourceId": "report_assumptions",
+        "encodings": {
+          "x": { "field": "date", "type": "temporal", "label": "Date" },
+          "y": { "field": "users", "type": "quantitative", "label": "Learners", "format": "number" },
+          "color": { "field": "series", "type": "nominal", "label": "Evidence" }
+        },
+        "yAxisTitle": "Learners",
+        "valueFormat": "number",
+        "layout": "full"
+      }
+    ],
+    "tables": [
+      {
+        "id": "evidence_gates",
+        "title": "November 19 evidence gates",
+        "subtitle": "Minimum decision-ready evidence; stretch goals are intentionally separate from the minimum bar.",
+        "dataset": "evidence_gates",
+        "sourceId": "report_assumptions",
+        "density": "spacious",
+        "layout": "full",
+        "columns": [
+          { "field": "workstream", "label": "Workstream", "type": "text" },
+          { "field": "minimum_gate", "label": "Minimum gate", "type": "text" },
+          { "field": "stretch_gate", "label": "Stretch", "type": "text" },
+          { "field": "proof", "label": "Proof in the data room", "type": "text" }
+        ]
+      },
+      {
+        "id": "weekly_roadmap",
+        "title": "Weekly execution roadmap",
+        "subtitle": "July 14-November 19, 2026. Each week has one product, traction, model, and company/fundraising deliverable.",
+        "dataset": "weekly_roadmap",
+        "sourceId": "report_assumptions",
+        "density": "dense",
+        "layout": "full",
+        "columns": [
+          { "field": "week", "label": "Week", "type": "text" },
+          { "field": "dates", "label": "Dates", "type": "text" },
+          { "field": "product", "label": "Product and mobile", "type": "text" },
+          { "field": "traction", "label": "Learner evidence", "type": "text" },
+          { "field": "metis", "label": "Metis-1.6", "type": "text" },
+          { "field": "company", "label": "Company and fundraising", "type": "text" }
+        ]
+      },
+      {
+        "id": "corporate_cleanup",
+        "title": "DIY corporate cleanup sequence",
+        "subtitle": "This sequence preserves facts and investor diligence; it does not treat family money or securities filings as if they never happened.",
+        "dataset": "corporate_cleanup",
+        "sourceId": "corporate_research",
+        "density": "spacious",
+        "layout": "full",
+        "columns": [
+          { "field": "when", "label": "When", "type": "text" },
+          { "field": "action", "label": "Action", "type": "text" },
+          { "field": "done_when", "label": "Done when", "type": "text" },
+          { "field": "risk", "label": "Do not do", "type": "text" }
+        ]
+      },
+      {
+        "id": "investors_now",
+        "title": "Apply before November",
+        "subtitle": "Ranked by action priority. Probability ranges are fit-adjusted analyst estimates for one submission, not published acceptance rates.",
+        "dataset": "investors_now",
+        "sourceId": "investor_research",
+        "defaultSort": { "field": "rank", "direction": "asc" },
+        "density": "dense",
+        "layout": "full",
+        "columns": [
+          { "field": "rank", "label": "Priority", "type": "number" },
+          { "field": "target", "label": "Target", "type": "text" },
+          { "field": "why_fit", "label": "Why Lernex fits", "type": "text" },
+          { "field": "published_amount", "label": "Published amount / terms", "type": "text" },
+          { "field": "deadline", "label": "Apply", "type": "text" },
+          { "field": "next_step_chance", "label": "Est. next-step chance", "type": "text" },
+          { "field": "cash_chance", "label": "Est. cash/check chance", "type": "text" }
+        ]
+      },
+      {
+        "id": "investors_november",
+        "title": "Target after the November evidence package is ready",
+        "subtitle": "Direct funds and accelerators that become more credible after mobile, retention, learning-outcome, and model evidence exists.",
+        "dataset": "investors_november",
+        "sourceId": "investor_research",
+        "defaultSort": { "field": "rank", "direction": "asc" },
+        "density": "dense",
+        "layout": "full",
+        "columns": [
+          { "field": "rank", "label": "Priority", "type": "number" },
+          { "field": "target", "label": "Target", "type": "text" },
+          { "field": "why_fit", "label": "Why Lernex fits", "type": "text" },
+          { "field": "published_amount", "label": "Published amount / terms", "type": "text" },
+          { "field": "best_trigger", "label": "Best outreach trigger", "type": "text" },
+          { "field": "next_step_chance", "label": "Est. next-step chance", "type": "text" },
+          { "field": "cash_chance", "label": "Est. cash/check chance", "type": "text" }
+        ]
+      },
+      {
+        "id": "portfolio_odds",
+        "title": "Fundraising outcome ranges",
+        "subtitle": "Estimated probability over six months after November 19 with 100-150 researched targets and the minimum evidence gates completed.",
+        "dataset": "portfolio_odds",
+        "sourceId": "report_assumptions",
+        "density": "spacious",
+        "layout": "full",
+        "columns": [
+          { "field": "outcome", "label": "Outcome by May 19, 2027", "type": "text" },
+          { "field": "estimated_probability", "label": "Estimated probability", "type": "text" },
+          { "field": "interpretation", "label": "Interpretation", "type": "text" }
+        ]
+      }
+    ],
+    "sources": [
+      {
+        "id": "report_assumptions",
+        "label": "Founder operating targets and probability method",
+        "path": "source_notes.md"
+      },
+      {
+        "id": "local_product_snapshot",
+        "label": "Lernex mobile repository inspection",
+        "path": "source_notes.md"
+      },
+      {
+        "id": "metis_plan",
+        "label": "Metis-1.6 architecture and training plan",
+        "path": "source_notes.md"
+      },
+      {
+        "id": "investor_research",
+        "label": "Official investor and program terms research",
+        "path": "source_notes.md"
+      },
+      {
+        "id": "store_research",
+        "label": "Apple and Google official store-readiness guidance",
+        "path": "source_notes.md"
+      },
+      {
+        "id": "corporate_research",
+        "label": "SEC, IRS, Delaware, and clinic guidance",
+        "path": "source_notes.md"
+      }
+    ],
+    "blocks": [
+      { "id": "title", "type": "markdown", "body": "# Lernex Pre-Seed Readiness Roadmap" },
+      {
+        "id": "executive_summary",
+        "type": "markdown",
+        "body": "## Executive Summary\n\n- **The goal is an investable evidence package, not perfection.** By November 19, Lernex should be able to prove that the product ships, strangers return to study, learning can be measured, Metis is a real technical asset, and the company owns what it is selling.\n- **Do not wait until 18 to apply.** YC's Fall 2026 application is due **July 27** and South Park Commons is due **August 2**. Apply now; solve signature, entity, and closing mechanics honestly if either says yes.\n- **The minimum November bar is demanding but reachable:** both stores live; at least **10 external W4-retained learners** (15 stretch); 30 measured study sessions and three permissioned case studies; a reproducible Metis release or transparent research candidate; and a reconciled cap table/IP file. Ten users are proof of behavior, not proof of product-market fit or model superiority.\n- **Raise toward $750K, not an ego number.** Use $250K as the minimum viable close and $1.5M as a hard cap unless a program/lead creates a credible path higher. A $2M round is possible, but under the assumed November scenario it remains an outlier rather than the base plan."
+      },
+      { "id": "summary_metrics", "type": "metric-strip", "cardIds": ["days_available", "retention_bar", "round_target"] },
+      {
+        "id": "evidence_intro",
+        "type": "markdown",
+        "body": "## The November story has to rest on six kinds of proof\n\nInvestors can forgive tiny scale at pre-seed. They are much less forgiving of fuzzy definitions, unverifiable claims, or a founder who cannot separate a technical demo from customer value. The gates below define the smallest credible package."
+      },
+      { "id": "evidence_table", "type": "table", "tableId": "evidence_gates", "layout": "full" },
+      {
+        "id": "retention_intro",
+        "type": "markdown",
+        "body": "## Retention evidence has to start before the launch\n\nA November launch cannot create four weeks of history. Start recruiting external learners in July, define activation before looking at the data, and follow each learner through week four. The wider activated cohort is the input; verified W4 returners are the outcome."
+      },
+      { "id": "retention_chart", "type": "chart", "chartId": "learner_evidence_target", "layout": "full" },
+      {
+        "id": "retention_interpretation",
+        "type": "markdown",
+        "body": "The chart is deliberately uncomfortable: reaching 10-15 genuine retained learners likely requires activating dozens of strangers. Product Hunt can add visibility, but it is not the primary student-acquisition plan. Direct student communities, referrals, school clubs, study groups, and repeated founder-led onboarding should produce the first cohort. Do not buy broad ads until activation and retention are visible."
+      },
+      {
+        "id": "roadmap_intro",
+        "type": "markdown",
+        "body": "## The 18-week critical path\n\nEach week has four must-wins. If a week slips, cut scope from secondary features, marketing polish, or model ambition before cutting instrumentation, retention work, release reliability, or corporate truth."
+      },
+      { "id": "roadmap_table", "type": "table", "tableId": "weekly_roadmap", "layout": "full" },
+      {
+        "id": "metis_critical_path",
+        "type": "markdown",
+        "sourceId": "metis_plan",
+        "body": "## Metis-1.6 needs a hard compute decision, not an open-ended wait\n\nThe current design is **2.94B total parameters** with **0.407B minimum, 0.464B average, and 0.539B maximum active parameters per pass**. The recurrent hidden state evolves and routing is re-decided at each pass; the proof must include routing behavior, collapse checks, and stage-by-stage expert use — not just parameter counts.\n\nThe plan estimates about **75 days on one RTX PRO 6000** or **38 days on two** for 300B pretraining tokens in the middle MXFP8 case, before post-training, evaluation, and release. Therefore:\n\n1. Freeze architecture and eval contracts by July 26.\n2. Prove packed-path parity, checkpoint recovery, and real throughput by August 10.\n3. Lock compute by August 17; begin the one-GPU path immediately if that is all that exists.\n4. Start the two-GPU full run no later than August 24.\n5. If the full run has not started by September 1, stop promising a finished 300B-token model for November. Publish a scaled, reproducible MoRE checkpoint and ablation report instead of hiding a rushed or incomplete result."
+      },
+      {
+        "id": "hpe_boundary",
+        "type": "markdown",
+        "body": "### Treat HPE access as a governed research track\n\nBefore any production-node run, get a short written scope covering authorization, allowed datasets/workloads, checkpoint and IP ownership, publication review, cost attribution, security rules, and whether Lernex may name HPE hardware publicly. The opportunity is extraordinary; informal access through a parent is not a substitute for written permission. Keep the Azure path alive until the HPE track is actually approved."
+      },
+      {
+        "id": "store_readiness",
+        "type": "markdown",
+        "body": "## Mobile release work begins with account and build risk\n\nThe current iOS identifier is set, but Android still carries `com.anonymous.lernex`, and the checked-out mobile tree does not yet show a normal complete Android project at the expected level. Fix identity and build reproducibility before launch polish.\n\nBecause Apple enrollment requires the enrolling person to be the age of majority, the current LLC can enroll through an adult with genuine authority and add you as a team member — never by sharing credentials. Organization enrollment also needs D-U-N-S and identity verification, so start now. The release checklist must include in-app account deletion, Sign in with Apple token revocation, privacy/data-safety disclosures, subscription compliance, reviewer credentials, screenshots, support URL, and a tested production backend."
+      },
+      {
+        "id": "traction_system",
+        "type": "markdown",
+        "body": "## Measure the learning loop investors will actually care about\n\nTrack one funnel from acquisition source through install, signup, onboarding, first meaningful study session, D1/D7 return, and W4 retention. Define a meaningful study session as at least five minutes with a completed learning action, not an app open.\n\nFor outcome evidence, run a small honest pilot: pre-test, Lernex study session, immediate post-test, and a seven-day delayed check when possible. Compare Metis/Lernex against a named baseline under matched conditions. Thirty sessions and three case studies will not prove causal superiority, but a preregistered method, raw anonymized results, and transparent limitations are far more credible than cherry-picked benchmark wins.\n\nAudit the current $750/month organic-marketing arrangement by August 10. Require attributable links and weekly reporting from post to activated learner. If it produces reach but no attributable activated learners after a defined test window, change the scope or pause it."
+      },
+      {
+        "id": "corporate_intro",
+        "type": "markdown",
+        "body": "## DIY the routine work; do not erase inconvenient facts\n\nThe father being organizer, IRS responsible party, bank signer, manager, or Apple-account authority are different roles; none alone proves stock ownership. Reconstruct each role from documents. Likewise, money from family cannot simply be treated as if it never happened. The SEC says even one friends-and-family sale can be a securities transaction, and a SAFE does not become common stock merely because cash changed hands.\n\nYou can keep this low-cost by doing the inventory and drafting yourself, then applying to the free CU Entrepreneurial Law Clinic for a narrow review. That is not a full legal retainer. It is a cheap way to catch a cleanup problem before an investor does."
+      },
+      { "id": "corporate_table", "type": "table", "tableId": "corporate_cleanup", "layout": "full" },
+      {
+        "id": "investor_now_intro",
+        "type": "markdown",
+        "body": "## The first applications should exploit founder fit and live deadlines\n\n1517 is the single strongest thesis fit: a young, nontraditional technical founder building hard technology and education. YC and SPC are lower-probability but time-sensitive and potentially round-defining. Grants and fellowships create signal without requiring Lernex to pretend it already has product-market fit."
+      },
+      { "id": "investors_now_table", "type": "table", "tableId": "investors_now", "layout": "full" },
+      {
+        "id": "investor_november_intro",
+        "type": "markdown",
+        "body": "## The November wave should be synchronized, not sprayed\n\nBuild a researched CRM of 100-150 targets, but contact them in waves. Start with 10-15 high-fit funds and angels, then launch the next 25-40 after the first meetings teach you which objection is real. Ask every positive contact for two specific introductions. Hundreds of generic cold emails will not compensate for a weak evidence package."
+      },
+      { "id": "investors_november_table", "type": "table", "tableId": "investors_november", "layout": "full" },
+      {
+        "id": "round_strategy",
+        "type": "markdown",
+        "body": "## A $750K target is more credible than leading with $2M\n\nUse a **$250K minimum close**, **$750K target**, and **$1.5M hard cap**. A $2M outcome becomes rational if YC/SPC/Pear/Antler or a credible lead anchors it, or if Lernex materially beats the minimum traction/model gates.\n\nA reasonable 18-month use-of-funds story is: 35% product/model engineering; 25% compute, data, and evaluation; 15% measured distribution experiments; 10% security, cloud, legal, and accounting; 10% founder compensation/benefits; and 5% contingency. Paid ads should be a bounded experiment after retention, not the central reason for the round."
+      },
+      { "id": "portfolio_odds_table", "type": "table", "tableId": "portfolio_odds", "layout": "full" },
+      {
+        "id": "accountability_system",
+        "type": "markdown",
+        "body": "## The accountability system is weekly and binary\n\nEvery Sunday, update the accompanying CSV and answer four questions:\n\n1. What shipped that a learner or investor can verify?\n2. How many external learners activated, returned at D7, and qualified as W4 retained?\n3. Which Metis gate passed with a reproducible artifact?\n4. What company or fundraising document became cleaner?\n\nOnly three outcomes may be labeled must-win in any seven-day period; the fourth workstream should receive a maintenance action. A milestone is green only when a link, build, query, signed document, or reproducible result proves it. Two consecutive red weeks trigger scope cuts, not longer working hours."
+      },
+      {
+        "id": "recommended_next_steps",
+        "type": "markdown",
+        "body": "## Recommended Next Steps\n\n**In the next 72 hours:**\n\n1. Start the YC application, schedule a founder-video recording, and set an internal submission deadline of July 24.\n2. Start the SPC application and ask the program whether a 17-year-old may sign later through the current entity/guardian structure if accepted.\n3. Submit the 1517 Fund, 1517 Medici, Afore Grants, and Z Fellows forms with one consistent founder story and live demos.\n4. Replace the Android package-id plan, verify whether a production Android project can build, and begin D-U-N-S/organization-account setup.\n5. Define activation and W4 retention in one page, then recruit the first five external learners.\n6. Create the legal fact folder: formation documents, operating agreement, membership ledger, EIN letter, bank records, every SAFE draft/signature, and every family transfer.\n7. Freeze Metis architecture scope and name the exact throughput/parity evidence required before spending the full compute budget."
+      },
+      {
+        "id": "further_questions",
+        "type": "markdown",
+        "body": "## Further Questions\n\n- Which state formed the current LLC, and do the operating agreement/member consents actually show the intended ownership?\n- Are Apple and Google organization accounts already open, and whose legal identity/authority is attached?\n- What learner age range is Lernex targeting first? Under-13 use changes privacy and product requirements.\n- Will you remain in school? That affects whether accepting the Thiel Fellowship is compatible with your plan.\n- What is the exact HPE authorization path and earliest date on which a governed training run could start?\n- Which single student segment has the sharpest pain now: test preparation, uploaded class materials, homework help, or a different wedge?"
+      },
+      {
+        "id": "caveats",
+        "type": "markdown",
+        "body": "## Caveats and Assumptions\n\n- Investor probabilities are broad judgment ranges, not published acceptance rates or guarantees. They assume the minimum November evidence package, clean applications, a live demo, and no undisclosed legal problem.\n- Investor decisions are correlated; do not add the individual percentages. The six-month portfolio ranges assume 100-150 researched targets and disciplined follow-up, not 100-150 identical cold emails.\n- The roadmap is business and execution guidance, not legal or tax advice. The family-money history, minor-founder status, LLC state, and exact documents can change the correct transaction.\n- HPE and Azure compute remain external dependencies. The fallback exists so that compute approval cannot block every investable artifact.\n- Ten retained learners and a 30-session pilot are early evidence. Do not describe them as statistically conclusive proof that Metis teaches better than frontier proprietary models."
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-07-14T15:32:29-06:00",
+    "status": "ready",
+    "datasets": {
+      "summary": [
+        {
+          "days_available": 128,
+          "minimum_w4_retained": 10,
+          "stretch_w4_retained": 15,
+          "target_round": 750000,
+          "minimum_close": 250000
+        }
+      ],
+      "learner_targets": [
+        { "date": "2026-07-20", "series": "Activated external learners", "users": 0, "target_kind": "cumulative", "minimum_november_bar": 50, "milestone": "Funnel and recruitment begin" },
+        { "date": "2026-07-20", "series": "Verified W4 retained", "users": 0, "target_kind": "cumulative", "minimum_november_bar": 10, "milestone": "No cohort old enough" },
+        { "date": "2026-08-03", "series": "Activated external learners", "users": 8, "target_kind": "cumulative", "minimum_november_bar": 50, "milestone": "Closed beta" },
+        { "date": "2026-08-03", "series": "Verified W4 retained", "users": 0, "target_kind": "cumulative", "minimum_november_bar": 10, "milestone": "Retention clock running" },
+        { "date": "2026-08-17", "series": "Activated external learners", "users": 16, "target_kind": "cumulative", "minimum_november_bar": 50, "milestone": "First repeat cohorts" },
+        { "date": "2026-08-17", "series": "Verified W4 retained", "users": 0, "target_kind": "cumulative", "minimum_november_bar": 10, "milestone": "Earliest cohort still maturing" },
+        { "date": "2026-08-31", "series": "Activated external learners", "users": 25, "target_kind": "cumulative", "minimum_november_bar": 50, "milestone": "Store submission window" },
+        { "date": "2026-08-31", "series": "Verified W4 retained", "users": 1, "target_kind": "cumulative", "minimum_november_bar": 10, "milestone": "First verified W4 learner" },
+        { "date": "2026-09-14", "series": "Activated external learners", "users": 30, "target_kind": "cumulative", "minimum_november_bar": 50, "milestone": "First case study" },
+        { "date": "2026-09-14", "series": "Verified W4 retained", "users": 3, "target_kind": "cumulative", "minimum_november_bar": 10, "milestone": "Cohort proof begins" },
+        { "date": "2026-09-28", "series": "Activated external learners", "users": 42, "target_kind": "cumulative", "minimum_november_bar": 50, "milestone": "Learning pilot complete" },
+        { "date": "2026-09-28", "series": "Verified W4 retained", "users": 5, "target_kind": "cumulative", "minimum_november_bar": 10, "milestone": "Half of minimum retention bar" },
+        { "date": "2026-10-12", "series": "Activated external learners", "users": 55, "target_kind": "cumulative", "minimum_november_bar": 50, "milestone": "Launch assets ready" },
+        { "date": "2026-10-12", "series": "Verified W4 retained", "users": 7, "target_kind": "cumulative", "minimum_november_bar": 10, "milestone": "Retention trend visible" },
+        { "date": "2026-10-26", "series": "Activated external learners", "users": 65, "target_kind": "cumulative", "minimum_november_bar": 50, "milestone": "Minimum evidence package" },
+        { "date": "2026-10-26", "series": "Verified W4 retained", "users": 10, "target_kind": "cumulative", "minimum_november_bar": 10, "milestone": "Minimum W4 bar reached" },
+        { "date": "2026-11-09", "series": "Activated external learners", "users": 75, "target_kind": "cumulative", "minimum_november_bar": 50, "milestone": "Public launch window" },
+        { "date": "2026-11-09", "series": "Verified W4 retained", "users": 12, "target_kind": "cumulative", "minimum_november_bar": 10, "milestone": "Above minimum" },
+        { "date": "2026-11-19", "series": "Activated external learners", "users": 85, "target_kind": "cumulative", "minimum_november_bar": 50, "milestone": "Fundraising readiness date" },
+        { "date": "2026-11-19", "series": "Verified W4 retained", "users": 15, "target_kind": "cumulative", "minimum_november_bar": 10, "milestone": "Stretch bar" }
+      ],
+      "evidence_gates": [
+        { "order": 1, "workstream": "Mobile product", "minimum_gate": "Public on iOS and Android; production auth/payment/deletion paths work; no known critical crash", "stretch_gate": ">99% crash-free sessions and 20 external beta testers", "proof": "Store URLs, release notes, crash report, review credentials" },
+        { "order": 2, "workstream": "Traction", "minimum_gate": "10 external learners with verified W4 retained behavior", "stretch_gate": "15 W4 retained from 85 activated external learners", "proof": "Cohort table with source, activation date, D1/D7/W4 activity" },
+        { "order": 3, "workstream": "Learning evidence", "minimum_gate": "30 measured sessions, 15 delayed checks where possible, 3 permissioned case studies", "stretch_gate": "Matched baseline comparison and independent educator review", "proof": "Protocol, anonymized raw results, case-study permissions, limitations" },
+        { "order": 4, "workstream": "Metis-1.6", "minimum_gate": "Reproducible checkpoint or transparent research candidate; model card; eval harness; cost/latency", "stretch_gate": "Full 300B-token release plus blind external evaluation", "proof": "Weights/config/code, technical report, logs, benchmark scripts" },
+        { "order": 5, "workstream": "Company/IP", "minimum_gate": "Reconciled family money and ownership; company owns code/models/data rights; founder control documented", "stretch_gate": "Investor-ready Delaware C-corp, clean cap table, 83(b)/IRS calendar", "proof": "Signed consents, ledger, SAFEs/rescission, IP schedule and assignments" },
+        { "order": 6, "workstream": "Fundraising", "minimum_gate": "Deck, two-minute demo, data room, 100 researched targets, clear $750K use of funds", "stretch_gate": "150 targets, 30 warm-intro paths, one committed lead or accelerator", "proof": "CRM, deck, demo link, budget/runway model, diligence index" }
+      ],
+      "weekly_roadmap": [
+        { "week_order": 1, "week": "1", "dates": "Jul 14-20", "product": "Define acquisition-to-W4 funnel; start D-U-N-S/store accounts; fix Android identity/build plan", "traction": "Book 5 external testers and 5 interviews", "metis": "Freeze scope, eval contract, and de-risk checklist", "company": "Inventory entity/family/IP docs; draft YC/SPC" },
+        { "week_order": 2, "week": "2", "dates": "Jul 21-27", "product": "Installable iOS/Android internal builds; event QA", "traction": "Activate 5 external learners", "metis": "Packed MoRE unit tests and parity evidence", "company": "Submit YC by Jul 27" },
+        { "week_order": 3, "week": "3", "dates": "Jul 28-Aug 3", "product": "Closed beta; crash and account-deletion checklist", "traction": "8 activated; 10 interviews cumulative", "metis": "Router-collapse tests; checkpoint/resume smoke", "company": "Submit SPC by Aug 2; submit 1517/Afore/Z" },
+        { "week_order": 4, "week": "4", "dates": "Aug 4-10", "product": "TestFlight/Play internal candidate; store metadata draft", "traction": "12 activated; first measured sessions", "metis": "1B-token-equivalent smoke and measured throughput", "company": "Family-money fact memo; marketing attribution audit" },
+        { "week_order": 5, "week": "5", "dates": "Aug 11-17", "product": "Beta defects triaged; privacy/data-safety forms", "traction": "16 activated; follow up every learner", "metis": "Compute go/no-go; start one-GPU path if necessary", "company": "Choose entity route after confirming LLC state; request clinic review" },
+        { "week_order": 6, "week": "6", "dates": "Aug 18-24", "product": "Release candidate 1; subscription/deletion verified", "traction": "20 activated; first W4 retained", "metis": "Start two-GPU full run by Aug 24 or trigger fallback", "company": "Draft founder/family factual acknowledgments" },
+        { "week_order": 7, "week": "7", "dates": "Aug 25-31", "product": "Submit both stores if gates pass", "traction": "25 activated; 15 measured sessions", "metis": "Training health report; preemption recovery proven", "company": "Send material progress updates to live applications" },
+        { "week_order": 8, "week": "8", "dates": "Sep 1-7", "product": "Soft launch or resolve review feedback within 48 hours", "traction": "28 activated; 2 W4 retained", "metis": "No full start by Sep 1 means scaled publishable fallback", "company": "Pitch narrative v0: learner, loop, model moat" },
+        { "week_order": 9, "week": "9", "dates": "Sep 8-14", "product": "Fix onboarding friction from observed sessions", "traction": "30 activated; 3 W4; first case study", "metis": "Freeze named-baseline evaluation harness", "company": "Data-room skeleton; cap-table reconstruction" },
+        { "week_order": 10, "week": "10", "dates": "Sep 15-21", "product": "Both stores public or written blocker/workaround", "traction": "36 activated; 4 W4", "metis": "Mid-run loss/router/throughput report", "company": "One-liner, founder story, two-minute demo" },
+        { "week_order": 11, "week": "11", "dates": "Sep 22-28", "product": "Weekly crash/funnel review", "traction": "42 activated; 5 W4; 30 measured sessions", "metis": "Evaluate mid-run checkpoint; no cherry-picking", "company": "Investor CRM reaches 50 qualified targets" },
+        { "week_order": 12, "week": "12", "dates": "Sep 29-Oct 5", "product": "Pricing/paywall path works; first payment attempted", "traction": "48 activated; 6 W4; second case study", "metis": "Freeze post-training data and safety set", "company": "Deck v1; 18-month use-of-funds model" },
+        { "week_order": 13, "week": "13", "dates": "Oct 6-12", "product": "Reliability release; capture launch media", "traction": "55 activated; 7 W4", "metis": "Checkpoint comparison; cost/latency evidence", "company": "Data room v1; map 20 warm-intro requests" },
+        { "week_order": 14, "week": "14", "dates": "Oct 13-19", "product": "Lock Product Hunt only if retention gates are green", "traction": "60 activated; 9 W4; third case study", "metis": "Review pretraining exit criteria", "company": "Application answer/objection bank" },
+        { "week_order": 15, "week": "15", "dates": "Oct 20-26", "product": "Stable launch candidate on both stores", "traction": "65 activated; 10 W4 minimum bar", "metis": "Middle-case pretraining exit; begin post-training", "company": "Corporate dry run; IP schedule complete" },
+        { "week_order": 16, "week": "16", "dates": "Oct 27-Nov 2", "product": "No features without activation/retention value", "traction": "70 activated; 11 W4", "metis": "Model card/report draft; blind external eval", "company": "Deck v2; diligence Q&A complete" },
+        { "week_order": 17, "week": "17", "dates": "Nov 3-9", "product": "Public/Product Hunt launch if gates pass", "traction": "75 activated; 12 W4; permissioned testimonials", "metis": "Final evals or transparent RC release", "company": "CRM 100-150; schedule Wave 1" },
+        { "week_order": 18, "week": "18", "dates": "Nov 10-16", "product": "Bug-fix-only release freeze", "traction": "80 activated; 14 W4; freeze cohort table", "metis": "Final release or fallback report", "company": "Family resolution signed; incorporation/IP package ready" },
+        { "week_order": 19, "week": "Final", "dates": "Nov 17-19", "product": "Backup demo and builds; no risky changes", "traction": "85 activated; 15 W4 stretch", "metis": "Publish reproducible evidence bundle", "company": "Execute chosen entity/control/IP steps; launch Wave 1" }
+      ],
+      "corporate_cleanup": [
+        { "order": 1, "when": "Jul 14-20", "action": "Collect articles, operating agreement, member/manager consents, ledger, EIN letter, bank authority, SAFE drafts/signatures, and transfer proof", "done_when": "One index says what exists, what is missing, and who signed what", "risk": "Do not infer ownership from organizer or IRS labels" },
+        { "order": 2, "when": "Jul 21-Aug 3", "action": "Build a factual cap-table and family-money memo", "done_when": "Every $1,000 transfer has date, sender, recipient, intended instrument, signed status, and proposed cleanup", "risk": "Do not pretend transfers never happened" },
+        { "order": 3, "when": "Aug 4-17", "action": "Choose one documented family resolution: refund/rescission, loan, valid restated SAFE, or other supported treatment", "done_when": "All affected family members sign the same factual understanding", "risk": "Do not issue arbitrary 0.33% common shares merely to match a verbal valuation" },
+        { "order": 4, "when": "Aug 4-Sep 15", "action": "Create IP schedule for code, models, data rights, domains, trademarks, cloud/store accounts, and contractors", "done_when": "Each asset has creator, current owner, license/source, and assignment needed", "risk": "Do not claim company ownership of third-party data or unassigned contractor work" },
+        { "order": 5, "when": "By Sep 15", "action": "Confirm the correct LLC-to-Delaware path based on the LLC's state and app-store/entity continuity", "done_when": "Written checklist covers statutory conversion versus new corporation/asset transfer, taxes, bank/EIN, and app transfer", "risk": "Do not use a generic conversion form without knowing the current state" },
+        { "order": 6, "when": "Oct 1-Nov 10", "action": "Prepare certificate, bylaws, incorporator/board actions, founder stock purchase, vesting decision, cap table, IP assignments, and securities notices", "done_when": "A dry-run packet is internally consistent and ready for signatures", "risk": "Do not create an oversized option pool without a hiring plan" },
+        { "order": 7, "when": "Nov 19", "action": "Execute the chosen entity and control transition in the correct order", "done_when": "Founder authority, stock, board, IP, bank/store/cloud control, and family instruments match the signed record", "risk": "Do not backdate documents" },
+        { "order": 8, "when": "Nov 19-Dec 19", "action": "Calendar post-close filings: 83(b) within 30 days if restricted founder stock applies; IRS responsible-party update within 60 days; state/Delaware/tax/account updates", "done_when": "Proof of every filing and deadline is in the data room", "risk": "Do not miss a deadline because incorporation felt finished" }
+      ],
+      "investors_now": [
+        { "rank": 1, "target": "YC Fall 2026", "why_fit": "Technical solo founder, live product, no-revenue companies accepted; deadline makes delay costly", "published_amount": "$500K: $125K for 7% + $375K uncapped MFN SAFE", "deadline": "Submit by Jul 27", "next_step_chance": "2-5%", "cash_chance": "0.5-1.5%" },
+        { "rank": 2, "target": "SPC Founder Fellowship F26", "why_fit": "Frontier technical build; solo builders welcome; no traction required", "published_amount": "$400K for 7% + $600K guaranteed next round", "deadline": "Submit by Aug 2", "next_step_chance": "2-6%", "cash_chance": "0.5-2%" },
+        { "rank": 3, "target": "1517 Fund", "why_fit": "Best thesis match: young/nontraditional founder plus hard AI/model work and education", "published_amount": "$50K-$1M; average $400K pre-seed", "deadline": "Submit Jul 15-17; rolling", "next_step_chance": "15-30%", "cash_chance": "3-8%" },
+        { "rank": 4, "target": "1517 Medici", "why_fit": "Designed for early young builders needing belief capital", "published_amount": "Minimum $1K non-dilutive grant", "deadline": "Submit now", "next_step_chance": "Not a standard interview funnel", "cash_chance": "8-20%" },
+        { "rank": 5, "target": "Afore Grants", "why_fit": "Age 21-or-under, North America, early exploration and first customers", "published_amount": "$1K non-dilutive; 12-week program", "deadline": "Rolling; Oct-Dec cohort", "next_step_chance": "10-25%", "cash_chance": "5-15%" },
+        { "rank": 6, "target": "Z Fellows", "why_fit": "No age restriction, solo accepted, very early technical builders", "published_amount": "No-money option or $10K at $1B cap", "deadline": "Rolling", "next_step_chance": "8-20%", "cash_chance": "4-10%" },
+        { "rank": 7, "target": "Founders, Inc.", "why_fit": "Prolific technical AI/consumer builder; under-18 application allowed with permission", "published_amount": "Up to $250K for 4-7%", "deadline": "Apply now/off-season", "next_step_chance": "4-12%", "cash_chance": "1-4%" },
+        { "rank": 8, "target": "Thiel Fellowship", "why_fit": "Age 22 or younger, nontraditional path, meaningful technical progress", "published_amount": "$250K over two years; no equity", "deadline": "Rolling", "next_step_chance": "1-4%", "cash_chance": "0.3-1.2%" }
+      ],
+      "investors_november": [
+        { "rank": 9, "target": "Reach Capital", "why_fit": "Strongest institutional edtech fit; AI learning and measurable outcomes", "published_amount": "From $100K at pre-seed; up to $12M later", "best_trigger": "W4 cohort + learning pilot + educator review", "next_step_chance": "1-4%", "cash_chance": "0.2-1%" },
+        { "rank": 10, "target": "PearX", "why_fit": "Pre-seed, solo accepted, product/customer/fundraising help", "published_amount": "$250K-$2M", "best_trigger": "Apps live + retained learner proof", "next_step_chance": "1-4%", "cash_chance": "0.3-1.2%" },
+        { "rank": 11, "target": "Afore Alpha / FIR", "why_fit": "Institutional pre-seed with true idea-to-first-customers support", "published_amount": "$500K-$2M+ via Alpha; at least $100K via FIR", "best_trigger": "First formal round + clear founder-market fit", "next_step_chance": "2-6%", "cash_chance": "0.4-1.5%" },
+        { "rank": 12, "target": "Antler US", "why_fit": "Solo accepted; full-time in-person founder residency; first institutional investor", "published_amount": "$500K-$1M initial commitment", "best_trigger": "Ready to relocate and build full-time", "next_step_chance": "3-10% residency", "cash_chance": "0.5-2.5% overall" },
+        { "rank": 13, "target": "Precursor Ventures", "why_fit": "People-over-product; no traction requirement; first-time/unproven founders welcome", "published_amount": "Up to $500K", "best_trigger": "Clean deck + personal proof of execution", "next_step_chance": "1-4%", "cash_chance": "0.2-1%" },
+        { "rank": 14, "target": "Denver Ventures", "why_fit": "Local Colorado relationship path; frontier tech; pre-seed", "published_amount": "$250K-$800K", "best_trigger": "Local intro + app/model demo", "next_step_chance": "2-6%", "cash_chance": "0.4-1.5%" },
+        { "rank": 15, "target": "Hustle Fund", "why_fit": "Dedicated pre-seed and comfortable being first check", "published_amount": "$150K first check", "best_trigger": "Fast, clear pitch and first retention evidence", "next_step_chance": "1-4%", "cash_chance": "0.2-1%" },
+        { "rank": 16, "target": "Techstars", "why_fit": "Structured network and follow-on signaling; apply to the most relevant active program", "published_amount": "$220K; minimum 5% + uncapped MFN SAFE conversion", "best_trigger": "Program-specific fit and incorporated/IP-clean company", "next_step_chance": "1-3%", "cash_chance": "0.2-0.8%" },
+        { "rank": 17, "target": "Learn Capital", "why_fit": "Education/human capital and AI-powered learning are core thesis areas", "published_amount": "No standard first-check size published", "best_trigger": "Learning outcomes + venture-scale category argument", "next_step_chance": "0.5-2%", "cash_chance": "0.1-0.6%" },
+        { "rank": 18, "target": "Conviction", "why_fit": "AI-native and often first investor; Metis could be real technical differentiation", "published_amount": "$1M-$25M", "best_trigger": "External model evidence plus product distribution loop", "next_step_chance": "0.5-2%", "cash_chance": "0.1-0.5%" },
+        { "rank": 19, "target": "Air Street Capital", "why_fit": "AI-first fund; custom model is core technology rather than a feature", "published_amount": "$500K-$5M at pre-seed/seed", "best_trigger": "Technical report, reproducible eval, compute efficiency", "next_step_chance": "0.5-2%", "cash_chance": "0.1-0.5%" },
+        { "rank": 20, "target": "Owl Ventures", "why_fit": "Largest dedicated edtech fund, investing across stages", "published_amount": "No standard first-check size published", "best_trigger": "Meaningful learning evidence and a much larger market narrative", "next_step_chance": "0.3-1%", "cash_chance": "0.05-0.3%" }
+      ],
+      "portfolio_odds": [
+        { "rank": 1, "outcome": "Any external check of at least $25K", "estimated_probability": "30-55%", "interpretation": "Plausible with disciplined volume, but still not guaranteed" },
+        { "rank": 2, "outcome": "At least $250K total raised", "estimated_probability": "15-30%", "interpretation": "Usually needs one credible institutional/fellowship anchor or several angels" },
+        { "rank": 3, "outcome": "$500K+ round closed", "estimated_probability": "8-20%", "interpretation": "Possible; stronger than current state but not the median outcome" },
+        { "rank": 4, "outcome": "$1M+ round closed", "estimated_probability": "4-10%", "interpretation": "Typically requires an accelerator/fund lead or evidence above the minimum bar" },
+        { "rank": 5, "outcome": "$2M round closed", "estimated_probability": "1-5%", "interpretation": "Outlier without SPC/Pear/Antler-style terms, a strong lead, or breakout traction/model results" }
+      ]
+    }
+  },
+  "sources": [
+    {
+      "id": "report_assumptions",
+      "label": "Founder operating targets and probability method",
+      "path": "source_notes.md",
+      "query": {
+        "engine": "duckdb",
+        "sql": "SELECT json_extract(snapshot, '$.datasets.summary') AS summary, json_extract(snapshot, '$.datasets.learner_targets') AS learner_targets, json_extract(snapshot, '$.datasets.evidence_gates') AS evidence_gates, json_extract(snapshot, '$.datasets.weekly_roadmap') AS weekly_roadmap, json_extract(snapshot, '$.datasets.portfolio_odds') AS portfolio_odds FROM read_json_auto('artifact.json');",
+        "description": "Reads the manually authored operating targets and probability ranges embedded in this artifact. These are planning assumptions, not observed company metrics."
+      }
+    },
+    {
+      "id": "local_product_snapshot",
+      "label": "Lernex mobile repository inspection",
+      "path": "source_notes.md"
+    },
+    {
+      "id": "metis_plan",
+      "label": "Metis-1.6 architecture and training plan",
+      "path": "source_notes.md"
+    },
+    {
+      "id": "investor_research",
+      "label": "Official investor and program terms research",
+      "path": "source_notes.md",
+      "query": {
+        "engine": "duckdb",
+        "sql": "SELECT json_extract(snapshot, '$.datasets.investors_now') AS investors_now, json_extract(snapshot, '$.datasets.investors_november') AS investors_november FROM read_json_auto('artifact.json');",
+        "description": "Reads the researched investor target rows embedded in this artifact; official source URLs and retrieval notes are in source_notes.md."
+      }
+    },
+    {
+      "id": "store_research",
+      "label": "Apple and Google official store-readiness guidance",
+      "path": "source_notes.md"
+    },
+    {
+      "id": "corporate_research",
+      "label": "SEC, IRS, Delaware, and clinic guidance",
+      "path": "source_notes.md",
+      "query": {
+        "engine": "duckdb",
+        "sql": "SELECT json_extract(snapshot, '$.datasets.corporate_cleanup') AS corporate_cleanup FROM read_json_auto('artifact.json');",
+        "description": "Reads the corporate-cleanup checklist embedded in this artifact; official SEC, IRS, Delaware, and clinic references are in source_notes.md."
+      }
+    }
+  ]
+}

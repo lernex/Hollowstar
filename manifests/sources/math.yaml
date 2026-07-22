@@ -1,0 +1,90 @@
+sources:
+  - id: nemotron_cc_math_4plus
+    label: Nemotron-CC-Math 4plus
+    category: math
+    phase_tokens: {phase_a: 20000000000, phase_b: 15000000000, phase_c: 5000000000}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access:
+      type: huggingface
+      repo_id: nvidia/Nemotron-CC-Math-v1
+      revision: 397a2502f2028c659ba411a6c4935b464a7f03aa
+      gated: auto
+      allow_patterns: [4plus/**]
+    license: {status: requires_acceptance, expression: NVIDIA-Data-Agreement-for-Model-Training}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.20, compressed_bytes_per_token: 0.78}
+    processing: {quality_profile: math_4plus_v1, dedup_namespace: global_math_web, priority: 100}
+
+  - id: nemotron_cc_math_unique_3
+    label: Unique Nemotron-CC-Math score-3 explanations
+    category: math
+    phase_tokens: {phase_a: 8000000000, phase_b: 6000000000, phase_c: 1000000000}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access:
+      type: huggingface
+      repo_id: nvidia/Nemotron-CC-Math-v1
+      revision: 397a2502f2028c659ba411a6c4935b464a7f03aa
+      gated: auto
+      allow_patterns: [3/**]
+    license: {status: requires_acceptance, expression: NVIDIA-Data-Agreement-for-Model-Training}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.60, compressed_bytes_per_token: 0.78}
+    processing: {quality_profile: math_score3_v1, dedup_namespace: global_math_web, priority: 85}
+
+  - id: nemotron_math_proofs
+    label: Nemotron Math Proofs natural-language and Lean proofs
+    category: math
+    phase_tokens: {phase_a: 3000000000, phase_b: 4000000000, phase_c: 0}
+    provenance: {generated: true, transformed: true, fresh: false}
+    access: {type: huggingface, repo_id: nvidia/Nemotron-Math-Proofs-v1, revision: 97229c590831adfe96202f5cd071d444d535bf91, gated: false, allow_patterns: ['**/*.parquet']}
+    license: {status: reviewed, expression: CC-BY-4.0}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.35, compressed_bytes_per_token: 0.75}
+    processing: {quality_profile: proof_v1, dedup_namespace: global_math, priority: 95}
+
+  - id: proof_pile2_math
+    label: Proof-Pile-2 mathematical subset
+    category: math
+    phase_tokens: {phase_a: 3000000000, phase_b: 3000000000, phase_c: 2000000000}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: huggingface, repo_id: EleutherAI/proof-pile-2, revision: 901a9273a770e9d4138c5ddd91802f9c5c6cdc4b, gated: false, allow_patterns: ['**/*.jsonl.zst']}
+    license: {status: per_record_required, expression: per-component}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.50, compressed_bytes_per_token: 0.65}
+    processing: {quality_profile: proof_v1, dedup_namespace: global_math_science, priority: 90}
+
+  - id: finemath_unique
+    label: FineMath unique high-quality math
+    category: math
+    phase_tokens: {phase_a: 2000000000, phase_b: 2000000000, phase_c: 1000000000}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: huggingface, repo_id: HuggingFaceTB/finemath, revision: e92b25a616738fe95dc186b64dfb19f9c8525594, gated: false, allow_patterns: ['**/*.parquet']}
+    license: {status: reviewed, expression: ODC-By-1.0}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.55, compressed_bytes_per_token: 0.72}
+    processing: {quality_profile: math_score3_v1, dedup_namespace: global_math_web, priority: 80}
+
+  - id: megamath_unique
+    label: MegaMath unique mathematical material
+    category: math
+    phase_tokens: {phase_a: 2000000000, phase_b: 2000000000, phase_c: 1000000000}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: huggingface, repo_id: LLM360/MegaMath, revision: 3cbc64616594d6bc8759abaa0b2a71858f880f0d, gated: false, allow_patterns: ['**/*.parquet']}
+    license: {status: per_record_required, expression: per-component}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.55, compressed_bytes_per_token: 0.72}
+    processing: {quality_profile: math_score3_v1, dedup_namespace: global_math_web, priority: 78}
+
+  - id: openwebmath_unique
+    label: OpenWebMath equation-rich web text
+    category: math
+    phase_tokens: {phase_a: 1000000000, phase_b: 1000000000, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: huggingface, repo_id: open-web-math/open-web-math, revision: fde8ef8de2300f5e778f56261843dab89f230815, gated: false, allow_patterns: ['**/*.parquet']}
+    license: {status: per_record_required, expression: per-record-and-upstream-terms}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.70, compressed_bytes_per_token: 0.72}
+    processing: {quality_profile: math_score3_v1, dedup_namespace: global_math_web, priority: 70}
+
+  - id: formal_theorem_corpora
+    label: Lean, Isabelle AFP, Coq, and Metamath corpora
+    category: math
+    phase_tokens: {phase_a: 1000000000, phase_b: 2000000000, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: canonical_registry, registry: manifests/registries/systems_formal.yaml}
+    license: {status: per_record_required, expression: canonical-source-license}
+    acquisition: {driver: canonical_git, candidate_multiplier: 1.60, compressed_bytes_per_token: 0.72}
+    processing: {quality_profile: formal_proof_v1, dedup_namespace: global_formal, priority: 98}

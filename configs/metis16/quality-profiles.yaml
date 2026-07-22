@@ -1,0 +1,49 @@
+schema: metis.quality-profiles/v1
+defaults:
+  minimum_characters: 200
+  maximum_characters: 2000000
+  minimum_alpha_fraction: 0.45
+  maximum_repeated_line_fraction: 0.20
+  maximum_symbol_fraction: 0.35
+  maximum_url_density_per_100_words: 4.0
+  language: en
+  language_probability_minimum: 0.80
+  reject_personal_data: true
+  reject_secrets: true
+  reject_benchmark_matches: true
+
+profiles:
+  web_hq_v1: {minimum_characters: 400, minimum_alpha_fraction: 0.55, quality_score_minimum: 0.72}
+  web_edu_v1: {minimum_characters: 500, minimum_alpha_fraction: 0.55, educational_score_minimum: 3.0}
+  web_general_v1: {minimum_characters: 300, quality_score_minimum: 0.62}
+  fresh_web_2026_v1: {minimum_characters: 500, quality_score_minimum: 0.76, require_capture_date: true, reject_probable_model_generated: true}
+  web_diversity_v1: {minimum_characters: 240, quality_score_minimum: 0.55, preserve_informal_register: true}
+  repository_code_v1: {minimum_characters: 80, maximum_generated_file_probability: 0.10, require_license: true, secret_scan: required}
+  fresh_repository_code_v1: {minimum_characters: 80, require_recent_commit: true, require_active_repository: true, require_license: true, secret_scan: required}
+  code_interleaved_v1: {minimum_characters: 300, code_text_interleave_minimum: 0.15, quality_score_minimum: 0.70}
+  engineering_discussion_v1: {minimum_characters: 120, require_technical_context: true, pii_scan: required}
+  swe_interleave_v1: {minimum_components: 3, require_tests_or_examples: true, require_license: true}
+  verified_synthetic_code_v1: {require_execution_or_static_verification: true, require_genealogy: true}
+  executable_code_v1: {require_execution_pass: true, require_license: true}
+  math_4plus_v1: {minimum_characters: 200, equation_integrity: required, math_score_minimum: 4}
+  math_score3_v1: {minimum_characters: 300, equation_integrity: required, math_score_minimum: 3, quality_score_minimum: 0.72}
+  proof_v1: {minimum_characters: 250, require_statement_and_argument: true}
+  formal_proof_v1: {minimum_characters: 40, parser_or_compiler_check: required}
+  pdf_technical_v1: {minimum_characters: 800, ocr_confidence_minimum: 0.90, repeated_header_footer_maximum: 0.08, reading_order_check: required}
+  scientific_paper_v1: {minimum_characters: 1000, require_title_or_abstract: true, bibliography_body_ratio_maximum: 0.35}
+  biomedical_paper_v1: {minimum_characters: 1000, require_open_access: true, bibliography_body_ratio_maximum: 0.35}
+  textbook_v1: {minimum_characters: 800, structural_completeness: required}
+  fresh_science_v1: {minimum_characters: 800, require_publication_date: true, require_open_access: true}
+  official_docs_v1: {minimum_characters: 200, require_canonical_source: true, require_version_metadata: true}
+  engineering_report_v1: {minimum_characters: 800, structural_completeness: required}
+  grounded_synthetic_v1: {require_source_document: true, require_genealogy: true, verification: required}
+  verified_reasoning_v1: {require_programmatic_or_source_verification: true, require_genealogy: true}
+  textbook_synthetic_v1: {require_source_document: true, require_genealogy: true, stylistic_diversity_check: required}
+  reference_v1: {minimum_characters: 500, require_license: true}
+  longform_book_v1: {minimum_characters: 2000, chapter_integrity: required, require_license: true}
+  explanatory_qa_v1: {minimum_characters: 150, answer_score_minimum: 2, require_license: true}
+  legal_primary_v1: {minimum_characters: 500, require_primary_source: true, require_jurisdiction: true}
+  legal_synthetic_v1: {require_source_document: true, require_genealogy: true}
+  translated_english_v1: {minimum_characters: 300, language_probability_minimum: 0.90, translation_quality_check: required}
+  multilingual_native_v1: {minimum_characters: 300, language_probability_minimum: 0.90, allowed_language_registry: required}
+

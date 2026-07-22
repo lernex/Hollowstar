@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME="${METIS_RUNTIME_DIR:-$ROOT/.metis-runtime}"
+PYTHON="${METIS_PYTHON:-$RUNTIME/bin/python}"
+
+if [[ ! -x "$PYTHON" ]]; then
+  PYTHON="${PYTHON_FALLBACK:-python3}"
+fi
+
+if ! "$PYTHON" -c 'import yaml' >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+Metis data runtime is not ready.
+Run this once from the repository root:
+  ./ops/bootstrap.sh --profile portage
+
+For an existing development environment, set METIS_PYTHON to its Python executable.
+EOF
+  exit 1
+fi
+
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$PYTHON" -m metis_data.cli "$@"

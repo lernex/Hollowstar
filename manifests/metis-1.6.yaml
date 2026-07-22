@@ -1,0 +1,122 @@
+schema: metis.data-manifest/v1
+release: metis-1.6-data-r1
+status: production_recipe
+description: >-
+  Metis-1.6 pretraining exposures. Every token allocation is measured after
+  filtering, cross-source deduplication, decontamination, and tokenization with
+  the released Metis-1.6 tokenizer. Published upstream token counts are only
+  candidate-reservoir estimates.
+
+tokenizer:
+  algorithm: byte_level_bpe
+  vocabulary_size_including_special_tokens: 65536
+  sample_target_bytes: 160000000000
+  min_sample_bytes_per_category: 1000000000
+  preserve_code_whitespace: true
+  preserve_latex: true
+  byte_fallback: true
+  special_tokens:
+    - <|endoftext|>
+    - <|padding|>
+    - <|fim_prefix|>
+    - <|fim_middle|>
+    - <|fim_suffix|>
+    - <|tool_call|>
+    - <|tool_result|>
+
+schedule:
+  target_tokens: 1000000000000
+  unique_target_tokens: 875000000000
+  replay_target_tokens: 125000000000
+  phases:
+    phase_a:
+      start_token: 0
+      target_tokens: 700000000000
+      unique_tokens: 700000000000
+      replay_tokens: 0
+      purpose: broad linguistic, factual, scientific, and software foundation
+    phase_b:
+      start_token: 700000000000
+      target_tokens: 250000000000
+      unique_tokens: 175000000000
+      replay_tokens: 75000000000
+      purpose: capability intensification in code, math, science, and structured reasoning
+    phase_c:
+      start_token: 950000000000
+      target_tokens: 50000000000
+      unique_tokens: 0
+      replay_tokens: 50000000000
+      purpose: premium non-synthetic cooldown during final learning-rate decay
+
+categories:
+  - id: web
+    label: General and educational web
+    phase_tokens: {phase_a: 420000000000, phase_b: 85000000000, phase_c: 20000000000}
+  - id: code
+    label: Code and software engineering
+    phase_tokens: {phase_a: 90000000000, phase_b: 55000000000, phase_c: 15000000000}
+  - id: math
+    label: Mathematics and formal reasoning
+    phase_tokens: {phase_a: 40000000000, phase_b: 35000000000, phase_c: 10000000000}
+  - id: science
+    label: Science, papers, PDFs, and technical text
+    phase_tokens: {phase_a: 90000000000, phase_b: 30000000000, phase_c: 5000000000}
+  - id: synthetic
+    label: Synthetic pedagogical and factual data
+    phase_tokens: {phase_a: 25000000000, phase_b: 45000000000, phase_c: 0}
+  - id: reference
+    label: Books, encyclopedic, legal, and reference
+    phase_tokens: {phase_a: 25000000000, phase_b: 0, phase_c: 0}
+  - id: multilingual
+    label: Translated and native multilingual
+    phase_tokens: {phase_a: 10000000000, phase_b: 0, phase_c: 0}
+
+freshness_layer:
+  embedded_in_target: true
+  target_tokens: 90000000000
+  buckets:
+    general_web: 35000000000
+    software: 35000000000
+    science: 10000000000
+    official_documentation: 10000000000
+
+selection:
+  seed: 16062026
+  source_deficit_policy: same_category_only
+  global_fallback: forbidden
+  require_final_tokenizer_counts: true
+  fail_on_source_exhaustion: true
+  replay:
+    maximum_document_exposures: 4
+    winner_policy:
+      - license_cleared
+      - primary_source
+      - human_original_over_synthetic
+      - structurally_complete_extraction
+      - current_version_for_time_sensitive_content
+      - higher_quality_score
+      - deterministic_hash
+
+hard_exclusions:
+  - id: cais/hle
+    reason: evaluation_only
+  - id: Idavidrein/gpqa
+    reason: evaluation_only
+  - id: nvidia/UltraData-SFT-2605
+    reason: post_training_only
+  - id: benchmark_solution_repositories
+    reason: contamination
+  - id: unlicensed_or_unresolved
+    reason: release_risk
+  - id: private_leaked_credential_or_personal_data
+    reason: privacy_and_security
+
+source_files:
+  - sources/web.yaml
+  - sources/code.yaml
+  - sources/math.yaml
+  - sources/science.yaml
+  - sources/synthetic.yaml
+  - sources/reference.yaml
+  - sources/multilingual.yaml
+

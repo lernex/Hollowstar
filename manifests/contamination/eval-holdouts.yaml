@@ -1,0 +1,24 @@
+schema: metis.contamination-registry/v1
+policy:
+  fail_closed_if_unavailable: true
+  exact_match: true
+  normalized_match: true
+  ngram_size: 13
+  minimum_matching_ngrams: 2
+  remove_entire_document: true
+  quarantine_outputs: true
+benchmarks:
+  - {id: hle, repo_id: cais/hle, revision: 5a81a4c7271a2a2a312b9a690f0c2fde837e4c29, config: default, split: test, use: evaluation_only}
+  - {id: gpqa, repo_id: Idavidrein/gpqa, revision: 633f5ee89ab8ad4522a9f850766b73f62147ffdd, config: gpqa_main, split: train, use: evaluation_only}
+  - {id: mmlu, repo_id: cais/mmlu, revision: c30699e8356da336a370243923dbaf21066bb9fe, config: all, split: test, use: evaluation_only}
+  - {id: mmlu_pro, repo_id: TIGER-Lab/MMLU-Pro, revision: b189ec765aa7ed75c8acfea42df31fdae71f97be, config: default, split: test, use: evaluation_only}
+  - {id: gsm8k, repo_id: openai/gsm8k, revision: 740312add88f781978c0658806c59bc2815b9866, config: main, split: test, use: evaluation_only}
+  - {id: math, repo_id: EleutherAI/hendrycks_math, revision: 21a5633873b6a120296cce3e2df9d5550074f4a3, configs: [algebra, counting_and_probability, geometry, intermediate_algebra, number_theory, prealgebra, precalculus], split: test, use: evaluation_only}
+  - {id: humaneval, repo_id: openai/openai_humaneval, revision: 7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544, config: openai_humaneval, split: test, use: evaluation_only}
+  - {id: mbpp, repo_id: google-research-datasets/mbpp, revision: 4bb6404fdc6cacfda99d4ac4205087b89d32030c, config: sanitized, split: test, use: evaluation_only}
+  - {id: swe_bench, repo_id: princeton-nlp/SWE-bench, revision: e48e2bd1e9fecd5bbd641e9414ac59da9f2e69f6, config: default, split: test, use: evaluation_only}
+  - id: livecodebench
+    repo_id: livecodebench/code_generation_lite
+    revision: 0fe84c3912ea0c4d4a78037083943e8f0c4dd505
+    files: [test.jsonl, test2.jsonl, test3.jsonl, test4.jsonl, test5.jsonl, test6.jsonl]
+    use: evaluation_only

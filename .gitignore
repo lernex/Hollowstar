@@ -13,6 +13,10 @@ checkpoints/
 artifacts/
 .hf/
 *.log
+.metis-runtime/
+.metis-portage/
+.metis-tiny/
+containers/*.sif
 
 # Model weights are published to Hugging Face, not GitHub.
 *.safetensors

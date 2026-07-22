@@ -1,0 +1,15 @@
+schema: metis.canonical-web-registry/v1
+selection: official_docs
+require_canonical_domain: true
+require_version_metadata: true
+require_license_capture: true
+seeds:
+  - {id: ietf_rfc, url: 'https://www.rfc-editor.org/rfc-index.html', product: IETF RFC, version: current, stable: true}
+  - {id: w3c, url: 'https://www.w3.org/TR/', product: W3C standards, version: current}
+  - {id: nist, url: 'https://csrc.nist.gov/publications', product: NIST publications, version: current}
+  - {id: cplusplus, url: 'https://eel.is/c++draft/', product: C++ draft, version: current}
+  - {id: ecma262, url: 'https://tc39.es/ecma262/', product: ECMAScript, version: current}
+  - {id: webgpu, url: 'https://www.w3.org/TR/webgpu/', product: WebGPU, version: current}
+  - {id: llvm, url: 'https://llvm.org/docs/', product: LLVM, version: current}
+  - {id: linux_docs, url: 'https://docs.kernel.org/', product: Linux kernel, version: current}
+

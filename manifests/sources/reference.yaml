@@ -1,0 +1,80 @@
+sources:
+  - id: finewiki
+    label: FineWiki encyclopedic knowledge
+    category: reference
+    phase_tokens: {phase_a: 5000000000, phase_b: 0, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: huggingface, repo_id: HuggingFaceFW/finewiki, revision: 8bd13e72e6a002407649b3e898535f42ceb1aeb9, gated: false, allow_patterns: [data/enwiki/**]}
+    license: {status: reviewed, expression: CC-BY-SA-4.0}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.20, compressed_bytes_per_token: 0.75}
+    processing: {quality_profile: reference_v1, dedup_namespace: global_reference, priority: 90}
+
+  - id: wikimedia_reference
+    label: Wikimedia, Wikibooks, and Wikisource
+    category: reference
+    phase_tokens: {phase_a: 3000000000, phase_b: 0, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: canonical_registry, registry: manifests/registries/reference_sources.yaml, selector: wikimedia}
+    license: {status: reviewed, expression: per-project-CC-license}
+    acquisition: {driver: canonical_http, candidate_multiplier: 1.25, compressed_bytes_per_token: 0.72}
+    processing: {quality_profile: reference_v1, dedup_namespace: global_reference, priority: 88}
+
+  - id: public_domain_books
+    label: PG-19 and Project Gutenberg public-domain long-form books
+    category: reference
+    phase_tokens: {phase_a: 4000000000, phase_b: 0, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: canonical_registry, registry: manifests/registries/reference_sources.yaml, selector: public_domain_books}
+    license: {status: per_record_required, expression: jurisdiction-specific-public-domain}
+    acquisition: {driver: canonical_http, candidate_multiplier: 1.30, compressed_bytes_per_token: 0.68}
+    processing: {quality_profile: longform_book_v1, dedup_namespace: global_books, priority: 84}
+
+  - id: common_pile_reference
+    label: Common Pile books and reference
+    category: reference
+    phase_tokens: {phase_a: 3000000000, phase_b: 0, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: canonical_registry, registry: manifests/registries/reference_sources.yaml, selector: common_pile}
+    license: {status: per_record_required, expression: per-component}
+    acquisition: {driver: canonical_http, candidate_multiplier: 1.45, compressed_bytes_per_token: 0.70}
+    processing: {quality_profile: reference_v1, dedup_namespace: global_reference, priority: 80}
+
+  - id: roots_stackexchange
+    label: ROOTS StackExchange high-quality explanatory QA
+    category: reference
+    phase_tokens: {phase_a: 3000000000, phase_b: 0, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: canonical_registry, registry: manifests/registries/reference_sources.yaml, selector: stackexchange}
+    license: {status: reviewed, expression: CC-BY-SA}
+    acquisition: {driver: canonical_http, candidate_multiplier: 1.35, compressed_bytes_per_token: 0.70}
+    processing: {quality_profile: explanatory_qa_v1, dedup_namespace: global_reference, priority: 92}
+
+  - id: open_law
+    label: Pile of Law and FreeLaw primary legal text
+    category: reference
+    phase_tokens: {phase_a: 3000000000, phase_b: 0, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: canonical_registry, registry: manifests/registries/reference_sources.yaml, selector: open_law}
+    license: {status: per_record_required, expression: jurisdiction-and-source-specific}
+    acquisition: {driver: canonical_http, candidate_multiplier: 1.40, compressed_bytes_per_token: 0.72}
+    processing: {quality_profile: legal_primary_v1, dedup_namespace: global_legal, priority: 86}
+
+  - id: nemotron_legal_v1
+    label: Selected Nemotron synthetic legal reasoning
+    category: reference
+    phase_tokens: {phase_a: 2000000000, phase_b: 0, phase_c: 0}
+    provenance: {generated: true, transformed: true, fresh: false}
+    access: {type: huggingface, repo_id: nvidia/Nemotron-Pretraining-Legal-v1, revision: 3d91d58a5c0c46fe9944300ec46719f97a385b13, gated: false, allow_patterns: ['**/*.parquet']}
+    license: {status: reviewed, expression: CC-BY-4.0}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.35, compressed_bytes_per_token: 0.75}
+    processing: {quality_profile: legal_synthetic_v1, dedup_namespace: synthetic_legal, priority: 75}
+
+  - id: metis_govreference
+    label: Government and institutional reference
+    category: reference
+    phase_tokens: {phase_a: 2000000000, phase_b: 0, phase_c: 0}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access: {type: canonical_registry, registry: manifests/registries/reference_sources.yaml, selector: government}
+    license: {status: public_domain_or_reviewed, expression: jurisdiction-specific}
+    acquisition: {driver: canonical_web, candidate_multiplier: 1.35, compressed_bytes_per_token: 0.82}
+    processing: {quality_profile: official_docs_v1, dedup_namespace: global_reference, priority: 90}
