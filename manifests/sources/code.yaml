@@ -2,14 +2,14 @@ sources:
   - id: nemotron_repository_code_v123
     label: NVIDIA Nemotron repository code v1, v2, and v3
     category: code
-    phase_tokens: {phase_a: 35000000000, phase_b: 20000000000, phase_c: 5000000000}
+    phase_tokens: {phase_a: 37910000000, phase_b: 22928000000, phase_c: 5982000000}
     provenance: {generated: false, transformed: false, fresh: false}
     access:
       type: repository_index
       components:
-        - {repo_id: nvidia/Nemotron-Pretraining-Code-v1, revision: 01393d3bd890ddc5c15da8a2c9afb57391277659, gated: manual}
-        - {repo_id: nvidia/Nemotron-Pretraining-Code-v2, revision: 7b1a453d43e3c0df9749834b04f1a9510c0f5e5b, gated: manual}
-        - {repo_id: nvidia/Nemotron-Pretraining-Code-v3, revision: 9b42feaec991c69006452e6654d91a58a04d935a, gated: false}
+        - {repo_id: nvidia/Nemotron-Pretraining-Code-v1, revision: 01393d3bd890ddc5c15da8a2c9afb57391277659, gated: manual, allow_patterns: [Nemotron-Code-Metadata/**]}
+        - {repo_id: nvidia/Nemotron-Pretraining-Code-v2, revision: 7b1a453d43e3c0df9749834b04f1a9510c0f5e5b, gated: manual, allow_patterns: [Nemotron-Code-Metadata/**]}
+        - {repo_id: nvidia/Nemotron-Pretraining-Code-v3, revision: 9b42feaec991c69006452e6654d91a58a04d935a, gated: false, allow_patterns: [Nemotron-Code-Metadata/**]}
     license: {status: per_record_required, expression: repository-license}
     acquisition: {driver: repository_index, candidate_multiplier: 1.80, compressed_bytes_per_token: 0.65}
     processing: {quality_profile: repository_code_v1, dedup_namespace: global_code, priority: 90}
@@ -17,7 +17,7 @@ sources:
   - id: nemotron_cc_code_v1
     label: Nemotron-CC-Code tutorials, docs, snippets, and code-text interleaving
     category: code
-    phase_tokens: {phase_a: 15000000000, phase_b: 8000000000, phase_c: 2000000000}
+    phase_tokens: {phase_a: 18000000000, phase_b: 10000000000, phase_c: 3000000000}
     provenance: {generated: false, transformed: false, fresh: false}
     access:
       type: huggingface
@@ -32,7 +32,7 @@ sources:
   - id: stack_edu
     label: Stack-Edu educational repository code
     category: code
-    phase_tokens: {phase_a: 7000000000, phase_b: 2000000000, phase_c: 1000000000}
+    phase_tokens: {phase_a: 9000000000, phase_b: 6000000000, phase_c: 2000000000}
     provenance: {generated: false, transformed: false, fresh: false}
     access:
       type: huggingface
@@ -74,9 +74,16 @@ sources:
     category: code
     phase_tokens: {phase_a: 6000000000, phase_b: 3000000000, phase_c: 1000000000}
     provenance: {generated: false, transformed: false, fresh: true, freshness_bucket: software}
-    access: {type: canonical_web_registry, registry: manifests/registries/software_docs.yaml}
+    access:
+      type: common_crawl
+      crawls: [CC-MAIN-2026-08, CC-MAIN-2026-12, CC-MAIN-2026-17, CC-MAIN-2026-21, CC-MAIN-2026-25]
+      url_index: s3://commoncrawl/cc-index/table/cc-main/warc/
+      warc_root: https://data.commoncrawl.org/
+      route: software_docs
+      cutoff_start: '2025-01-01'
+      cutoff_end: '2026-06-30'
     license: {status: per_record_required, expression: canonical-source-license}
-    acquisition: {driver: canonical_web, candidate_multiplier: 1.80, compressed_bytes_per_token: 0.90}
+    acquisition: {driver: common_crawl_ranges, candidate_multiplier: 1.80, compressed_bytes_per_token: 0.90}
     processing: {quality_profile: official_docs_v1, dedup_namespace: global_docs, priority: 100}
 
   - id: metis_freshengineering_discussions_2025_26
@@ -89,43 +96,27 @@ sources:
     acquisition: {driver: github_discussions, candidate_multiplier: 2.20, compressed_bytes_per_token: 0.80}
     processing: {quality_profile: engineering_discussion_v1, dedup_namespace: global_code_discussion, priority: 98}
 
-  - id: metis_swe_interleave
-    label: README to implementation to tests to issue and PR records
-    category: code
-    phase_tokens: {phase_a: 3000000000, phase_b: 2000000000, phase_c: 1000000000}
-    provenance: {generated: false, transformed: true, fresh: false}
-    access: {type: derived, parents: [nemotron_repository_code_v123, metis_freshgithub_2025_26, metis_freshengineering_discussions_2025_26]}
-    license: {status: inherited, expression: parent-record-license}
-    acquisition: {driver: derived_after_download, candidate_multiplier: 1.50, compressed_bytes_per_token: 0.70}
-    processing: {quality_profile: swe_interleave_v1, dedup_namespace: global_code_interleave, priority: 96}
-
   - id: metis_systems_formal
     label: CUDA, Triton, SQL, shell, build systems, Lean, and Coq
     category: code
-    phase_tokens: {phase_a: 3000000000, phase_b: 3000000000, phase_c: 1000000000}
+    phase_tokens: {phase_a: 90000000, phase_b: 72000000, phase_c: 18000000}
     provenance: {generated: false, transformed: false, fresh: false}
-    access: {type: canonical_registry, registry: manifests/registries/systems_formal.yaml}
+    access: {type: canonical_registry, registry: manifests/registries/systems_formal.yaml, selector: systems_code}
     license: {status: per_record_required, expression: canonical-source-license}
-    acquisition: {driver: canonical_git, candidate_multiplier: 1.80, compressed_bytes_per_token: 0.72}
+    acquisition: {driver: canonical_git, candidate_multiplier: 1.00, compressed_bytes_per_token: 0.72}
     processing: {quality_profile: repository_code_v1, dedup_namespace: global_code, priority: 94}
 
   - id: verified_synthetic_code
-    label: NVIDIA and Metis verified synthetic code review, repair, rewrite, QA, and transpilation
+    label: NVIDIA verified synthetic code review, repair, rewrite, QA, and transpilation
     category: code
     phase_tokens: {phase_a: 2000000000, phase_b: 3000000000, phase_c: 0}
     provenance: {generated: true, transformed: true, fresh: false}
-    access: {type: derived, parents: [nemotron_repository_code_v123]}
-    license: {status: inherited, expression: parent-record-license}
-    acquisition: {driver: derived_after_download, candidate_multiplier: 1.40, compressed_bytes_per_token: 0.75}
+    access:
+      type: huggingface
+      repo_id: nvidia/Nemotron-Pretraining-Code-v2
+      revision: 7b1a453d43e3c0df9749834b04f1a9510c0f5e5b
+      gated: manual
+      allow_patterns: [Synthetic-Code/**]
+    license: {status: requires_acceptance, expression: NVIDIA-Data-Agreement-for-Model-Training}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.40, compressed_bytes_per_token: 0.75}
     processing: {quality_profile: verified_synthetic_code_v1, dedup_namespace: synthetic_code, priority: 85}
-
-  - id: accepted_notebooks_tests_examples
-    label: Accepted notebooks, tests, and executable examples
-    category: code
-    phase_tokens: {phase_a: 2000000000, phase_b: 4000000000, phase_c: 1000000000}
-    provenance: {generated: false, transformed: false, fresh: false}
-    access: {type: derived, parents: [nemotron_repository_code_v123, stack_edu, metis_freshgithub_2025_26]}
-    license: {status: inherited, expression: parent-record-license}
-    acquisition: {driver: derived_after_download, candidate_multiplier: 1.70, compressed_bytes_per_token: 0.70}
-    processing: {quality_profile: executable_code_v1, dedup_namespace: global_code, priority: 97}
-

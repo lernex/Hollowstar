@@ -2,8 +2,22 @@ schema: metis.portage-profile/v1
 name: portage
 manifest: manifests/metis-1.6.yaml
 
+# Historical combined data-prep profile retained only for audit compatibility.
+# Login2 owns acquisition, Rhea owns CPU preparation, and Portage is trainer-only.
+# The unsupported operator role makes production doctor/preflight calls fail closed.
+operator:
+  roles: [legacy_disabled]
+
+acquisition:
+  mode: local_detached
+  max_workers: 8
+  host_role: lustre_server
+
 storage:
   lustre_root: ${METIS_LUSTRE_ROOT:-auto}
+  require_explicit_root: true
+  forbidden_roots: ['/', /lus, /lus/lustre1]
+  expected_filesystem: lustre
   minimum_free_tb: 25
   recommended_free_tb: 40
   safety_free_tb: 5
@@ -46,22 +60,47 @@ scheduler:
   exact_signature: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
   exact_find: {cpus_per_task: 4, memory_gb: 64, time: '24:00:00', max_concurrent: 256}
   exact_filter: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
+  span_prefilter_signature: {cpus_per_task: 8, memory_gb: 32, time: '36:00:00', max_concurrent: 400}
+  span_prefilter_find: {cpus_per_task: 4, memory_gb: 64, time: '36:00:00', max_concurrent: 64}
+  span_signature: {cpus_per_task: 8, memory_gb: 48, time: '36:00:00', max_concurrent: 400}
+  span_find: {cpus_per_task: 4, memory_gb: 96, time: '48:00:00', max_concurrent: 16}
+  span_filter: {cpus_per_task: 8, memory_gb: 48, time: '36:00:00', max_concurrent: 400}
   minhash_signature: {cpus_per_task: 8, memory_gb: 48, time: '48:00:00', max_concurrent: 400}
   minhash_buckets: {cpus_per_task: 8, memory_gb: 96, time: '48:00:00', max_concurrent: 20}
-  minhash_cluster: {cpus_per_task: 32, memory_gb: 512, time: '72:00:00'}
+  minhash_components: {cpus_per_task: 16, memory_gb: 128, time: '72:00:00'}
+  minhash_priority_candidates: {cpus_per_task: 4, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
+  minhash_priority_resolve: {cpus_per_task: 8, memory_gb: 96, time: '48:00:00', max_concurrent: 64}
+  minhash_priority_finalize: {cpus_per_task: 4, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
+  minhash_priority_verify: {cpus_per_task: 4, memory_gb: 16, time: '04:00:00'}
   minhash_filter: {cpus_per_task: 8, memory_gb: 48, time: '48:00:00', max_concurrent: 400}
-  decontam_index: {cpus_per_task: 8, memory_gb: 64, time: '12:00:00'}
+  code_signature: {cpus_per_task: 8, memory_gb: 48, time: '36:00:00', max_concurrent: 400}
+  code_find: {cpus_per_task: 8, memory_gb: 96, time: '36:00:00', max_concurrent: 64}
+  code_filter: {cpus_per_task: 8, memory_gb: 48, time: '36:00:00', max_concurrent: 400}
+  decontam_index: {cpus_per_task: 16, memory_gb: 256, time: '24:00:00'}
   decontam_filter: {cpus_per_task: 8, memory_gb: 48, time: '24:00:00', max_concurrent: 400}
+  final_hash_signature: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
+  final_hash_find: {cpus_per_task: 8, memory_gb: 64, time: '24:00:00', max_concurrent: 64}
+  final_hash_filter: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
   tokenizer_sample: {cpus_per_task: 16, memory_gb: 128, time: '24:00:00'}
   tokenizer_train: {cpus_per_task: 64, memory_gb: 512, time: '48:00:00'}
   token_count: {cpus_per_task: 8, memory_gb: 48, time: '48:00:00', max_concurrent: 400}
   select: {cpus_per_task: 32, memory_gb: 512, time: '72:00:00'}
   pack: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 200}
   verify: {cpus_per_task: 16, memory_gb: 64, time: '48:00:00'}
-  release: {cpus_per_task: 2, memory_gb: 8, time: '02:00:00'}
+  release: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00'}
   exact_dedup:
     tasks: 2000
     find_tasks: 256
+  repeated_span:
+    finder_tasks: 64
+    sentence_count: 3
+    minimum_span_words: 24
+    minimum_remaining_words: 50
+    minimum_remaining_sentences: 3
+    maximum_open_files: 32
+    external_sort_chunk_records: 250000
+    external_sort_max_open_runs: 64
+    semantic_dedup: false
   minhash:
     tasks: 2000
     workers: 400
@@ -69,6 +108,19 @@ scheduler:
     hashes_per_bucket: 10
     n_grams: 5
     target_similarity_operating_region: 0.82
+  minhash_priority:
+    bucket_count: 256
+    maximum_open_files: 32
+    sqlite_cache_mb: 256
+    transaction_rows: 100000
+  code_structural:
+    finder_tasks: 64
+    block_tokens: 96
+    duplicate_fraction: 0.80
+    semantic_dedup: false
+  final_hash:
+    finder_tasks: 64
+    algorithm: sha256
   tokenize:
     tasks: 2000
     workers: 400
@@ -80,6 +132,7 @@ runtime:
   require_apptainer_for_compute: false
   hf_home: cache/huggingface
   temp_dir: cache/tmp
+  node_local_temp_dir: ${METIS_NODE_LOCAL_TMP:-auto}
   download_retries: 8
   request_timeout_seconds: 900
   # Set true only after the site-approved Common Crawl, GitHub/repository,

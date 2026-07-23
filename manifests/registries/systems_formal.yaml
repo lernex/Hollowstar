@@ -1,13 +1,16 @@
 schema: metis.canonical-git-registry/v1
-resolve_revisions_on_first_run: true
+resolve_revisions_on_first_run: false
 require_allowlisted_license: true
 repositories:
-  - {id: lean4, url: 'https://github.com/leanprover/lean4.git', license: Apache-2.0}
-  - {id: mathlib4, url: 'https://github.com/leanprover-community/mathlib4.git', license: Apache-2.0}
-  - {id: coq, url: 'https://github.com/coq/coq.git', license: LGPL-2.1}
-  - {id: metamath, url: 'https://github.com/metamath/set.mm.git', license: CC0-1.0}
-  - {id: afp, url: 'https://github.com/isabelle-prover/mirror-afp-devel.git', license: BSD-3-Clause}
-  - {id: triton, url: 'https://github.com/triton-lang/triton.git', license: MIT}
-  - {id: pytorch, url: 'https://github.com/pytorch/pytorch.git', license: BSD-3-Clause}
-  - {id: cuda_samples, url: 'https://github.com/NVIDIA/cuda-samples.git', license: BSD-3-Clause}
+  - {id: lean4, url: 'https://github.com/leanprover/lean4.git', revision: 9e44042a4208e8bbb06dc3a43a0ada0d933170b9, license: Apache-2.0}
+  - {id: mathlib4, url: 'https://github.com/leanprover-community/mathlib4.git', revision: b5d557f7df250b0a7476c30778a3b17a1e448a26, license: Apache-2.0}
+  - {id: coq, url: 'https://github.com/coq/coq.git', revision: 3403defcb25489dd81af00f9b3d16cca5bb00b25, license: LGPL-2.1}
+  - {id: metamath, url: 'https://github.com/metamath/set.mm.git', revision: cef0ef4a54e3f0d696e9640812f01e5717eeb2c4, license: CC0-1.0}
+  - {id: afp, url: 'https://github.com/isabelle-prover/mirror-afp-devel.git', revision: ad4f89c623df7a698b277123fa5cadfb7ef59293, license: BSD-3-Clause}
+  - {id: triton, url: 'https://github.com/triton-lang/triton.git', revision: 4a7cc23cc9c0066d039918e7db6202344f595177, license: MIT}
+  - {id: pytorch, url: 'https://github.com/pytorch/pytorch.git', revision: 083187777357e2747de33b0f17dd9de75e24e757, license: BSD-3-Clause}
+  - {id: cuda_samples, url: 'https://github.com/NVIDIA/cuda-samples.git', revision: b7c5481c556c3fe98db060207ecaa41a4b9a9abc, license: BSD-3-Clause}
 
+groups:
+  systems_code: [lean4, mathlib4, coq, metamath, afp, triton, pytorch, cuda_samples]
+  formal_math: [lean4, mathlib4, coq, metamath, afp]

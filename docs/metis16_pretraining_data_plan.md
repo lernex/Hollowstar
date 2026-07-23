@@ -30,11 +30,11 @@ totals do not reconcile exactly.
 The exact source tables are:
 
 - [`web.yaml`](../manifests/sources/web.yaml): 9 sources, exactly 525B.
-- [`code.yaml`](../manifests/sources/code.yaml): 11 sources, exactly 160B.
+- [`code.yaml`](../manifests/sources/code.yaml): 9 sources, exactly 160B.
 - [`math.yaml`](../manifests/sources/math.yaml): 8 sources, exactly 85B.
-- [`science.yaml`](../manifests/sources/science.yaml): 10 sources, exactly 125B.
+- [`science.yaml`](../manifests/sources/science.yaml): 8 sources, exactly 125B.
 - [`synthetic.yaml`](../manifests/sources/synthetic.yaml): 7 sources, exactly 70B.
-- [`reference.yaml`](../manifests/sources/reference.yaml): 8 sources, exactly 25B.
+- [`reference.yaml`](../manifests/sources/reference.yaml): 13 sources, exactly 25B.
 - [`multilingual.yaml`](../manifests/sources/multilingual.yaml): 2 sources, exactly 10B.
 
 ### Exact source allocations
@@ -54,50 +54,51 @@ the multilingual category and verified synthetic code remains in code.
 | web | `zyda2_unique` | 14B | 1B | 0 | 15B | no | no |
 | web | `metis_freshweb_2026` | 25B | 7B | 3B | 35B | yes | no |
 | web | `fineweb_diversity_tail` | 23B | 10B | 2B | 35B | no | no |
-| code | `nemotron_repository_code_v123` | 35B | 20B | 5B | 60B | no | no |
-| code | `nemotron_cc_code_v1` | 15B | 8B | 2B | 25B | no | no |
-| code | `stack_edu` | 7B | 2B | 1B | 10B | no | no |
+| code | `nemotron_repository_code_v123` | 37.91B | 22.928B | 5.982B | 66.82B | no | no |
+| code | `nemotron_cc_code_v1` | 18B | 10B | 3B | 31B | no | no |
+| code | `stack_edu` | 9B | 6B | 2B | 17B | no | no |
 | code | `stack_v2_unique` | 4B | 1B | 0 | 5B | no | no |
 | code | `metis_freshgithub_2025_26` | 10B | 6B | 2B | 18B | yes | no |
 | code | `metis_freshsoftwaredocs_2025_26` | 6B | 3B | 1B | 10B | yes | no |
 | code | `metis_freshengineering_discussions_2025_26` | 3B | 3B | 1B | 7B | yes | no |
-| code | `metis_swe_interleave` | 3B | 2B | 1B | 6B | no | yes |
-| code | `metis_systems_formal` | 3B | 3B | 1B | 7B | no | no |
+| code | `metis_systems_formal` | 0.09B | 0.072B | 0.018B | 0.18B | no | no |
 | code | `verified_synthetic_code` | 2B | 3B | 0 | 5B | no | yes |
-| code | `accepted_notebooks_tests_examples` | 2B | 4B | 1B | 7B | no | no |
 | math | `nemotron_cc_math_4plus` | 20B | 15B | 5B | 40B | no | no |
 | math | `nemotron_cc_math_unique_3` | 8B | 6B | 1B | 15B | no | no |
-| math | `nemotron_math_proofs` | 3B | 4B | 0 | 7B | no | yes |
-| math | `proof_pile2_math` | 3B | 3B | 2B | 8B | no | no |
+| math | `nemotron_math_proofs` | 3.6B | 5.4B | 0 | 9B | no | yes |
+| math | `proof_pile2_math` | 3.34B | 3.51B | 2B | 8.85B | no | no |
 | math | `finemath_unique` | 2B | 2B | 1B | 5B | no | no |
 | math | `megamath_unique` | 2B | 2B | 1B | 5B | no | no |
 | math | `openwebmath_unique` | 1B | 1B | 0 | 2B | no | no |
-| math | `formal_theorem_corpora` | 1B | 2B | 0 | 3B | no | no |
-| science | `finepdfs_edu_english` | 32B | 10B | 3B | 45B | no | no |
-| science | `pes2o` | 16B | 4B | 0 | 20B | no | no |
-| science | `s2orc_arxiv_unique` | 12B | 3B | 0 | 15B | no | no |
-| science | `pmc_open_access` | 8B | 2B | 0 | 10B | no | no |
+| math | `formal_theorem_corpora` | 0.06B | 0.09B | 0 | 0.15B | no | no |
+| science | `finepdfs_edu_english` | 43.97075B | 12.99025B | 3B | 59.961B | no | no |
+| science | `pes2o` | 19B | 5B | 0 | 24B | no | no |
+| science | `pmc_open_access` | 11B | 3B | 0 | 14B | no | no |
 | science | `proof_pile2_science` | 4B | 1B | 0 | 5B | no | no |
-| science | `openstax` | 4B | 1B | 0 | 5B | no | no |
+| science | `openstax` | 0.02925B | 0.00975B | 0 | 0.039B | no | no |
 | science | `metis_freshscience_2025_26` | 6B | 3B | 1B | 10B | yes | no |
 | science | `metis_freshdocs_2025_26` | 5B | 4B | 1B | 10B | yes | no |
-| science | `stable_rfcs_specs` | 2B | 1B | 0 | 3B | no | no |
 | science | `patents_engineering_reports` | 1B | 1B | 0 | 2B | no | no |
 | synthetic | `nemotron_specialized_fact_seeking` | 5B | 10B | 0 | 15B | no | yes |
 | synthetic | `nemotron_v21_dqa` | 4B | 4B | 0 | 8B | no | yes |
 | synthetic | `nemotron_specialized_reasoning_scicode` | 4B | 8B | 0 | 12B | no | yes |
 | synthetic | `nemotron_wiki_rewrite` | 3B | 3B | 0 | 6B | no | yes |
 | synthetic | `cosmopedia_v2` | 4B | 4B | 0 | 8B | no | yes |
-| synthetic | `metis_textbook_synthetic` | 3B | 9B | 0 | 12B | no | yes |
-| synthetic | `metis_verified_reasoning` | 2B | 7B | 0 | 9B | no | yes |
+| synthetic | `nemotron_math_textbooks` | 3B | 9B | 0 | 12B | no | yes |
+| synthetic | `nemotron_rqa_verified_reasoning` | 2B | 7B | 0 | 9B | no | yes |
 | reference | `finewiki` | 5B | 0 | 0 | 5B | no | no |
 | reference | `wikimedia_reference` | 3B | 0 | 0 | 3B | no | no |
-| reference | `public_domain_books` | 4B | 0 | 0 | 4B | no | no |
-| reference | `common_pile_reference` | 3B | 0 | 0 | 3B | no | no |
+| reference | `public_domain_books_gutenberg` | 1.5B | 0 | 0 | 1.5B | no | no |
+| reference | `public_domain_books_pre1929` | 2.5B | 0 | 0 | 2.5B | no | no |
+| reference | `common_pile_loc_reference` | 1.5B | 0 | 0 | 1.5B | no | no |
+| reference | `common_pile_doab_reference` | 1B | 0 | 0 | 1B | no | no |
+| reference | `common_pile_libretexts_reference` | 0.5B | 0 | 0 | 0.5B | no | no |
 | reference | `roots_stackexchange` | 3B | 0 | 0 | 3B | no | no |
-| reference | `open_law` | 3B | 0 | 0 | 3B | no | no |
+| reference | `open_law_caselaw` | 2.3B | 0 | 0 | 2.3B | no | no |
+| reference | `open_law_usgpo` | 0.7B | 0 | 0 | 0.7B | no | no |
 | reference | `nemotron_legal_v1` | 2B | 0 | 0 | 2B | no | yes |
-| reference | `metis_govreference` | 2B | 0 | 0 | 2B | no | no |
+| reference | `metis_govreference_uk_hansard` | 1.5B | 0 | 0 | 1.5B | no | no |
+| reference | `metis_govreference_regulations` | 0.5B | 0 | 0 | 0.5B | no | no |
 | multilingual | `nemotron_v21_translated_hq` | 7B | 0 | 0 | 7B | no | yes |
 | multilingual | `fineweb2_native_multilingual` | 3B | 0 | 0 | 3B | no | no |
 
@@ -105,10 +106,25 @@ One deliberate correction was made to the proposed table: the proposed 1B of gen
 Math Proofs in Phase C was moved to the non-generated Proof-Pile-2 math allocation. “No generated
 data in Phase C” is therefore a tested invariant rather than an aspiration.
 
+Three acquisition corrections keep the recipe legally and operationally defensible without changing
+any category or phase total. The unverified third-party S2ORC snapshot was removed because its
+database-level ODC-By label does not establish the rights for every underlying paper, and it overlaps
+the stronger paper reservoirs. Its 15B allocation stays in the same phases: 7B moves to FinePDFs
+(6B Phase A / 1B Phase B), 4B to peS2o (3B / 1B), and 4B to the licensed Common Pile PubMed/PMC
+snapshot (3B / 1B). The pinned historical CC-BY OpenStax snapshot is capped at its approximately
+39M-token inventory; its final 1M shortfall and the earlier displaced allocation move to FinePDFs in
+the same phases. The pinned canonical formal repositories are also bounded reservoirs rather than
+multi-billion-token sources. A production-filter canary over the pinned commits measured about
+186.5M formal-math and 231.4M systems-code byte-estimated tokens, so their exposure caps are 150M
+and 180M respectively, with the original remainder moved to Proof-Pile-2 math and NVIDIA repository
+code in the same phases. Wholesale
+Pile of Law is replaced by pinned Common Pile Caselaw Access Project and USGPO primary-law snapshots,
+with per-record license enforcement retained.
+
 Because categories describe capability rather than provenance, generated code, math proofs, and
 legal material sit outside the dedicated 70B synthetic-pedagogy category. The complete manifest has
-**84B explicitly generated exposures (8.4%)** and **97B generated-or-transformed exposures (9.7%)**,
-both below the 15% hard cap. The executable cap uses the stricter 97B definition.
+**86B explicitly generated exposures (8.6%)** and **93B generated-or-transformed exposures (9.3%)**,
+both below the 15% hard cap. The executable cap uses the stricter 93B definition.
 
 ## The three phases
 
@@ -144,15 +160,54 @@ The freshness layer is exactly **90B inside the trillion**, not on top of it:
 | Open science published in 2025–2026 | 10B |
 | Current official documentation, specifications, and manuals | 10B |
 
-Fresh records carry their capture, publication, commit, or retrieval date; canonical source;
+Fresh records carry the strongest applicable capture, publication, commit, or retrieval date; canonical source;
 version/current/deprecated status where applicable; license; and content hash. Freshness never
 overrides the quality, privacy, license, or contamination gates.
+
+### Fresh Common Crawl construction
+
+The four WARC-backed freshness rows total **65B final exposures**: 35B general web, 10B current
+software documentation, 10B recent science, and 10B current official documentation. Every row is
+selected across exactly `CC-MAIN-2026-08`, `-12`, `-17`, `-21`, and `-25`. The materializer reads
+all 1,500 WARC URL-index Parquet partitions through the bulk columnar index, deterministically
+selects bounded candidates, and retrieves validated record byte ranges from WARC files; it never
+mirrors a complete crawl or substitutes structure-poor WET text.
+
+Selection favors official documentation and standards, universities and educational sites,
+technical blogs, product/API documentation, scientific organizations, institutional and government
+pages, substantive reporting, software discussions, and release material. The four routes have
+separate category contracts. Every retained page must pass HTTP/WARC/digest integrity, English
+evidence, publisher `noai`/`noml`/`notrain`/`noarchive`, structural-text quality, secret/PII, and
+canonical-URL checks and must expose explicit reusable open-license evidence. Recent reporting is
+eligible only when that evidence is present. Science additionally requires a publication date;
+software and official-documentation pages require explicit version evidence.
+
+For the general-web route, “fresh” means captured in one of the five 2026 snapshots; it does not
+claim that every retained page was first published in 2026 when the page exposes no trustworthy
+publication date. Science remains publication-fresh, and software repositories remain commit-fresh.
+
+Canonical URL and payload-digest winners are selected across all five snapshots before downstream
+global exact and MinHash deduplication. Semantic deduplication remains disabled. The official
+Common Crawl publisher opt-out registry is applied before WARC retrieval and snapshotted again at
+the end of acquisition; Rhea reapplies that final hash-bound snapshot during normalization so an
+opt-out received while the multi-day acquisition was running is still honored.
+
+Acquisition materializes a 5% FreshWeb reserve beyond the immutable source-lock minimum. This is
+only protection against opt-outs arriving during the run, not extra training exposure: final
+selection remains exactly 1T tokens, and the handoff recount fails if the final opt-out snapshot
+leaves any locked source below target.
+
+These gates intentionally prefer a reported shortfall over unverifiable freshness. Candidate
+selection is oversampled by route and the receipts report every rejection reason. If a route is
+short, expand its bounded candidate scan or add a separately licensed canonical source in a new
+manifest revision; do not weaken the evidence rules or silently borrow tokens from another bucket.
 
 ## Candidate acquisition budget
 
 The manifest intentionally requests more candidate material than the final exposure target. Current
-headroom totals are **1.49985T candidate-token estimates** and approximately **1.121572TB of
-compressed packaged-source downloads**. The byte estimate is a planning heuristic, not a quota:
+source-lock headroom totals are **1.586231T candidate-token estimates** and approximately **1.264871TB
+of planned compressed candidate payload**, before the 5% FreshWeb opt-out reserve. The byte estimate
+is a planning heuristic, not a quota:
 it excludes the amplification from Git repository objects, WARC/HTML retrieval, extraction,
 Parquet metadata, deduplication indices, sort spill, and temporary copies.
 
@@ -165,6 +220,13 @@ Candidate reservoirs are selected by pinned file manifests and deterministic sou
 headroom. The pipeline does not mirror all 6.6T Nemotron-CC-v2 tokens, all 24T Essential-Web tokens,
 or complete Common Crawl snapshots. Rejected raw shards may be removed only after provenance,
 hashes, rejection statistics, and the final release have been verified.
+
+Small, bounded Common Pile snapshots marked `take_all` are the exception: their candidate
+multipliers represent the complete published UTF-8 inventory at the planning assumption of four
+bytes per token, and their compressed-byte factors are calibrated to the pinned LFS payload sizes.
+This makes the plan reserve the bytes it will actually download instead of pretending a full
+snapshot is only the size of its final selected exposure. `take_all` never permits underfill: source
+resolution aborts before downloading if the pinned matching-file inventory is below its target.
 
 ## Acquisition truth and launch gate
 
@@ -180,13 +242,20 @@ There are three acquisition classes:
    produce immutable selection plans. Their materializers must then fetch WARC byte ranges, pinned
    repository objects, canonical documents, or bulk archives onto Lustre.
 
-The current repository deliberately marks dynamic selection locks as `remote_source_plan` and the
-normalizer rejects them. This prevents a dangerous false-success state, but it also means the
-production run is **not operator-ready until the site-approved Common Crawl, GitHub/repository,
-and canonical-registry materializers are connected and pass the tiny end-to-end fixture**. The
-missing pieces depend on HPE's permitted egress path, approved credentials/service accounts, and
-whether Portage exposes public S3 directly or through an HPE gateway. Do not ask the account owner
-to run the full acquisition while this gate is red.
+Dynamic selection locks are resolved by production materializers before the acquisition handoff:
+Common Crawl URL-index partitions become validated WARC byte-range payloads; NVIDIA repository
+metadata becomes pinned repository-file payloads; GH Archive activity becomes pinned public
+repository snapshots and license-filtered engineering discussions; and canonical registries become
+checksummed local documents. A URL, repository index, or selection plan is never accepted as
+training material. Each materializer has a bounded fixture and the acquisition handoff requires
+zero unresolved remote plans.
+
+The login2 launch is operationally gated by two live facts the repository cannot manufacture: the
+account owner must have at least 25TB of genuinely available Lustre capacity (40TB preferred), and
+the exact clean repository commit used for acquisition must be available to clone. Rhea remains a
+separate later gate until its Lustre mount path and Slurm settings are confirmed. Those limitations
+do not require Portage compute nodes or an S3 gateway for acquisition; the confirmed login2 host has
+direct HTTPS access to Hugging Face, Common Crawl, and public GitHub archives.
 
 The final operator release must turn every source lock into local materialized files with byte
 counts and hashes. `metisctl report` must show zero unresolved remote plans before the CPU build is
@@ -272,14 +341,31 @@ Deduplication is global across overlapping web descendants, not performed indepe
 brand. It runs in this order:
 
 1. canonicalize text for identity comparison while preserving the original selected extraction;
-2. exact 64-bit signatures and distributed duplicate finding;
+2. full canonical SHA-256 signatures and externally sorted distributed duplicate finding;
 3. exact duplicate removal using deterministic source/document priority;
-4. MinHash signatures over 5-grams, 20 buckets, 10 hashes per bucket, fixed seed;
-5. probabilistic near-duplicate candidate clustering tuned for the 0.82 operating region (the LSH
-   collision curve is not falsely described as a hard Jaccard cutoff), followed by priority-aware
-   winner selection;
-6. code-specific repository/file/function deduplication before packing structured code groups;
-7. repeat the final content-hash check before schedule selection.
+4. a two-pass exact normalized three-sentence repeated-span/template scan (minimum 24 words): a
+   compact 128-bit-prefix prefilter first proves that a span occurs across distinct documents, then
+   only those candidates receive full SHA-256 signatures; both global passes use bounded external
+   sorts across 64 finder buckets, keep the highest-priority occurrence, strip losing boilerplate,
+   quarantine the original, and drop remnants below 50 words or three sentences;
+5. MinHash signatures over 5-grams, 20 buckets, 10 hashes per bucket, fixed seed;
+6. probabilistic near-duplicate candidate clustering tuned for the 0.82 operating region (the LSH
+   collision curve is not falsely described as a hard Jaccard cutoff), followed by a disk-backed,
+   partitioned priority-winner pipeline: streamed duplicate pairs, component construction, per-rank
+   candidate hydration, 256 independent component-bucket resolvers, and per-rank removal finalizers;
+7. reject repository forks/mirrors, vendor/build trees, generated/minified files, lockfiles, encoded
+   blobs, and known benchmark-solution repositories when the source metadata or path identifies them;
+8. code-specific normalized-file and exact function/96-token-block fingerprints, removing a lower-
+   priority file when copied structural units account for at least 80% of its fingerprinted content;
+9. benchmark decontamination and quarantine;
+10. a final canonical SHA-256 duplicate audit before tokenizer sampling and schedule selection.
+
+Every exact/span/code/MinHash substage publishes counts, sizes, hashes, and completeness manifests,
+including explicit empty outputs. Missing ranks or buckets fail closed. The code structural pass uses
+128-bit BLAKE2b structural fingerprints, while the initial and final whole-document audits use full
+SHA-256. They write removal maps and quarantine records instead of silently mutating provenance.
+**Semantic/embedding deduplication is intentionally disabled**: it risks deleting independently
+written explanations that express the same useful idea.
 
 When content overlaps, prefer: cleared license, primary/canonical source, human original over a
 synthetic rewrite, structurally complete extraction, current version for time-sensitive material,
@@ -290,13 +376,29 @@ restart reaches the same winner.
 
 Evaluation data is declared separately in
 [`manifests/contamination/eval-holdouts.yaml`](../manifests/contamination/eval-holdouts.yaml). It is
-never a training source. The initial registry covers HLE, GPQA, MMLU/MMLU-Pro, GSM8K, MATH,
-HumanEval, MBPP, SWE-bench, and LiveCodeBench.
+never a training source. Registry v2 contains **63 benchmark registry entries across 36 family
+labels and 203 pinned configuration/split/file jobs** spanning frontier knowledge, general reasoning, instruction following,
+math/competition math, code/software engineering, retrieval and long context, science/medicine,
+safety and hazardous knowledge, bias, legal/finance, and multilingual transfer. This includes HLE,
+all GPQA variants including Diamond, MMLU/MMLU-Pro, MMMU, BBH, ARC, IFEval,
+GSM8K/MATH/MATH-500/AIME/OlympiadBench, HumanEval/MBPP/EvalPlus/APPS/DS-1000/SciCode/
+SWE-bench/LiveCodeBench, DROP/HotpotQA/Natural Questions/SimpleQA/LongBench,
+WMDP/HealthBench/LegalBench, MGSM/XCOPA/XNLI, and the other entries in the manifest.
 
-The build creates an evaluation-only exact-hash and normalized 13-gram index. A training document is
-removed on an exact match or at least two matching benchmark n-grams. Benchmark answer repositories,
-mirrors, and solution collections are also excluded at repository selection. The build fails if the
-holdout bundle or contamination index is missing.
+Each benchmark row is decomposed into separately indexed prompts, contexts/passages, choices and
+distractors, answers/rationales, code, and test cases. The build uses canonical exact SHA-256,
+normalized 13-word overlap (two matches), normalized 8-word short-fragment overlap (two matches),
+syntax-gated 12-code-token overlap (two matches), and identifier/literal-normalized code-skeleton
+overlap. Every threshold must be satisfied against one benchmark row; matches from unrelated
+examples are never combined, and shingles appearing across more than 32 benchmark rows are
+suppressed as corpus-generic. A hit removes the entire training document and writes it to the
+contamination quarantine with its reason. Benchmark-answer repositories, mirrors, and solution collections are also excluded
+during code hygiene. Explicit upstream `benchmark`, evaluation-dataset, or seed/source-dataset
+genealogy is matched against the same pinned registry, with conservative handling for ambiguous
+names such as `math` or `apps`. The build fails if any configured
+holdout job, the complete holdout bundle, or the contamination index is unavailable.
+The row-aware shingle postings are persisted as sorted binary arrays and memory-mapped read-only by
+filter workers, rather than replicated as enormous JSON/Python mappings in every process.
 
 ## Tokenizer
 
@@ -347,60 +449,83 @@ and resume state. It intentionally does not invent an unmeasured Portage learnin
 batch. Before a trainer launch, validate the complete on-disk release with:
 
 ```bash
-./metisctl training-contract --release /hpe/assigned/path/metis-1.6/releases/metis-1.6-data-r1
+./metisctl training-contract --release /lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r1
 ```
 
-## Portage operator flow
+## Split login2, Rhea, and Portage operator flow
 
-The repository should be cloned on the approved Portage login/download environment. Secrets stay in
-the user's Hugging Face login/environment and HPE credential stores, never in Git. Before handoff,
-commit this implementation, push it, and create the immutable `metis-1.6-data-r1` tag; the operator
-must not build a trillion-token release from a moving branch.
+Acquisition runs in GNU Screen on `login2`, the server that hosts/mounts Lustre; it is **not a
+Slurm job**. The later normalization, quality, deduplication, decontamination, tokenizer, token
+counting, selection, and packing stages run as Slurm jobs on Rhea against the same immutable
+acquisition. Portage is used later for model training. Secrets stay in the user's shell/credential
+stores, never in Git. Before handoff, commit and push this implementation to the documented release
+branch. The source lock records the exact clean commit, so later branch movement cannot change an
+acquisition already in progress.
 
 ```bash
-git clone git@github.com:lernex/Metis.git
+git clone --branch codex/metis16-data-acquisition git@github.com:lernex/Metis.git
 cd Metis
-git checkout metis-1.6-data-r1
-export METIS_LUSTRE_ROOT=/hpe/assigned/path/metis-1.6
-./ops/bootstrap.sh --profile portage
+./ops/start-acquisition.sh \
+  --lustre-root /lus/lustre1/vollmerc/metis-1.6 \
+  --quota-acknowledgement administrator-confirmed
 ```
 
-Before production acquisition, run the full access and environment check:
+The launcher securely prompts for missing credentials, bootstraps, checks every production gate,
+and starts one restart-safe foreground supervisor inside Screen. It returns immediately, so the SSH
+session can close. Monitoring does not require attaching to Screen:
+
+Bootstrap installs the complete transitive runtime from `requirements-metis16-data.lock` with
+package hashes required and binary wheels only. The lock embeds the digest of its reviewed direct
+input file and supports CPython 3.11/3.12; both Linux x86_64 ABI resolutions were checked. There is
+no floating pip upgrade, editable project install, or source-package compilation in the production
+path. The runtime-lock digest and Python compatibility contract are frozen into both
+`sources.lock.json` and `ACQUISITION_READY.json`, so login2 and Rhea cannot silently process the
+same release with different dependency graphs.
 
 ```bash
-./metisctl doctor --profile portage
+export METIS_LUSTRE_ROOT=/lus/lustre1/vollmerc/metis-1.6
+./metisctl status --profile login2
+./metisctl report --profile login2
 ```
 
-Once every check and materializer gate passes, acquisition is independent of the later CPU build:
+The supervisor also downloads and pins the evaluation-only holdout bundle, then emits the hashed
+`ACQUISITION_READY.json` contract. After `status` reports `build_ready: true`, enter Rhea, supply its
+confirmed scheduler values, verify the immutable handoff, and submit CPU preparation:
 
 ```bash
-./metisctl submit download --profile portage
-./metisctl status --profile portage
-./metisctl report --profile portage
+./ops/bootstrap.sh --profile rhea --role compute --lustre-root "$METIS_LUSTRE_ROOT"
+./metisctl doctor --profile rhea --role compute
+./metisctl verify-handoff --profile rhea
+./metisctl submit build --profile rhea
 ```
 
-After the data is fully materialized, submit tokenizer training, filtering, exact counting, selection,
-and packing:
+Safely resume unfinished acquisition by rerunning the same launcher command. Completion markers
+skip finished tasks, while the Screen session check and filesystem singleton lock prevent duplicate
+supervisors.
 
 ```bash
-./metisctl submit build --profile portage
+./ops/start-acquisition.sh \
+  --lustre-root /lus/lustre1/vollmerc/metis-1.6 \
+  --quota-acknowledgement administrator-confirmed
 ```
 
-Safely resubmit unfinished acquisition tasks:
-
-```bash
-./metisctl resume --profile portage
-```
-
-If an interrupted node left a lock behind, wait until the corresponding Slurm job is no longer
-running, then remove only locks older than the 24-hour safety window:
+If an interrupted login2 process left a lock behind, first confirm that no acquisition Screen or
+supervisor is still running on the same host, then ask the tool to remove only locks older than the
+24-hour safety window:
 
 ```bash
 ./ops/clean-failed.sh
 ```
 
-Slurm dependencies keep stages ordered and return control immediately, so the SSH session does not
-need to remain open. Every array task is idempotent and has a deterministic completion marker.
+`submit pipeline` is deliberately rejected for this split-host design. The Screen acquisition
+supervisor and the Slurm build both use deterministic completion markers, so each can be resumed
+without redownloading or rebuilding completed tasks.
+
+The login2 host, user path, Python runtime, detached Screen support, and primary network endpoints are
+now confirmed. The remaining questions are only for Rhea: its Slurm account, partition, QoS,
+maximum array size/concurrency, job time/memory limits, and the exact path by which its compute nodes
+see this acquisition. The complete remaining list is in
+[`docs/metis16_portage_site_intake.md`](metis16_portage_site_intake.md).
 
 ## Explicitly out of scope
 

@@ -12,11 +12,14 @@ from .doctor import run_doctor
 from .download import run_download_task
 from .manifest import candidate_plan, dump_json, validate_manifest
 from .holdouts import prepare_holdouts
+from .handoff import verify_acquisition_handoff
 from .reporting import report, status
 from .slurm import submit_graph
 from .source_lock import resolve_sources
 from .state import StateStore, utc_now
 from .training_contract import validate_training_release
+from .local_download import launch_local_download
+from .local_download import run_local_download_supervisor
 
 
 def _context(profile_name: str) -> tuple[Path, dict[str, Any], dict[str, Any], StateStore]:
@@ -34,6 +37,34 @@ def _context(profile_name: str) -> tuple[Path, dict[str, Any], dict[str, Any], S
 
 def _print(payload: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _profile_roles(profile: dict[str, Any]) -> set[str]:
+    return {str(role) for role in profile.get("operator", {}).get("roles", [])}
+
+
+def _require_profile_role(profile: dict[str, Any], role: str) -> None:
+    roles = _profile_roles(profile)
+    if roles and role not in roles:
+        raise RuntimeError(
+            f"Profile {profile.get('name')} is restricted to {sorted(roles)} and cannot run the {role} role"
+        )
+
+
+def _require_preflight(profile: dict[str, Any], role: str) -> None:
+    _require_profile_role(profile, role)
+    result = run_doctor(profile, tiny_probe=False, role=role)
+    failed = [check["name"] for check in result["checks"] if check["status"] == "FAIL"]
+    if failed:
+        raise RuntimeError(
+            f"{role.title()} preflight failed: "
+            + ", ".join(failed)
+            + f". Run `metisctl doctor --profile {profile.get('name')} --role {role}` for details."
+        )
+
+
+def _require_acquisition_preflight(profile: dict[str, Any]) -> None:
+    _require_preflight(profile, "acquisition")
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -80,7 +111,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     _, profile, _, _ = _context(args.profile)
-    payload = run_doctor(profile, tiny_probe=args.tiny_probe)
+    payload = run_doctor(profile, tiny_probe=args.tiny_probe, role=args.role)
     for check in payload["checks"]:
         print(f"{check['status']:<4}  {check['name']:<34} {check['detail']}")
     return 0 if payload["ok"] else 1
@@ -102,17 +133,70 @@ def cmd_resolve(args: argparse.Namespace) -> int:
 
 def cmd_submit(args: argparse.Namespace) -> int:
     profile_path, profile, manifest, state = _context(args.profile)
-    if state.read("sources.lock.json") is None:
-        resolve_sources(manifest, profile, state)
+    acquisition_mode = profile.get("acquisition", {}).get("mode", "slurm")
+    split_mode = acquisition_mode in {"local_detached", "screen_foreground", "external_complete"}
+    if args.target == "pipeline" and split_mode:
+        raise RuntimeError(
+            "This site uses split execution: run `metisctl submit download` on the Lustre server, "
+            "wait for the acquisition handoff, then run `metisctl submit build` from Rhea."
+        )
+    if args.target in {"download", "pipeline"} and acquisition_mode in {"local_detached", "screen_foreground"} and not args.dry_run:
+        _require_acquisition_preflight(profile)
+    # Resolving is also the immutable-lock verification boundary on resume.
+    # It performs no Hub work when a valid lock already exists.
+    resolve_sources(manifest, profile, state)
     include_download = args.target in {"download", "pipeline"}
     include_build = args.target in {"build", "pipeline"}
+    if include_download:
+        _require_profile_role(profile, "acquisition")
+    if include_build:
+        _require_profile_role(profile, "compute")
     if include_build and not args.dry_run and not profile.get("runtime", {}).get("dynamic_materializers_enabled", False):
         raise RuntimeError(
-            "Production build is gated: dynamic Common Crawl, GitHub/repository, canonical-source, "
-            "and derived-data materializers are not connected in this Portage profile."
+            "Production build is gated: dynamic acquisition materializers are disabled in this profile."
         )
     if include_build and not args.dry_run:
-        prepare_holdouts(profile, state)
+        _require_preflight(profile, "compute")
+        if profile.get("gates", {}).get("require_acquisition_handoff"):
+            verify_acquisition_handoff(
+                profile,
+                manifest,
+                state,
+                # The Rhea graph hashes the frozen payload in a restartable
+                # Slurm array. Submission performs only the fast structural
+                # handoff checks so it returns promptly.
+                verify_artifact_hashes=False,
+            )
+        download_status = status(profile, state)["download"]
+        if not download_status["build_ready"]:
+            raise RuntimeError(
+                "Acquisition is not build-ready: downloads, dynamic materialization, and evaluation holdouts "
+                "must all be complete on the Lustre server."
+            )
+        holdouts = Path(profile["storage"]["lustre_root"]) / profile["storage"]["directories"]["contamination"] / "holdouts.jsonl"
+        if not holdouts.exists():
+            raise RuntimeError(
+                "Evaluation holdouts are missing. Complete `metisctl submit download` on the Lustre server first."
+            )
+    if include_download and not include_build and acquisition_mode == "screen_foreground":
+        raise RuntimeError(
+            "This profile runs acquisition in GNU Screen. Use `./ops/start-acquisition.sh --lustre-root PATH`; "
+            "it invokes the foreground supervisor without double-detaching."
+        )
+    if include_download and not include_build and acquisition_mode == "local_detached":
+        if args.dry_run:
+            _print(
+                {
+                    "dry_run": True,
+                    "mode": "local_detached",
+                    "host_role": "lustre_server",
+                    "max_workers": int(profile.get("acquisition", {}).get("max_workers", 8)),
+                    "pending_tasks": len(state.read("sources.lock.json")["download_tasks"]),
+                }
+            )
+        else:
+            _print(launch_local_download(profile_path, profile, state))
+        return 0
     payload = submit_graph(
         profile_path=profile_path,
         profile=profile,
@@ -139,16 +223,52 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 def cmd_resume(args: argparse.Namespace) -> int:
     profile_path, profile, manifest, state = _context(args.profile)
-    if state.read("sources.lock.json") is None:
-        resolve_sources(manifest, profile, state)
+    acquisition_mode = profile.get("acquisition", {}).get("mode", "slurm")
+    split_mode = acquisition_mode in {"local_detached", "screen_foreground", "external_complete"}
+    if args.target == "pipeline" and split_mode:
+        raise RuntimeError("Resume download and build separately on their respective hosts")
+    if args.target in {"download", "pipeline"} and acquisition_mode in {"local_detached", "screen_foreground"} and not args.dry_run:
+        _require_acquisition_preflight(profile)
+    # Resolving is also the immutable-lock verification boundary on resume.
+    # It performs no Hub work when a valid lock already exists.
+    resolve_sources(manifest, profile, state)
     if (
         args.target in {"build", "pipeline"}
         and not args.dry_run
         and not profile.get("runtime", {}).get("dynamic_materializers_enabled", False)
     ):
         raise RuntimeError("Cannot resume the build until dynamic source materializers are connected")
-    if args.target in {"build", "pipeline"} and not args.dry_run:
-        prepare_holdouts(profile, state)
+    if args.target == "download" and acquisition_mode == "screen_foreground":
+        raise RuntimeError(
+            "Rerun `./ops/start-acquisition.sh --lustre-root PATH`; completed tasks will be skipped safely"
+        )
+    if args.target == "download" and acquisition_mode == "local_detached":
+        if args.dry_run:
+            _print(
+                {
+                    "dry_run": True,
+                    "mode": "local_detached",
+                    "host_role": "lustre_server",
+                    "max_workers": int(profile.get("acquisition", {}).get("max_workers", 8)),
+                }
+            )
+        else:
+            _print(launch_local_download(profile_path, profile, state))
+        return 0
+    if args.target == "build" and not args.dry_run:
+        _require_preflight(profile, "compute")
+        if profile.get("gates", {}).get("require_acquisition_handoff"):
+            verify_acquisition_handoff(
+                profile,
+                manifest,
+                state,
+                verify_artifact_hashes=False,
+            )
+        if not status(profile, state)["download"]["build_ready"]:
+            raise RuntimeError("Acquisition is not build-ready; resume it on the Lustre server first")
+        holdouts = Path(profile["storage"]["lustre_root"]) / profile["storage"]["directories"]["contamination"] / "holdouts.jsonl"
+        if not holdouts.exists():
+            raise RuntimeError("Evaluation holdouts are missing; resume acquisition on the Lustre server first")
     payload = submit_graph(
         profile_path=profile_path,
         profile=profile,
@@ -162,7 +282,8 @@ def cmd_resume(args: argparse.Namespace) -> int:
 
 
 def cmd_download_task(args: argparse.Namespace) -> int:
-    _, profile, _, _ = _context(args.profile)
+    _, profile, manifest, state = _context(args.profile)
+    resolve_sources(manifest, profile, state)
     _print(run_download_task(profile, args.task_index))
     return 0
 
@@ -170,6 +291,42 @@ def cmd_download_task(args: argparse.Namespace) -> int:
 def cmd_prepare_holdouts(args: argparse.Namespace) -> int:
     _, profile, _, state = _context(args.profile)
     _print(prepare_holdouts(profile, state))
+    return 0
+
+
+def cmd_run_acquisition(args: argparse.Namespace) -> int:
+    """Run the acquisition supervisor in the current Screen session."""
+
+    _, profile, manifest, state = _context(args.profile)
+    _require_acquisition_preflight(profile)
+    # Always validate an existing immutable source lock before trusting its
+    # task identities. This performs no Hub work when the lock is valid.
+    resolve_sources(manifest, profile, state)
+    result = run_local_download_supervisor(args.profile)
+    _print(result)
+    if result.get("status") != "complete":
+        return 1
+    if not state.path("ACQUISITION_READY.json").is_file():
+        raise RuntimeError(
+            "Acquisition supervisor reported completion without ACQUISITION_READY.json"
+        )
+    if not isinstance(result.get("acquisition_handoff"), dict):
+        raise RuntimeError(
+            "Acquisition supervisor reported completion without a verified handoff payload"
+        )
+    return 0
+
+
+def cmd_verify_handoff(args: argparse.Namespace) -> int:
+    _, profile, manifest, state = _context(args.profile)
+    _print(
+        verify_acquisition_handoff(
+            profile,
+            manifest,
+            state,
+            verify_artifact_hashes=args.deep,
+        )
+    )
     return 0
 
 
@@ -189,11 +346,13 @@ def cmd_unlock_stale(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="metisctl", description="Metis-1.6 Portage data factory")
+    parser = argparse.ArgumentParser(
+        prog="metisctl", description="Metis-1.6 login2/Rhea data factory"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init = subparsers.add_parser("init", help="Create the content-addressed Lustre directory layout")
-    init.add_argument("--profile", default="portage")
+    init.add_argument("--profile", default="login2")
     init.set_defaults(func=cmd_init)
 
     validate = subparsers.add_parser("validate", help="Validate all 1T phase/source/freshness contracts")
@@ -201,40 +360,50 @@ def build_parser() -> argparse.ArgumentParser:
     validate.set_defaults(func=cmd_validate)
 
     plan = subparsers.add_parser("plan", help="Print final exposures and candidate acquisition headroom")
-    plan.add_argument("--profile", default="portage")
+    plan.add_argument("--profile", default="login2")
     plan.set_defaults(func=cmd_plan)
 
     doctor = subparsers.add_parser("doctor", help="Check Lustre, Slurm, auth, tools, and release gates")
-    doctor.add_argument("--profile", default="portage")
+    doctor.add_argument("--profile", default="login2")
     doctor.add_argument("--tiny-probe", action="store_true")
+    doctor.add_argument("--role", choices=("acquisition", "compute", "all"), default="acquisition")
     doctor.set_defaults(func=cmd_doctor)
 
     resolve = subparsers.add_parser("resolve", help="Resolve and immutably lock upstream source files")
-    resolve.add_argument("--profile", default="portage")
+    resolve.add_argument("--profile", default="login2")
     resolve.set_defaults(func=cmd_resolve)
 
     holdouts = subparsers.add_parser("prepare-holdouts", help="Build the evaluation-only contamination index input")
-    holdouts.add_argument("--profile", default="portage")
+    holdouts.add_argument("--profile", default="login2")
     holdouts.set_defaults(func=cmd_prepare_holdouts)
 
-    submit = subparsers.add_parser("submit", help="Submit a restartable Slurm dependency graph")
+    run_acquisition = subparsers.add_parser("run-acquisition", help=argparse.SUPPRESS)
+    run_acquisition.add_argument("--profile", default="login2")
+    run_acquisition.set_defaults(func=cmd_run_acquisition)
+
+    handoff = subparsers.add_parser("verify-handoff", help="Verify the immutable login2-to-Rhea acquisition handoff")
+    handoff.add_argument("--profile", default="rhea")
+    handoff.add_argument("--deep", action="store_true", help="Rehash every acquired artifact")
+    handoff.set_defaults(func=cmd_verify_handoff)
+
+    submit = subparsers.add_parser("submit", help="Launch local acquisition or submit the Slurm build graph")
     submit.add_argument("target", choices=("download", "build", "pipeline"))
-    submit.add_argument("--profile", default="portage")
+    submit.add_argument("--profile", required=True)
     submit.add_argument("--dry-run", action="store_true")
     submit.set_defaults(func=cmd_submit)
 
     resume = subparsers.add_parser("resume", help="Resubmit the restart-safe graph after a failure")
-    resume.add_argument("--target", choices=("download", "build", "pipeline"), default="pipeline")
-    resume.add_argument("--profile", default="portage")
+    resume.add_argument("--target", choices=("download", "build", "pipeline"), default="download")
+    resume.add_argument("--profile", required=True)
     resume.add_argument("--dry-run", action="store_true")
     resume.set_defaults(func=cmd_resume)
 
     status_parser = subparsers.add_parser("status", help="Show completion counts and live Slurm jobs")
-    status_parser.add_argument("--profile", default="portage")
+    status_parser.add_argument("--profile", default="login2")
     status_parser.set_defaults(func=cmd_status)
 
     report_parser = subparsers.add_parser("report", help="Emit the human/machine-readable build report")
-    report_parser.add_argument("--profile", default="portage")
+    report_parser.add_argument("--profile", default="login2")
     report_parser.set_defaults(func=cmd_report)
 
     download_task = subparsers.add_parser("download-task", help=argparse.SUPPRESS)
@@ -250,7 +419,7 @@ def build_parser() -> argparse.ArgumentParser:
     training_contract.set_defaults(func=cmd_training_contract)
 
     unlock = subparsers.add_parser("unlock-stale", help="Remove only abandoned task locks older than a safety window")
-    unlock.add_argument("--profile", default="portage")
+    unlock.add_argument("--profile", default="login2")
     unlock.add_argument("--older-than-hours", type=float, default=24.0)
     unlock.set_defaults(func=cmd_unlock_stale)
     return parser

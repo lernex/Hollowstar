@@ -48,19 +48,21 @@ verify), because routing is re-decided each pass — a qualitative win, not just
 
 ### Naming boundary for the paper (locked)
 
-**MoRE-Core names the three-axis conditional-computation mechanism:** per-pass adaptive continuation
-(depth), variable expert count (width), and per-pass expert re-routing (pathway), operating on an
-evolving recurrent state through a weight-shared stack. Do not redefine MoRE as every component in
-Metis-1.6; that would blur the novel claim and incorrectly absorb independently sourced techniques.
+**MoRE-Core names the original architecture:** a weight-shared recurrent stack with an evolving
+hidden state, per-pass continuation (depth), variable expert count (width), and per-pass expert
+re-routing (pathway), together with the routing/budget objectives required to train those decisions.
+The three axes are the headline abstraction, not the entire implementation. Do not redefine MoRE as
+every component in Metis-1.6; that would blur the novel claim and incorrectly absorb independently
+sourced techniques.
 
 **MoRE-RM is the paper's named native extension:** MoRE-Core plus the dual-use, expert-aware
 recurrent depth memory and the per-pass continuation controller that consumes it. This belongs in
 the MoRE paper because it is designed around MoRE's evolving state and route history, but it is not
-required for the clean three-axis definition or its 2³ causal ablation.
+required for the clean three-axis definition or the selected axis-isolating ablations.
 
-**Metis-1.6 is the complete model family:** MoRE-RM + the hybrid Mamba-2/attention backbone +
+**Metis-1.6 is the complete MoRE-based model family:** MoRE-RM + the hybrid Mamba-2/attention backbone +
 recursion-aware mHC + concatenated N-gram conditional memory. mHC and N-gram memory are
-complementary integrations rather than MoRE inventions and must be cited and ablated as such. In
+complementary integrations rather than MoRE inventions and must be cited and reported as such. In
 the paper, report `Full MoRE-Core`, `MoRE-RM`, and `Full Metis-1.6` separately.
 
 ### Fused recursion-aware mHC residual path (locked)
@@ -104,11 +106,26 @@ separate learned conditional-memory table. Multiple independent prime-sized hash
 collisions. Their retrieved vectors are **concatenated, then projected once**, preserving N-gram
 order/hash-head identity instead of destroying it through averaging.
 
-Allocate **0.45–0.60B additional stored parameters** to this memory while retaining all **128 routed
-experts + 1 shared expert**. This raises total stored parameters from ~2.94B to **~3.39–3.54B** while
-adding only the retrieved rows, projection, gates, and memory traffic to active computation. Use
+Target **0.60B additional stored parameters** for Praxis while retaining all **128 routed experts +
+1 shared expert**. This raises total stored parameters from ~2.94B to **~3.54B** while
+before small controllers, while adding only the retrieved rows, projection, gates, and memory
+traffic to active computation. Use
 separate sparse-embedding optimizer settings (Adam-style states, higher embedding LR, no weight
 decay) rather than applying the dense-matrix AdaMuon policy blindly.
+
+The parameter count is dominated by table rows, not projection matrices. For illustration, two
+N-gram orders × eight hash heads × approximately 0.586M slots/head × 64 values/slot is about 0.60B
+parameters; exact prime slot counts are frozen in the executable manifest. Each token retrieves only
+16 rows (1,024 values total in this illustration), concatenates them, and applies a small projection.
+At BF16 the table weights occupy about 1.2GB, but FP32 master weights plus two FP32 Adam moments bring
+the training-state footprint to roughly 8.4GB before sparse-gradient metadata and buffers.
+
+The 0.60B target is a conditional-memory allocation, not a claim that lookup parameters equal neural
+compute parameters. It is justified by the Engram sparsity-allocation result and by Praxis already
+having substantial routed computation; monitor slot occupancy, collision rate, per-row update count,
+gate utilization, and loss contribution. Before the 1T launch, run one short architecture-selection
+canary comparing the locked hashed/concatenated design against a parameter-efficient Tensorized
+Engram implementation. This is a production design check, not a required MoRE paper ablation.
 
 Retrieve each token's N-gram rows once and cache them across recursion passes. Inject them through
 branch-specific, pass-aware gates at two points: after approximately physical block 2 and after the
@@ -153,79 +170,64 @@ hit/collision frequency, and matched-compute quality against the pre-addition Mo
 
 ### Paper ablation contract
 
-The core claim requires the complete **2³ factorial** below. Here, `dynamic expert identity` means
-**re-routing between recursion passes**. In the `No` condition, pass 1 still routes each token, but
-its ranked expert list is cached and reused at later passes; variable `k` selects prefixes of that
-cached ranking. This isolates pathway dynamics without replacing learned MoE routing with arbitrary
-fixed experts.
+Use the small, interpretable model list below. A complete 2³ statistical factorial is not required;
+the selected variants isolate the claims directly without training every binary interaction.
 
-| Variant | Adaptive depth | Variable expert count | Per-pass expert re-routing |
-|---|---:|---:|---:|
-| Fixed LoopMoE, cached path | No | No | No |
-| Fixed LoopMoE, re-routed path | No | No | Yes |
-| Fixed-depth variable-`k`, cached path | No | Yes | No |
-| Fixed-depth variable-`k`, re-routed path | No | Yes | Yes |
-| Adaptive MoR + fixed-`k`, cached path | Yes | No | No |
-| Adaptive MoR + fixed-`k`, re-routed path | Yes | No | Yes |
-| Adaptive depth + variable-`k`, cached path | Yes | Yes | No |
-| **Full MoRE-Core** | **Yes** | **Yes** | **Yes** |
+| Model | Adaptive depth | Variable expert count | Routed expert identity | What it tests |
+|---|---:|---:|---:|---|
+| Dense | No | No | No | Total-parameter-matched dense reference |
+| Vanilla MoE | No | No | Yes | Sparse routing without recurrence |
+| Fixed LoopMoE | No | No | Yes | Recurrence with fixed depth and fixed `k` |
+| MoR + dense FFN | Yes | No | No | Adaptive depth without sparse experts |
+| MoR + fixed-top-`k` MoE | Yes | No | Yes | Adaptive depth plus pathway, fixed `k=4` |
+| Fixed-depth variable-`k` MoE | No | Yes | Yes | Adaptive width without adaptive depth |
+| **Full MoRE-Core** | **Yes** | **Yes** | **Yes** | All three axes together |
+| **MoRE-RM** | **Yes** | **Yes** | **Yes** | Full MoRE-Core plus expert-aware recurrent memory |
 
-Use fixed depth equal to the full model's measured mean-depth compute and fixed `k=4`; additionally
-report threshold-matched and quality-matched operating points. The factorial is accompanied by four
-external anchors: vanilla one-pass fixed-top-`k` MoE, one-pass dense, fixed-depth dense looping, and
-adaptive MoR + dense FFN. Dense controls are reported in **two matching regimes**. The
-active-compute-matched dense FFN matches the MoRE variant's active FFN parameters/FLOPs per pass and
-is the primary efficiency control. The stored-parameter-matched dense FFN matches the complete MoE
-parameter bank while holding the backbone fixed; because every dense parameter executes for every
-token, it is an intentionally much more expensive capacity control, not a compute-fair baseline.
-Report both loss-versus-token and loss-versus-training-FLOP so the total-parameter-matched dense
-model cannot receive roughly five times the active compute and be presented as an equal-budget
-comparison. A conventionally proportioned dense model scaled through width/depth may be added as a
-secondary scaling-law anchor, but it does not replace the same-backbone controls.
-
-The complete Metis integrations receive a second, conditional ablation ladder on top of Full
-MoRE-Core:
-
-| Component question | Required variants |
-|---|---|
-| Residual topology | standard residual; recursion-unaware mHC; recursion-aware mHC |
-| Recurrent memory | none; Nanbeige-style value-only; representation-only; router-only; dual-use |
-| Route metadata | state-only memory; +`k`/confidence; +expert-coalition identity |
-| Depth decision | upfront bucket; per-pass continuation |
-| Conditional memory | none; averaged N-grams; concatenated N-grams |
-| N-gram placement | input-only; one early injection; locked two-point gated injection |
-| Loop topology | full-stack recursion; LoopSplit, matched for effective depth/compute |
-
-Do not run every cross-product at full scale. Run the 2³ MoRE factorial and component ladder on a
-shared proxy configuration with identical data order, tokenizer, optimizer, active-FLOP budget, and
-training-token budget; promote only the decisive baseline, Full MoRE-Core, MoRE-RM, and Full
-Metis-1.6 to the Praxis/Logos scaling comparison. Report loss versus tokens and FLOPs, downstream
-quality, wall-clock, router/stream/memory health, and confidence intervals across seeds.
-Parameter-matched and
-active-compute-matched comparisons are both required because N-gram storage and recurrence change
-different scaling axes.
+Fixed-depth models use the measured mean depth of Full MoRE; fixed-`k` models use `k=4`. The dense
+model matches the proxy's total stored core parameters as requested, so it is deliberately much more
+expensive per token. Report quality versus tokens and executed FLOPs rather than pretending it is a
+compute-matched control. mHC, N-gram combination/placement, and LoopSplit are **not required paper
+ablations**. They remain parts of full Metis or possible follow-up studies; Praxis and Logos can be
+reported as full-architecture scale demonstrations without decomposing every integration.
 
 **Recommended proxy manifest:** 10 physical layers (8 Mamba + 2 attention), `d_model=1792`, latent
 width `896`, expert intermediate `448`, 96 routed + 1 shared expert, dynamic `k=1–8` with mean near
 4, and the same `R_max=5`. This is approximately **1.5B core stored / 0.29B core active per pass**
-before the lightweight controllers; use a **0.25–0.35B** N-gram table only in the integration ladder.
-It is roughly half-Praxis class without naively halving every width, which would shrink matrix
+before the lightweight controllers. It is roughly half-Praxis class without naively halving every width, which would shrink matrix
 capacity much faster than twofold.
 
-Use a multi-fidelity token budget: screen the full eight-cell MoRE factorial at **10B tokens** with
-at least two seeds, then continue every cell to **50B** if allocation permits; otherwise continue
-Full MoRE-Core, the strongest non-full interaction baselines, and the external anchors to 50B. Run
-the Metis component ladder first at 10B and promote decisive variants to 50B. A single 50B run per
-cell is useful but cannot substitute for seed variance; publish both the 10B multi-seed evidence and
-50B confirmation. The proxy uses the same sampled corpus mixture and curriculum logic as the 1T
-release, not literally the first contiguous 50B tokens.
+Use **10B tokens as the primary proxy-paper budget**. Ten billion tokens is enough to test
+optimization, routing, and relative quality at this A0.29B active scale, but it is not enough to
+claim final scaling-law superiority; the full Praxis/Logos runs supply scaling evidence. Continue
+Dense, Full MoRE-Core, or MoRE-RM beyond 10B only if their curves have not separated or reviewers
+would otherwise be left with an ambiguous headline comparison. The proxy uses
+the same sampled corpus mixture and curriculum logic as the 1T release, not literally the first
+contiguous 10B tokens.
 
-Here a **seed** means one independent training replicate: different initialization, routing noise,
-dropout/stochastic decisions, and shuffled sample order. Use paired seeds across variants—seed A of
-every variant shares the same data order, as does seed B—so architectural differences are not
-confounded with easier batches. Two seeds is the minimum screen for detecting an unstable or lucky
-run; **three seeds is the preferred paper standard** for promoted 50B comparisons and permits
-meaningful uncertainty intervals. It does not mean training on two different corpora.
+### Executable paper experiment ledger
+
+All architecture comparisons use **base pretrained checkpoints**. RL and full post-training are not
+required per ablation: they would multiply cost and introduce policy/reward confounders. This is
+**8 unique models and 8 required 10B training runs**. If time permits, repeat only Dense, Full
+MoRE-Core, and MoRE-RM with a second paired seed, producing **11 total runs** while remaining eight
+unique architectures. A seed is just a repeat with a different initialization and shuffle; it is
+insurance against one lucky headline result, not a different model design. No third seeds are
+required by this plan. Reserve the complete SFT/RL pipeline for Praxis/Logos.
+
+### Recursion-budget scaling test
+
+`R_max=5` means five passes: one initial pass plus up to four recursions. Evaluate the same trained
+checkpoint under natural continuation caps 1–5 and forced uniform depths 1–5, reporting quality
+against executed FLOPs. Train with stochastic maximum-depth budgets or an explicit budget embedding
+so caps 1–5 are supported operating points rather than out-of-distribution overrides; retain the
+learned continuation loss inside each sampled cap. For the proxy, approximately A0.29B/pass × 5 = **1.45B executed active-
+parameter equivalents** at mean `k`; depth 5 with `k=8` approaches **1.70B**. That brackets the
+roughly 1.5B fully active stored-parameter-matched dense control. It does not create new parameters,
+and weight reuse can have diminishing returns, so the paper claim is conditional: if depth-5 MoRE
+matches or beats dense at equal executed FLOPs while adaptive mean depth remains near 2, MoRE has
+learned to concentrate dense-class compute selectively. Extend to `R_max=8` only after depth-5
+stability, non-saturated quality gains, healthy gradients, and continued expert use are demonstrated.
 
 ### Worked example (`2x + 3 = 11, so x = 4`)
 Matches the spec: `2x`→depth4, k=[2,2,1,1] (6 calls); `+`→depth2 (2); `3`→depth3 (4); `so`→depth1
@@ -278,10 +280,10 @@ strength. The 1T schedule is intentionally knowledge-dense rather than a raw cra
 | top_k | 4 (fixed) | **dynamic 1–8 routed + 1 shared** (avg ≈ 4+1) |
 | Residual topology | standard single stream | **4-stream recursion-aware mHC**, fused around every mixer and expert sublayer |
 | Recurrent memory | none | **dual-use expert-aware depth memory** at both attention anchors + pass end |
-| Conditional memory | none | **0.45–0.60B concatenated 2/3-gram parameters**, two gated injection points |
+| Conditional memory | none | **0.60B concatenated 2/3-gram parameters**, two gated injection points |
 | Recursion depth | (cut) | **1–5 passes, per-pass continue/halt, monotonic packed active set**, target mean ≈2 |
 | PT tokens | 50B | **1T, locked** (700B foundation + 250B capability build + 50B premium cooldown) |
-| Params | 0.9B total / 340M active | **~3.39–3.54B stored / ~0.464B core active per pass** (avg k), plus lightweight mHC/depth-memory/N-gram projections and retrieved rows |
+| Params | 0.9B total / 340M active | **~3.54B stored before small controllers / ~0.464B core active per pass** (avg k), plus lightweight mHC/depth-memory/N-gram projections and retrieved rows |
 
 **Param estimate (active, non-embedding, per pass):** mixers **~316M** — 10 Mamba-2 × ~29.5M
 (**expand 2.0**, restored to the paper-default: d_inner 4096, 64 heads, ngroups 8, d_state 128:
@@ -290,9 +292,9 @@ in_proj+out_proj ≈ 29.5M/block) + 2 attention × 10.5M (QKVO, 32Q/8KV×64) —
 (5 × 12 × 1.573M; SwiGLU 1024↔512) = **~0.464B active** at avg k (4 routed + 1 shared);
 **~0.407B at min k** (1 routed + 1 shared) — **~0.539B at max k** (8 routed + 1 shared).
 **Core total:** experts 128 × 12 × 1.573M ≈ 2.42B + shared 0.019B + mixers 0.316B + latent/router
-0.053B + tied embedding 0.134B (65,536 × 2048) ≈ **~2.94B**. Add **0.45–0.60B N-gram
-conditional memory** plus small mHC/depth-memory/controller parameters for a planning total of
-**~3.39–3.54B stored**; the final manifest must report the exact controller/projection delta.
+0.053B + tied embedding 0.134B (65,536 × 2048) ≈ **~2.94B**. Add **0.60B N-gram conditional
+memory** for **~3.54B before** small mHC/depth-memory/controller parameters; the final manifest must
+report the exact controller/projection delta rather than rounding it away.
 *Provenance (this spec went through several revisions in one sitting — recorded so the numbers
 don't look inconsistent across the doc):* 18 layers/expand-1.5/0.61B active → cut to 14
 layers/expand-1.0/0.396B active (to hit a ~0.4B active target without touching the just-validated
@@ -306,7 +308,7 @@ is untouched) is a free way to buy back total params with ~zero active-compute c
 2-per-cent-of-benchmark-accuracy gain (per the closest real reference, OLMoE's 32→64-expert
 ablation, itself a bigger jump than what was on the table here) wasn't judged worth the systems
 complexity — **kept at 128 experts**. Storage flexibility is now spent instead on the complementary
-0.45–0.60B N-gram memory, bringing the architecture to ~3.39–3.54B stored while preserving the
+0.60B N-gram memory, bringing the architecture to ~3.54B stored before small controllers while preserving the
 physical Mamba-2/attention layers and restored expand=2.0.
 
 ### Metis-1.6 family contract
@@ -319,7 +321,7 @@ parallelism schedules, optimizer hyperparameters, and N-gram table capacity scal
 
 | Field | **Praxis** | **Logos target** |
 |---|---:|---:|
-| Stored parameters | ~3.39–3.54B | **12.0B** (table slots tuned after exact controller count) |
+| Stored parameters | ~3.54B before small controllers | **12.0B** (table slots tuned after exact controller count) |
 | Core active/pass @ avg `k` | ~0.464B | **~1.183B** before control/memory projections; ~1.2B with controllers |
 | `d_model` | 2,048 | **2,560** |
 | Physical layers | 12 (10 Mamba + 2 attention) | **20 (17 Mamba + 3 attention)** |
@@ -331,7 +333,7 @@ parallelism schedules, optimizer hyperparameters, and N-gram table capacity scal
 | Shared experts | 1 | **1** |
 | Expert intermediate | 512 | **768** |
 | Dynamic routed `k` | 1–8, mean ~4 | **1–8, mean ~4** |
-| N-gram memory | 0.45–0.60B | **~1.60–1.70B initial range**, tuned to the exact 12B manifest |
+| N-gram memory | **0.60B** | **~1.60–1.70B initial range**, tuned to the exact 12B manifest |
 | Recursion | 1–5, mean ~2 | **1–5, mean ~2** |
 
 **Why Logos uses `d_model=2560` but keeps latent 1,024:** shared width and MoE bottleneck width solve
@@ -344,6 +346,16 @@ GEMMs and shifts capacity from the shared-to-expert bottleneck into the nonlinea
 Buying only more routed identities would add stored specialization without raising active capacity
 at fixed mean `k≈4`, reduce tokens per expert GEMM, and break the clean `EP=192 × replica 2`
 mapping if the count does not divide the 384-APU allocation.
+
+Adding physical layers is less attractive than the 768 expert intermediate for the locked target.
+One additional Logos layer carries roughly **0.45B stored routed-expert parameters** and about
+**59M active parameters per pass** once its mixer, latent projections, router, and five average
+expert calls are included. It also extends the serial path on every recursion, so one layer executes
+approximately twice per average token and five times for a maximum-depth token. Raising the expert
+intermediate instead increases nonlinear routed capacity throughout the existing 20-stage stack,
+keeps the clean topology, and leaves controller headroom near A1.2B. Benchmark a 21-layer/640-expert-
+intermediate sizing pilot before the final manifest if desired, but do not silently change the paper
+proxy or production class on that result alone.
 
 **Logos sizing derivation (planning estimate):** each routed expert in a layer is
 `3 × 1024 × 768 = 2.3593M` parameters. Across 20 layers and 192 routed experts this is **9.060B**;
@@ -358,12 +370,12 @@ are instantiated. `Logos-A1.2B` remains a rounded active-class label, and the ma
 both core-active and all-control-active counts rather than hiding the delta.
 
 **Decisions (locked):**
-- **Total stored params ~3.39–3.54B**, retaining 128 routed experts; **~0.464B core active per
+- **Total stored params ~3.54B before small controllers**, retaining 128 routed experts; **~0.464B core active per
   *pass*** (avg k) plus mHC/depth-memory/N-gram control work. The previous **6.5 GF/token** estimate
   is the base-core lower bound, not the final fused-architecture measurement. §6 carries it only as
   a reference until the fused single-GPU probe supplies real tokens/sec and MFU.
 - **Recursion-aware 4-stream mHC, dual-use expert-aware recurrent depth memory, per-pass
-  continuation routing, and 0.45–0.60B concatenated 2/3-gram memory are locked architecture**, not
+  continuation routing, and 0.60B concatenated 2/3-gram memory are locked architecture**, not
   optional post-hoc experiments. Their internal sizes and kernel layouts may be tuned without
   removing the capabilities.
 - **Hybrid ratio: 10 Mamba-2 + 2 full attention (16.7% of mixers), attention at block indices ~4 and
@@ -581,7 +593,7 @@ where and which parts are our own addition):**
      half (every mechanism described is about matching the teacher's full probability distribution,
      which a DPO-style preference margin doesn't require). None of that literature examined a
      **recursive (MoRE) or MoE** student, so it's not known whether Metis-1.6's effective capacity
-     (up to ~2.3B core capacity exposure via max-depth recursion; ~3.39–3.54B total stored including
+     (up to ~2.3B core capacity exposure via max-depth recursion; ~3.54B stored before controllers including
      static N-gram memory) mitigates this the way raw
      dense active-params would predict — this is genuinely untested territory, not just for us but
      for anyone. **Decision: proceed anyway** — betting on MoRE's capacity being real is the point of
@@ -795,7 +807,7 @@ quantization overhead (RHT, 2D scaling) can even make it *slower* than FP8 (nano
 **Multi-GPU over PCIe (2× on Azure) — data-parallel core + replicated sparse memory:**
 - The dense/MoE core still communicates gradients for **~2.94B parameters**, not only the active
   0.464B, because a large accumulated batch reaches every expert: **~5.9 GB bf16** per step. The
-  0.45–0.60B N-gram table is replicated but uses custom sparse touched-row synchronization; do not
+  0.60B N-gram table is replicated but uses custom sparse touched-row synchronization; do not
   materialize/all-reduce another dense 0.9–1.2 GB gradient buffer. If sparse synchronization is not
   correct and faster in measurement, shard the table lookup rather than silently accepting dense
   traffic.
@@ -812,7 +824,7 @@ quantization overhead (RHT, 2D scaling) can even make it *slower* than FP8 (nano
   interconnect — not a cross-VM bridge). Budget ~1.2 kW GPU power for the pair.
 
 **Memory per GPU (96 GB):**
-- The original ~2.94B core occupied **~45 GB static** in 1× pure DP. A BF16 0.45–0.60B N-gram
+- The original ~2.94B core occupied **~45 GB static** in 1× pure DP. A BF16 0.60B N-gram
   table plus FP32 master/Adam states adds approximately **6.3–8.4 GB**, before sparse-gradient
   transients and small controller weights: plan **~52–55 GB static**. Four mHC streams and typed
   depth memory increase activation pressure substantially, so aggressive selective rematerialization
@@ -830,7 +842,7 @@ table. Then confirm sparse table synchronization and 2-GPU scaling; NVFP4 remain
 gate. This probe still decides the training topology and honest calendar estimate, but not the
 now-locked 1T data schedule.
 
-## 6A. Portage data and training launch plan — current
+## 6A. Login2/Rhea data and Portage training launch plan — current
 
 Metis-1.6 now uses **exactly 1,000,000,000,000 final-tokenizer-measured training exposures**. The
 release contract is declarative in `manifests/metis-1.6.yaml`; detailed source rows are under
@@ -843,25 +855,51 @@ The embedded freshness layer is **90B**, not an addition to the trillion: 35B fr
 is enforced after filtering, global deduplication, benchmark decontamination, and counting with the
 accepted 65,536-token Metis tokenizer. Published source-token estimates never satisfy a target.
 
-The operator interface is the restartable Portage data factory:
+The production science/reference recipe uses only pinned, auditable reservoirs. A third-party S2ORC
+snapshot was removed because a database-level ODC-By label did not resolve the licenses of its
+underlying papers; its 15B allocation remains in the same phases across FinePDFs (7B), peS2o (4B),
+and licensed Common Pile PubMed/PMC (4B). The pinned historical CC-BY OpenStax snapshot is capped at
+39M tokens, with its displaced allocation moved to FinePDFs in the same phases. The bounded pinned
+formal repositories are capped at 150M formal-math and 180M systems-code exposures. A pinned-commit
+materialization canary measured about 186.5M and 231.4M accepted byte-estimated tokens respectively,
+leaving deterministic filtering headroom; the displaced allocations move to Proof-Pile-2 math and
+NVIDIA repository code without changing category or phase totals.
+Wholesale Pile of Law was
+replaced by pinned Common Pile Caselaw Access Project and USGPO primary-law snapshots. These are
+source substitutions only: science remains 90B / 30B / 5B and reference remains 25B / 0 / 0.
 
-1. `./ops/bootstrap.sh --profile portage`
-2. `./metisctl doctor --profile portage`
-3. only after every production gate passes, `./metisctl submit download --profile portage`
-4. after acquisition finishes, `./metisctl submit build --profile portage`
-5. `./metisctl status --profile portage`, `./metisctl report --profile portage`, or
-   `./metisctl resume --profile portage` after a failed task
+The operator interface is split by environment:
 
-The packaged Hugging Face resolver/downloader is implemented. Production launch remains red until
-the HPE-approved Common Crawl, GitHub/repository, canonical-source, and derived-data materializers
-produce local payloads; a URL, repository index, or generation recipe is never counted as downloaded
-training text. The license-review attestation and real Lustre/Slurm/account settings are separate
-fail-closed gates. Keep HPE-specific configuration and credentials outside the generic repository.
+1. after the Lustre administrator confirms sufficient capacity, on `login2`, run
+   `./ops/start-acquisition.sh --lustre-root /lus/lustre1/vollmerc/metis-1.6 --quota-acknowledgement administrator-confirmed`;
+2. the launcher bootstraps and runs restart-safe acquisition inside GNU Screen, then emits the
+immutable `ACQUISITION_READY.json` handoff; the launcher obtains both gated Hugging Face access and
+read-only GitHub repository metadata credentials without placing tokens in argv or logs;
+3. after `build_ready: true`, enter Rhea, run `./metisctl doctor --profile rhea --role compute` and
+   `./metisctl verify-handoff --profile rhea`, then `./metisctl submit build --profile rhea`;
+4. Portage consumes the final verified release for model training and does not run CPU data prep;
+5. monitor acquisition with
+   `METIS_LUSTRE_ROOT=/lus/lustre1/vollmerc/metis-1.6 ./metisctl status --profile login2` and resume
+   by rerunning the same Screen launcher command.
 
-The Slurm graph resolves pinned sources, hydrates candidates, normalizes canonical records, applies
-fail-closed quality and license gates, runs global exact and MinHash deduplication, builds a separate
-evaluation-only contamination index, trains and validates the tokenizer, performs exact source and
-phase selection, writes 1,000 one-billion-token uint16 shards, rehashes them, and emits `RELEASE.json`.
+Packaged Hugging Face, Common Crawl WARC-range, pinned GitHub/repository, and canonical-source
+acquisition paths are implemented and must produce hashed local payloads; a URL, repository index,
+or generation recipe is never counted as downloaded training text. The login2 launch still requires
+confirmed usable Lustre capacity and a clean cloneable commit. Rhea's later build remains sealed
+until its mount path and scheduler facts are known, and the license-review attestation remains a
+separate fail-closed release gate. Keep credentials outside the repository.
+
+The Lustre-server acquisition supervisor resolves and hydrates pinned sources plus evaluation
+holdouts. The later Slurm graph normalizes canonical records, applies fail-closed quality and license
+gates, runs full-SHA-256 global exact deduplication, two-pass externally sorted repeated-span
+deduplication, disk-backed partitioned MinHash winner resolution, 128-bit code-structural
+deduplication, and a final SHA-256 audit, then decontaminates
+against 63 benchmark registry entries across 36 family labels/203 pinned jobs with exact, long,
+short, code-token, and identifier/literal-normalized code-skeleton matching bound to individual
+benchmark rows,
+trains and validates the tokenizer, performs exact source and phase selection, writes 1,000 one-
+billion-token uint16 shards, rehashes them, and emits `RELEASE.json`. Semantic deduplication is
+explicitly disabled.
 Training must refuse to start without that verified release. The operational and data details live in
 `docs/metis16_pretraining_data_plan.md`.
 
@@ -972,6 +1010,30 @@ efficiency, packed-token padding/overflow/drop rate, HBM bandwidth, power, and l
 production 1T runs use the fastest numerically correct topology found; the deliberately inefficient
 placements remain separate research evidence for the Slingshot paper.
 
+### Fast ablation allocation (separate from the Slingshot study)
+
+The approximately 1.5B-stored proxy fits on one 128GB MI300A with FP32 master weights and optimizer
+state, so paper ablations do not need wide expert parallelism. Before the campaign, race three
+fixed-token canaries at 4/16/32 APUs: fully replicated local experts + data parallelism, intra-node
+`EP=4` + data parallelism, and the validated sharded-optimizer/HSDP path. Select solely by
+end-to-end tokens/second at matched loss and zero token drops. Do not use deliberately congested
+placements, wide EP, or routing skew in the architecture paper campaign.
+
+Assuming four APUs per node is confirmed, train all eight required models in **one concurrent
+wave**. Allocate 128 APUs to Dense, 64 each to Full MoRE-Core and MoRE-RM, and 48 each to the other
+five models: `128 + 64 + 64 + 5×48 = 496`, leaving 16 APUs for evaluation/canaries. For optional
+second seeds of Dense/MoRE-Core/MoRE-RM, run a short second wave and allocate the full machine by
+measured throughput rather than preserving these initial ratios.
+
+Compute-only planning uses approximately 3.5 GFLOP/token for the A0.29B, mean-depth-2 proxy, or
+about **35 EFLOP per normal 10B run**; the total-parameter dense model is roughly **90 EFLOP**.
+With the allocation above and an unproven end-to-end 3–15% of the official FP8 peak, budget roughly
+**1–6 hours of compute and one practical day** for the required eight-model wave after the stack is
+stable. The optional three-repeat wave should fit inside another day. BF16 fallback or immature
+dynamic kernels can roughly double that; queue time and initial ROCm/kernel commissioning are
+excluded. Replace every estimate with measured tokens/second from the canary before promising a
+calendar date.
+
 ### Two-model comparability contract
 
 Praxis and Logos consume the same immutable 1T release and 700B/250B/50B phase boundaries. Use the
@@ -999,7 +1061,7 @@ cross-job interference as an explicit experimental condition.
 6. Execute the §6B Portage bring-up and Slingshot scaling matrix; throughput-prove the **complete
    fused path** from 1 APU → 1 node → multi-node EP before reserving all 512 APUs. Reject any
    extrapolation based only on component microbenchmarks.
-7. Tokenizer + **1T-token Portage data pipeline** (with the §5 fixes baked in — hybrid short/long SFT tagging
+7. Tokenizer + **1T-token login2/Rhea data pipeline** (with the §5 fixes baked in — hybrid short/long SFT tagging
    scheme decided early since it constrains data collection, not just training recipe).
 8. Launch simultaneous Praxis-128 and Logos-384 curriculum PT runs
    (depth-1/fixed-k/near-zero memory gates warm-start → staged joint ramp); all components exist from
@@ -1013,8 +1075,8 @@ cross-job interference as an explicit experimental condition.
    eval (reuse `eval_metis.py`) → publish.
 
 ## 8. Open questions for you
-- ✅ Params **~3.39–3.54B stored / ~0.464B core active per pass plus fused control/memory work**;
-  128 routed + 1 shared expert retained; **0.45–0.60B additional concatenated 2/3-gram memory** ·
+- ✅ Params **~3.54B stored before small controllers / ~0.464B core active per pass plus fused control/memory work**;
+  128 routed + 1 shared expert retained; **0.60B additional concatenated 2/3-gram memory** ·
   ✅ Tokenizer: new 65,536 · ✅ Recursion: full-stack loop (Ouro-style), **depth = passes =
   recursions+1**, per-pass continuation, target mean 2, max 5 · ✅ **four-stream recursion-aware
   fused mHC** · ✅ **dual-use expert-aware recurrent depth memory** · ✅ PT context 4096 ·
@@ -1022,10 +1084,10 @@ cross-job interference as an explicit experimental condition.
   ✅ **Hybrid ratio: 10 Mamba-2 + 2 attention @ ~4/~8 (12 layers)** · ✅ **G=16 granularity
   (128×512) confirmed** · ✅ Core optimizer: AdaMuon; N-gram tables: separate sparse Adam-style
   policy — all locked.
-- ✅ Data preparation platform: **HPE Portage + Lustre + Slurm**, using pinned manifests,
-  restartable arrays, and an immutable verified release. Keep the site-specific profile private and
-  credentials out of Git. Exact partition/account/reservation values remain site configuration and
-  must be supplied by the HPE account owner.
+- ✅ Data preparation platform: **login2 acquisition onto Lustre, then Rhea CPU Slurm**, using pinned
+  manifests, restartable arrays, and an immutable verified release. Portage is trainer-only. Keep
+  site-specific profiles private and credentials out of Git. Exact Rhea partition/account/QoS values
+  remain site configuration and must be supplied by the HPE account owner.
 - ✅ Primary training allocation: **Praxis on 128 MI300A APUs (EP=128, one expert replica)** and
   **Logos on 384 MI300A APUs (EP=192, two expert replicas)**, running simultaneously after the
   staged Portage/RCCL/Slingshot canaries. Azure RTX PRO 6000 is fallback/canary, not the launch plan.

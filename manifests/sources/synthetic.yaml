@@ -24,8 +24,13 @@ sources:
     category: synthetic
     phase_tokens: {phase_a: 4000000000, phase_b: 8000000000, phase_c: 0}
     provenance: {generated: true, transformed: true, fresh: false}
-    access: {type: huggingface, repo_id: nvidia/Nemotron-Pretraining-Specialized-v1.2, revision: 807afc1fa65c441d46ebc7d9b95295a35499a527, gated: false, allow_patterns: [Nemotron-Pretraining-Generative/**]}
-    license: {status: requires_review, expression: CC-BY-4.0-plus-generator-distribution-review}
+    access:
+      type: huggingface
+      repo_id: nvidia/Nemotron-Pretraining-Specialized-v1
+      revision: 9ed3718b5f2ae29074c5e34e64115432b7c4320f
+      gated: false
+      allow_patterns: [Nemotron-Pretraining-InfiniByte-Reasoning/**, Nemotron-Pretraining-Scientific-Coding/**]
+    license: {status: reviewed, expression: CC-BY-4.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.45, compressed_bytes_per_token: 0.78}
     processing: {quality_profile: verified_reasoning_v1, dedup_namespace: synthetic_reasoning, priority: 88}
 
@@ -34,9 +39,14 @@ sources:
     category: synthetic
     phase_tokens: {phase_a: 3000000000, phase_b: 3000000000, phase_c: 0}
     provenance: {generated: true, transformed: true, fresh: false}
-    access: {type: derived, parents: [finewiki]}
-    license: {status: inherited, expression: CC-BY-SA-compatible-output-review}
-    acquisition: {driver: derived_after_download, candidate_multiplier: 1.35, compressed_bytes_per_token: 0.78}
+    access:
+      type: huggingface
+      repo_id: nvidia/Nemotron-Pretraining-Specialized-v1
+      revision: 9ed3718b5f2ae29074c5e34e64115432b7c4320f
+      gated: false
+      allow_patterns: [Nemotron-Pretraining-Wiki-Rewrite/**]
+    license: {status: reviewed, expression: CC-BY-4.0}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.35, compressed_bytes_per_token: 0.78}
     processing: {quality_profile: grounded_synthetic_v1, dedup_namespace: synthetic_grounded, priority: 85}
 
   - id: cosmopedia_v2
@@ -49,23 +59,32 @@ sources:
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.45, compressed_bytes_per_token: 0.75}
     processing: {quality_profile: textbook_synthetic_v1, dedup_namespace: synthetic_grounded, priority: 82}
 
-  - id: metis_textbook_synthetic
-    label: Source-grounded Metis lessons and worked explanations
+  - id: nemotron_math_textbooks
+    label: NVIDIA Nemotron source-grounded math textbooks and worked explanations
     category: synthetic
     phase_tokens: {phase_a: 3000000000, phase_b: 9000000000, phase_c: 0}
     provenance: {generated: true, transformed: true, fresh: false}
-    access: {type: derived, parents: [openstax, finepdfs_edu_english, stable_rfcs_specs]}
-    license: {status: inherited, expression: parent-record-license}
-    acquisition: {driver: derived_after_download, candidate_multiplier: 1.50, compressed_bytes_per_token: 0.78}
+    access:
+      type: huggingface
+      repo_id: nvidia/Nemotron-Pretraining-Specialized-v1
+      revision: 9ed3718b5f2ae29074c5e34e64115432b7c4320f
+      gated: false
+      allow_patterns: [Nemotron-Pretraining-Math-Textbooks/**]
+    license: {status: reviewed, expression: CC-BY-4.0}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.50, compressed_bytes_per_token: 0.78}
     processing: {quality_profile: grounded_synthetic_v1, dedup_namespace: synthetic_grounded, priority: 94}
 
-  - id: metis_verified_reasoning
-    label: Verified derivations, corrections, counterexamples, and repairs
+  - id: nemotron_rqa_verified_reasoning
+    label: NVIDIA Nemotron retrieval-grounded questions, derivations, and repairs
     category: synthetic
     phase_tokens: {phase_a: 2000000000, phase_b: 7000000000, phase_c: 0}
     provenance: {generated: true, transformed: true, fresh: false}
-    access: {type: derived, parents: [nemotron_cc_math_4plus, proof_pile2_math, openstax]}
-    license: {status: inherited, expression: parent-record-license}
-    acquisition: {driver: derived_after_download, candidate_multiplier: 1.55, compressed_bytes_per_token: 0.78}
+    access:
+      type: huggingface
+      repo_id: nvidia/Nemotron-Pretraining-Specialized-v1
+      revision: 9ed3718b5f2ae29074c5e34e64115432b7c4320f
+      gated: false
+      allow_patterns: [Nemotron-Pretraining-RQA/**]
+    license: {status: reviewed, expression: CC-BY-4.0}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.55, compressed_bytes_per_token: 0.78}
     processing: {quality_profile: verified_reasoning_v1, dedup_namespace: synthetic_reasoning, priority: 98}
-

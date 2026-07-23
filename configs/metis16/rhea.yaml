@@ -1,0 +1,125 @@
+schema: metis.portage-profile/v1
+name: rhea
+manifest: manifests/metis-1.6.yaml
+
+operator:
+  roles: [compute]
+  expected_host_patterns: []
+
+acquisition:
+  mode: external_complete
+  host_role: compute_cluster
+
+storage:
+  # Set this to the path by which Rhea sees the completed login2 acquisition.
+  # If Rhea cannot mount it directly, a separate transfer profile is required.
+  lustre_root: ${METIS_LUSTRE_ROOT:-auto}
+  require_explicit_root: true
+  forbidden_roots: ['/', /lus, /lus/lustre1]
+  must_exist: true
+  expected_filesystem: lustre
+  minimum_free_tb: 25
+  recommended_free_tb: 40
+  safety_free_tb: 5
+  raw_retention: until_release_verified
+  normalized_format: jsonl.zst
+  final_token_dtype: uint16
+  final_shard_tokens: 1000000000
+  directories:
+    cache: cache
+    raw: raw
+    normalized: normalized
+    eligible: eligible
+    dedup: dedup
+    contamination: contamination
+    tokenizer: tokenizer
+    token_counts: token-counts
+    selected: selected
+    release: releases/metis-1.6-data-r1
+    state: state/metis-1.6-data-r1
+    logs: logs/metis-1.6-data-r1
+
+# Rhea's scheduler facts have not been supplied. `site_values_confirmed: false`
+# and the auto fields are hard failures in the compute doctor.
+scheduler:
+  mode: slurm
+  site_values_confirmed: false
+  required_fields: [account, partition, max_array_size]
+  account: ${METIS_SLURM_ACCOUNT:-auto}
+  partition: ${METIS_SLURM_PARTITION:-auto}
+  qos: ${METIS_SLURM_QOS:-auto}
+  max_array_size: ${METIS_SLURM_MAX_ARRAY_SIZE:-auto}
+  download: {target_bytes_per_task: 20000000000, max_concurrent: 1}
+  # One sequential reader per artifact keeps hashing restartable without
+  # creating a single long-lived 1+ TB preflight process.
+  handoff_signature: {cpus_per_task: 1, memory_gb: 4, time: '24:00:00', max_concurrent: 32}
+  handoff_verify: {cpus_per_task: 1, memory_gb: 4, time: '02:00:00'}
+  normalize: {cpus_per_task: 4, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
+  exact_signature: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
+  exact_find: {cpus_per_task: 4, memory_gb: 64, time: '24:00:00', max_concurrent: 256}
+  exact_filter: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
+  span_prefilter_signature: {cpus_per_task: 8, memory_gb: 32, time: '36:00:00', max_concurrent: 400}
+  span_prefilter_find: {cpus_per_task: 4, memory_gb: 64, time: '36:00:00', max_concurrent: 64}
+  span_signature: {cpus_per_task: 8, memory_gb: 48, time: '36:00:00', max_concurrent: 400}
+  span_find: {cpus_per_task: 4, memory_gb: 96, time: '48:00:00', max_concurrent: 16}
+  span_filter: {cpus_per_task: 8, memory_gb: 48, time: '36:00:00', max_concurrent: 400}
+  minhash_signature: {cpus_per_task: 8, memory_gb: 48, time: '48:00:00', max_concurrent: 400}
+  minhash_buckets: {cpus_per_task: 8, memory_gb: 96, time: '48:00:00', max_concurrent: 20}
+  minhash_components: {cpus_per_task: 16, memory_gb: 128, time: '72:00:00'}
+  minhash_priority_candidates: {cpus_per_task: 4, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
+  minhash_priority_resolve: {cpus_per_task: 8, memory_gb: 96, time: '48:00:00', max_concurrent: 64}
+  minhash_priority_finalize: {cpus_per_task: 4, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
+  minhash_priority_verify: {cpus_per_task: 4, memory_gb: 16, time: '04:00:00'}
+  minhash_filter: {cpus_per_task: 8, memory_gb: 48, time: '48:00:00', max_concurrent: 400}
+  code_signature: {cpus_per_task: 8, memory_gb: 48, time: '36:00:00', max_concurrent: 400}
+  code_find: {cpus_per_task: 8, memory_gb: 96, time: '36:00:00', max_concurrent: 64}
+  code_filter: {cpus_per_task: 8, memory_gb: 48, time: '36:00:00', max_concurrent: 400}
+  decontam_index: {cpus_per_task: 16, memory_gb: 256, time: '24:00:00'}
+  decontam_filter: {cpus_per_task: 8, memory_gb: 48, time: '24:00:00', max_concurrent: 400}
+  final_hash_signature: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
+  final_hash_find: {cpus_per_task: 8, memory_gb: 64, time: '24:00:00', max_concurrent: 64}
+  final_hash_filter: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 400}
+  tokenizer_sample: {cpus_per_task: 16, memory_gb: 128, time: '24:00:00'}
+  tokenizer_train: {cpus_per_task: 64, memory_gb: 480, time: '48:00:00'}
+  token_count: {cpus_per_task: 8, memory_gb: 48, time: '48:00:00', max_concurrent: 400}
+  select: {cpus_per_task: 32, memory_gb: 480, time: '72:00:00'}
+  pack: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 200}
+  verify: {cpus_per_task: 16, memory_gb: 64, time: '48:00:00'}
+  # Release revalidates the complete token, filter, selection, and shard
+  # contract rather than trusting an earlier marker, so budget a full Lustre
+  # integrity pass.
+  release: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00'}
+  exact_dedup: {tasks: 2000, find_tasks: 256}
+  repeated_span: {finder_tasks: 64, sentence_count: 3, minimum_span_words: 24, minimum_remaining_words: 50, minimum_remaining_sentences: 3, maximum_open_files: 32, external_sort_chunk_records: 250000, external_sort_max_open_runs: 64, semantic_dedup: false}
+  minhash: {tasks: 2000, workers: 400, num_buckets: 20, hashes_per_bucket: 10, n_grams: 5, target_similarity_operating_region: 0.82}
+  minhash_priority: {bucket_count: 256, maximum_open_files: 32, sqlite_cache_mb: 256, transaction_rows: 100000}
+  code_structural: {finder_tasks: 64, block_tokens: 96, duplicate_fraction: 0.80, semantic_dedup: false}
+  final_hash: {finder_tasks: 64, algorithm: sha256}
+  tokenize: {tasks: 2000, workers: 400}
+
+runtime:
+  python: python3
+  environment_dir: ${METIS_RUNTIME_DIR:-.metis-runtime-rhea}
+  require_apptainer_for_compute: false
+  hf_home: cache/huggingface
+  temp_dir: cache/tmp
+  # Set METIS_NODE_LOCAL_TMP to Rhea's scheduler-provided local scratch path.
+  # The compute doctor will keep Rhea sealed until site values are confirmed.
+  node_local_temp_dir: ${METIS_NODE_LOCAL_TMP:-auto}
+  dynamic_materializers_enabled: true
+
+gates:
+  fail_closed: true
+  require_acquisition_handoff: true
+  require_deep_handoff_verification: true
+  # Handoff artifacts are addressed relative to the acquisition root, so the
+  # same Lustre content may be mounted at a different absolute prefix on Rhea.
+  allow_relocated_lustre_root: true
+  require_repository_commit_match: true
+  require_clean_repository: true
+  require_contamination_index: true
+  require_license_ledger: true
+  license_review_complete: false
+  require_final_tokenizer_counts: true
+  maximum_generated_share: 0.15
+  minimum_unique_tokens: 875000000000

@@ -1,0 +1,110 @@
+schema: metis.portage-profile/v1
+name: login2
+manifest: manifests/metis-1.6.yaml
+
+operator:
+  roles: [acquisition]
+  expected_host_patterns: ['login2', 'login2.*']
+
+acquisition:
+  mode: screen_foreground
+  session_name: metis16-acquisition
+  # login2 is an interactive/service host, so keep the outer and per-source
+  # concurrency deliberately modest. Each materializer is restartable.
+  max_workers: 4
+  maximum_task_attempts: 4
+  retry_initial_seconds: 15
+  retry_maximum_seconds: 60
+  host_role: lustre_server
+  # GitHub repository, discussion, and metadata-hydration builders share one
+  # public-archive lane to keep transfer pressure bounded.
+  driver_lanes:
+    common_crawl_ranges: common_crawl
+    github_repositories: github
+    github_discussions: github
+    repository_index: github
+    canonical_web: canonical
+    canonical_git: canonical
+    canonical_http: canonical
+    derived_after_download: derived
+  lane_max_workers: {github: 1, common_crawl: 1, canonical: 1, derived: 1}
+  common_crawl:
+    range_workers: 4
+    shard_count: 128
+    keep_index_files: true
+    # Retryable shortfalls double the deterministic per-partition sample in
+    # the same Screen run. Round 8 is the fail-closed upper bound.
+    maximum_selection_round: 8
+    # Materialize 5% beyond the locked minimum so publisher opt-outs added
+    # during acquisition do not normally turn the final handoff recount into
+    # an underfill. The handoff still checks the original locked target.
+    final_opt_out_reserve_multiplier: 1.05
+  repository_index_workers: 4
+
+storage:
+  # /lus/lustre1 itself is shared and is deliberately rejected. The account
+  # owner must supply the confirmed user-owned child directory at launch.
+  lustre_root: ${METIS_LUSTRE_ROOT:-auto}
+  require_explicit_root: true
+  allowed_root_prefixes: [/lus/lustre1/vollmerc]
+  forbidden_roots: ['/', /lus, /lus/lustre1, /lus/lustre1/vollmerc]
+  expected_filesystem: lustre
+  quota_group: sumusa
+  # Some Lustre sites report 0/0 even when a project/default quota applies.
+  # Production acquisition must not interpret that as unlimited implicitly.
+  require_explicit_quota_acknowledgement: true
+  quota_unknown_acknowledgement: ${METIS_LUSTRE_QUOTA_ACKNOWLEDGEMENT:-}
+  minimum_free_tb: 25
+  minimum_free_inodes: 100000
+  recommended_free_tb: 40
+  safety_free_tb: 5
+  raw_retention: until_release_verified
+  normalized_format: jsonl.zst
+  final_token_dtype: uint16
+  final_shard_tokens: 1000000000
+  directories:
+    cache: cache
+    raw: raw
+    normalized: normalized
+    eligible: eligible
+    dedup: dedup
+    contamination: contamination
+    tokenizer: tokenizer
+    token_counts: token-counts
+    selected: selected
+    release: releases/metis-1.6-data-r1
+    state: state/metis-1.6-data-r1
+    logs: logs/metis-1.6-data-r1
+
+# Download batching remains here for source-lock compatibility. No job from
+# this profile is submitted to Slurm.
+scheduler:
+  mode: none
+  download:
+    target_bytes_per_task: 20000000000
+    max_concurrent: 4
+
+runtime:
+  python: /usr/bin/python3.11
+  environment_dir: ${METIS_RUNTIME_DIR:-.metis-runtime-login2}
+  require_apptainer_for_compute: false
+  hf_home: cache/huggingface
+  temp_dir: cache/tmp
+  download_retries: 8
+  request_timeout_seconds: 900
+  # Every production driver in the manifest has a materialized, receipt-backed
+  # implementation with an offline end-to-end fixture.
+  dynamic_materializers_enabled: true
+
+gates:
+  fail_closed: true
+  require_hf_auth_for_gated_sources: true
+  require_github_auth: true
+  require_contamination_index: true
+  require_acquisition_handoff: true
+  require_license_ledger: true
+  license_review_complete: false
+  require_clean_repository: true
+  require_final_tokenizer_counts: true
+  maximum_generated_share: 0.15
+  minimum_unique_tokens: 875000000000

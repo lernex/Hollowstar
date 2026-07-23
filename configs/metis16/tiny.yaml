@@ -7,7 +7,9 @@ storage:
   recommended_free_tb: 0
   safety_free_tb: 0
   final_token_dtype: uint16
-  final_shard_tokens: 1024
+  # Keep graph planning bounded even though this profile points at the
+  # production manifest; fixture tests override actual document volumes.
+  final_shard_tokens: 1000000000
   directories:
     cache: cache
     raw: raw
@@ -26,7 +28,11 @@ scheduler:
   download: {target_bytes_per_task: 1048576, max_concurrent: 2}
   normalize: {tasks: 2, workers: 2}
   exact_dedup: {tasks: 2, find_tasks: 2}
+  repeated_span: {finder_tasks: 2, sentence_count: 3, minimum_span_words: 24, minimum_remaining_words: 50, minimum_remaining_sentences: 3, maximum_open_files: 2, external_sort_chunk_records: 128, external_sort_max_open_runs: 4, semantic_dedup: false}
   minhash: {tasks: 2, workers: 2, num_buckets: 4, hashes_per_bucket: 2, n_grams: 3, target_similarity_operating_region: 0.8}
+  minhash_priority: {bucket_count: 4, maximum_open_files: 2, sqlite_cache_mb: 4, transaction_rows: 128}
+  code_structural: {finder_tasks: 2, block_tokens: 32, duplicate_fraction: 0.80, semantic_dedup: false}
+  final_hash: {finder_tasks: 2, algorithm: sha256}
   tokenize: {tasks: 2, workers: 2}
 runtime:
   python: python3
@@ -34,6 +40,7 @@ runtime:
   require_apptainer_for_compute: false
   hf_home: cache/huggingface
   temp_dir: cache/tmp
+  node_local_temp_dir: auto
 gates:
   fail_closed: true
   require_hf_auth_for_gated_sources: false

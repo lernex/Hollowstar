@@ -1,23 +1,56 @@
 from __future__ import annotations
 
 import copy
+import concurrent.futures
+import hashlib
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 import struct
+import threading
+import time
 from pathlib import Path
+from unittest import mock
 
-from metis_data.decontaminate import ContaminationIndex
+from metis_data.decontaminate import ContaminationIndex, benchmark_genealogy_match
+from metis_data.code_dedup import (
+    code_hygiene_reason,
+    find_code_duplicates,
+    load_code_removals,
+    write_code_signatures,
+)
 from metis_data.dedup import deduplicate_records
+from metis_data.final_dedup import find_final_duplicates, load_final_removals, write_final_signatures
+from metis_data.holdouts import _benchmark_fragments, _benchmark_jobs
+from metis_data.config import load_profile, load_yaml, validate_storage_root
+from metis_data.build_inputs import prepare_build_inputs
+from metis_data.handoff import write_acquisition_handoff, verify_acquisition_handoff
+from metis_data.local_download import (
+    _lane_configuration,
+    _pending_task_waves,
+    _run_task_in_lanes,
+    _supervisor_lock,
+)
 from metis_data.manifest import load_manifest, matches_any, validate_manifest
 from metis_data.packing import pack_release
 from metis_data.quality import evaluate_quality
+from metis_data.runtime_lock import runtime_contract
+from metis_data.source_lock import source_lock_sha256
 from metis_data.selection import build_selection, hamilton_apportion, replay_quotas, unique_quotas
 from metis_data.tokenizer import train_tokenizer, validate_tokenizer
 from metis_data.training_contract import phase_for_token
-from metis_data.datatrove_blocks import build_priority_minhash_removals
-from metis_data.source_builders import run_source_builder
-from metis_data.slurm import _indices_expression
+from metis_data.datatrove_blocks import (
+    build_priority_minhash_removals,
+    load_contamination_index,
+    save_contamination_index,
+)
+from metis_data.slurm import BUILD_GRAPH, _indices_expression, _submit_array_chunks
+from metis_data import stage_runner
+from metis_data.state import StateStore
+
+from tests.contamination_fixtures import write_contamination_inputs
 
 
 class ManifestTests(unittest.TestCase):
@@ -28,13 +61,15 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(manifest["schedule"]["target_tokens"], 1_000_000_000_000)
         self.assertEqual(manifest["freshness_layer"]["target_tokens"], 90_000_000_000)
         self.assertEqual(manifest["tokenizer"]["vocabulary_size_including_special_tokens"], 65_536)
-        self.assertEqual(len(manifest["sources"]), 55)
+        source_ids = [source["id"] for source in manifest["sources"]]
+        self.assertGreaterEqual(len(source_ids), 50)
+        self.assertEqual(len(source_ids), len(set(source_ids)))
         generated_or_transformed = sum(
             sum(source["phase_tokens"].values())
             for source in manifest["sources"]
             if source["provenance"].get("generated") or source["provenance"].get("transformed")
         )
-        self.assertEqual(generated_or_transformed, 97_000_000_000)
+        self.assertEqual(generated_or_transformed, 93_000_000_000)
 
     def test_phase_c_contains_no_generated_sources(self) -> None:
         manifest = load_manifest()
@@ -92,6 +127,177 @@ class QualityAndDedupTests(unittest.TestCase):
         self.assertEqual(index.reason("prefix one two three four five six seven suffix"), "benchmark_ngram")
         self.assertIsNone(index.reason("independent prose with no benchmark overlap at all"))
 
+    def test_decontamination_catches_short_and_code_fragments(self) -> None:
+        index = ContaminationIndex.build(
+            [
+                "Which planet is known as the red planet because of iron oxide?",
+                "def benchmark_secret(value):\n    return value * value + 17\n",
+            ],
+            ngram_size=13,
+            minimum_matching_ngrams=2,
+            short_ngram_size=5,
+            minimum_short_matching_ngrams=2,
+            code_ngram_size=6,
+            minimum_code_matching_ngrams=2,
+        )
+        self.assertEqual(
+            index.reason("A copied prompt asks which planet is known as the red planet because of iron oxide today"),
+            "benchmark_short_ngram",
+        )
+        self.assertEqual(
+            index.reason("# copied benchmark\ndef benchmark_secret(value):\n    return value * value + 17\nprint('x')"),
+            "benchmark_code_ngram",
+        )
+
+    def test_decontamination_catches_code_with_renamed_identifiers_and_literals(self) -> None:
+        index = ContaminationIndex.build(
+            [
+                "def benchmark_solution(values):\n"
+                "    total = 0\n"
+                "    for value in values:\n"
+                "        total = total + value * 17\n"
+                "    return total\n"
+            ],
+            code_ngram_size=20,
+            minimum_code_matching_ngrams=2,
+            code_skeleton_ngram_size=8,
+            minimum_code_skeleton_matching_ngrams=2,
+        )
+        renamed = (
+            "def copied_answer(items):\n"
+            "    accumulator = 91\n"
+            "    for element in items:\n"
+            "        accumulator = accumulator + element * 23\n"
+            "    return accumulator\n"
+        )
+        self.assertEqual(index.reason(renamed), "benchmark_code_skeleton_ngram")
+
+    def test_code_hygiene_rejects_repository_noise(self) -> None:
+        self.assertEqual(
+            code_hygiene_reason("const x = 1;", {"category": "code", "repo_path": "node_modules/a.js"}),
+            "vendored_or_build_tree",
+        )
+        self.assertEqual(
+            code_hygiene_reason("const x = 1;", {"category": "code", "repo_path": "package-lock.json"}),
+            "lockfile",
+        )
+        self.assertEqual(
+            code_hygiene_reason("def useful():\n    return 1\n", {"category": "code", "repo_path": "src/useful.py"}),
+            None,
+        )
+
+    def test_code_and_final_exact_dedup_keep_higher_priority(self) -> None:
+        try:
+            from datatrove.data import Document
+        except ImportError:
+            self.skipTest("DataTrove is installed by the Metis-1.6 data runtime")
+        low = Document(
+            text="def copied_function(value):\n    result = value + 1\n    return result\n",
+            id="low",
+            metadata={"category": "code", "repo_path": "a.py", "priority": 10},
+        )
+        high = Document(
+            text="def copied_function(value):\n    result = value + 1\n    return result\n",
+            id="high",
+            metadata={"category": "code", "repo_path": "b.py", "priority": 20},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            code_signatures = root / "code-signatures"
+            code_removals = root / "code-removals"
+            write_code_signatures([low], code_signatures, rank=0, finder_workers=2, block_tokens=16)
+            write_code_signatures([high], code_signatures, rank=1, finder_workers=2, block_tokens=16)
+            for bucket in range(2):
+                find_code_duplicates(code_signatures, code_removals, bucket=bucket)
+            low_files, _ = load_code_removals(code_removals, rank=0, finder_workers=2)
+            high_files, _ = load_code_removals(code_removals, rank=1, finder_workers=2)
+            self.assertEqual(low_files, {0})
+            self.assertEqual(high_files, set())
+
+            final_signatures = root / "final-signatures"
+            final_removals = root / "final-removals"
+            write_final_signatures([low], final_signatures, rank=0, finder_workers=2)
+            write_final_signatures([high], final_signatures, rank=1, finder_workers=2)
+            for bucket in range(2):
+                find_final_duplicates(final_signatures, final_removals, bucket=bucket)
+            self.assertEqual(load_final_removals(final_removals, rank=0, finder_workers=2), {0})
+            self.assertEqual(load_final_removals(final_removals, rank=1, finder_workers=2), set())
+
+    def test_holdout_fragment_extraction_includes_context_answers_and_tests(self) -> None:
+        row = {
+            "question": "What does the function return?",
+            "context": "The function increments its input.",
+            "choices": ["zero", "the input plus one"],
+            "solution": "The input plus one.",
+            "test_list": ["assert f(1) == 2"],
+        }
+        fragments = list(_benchmark_fragments(row))
+        kinds = {kind for kind, _ in fragments}
+        self.assertTrue({"query", "context", "choices", "answer", "code"} <= kinds)
+
+    def test_holdout_registry_is_broad_pinned_and_nonsemantic(self) -> None:
+        registry = load_yaml(Path(__file__).resolve().parents[1] / "manifests" / "contamination" / "eval-holdouts.yaml")
+        self.assertEqual(len(registry["benchmarks"]), 63)
+        jobs = sum(
+            len(entry.get("files", [])) if entry.get("files") else len(list(_benchmark_jobs(entry)))
+            for entry in registry["benchmarks"]
+        )
+        self.assertEqual(jobs, 203)
+        self.assertEqual(len({entry["family"] for entry in registry["benchmarks"]}), 36)
+        self.assertEqual(registry["policy"]["expected_benchmark_registries"], 63)
+        self.assertEqual(registry["policy"]["expected_family_labels"], 36)
+        self.assertEqual(registry["policy"]["expected_jobs"], 203)
+        self.assertFalse(registry["policy"]["semantic_dedup"])
+        self.assertEqual(registry["policy"]["maximum_shingle_rows"], 32)
+        self.assertTrue(registry["policy"]["explicit_genealogy_match"])
+        self.assertTrue(registry["policy"]["quarantine_outputs"])
+        ids = [entry["id"] for entry in registry["benchmarks"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        for entry in registry["benchmarks"]:
+            self.assertRegex(entry["revision"], r"^[0-9a-f]{40}$")
+
+    def test_benchmark_genealogy_rejects_explicit_seed_lineage_without_domain_false_positives(self) -> None:
+        registry = load_yaml(
+            Path(__file__).resolve().parents[1]
+            / "manifests"
+            / "contamination"
+            / "eval-holdouts.yaml"
+        )
+        self.assertEqual(
+            benchmark_genealogy_match(
+                {"upstream_metadata": {"seed_dataset": "openai/gsm8k"}}, registry
+            ),
+            "gsm8k",
+        )
+        self.assertEqual(
+            benchmark_genealogy_match({"benchmark_name": "gpqa_diamond"}, registry),
+            "gpqa",
+        )
+        self.assertIsNone(
+            benchmark_genealogy_match(
+                {"dataset_name": "a broad mathematics and applications corpus"}, registry
+            )
+        )
+        self.assertEqual(
+            benchmark_genealogy_match({"evaluation_benchmark": "MATH"}, registry),
+            "math",
+        )
+
+    def test_contamination_index_roundtrips_as_memory_mapped_binary(self) -> None:
+        source = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+        index = ContaminationIndex.build([source], short_ngram_size=5, code_ngram_size=6)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "index.json"
+            write_contamination_inputs(Path(temporary), index, [source])
+            save_contamination_index(index, path)
+            loaded = load_contamination_index(path)
+            self.assertEqual(loaded.reason(source), "benchmark_exact")
+            self.assertEqual(
+                loaded.reason("prefix one two three four five six seven suffix"),
+                "benchmark_short_ngram",
+            )
+            self.assertTrue((Path(temporary) / "index.exact.npy").exists())
+
     def test_near_dedup_keeps_higher_priority(self) -> None:
         try:
             import datatrove  # noqa: F401
@@ -125,27 +331,693 @@ class AcquisitionTruthTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _indices_expression(range(1_000_000_000), 200, 1000)
 
-    def test_repository_index_and_derived_recipes_are_not_materialized_payloads(self) -> None:
-        items = (
-            {
-                "source_id": "repository-code",
-                "driver": "repository_index",
-                "access": {"components": [{"repo_id": "example/index", "revision": "0" * 40}]},
-                "candidate_tokens": 100,
-            },
-            {
-                "source_id": "derived-synthetic",
-                "driver": "derived_after_download",
-                "access": {"parents": ["primary"]},
-                "candidate_tokens": 100,
-            },
-        )
+    def test_production_manifest_has_no_unmaterialized_derived_sources(self) -> None:
+        manifest = load_manifest()
+        derived = [
+            source["id"]
+            for source in manifest["sources"]
+            if source["access"].get("type") == "derived"
+            or source["acquisition"].get("driver") == "derived_after_download"
+        ]
+        self.assertEqual(derived, [])
+
+    def test_build_inputs_freeze_payloads_expand_shards_and_exclude_source_indices(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            for item in items:
-                result = run_source_builder(item, profile={}, root=Path(temporary))
-                self.assertEqual(result["kind"], "remote_source_plan")
-                self.assertFalse(result["materialized"])
-                self.assertFalse(result["ready_for_training_build"])
+            root = Path(temporary).resolve()
+            state = StateStore(root / "state")
+            hf_payload = root / "raw" / "hf-source" / "part.jsonl"
+            source_index = root / "raw" / "repo-source" / "metadata.parquet"
+            materialized = root / "raw" / "repo-source" / "materialized"
+            hf_payload.parent.mkdir(parents=True)
+            source_index.parent.mkdir(parents=True)
+            materialized.mkdir(parents=True)
+            hf_payload.write_text('{"text":"training payload"}\n', encoding="utf-8")
+            source_index.write_bytes(b"retrieval metadata only")
+            shards = []
+            for index, content in enumerate((b'{"text":"one"}\n', b'{"text":"two"}\n')):
+                path = materialized / f"part-{index:05d}.jsonl.zst"
+                path.write_bytes(content)
+                shards.append(
+                    {
+                        "path": str(path),
+                        "size": path.stat().st_size,
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                    }
+                )
+            lock = {
+                "release": "test-release",
+                "sources": [{"id": "hf-source"}, {"id": "repo-source"}],
+                "download_tasks": [
+                    {"task_id": "download-000000"},
+                    {"task_id": "download-000001"},
+                ],
+            }
+            state.write("sources.lock.json", payload=lock)
+            hf_record = {
+                "kind": "hf_file",
+                "source_id": "hf-source",
+                "local_path": str(hf_payload),
+                "size": hf_payload.stat().st_size,
+                "sha256": hashlib.sha256(hf_payload.read_bytes()).hexdigest(),
+                "payload_role": "training_records",
+            }
+            state.complete("download", "download-000000", {"files": [hf_record]})
+            state.complete(
+                "download",
+                "download-000001",
+                {
+                    "files": [
+                        {
+                            "kind": "hf_file",
+                            "source_id": "repo-source",
+                            "local_path": str(source_index),
+                            "size": source_index.stat().st_size,
+                            "sha256": hashlib.sha256(source_index.read_bytes()).hexdigest(),
+                            "payload_role": "source_index",
+                        },
+                        {
+                            "kind": "materialized_dataset",
+                            "source_id": "repo-source",
+                            "local_path": str(materialized),
+                            "shards": shards,
+                            "materialized": True,
+                        },
+                    ]
+                },
+            )
+            profile = {"storage": {"lustre_root": str(root)}}
+            frozen = prepare_build_inputs(profile, state)
+            self.assertEqual(frozen["input_count"], 3)
+            self.assertEqual(frozen["files_by_source"], {"hf-source": 1, "repo-source": 2})
+            self.assertNotIn(str(source_index), {item["local_path"] for item in frozen["inputs"]})
+            self.assertEqual(prepare_build_inputs(profile, state), frozen)
+
+            extra = root / "raw" / "hf-source" / "late.jsonl"
+            extra.write_text('{"text":"late payload"}\n', encoding="utf-8")
+            extra_record = {
+                "kind": "hf_file",
+                "source_id": "hf-source",
+                "local_path": str(extra),
+                "size": extra.stat().st_size,
+                "sha256": hashlib.sha256(extra.read_bytes()).hexdigest(),
+            }
+            state.complete("download", "download-000000", {"files": [hf_record, extra_record]})
+            with self.assertRaisesRegex(RuntimeError, "Frozen build.inputs.json differs"):
+                prepare_build_inputs(profile, state)
+
+    def test_build_inputs_fail_closed_when_a_manifest_source_has_no_training_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = StateStore(root / "state")
+            payload = root / "raw" / "present" / "part.jsonl"
+            payload.parent.mkdir(parents=True)
+            payload.write_text('{"text":"present"}\n', encoding="utf-8")
+            state.write(
+                "sources.lock.json",
+                payload={
+                    "release": "test-release",
+                    "sources": [{"id": "present"}, {"id": "missing"}],
+                    "download_tasks": [{"task_id": "download-000000"}],
+                },
+            )
+            state.complete(
+                "download",
+                "download-000000",
+                {
+                    "files": [
+                        {
+                            "kind": "hf_file",
+                            "source_id": "present",
+                            "local_path": str(payload),
+                            "size": payload.stat().st_size,
+                            "sha256": hashlib.sha256(payload.read_bytes()).hexdigest(),
+                        }
+                    ]
+                },
+            )
+            with self.assertRaisesRegex(RuntimeError, "missing"):
+                prepare_build_inputs({"storage": {"lustre_root": str(root)}}, state)
+
+    def test_build_inputs_fail_closed_on_duplicate_training_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = StateStore(root / "state")
+            payload = root / "raw" / "source" / "part.jsonl"
+            payload.parent.mkdir(parents=True)
+            payload.write_text('{"text":"one physical payload"}\n', encoding="utf-8")
+            record = {
+                "kind": "hf_file",
+                "source_id": "source",
+                "local_path": str(payload),
+                "size": payload.stat().st_size,
+                "sha256": hashlib.sha256(payload.read_bytes()).hexdigest(),
+            }
+            state.write(
+                "sources.lock.json",
+                payload={
+                    "release": "test-release",
+                    "sources": [{"id": "source"}],
+                    "download_tasks": [
+                        {"task_id": "download-000000"},
+                        {"task_id": "download-000001"},
+                    ],
+                },
+            )
+            state.complete("download", "download-000000", {"files": [record]})
+            state.complete("download", "download-000001", {"files": [{**record, "repo_path": "alias.jsonl"}]})
+            with self.assertRaisesRegex(RuntimeError, "duplicate training-record path"):
+                prepare_build_inputs({"storage": {"lustre_root": str(root)}}, state)
+
+    def test_slurm_arrays_are_chunked_with_global_task_offsets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            profile = {
+                "storage": {"lustre_root": str(root), "directories": {"logs": "logs"}},
+                "scheduler": {
+                    "max_array_size": 3,
+                    "normalize": {"max_concurrent": 2},
+                },
+            }
+            jobs = _submit_array_chunks(
+                stage="normalize",
+                global_indices=range(8),
+                profile_path=root / "rhea.yaml",
+                profile=profile,
+                dependency="previous-job",
+                dry_run=True,
+            )
+            self.assertEqual([job.array for job in jobs], ["0-2%2", "0-2%2", "0-1%2"])
+            self.assertEqual([job.task_offset for job in jobs], [0, 3, 6])
+            self.assertEqual([job.dependency for job in jobs], ["previous-job"] * 3)
+            self.assertEqual(len({job.job_id for job in jobs}), 3)
+            for job in jobs:
+                exports = [argument for argument in job.command if argument.startswith("--export=")]
+                self.assertEqual(len(exports), 1)
+                self.assertIn(f"METIS_TASK_OFFSET={job.task_offset}", exports[0])
+
+    def test_repeated_span_dedup_precedes_minhash_in_build_graph(self) -> None:
+        stages = [stage for stage, _ in BUILD_GRAPH]
+        self.assertLess(stages.index("exact_filter"), stages.index("span_prefilter_signature"))
+        self.assertLess(
+            stages.index("span_prefilter_signature"),
+            stages.index("span_prefilter_find"),
+        )
+        self.assertLess(stages.index("span_prefilter_find"), stages.index("span_signature"))
+        self.assertLess(stages.index("span_signature"), stages.index("span_find"))
+        self.assertLess(stages.index("span_find"), stages.index("span_filter"))
+        self.assertLess(stages.index("span_filter"), stages.index("minhash_signature"))
+        self.assertLess(stages.index("minhash_buckets"), stages.index("minhash_components"))
+        self.assertLess(
+            stages.index("minhash_components"),
+            stages.index("minhash_priority_candidates"),
+        )
+        self.assertLess(
+            stages.index("minhash_priority_candidates"),
+            stages.index("minhash_priority_resolve"),
+        )
+        self.assertLess(
+            stages.index("minhash_priority_resolve"),
+            stages.index("minhash_priority_finalize"),
+        )
+        self.assertLess(
+            stages.index("minhash_priority_finalize"),
+            stages.index("minhash_priority_verify"),
+        )
+        self.assertLess(
+            stages.index("minhash_priority_verify"),
+            stages.index("minhash_filter"),
+        )
+
+    def test_slurm_wrapper_adds_array_id_to_exported_offset(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake_python = root / "python"
+            fake_python.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8")
+            fake_python.chmod(0o755)
+            environment = {
+                **os.environ,
+                "METIS_PYTHON": str(fake_python),
+                "METIS_PROFILE": str(root / "rhea.yaml"),
+                "METIS_STAGE": "normalize",
+                "METIS_TASK_OFFSET": "3000",
+                "SLURM_ARRAY_TASK_ID": "17",
+            }
+            result = subprocess.run(
+                ["bash", str(Path(__file__).resolve().parents[1] / "slurm" / "metis16" / "stage.sbatch")],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            arguments = result.stdout.splitlines()
+            self.assertEqual(arguments[arguments.index("--task-index") + 1], "3017")
+
+    def test_production_profile_requires_explicit_safe_lustre_root(self) -> None:
+        profile = {
+            "storage": {
+                "require_explicit_root": True,
+                "lustre_root": "auto",
+                "forbidden_roots": ["/", "/lus", "/lus/lustre1"],
+            }
+        }
+        with self.assertRaises(RuntimeError):
+            validate_storage_root(profile, Path("/lus/lustre1"))
+        with tempfile.TemporaryDirectory() as temporary:
+            profile_path = Path(temporary) / "production.yaml"
+            profile_path.write_text(
+                "name: production\n"
+                "storage:\n"
+                "  lustre_root: ${METIS_LUSTRE_ROOT:-auto}\n"
+                "  require_explicit_root: true\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("METIS_LUSTRE_ROOT", None)
+                with self.assertRaises(RuntimeError):
+                    load_profile(profile_path)
+
+    def test_login2_and_rhea_profiles_have_separate_fail_closed_roles(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "configs" / "metis16"
+        login2 = load_yaml(root / "login2.yaml")
+        rhea = load_yaml(root / "rhea.yaml")
+        portage = load_yaml(root / "portage.yaml")
+        self.assertEqual(login2["operator"]["roles"], ["acquisition"])
+        self.assertEqual(login2["acquisition"]["mode"], "screen_foreground")
+        self.assertTrue(login2["storage"]["require_explicit_root"])
+        self.assertEqual(rhea["operator"]["roles"], ["compute"])
+        self.assertEqual(rhea["acquisition"]["mode"], "external_complete")
+        self.assertFalse(rhea["scheduler"]["site_values_confirmed"])
+        self.assertEqual(rhea["scheduler"]["account"], "${METIS_SLURM_ACCOUNT:-auto}")
+        self.assertFalse(rhea["scheduler"]["repeated_span"]["semantic_dedup"])
+        self.assertEqual(portage["operator"]["roles"], ["legacy_disabled"])
+        self.assertTrue(portage["storage"]["require_explicit_root"])
+
+    def test_acquisition_supervisor_lock_is_singleton(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state = StateStore(Path(temporary) / "state")
+            with _supervisor_lock(state):
+                with self.assertRaises(RuntimeError):
+                    with _supervisor_lock(state):
+                        self.fail("second supervisor unexpectedly acquired the lock")
+
+    def test_task_lock_reclaims_a_proven_dead_process_on_the_same_host(self) -> None:
+        import socket
+
+        with tempfile.TemporaryDirectory() as temporary:
+            state = StateStore(Path(temporary) / "state")
+            lock = state.path("locks", "download", "task.lock")
+            lock.mkdir(parents=True)
+            (lock / "OWNER.json").write_text(
+                json.dumps({"pid": 2_000_000_000, "hostname": socket.gethostname()}),
+                encoding="utf-8",
+            )
+            with state.task_lock("download", "task") as reclaimed:
+                self.assertEqual(reclaimed, lock)
+                owner = json.loads((lock / "OWNER.json").read_text(encoding="utf-8"))
+                self.assertEqual(owner["pid"], os.getpid())
+            self.assertFalse(lock.exists())
+
+    def test_acquisition_handoff_detects_mutated_source_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = StateStore(root / "state")
+            artifact = root / "raw" / "source" / "part.bin"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"immutable candidate data")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            task_payload = {"items": [], "planned_bytes": 0}
+            task_sha256 = hashlib.sha256(
+                json.dumps(
+                    task_payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            task_id = f"download-000000-{task_sha256[:16]}"
+            source_lock = {
+                "schema": "metis.source-lock/v4",
+                "release": "test-release",
+                "sources": [],
+                "runtime_contract": runtime_contract(),
+                "download_tasks": [
+                    {
+                        **task_payload,
+                        "task_index": 0,
+                        "task_sha256": task_sha256,
+                        "task_id": task_id,
+                    }
+                ],
+            }
+            source_lock["lock_sha256"] = source_lock_sha256(source_lock)
+            state.write("sources.lock.json", payload=source_lock)
+            state.complete(
+                "download",
+                task_id,
+                {
+                    "task_id": task_id,
+                    "task_sha256": task_sha256,
+                    "files": [
+                        {
+                            "kind": "hf_file",
+                            "source_id": "source",
+                            "local_path": str(artifact),
+                            "size": artifact.stat().st_size,
+                            "sha256": digest,
+                        }
+                    ],
+                },
+            )
+            contamination = root / "contamination"
+            contamination.mkdir()
+            (contamination / "holdouts.jsonl").write_text('{"text":"holdout"}\n', encoding="utf-8")
+            (contamination / "HOLDOUTS.json").write_text(
+                '{"schema":"metis.holdout-bundle/test"}\n', encoding="utf-8"
+            )
+            profile = {
+                "storage": {
+                    "lustre_root": str(root),
+                    "directories": {"state": "state", "contamination": "contamination"},
+                },
+                "gates": {"require_clean_repository": False, "require_repository_commit_match": False},
+            }
+            manifest = {"release": "test-release", "sources": []}
+            handoff = write_acquisition_handoff(profile, manifest, state)
+            self.assertEqual(handoff["artifact_count"], 1)
+            self.assertTrue(verify_acquisition_handoff(profile, manifest, state)["ok"])
+            original = artifact.read_bytes()
+            artifact.write_bytes(b"x" * len(original))
+            with self.assertRaisesRegex(RuntimeError, "hash changed"):
+                verify_acquisition_handoff(profile, manifest, state, verify_artifact_hashes=True)
+            artifact.write_bytes(original)
+            state.write("sources.lock.json", payload={**source_lock, "tampered": True})
+            with self.assertRaisesRegex(RuntimeError, "source lock changed"):
+                verify_acquisition_handoff(profile, manifest, state)
+
+    def test_handoff_expands_materialized_dataset_receipt_and_shards(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = StateStore(root / "state")
+            dataset = root / "raw" / "dynamic-source"
+            dataset.mkdir(parents=True)
+            shards = []
+            for index, payload in enumerate((b"first shard", b"second shard")):
+                path = dataset / f"part-{index:05d}.jsonl.zst"
+                path.write_bytes(payload)
+                shards.append(
+                    {
+                        "path": str(path),
+                        "size": path.stat().st_size,
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                    }
+                )
+            receipt = dataset / "ACQUISITION_RECEIPT.json"
+            receipt.write_text(json.dumps({"shards": shards}, sort_keys=True), encoding="utf-8")
+            task_payload = {"items": [], "planned_bytes": 0}
+            task_sha256 = hashlib.sha256(
+                json.dumps(
+                    task_payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            task_id = f"download-000000-{task_sha256[:16]}"
+            source_lock = {
+                "schema": "metis.source-lock/v4",
+                "release": "test",
+                "sources": [],
+                "runtime_contract": runtime_contract(),
+                "download_tasks": [
+                    {
+                        **task_payload,
+                        "task_index": 0,
+                        "task_sha256": task_sha256,
+                        "task_id": task_id,
+                    }
+                ],
+            }
+            source_lock["lock_sha256"] = source_lock_sha256(source_lock)
+            state.write(
+                "sources.lock.json",
+                payload=source_lock,
+            )
+            state.complete(
+                "download",
+                task_id,
+                {
+                    "task_sha256": task_sha256,
+                    "files": [
+                        {
+                            "kind": "materialized_dataset",
+                            "source_id": "dynamic-source",
+                            "local_path": str(dataset),
+                            "receipt": str(receipt),
+                            "shards": shards,
+                            "materialized": True,
+                            "ready_for_training_build": True,
+                        }
+                    ]
+                },
+            )
+            contamination = root / "contamination"
+            contamination.mkdir()
+            (contamination / "holdouts.jsonl").write_text('{"text":"holdout"}\n', encoding="utf-8")
+            (contamination / "HOLDOUTS.json").write_text(
+                '{"schema":"metis.holdout-bundle/test"}\n', encoding="utf-8"
+            )
+            profile = {
+                "storage": {
+                    "lustre_root": str(root),
+                    "directories": {"state": "state", "contamination": "contamination"},
+                },
+                "gates": {"require_clean_repository": False, "require_repository_commit_match": False},
+            }
+            handoff = write_acquisition_handoff(profile, {"release": "test", "sources": []}, state)
+            self.assertEqual(handoff["artifact_count"], 3)
+            paths = {item["path"] for item in handoff["artifacts"]}
+            self.assertIn(str(receipt.relative_to(root)), paths)
+            self.assertTrue(all(str(dataset.relative_to(root)) != path for path in paths))
+            self.assertTrue(verify_acquisition_handoff(profile, {"release": "test", "sources": []}, state)["ok"])
+
+    def test_release_bundles_the_frozen_build_input_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repository = root / "repository"
+            manifest_path = repository / "manifests" / "metis-1.6.yaml"
+            manifest_path.parent.mkdir(parents=True)
+            manifest_path.write_text("release: test-release\n", encoding="utf-8")
+            directories = {
+                "state": "state",
+                "release": "release",
+                "tokenizer": "tokenizer",
+                "selected": "selected",
+            }
+            profile = {
+                "manifest": str(manifest_path),
+                "storage": {
+                    "lustre_root": str(root),
+                    "directories": directories,
+                    "final_token_dtype": "uint16",
+                },
+                "gates": {"require_license_ledger": False},
+            }
+            tokenizer_root = root / directories["tokenizer"]
+            tokenizer_root.mkdir()
+            for name in (
+                "tokenizer.json",
+                "vocab.json",
+                "TOKENIZER_RELEASE.json",
+                "TOKENIZER_VALIDATION.json",
+            ):
+                (tokenizer_root / name).write_text(f"{name}\n", encoding="utf-8")
+            selection_path = root / directories["selected"] / "SELECTION.json"
+            selection_path.parent.mkdir()
+            selection_path.write_text('{"schema":"selection-test"}\n', encoding="utf-8")
+            token_count_contract = selection_path.parent / "TOKEN_COUNT_CONTRACT.json"
+            token_count_contract.write_text('{"schema":"token-count-test"}\n', encoding="utf-8")
+            state = StateStore(root / directories["state"])
+            state.write("sources.lock.json", payload={"release": "test-release", "sources": []})
+            build_inputs = {
+                "schema": "metis.build-inputs/v1",
+                "release": "test-release",
+                "input_count": 1,
+                "inputs": [{"input_id": "abc", "source_id": "source"}],
+            }
+            state.write("build.inputs.json", payload=build_inputs)
+            provenance = root / directories["release"] / "provenance"
+            provenance.mkdir(parents=True)
+            filter_chain_path = provenance / "FILTER_CHAIN.json"
+            filter_chain = {"schema": "metis.filter-chain/v1", "stages": []}
+            filter_chain["filter_chain_sha256"] = stage_runner._json_sha256(filter_chain)
+            filter_chain_path.write_text(
+                json.dumps(filter_chain, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            ledger_path = provenance / "LICENSE_LEDGER.jsonl"
+            ledger_path.write_text('{"source_id":"source"}\n', encoding="utf-8")
+            shard_manifest_path = provenance / "SHARDS.jsonl"
+            shard_manifest_path.write_text("", encoding="utf-8")
+            tokenizer_contract = {
+                "schema": "test-tokenizer-contract",
+                "tokenizer_sha256": hashlib.sha256(
+                    (tokenizer_root / "tokenizer.json").read_bytes()
+                ).hexdigest(),
+                "vocab_sha256": hashlib.sha256(
+                    (tokenizer_root / "vocab.json").read_bytes()
+                ).hexdigest(),
+                "tokenizer_release_sha256": hashlib.sha256(
+                    (tokenizer_root / "TOKENIZER_RELEASE.json").read_bytes()
+                ).hexdigest(),
+                "tokenizer_validation_sha256": hashlib.sha256(
+                    (tokenizer_root / "TOKENIZER_VALIDATION.json").read_bytes()
+                ).hexdigest(),
+            }
+            selection_contract = {"schema": "test-selection-contract"}
+            verification = {
+                "schema": "metis.verification/v2",
+                "ok": True,
+                "target_tokens": 10,
+                "phase_tokens": {"phase_a": 7, "phase_b": 2, "phase_c": 1},
+                "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                "source_lock_sha256": hashlib.sha256(
+                    state.path("sources.lock.json").read_bytes()
+                ).hexdigest(),
+                "build_inputs_sha256": hashlib.sha256(
+                    state.path("build.inputs.json").read_bytes()
+                ).hexdigest(),
+                "selection_sha256": hashlib.sha256(selection_path.read_bytes()).hexdigest(),
+                "selection_contract": selection_contract,
+                "token_count_contract_sha256": hashlib.sha256(
+                    token_count_contract.read_bytes()
+                ).hexdigest(),
+                "tokenizer_contract": tokenizer_contract,
+                "filter_chain": str(filter_chain_path),
+                "filter_chain_sha256": hashlib.sha256(filter_chain_path.read_bytes()).hexdigest(),
+                "license_ledger_sha256": hashlib.sha256(ledger_path.read_bytes()).hexdigest(),
+                "shard_manifest_sha256": hashlib.sha256(
+                    shard_manifest_path.read_bytes()
+                ).hexdigest(),
+            }
+            manifest = {
+                "_path": str(manifest_path),
+                "release": "test-release",
+                "schedule": {
+                    "target_tokens": 10,
+                    "phases": {
+                        "phase_a": {"target_tokens": 7},
+                        "phase_b": {"target_tokens": 2},
+                        "phase_c": {"target_tokens": 1},
+                    },
+                },
+            }
+            verification["manifest_contract_sha256"] = (
+                stage_runner._manifest_contract_sha256(manifest)
+            )
+            verification["verification_sha256"] = stage_runner._json_sha256(
+                {
+                    key: value
+                    for key, value in verification.items()
+                    if key != "verification_sha256"
+                }
+            )
+            state.write("VERIFICATION.json", payload=verification)
+            with (
+                mock.patch("metis_data.stage_runner._manifest", return_value=manifest),
+                mock.patch("metis_data.stage_runner.repository_root", return_value=repository),
+                mock.patch(
+                    "metis_data.stage_runner._production_tokenizer_contract",
+                    return_value=tokenizer_contract,
+                ),
+                mock.patch(
+                    "metis_data.stage_runner._validate_selection_artifacts",
+                    return_value={
+                        "token_count_contract_path": token_count_contract,
+                        "tokenizer_contract": tokenizer_contract,
+                    },
+                ),
+                mock.patch(
+                    "metis_data.stage_runner._validate_selection_contract",
+                    return_value=selection_contract,
+                ),
+                mock.patch("metis_data.stage_runner._validate_filter_chain_artifacts"),
+                mock.patch(
+                    "metis_data.training_contract.validate_training_release",
+                    return_value={"ok": True},
+                ),
+            ):
+                released = stage_runner._release(profile)
+            bundled = root / directories["release"] / "manifests" / "build.inputs.json"
+            self.assertEqual(json.loads(bundled.read_text(encoding="utf-8")), build_inputs)
+            self.assertEqual(released["artifacts"]["build_inputs"], "manifests/build.inputs.json")
+            self.assertEqual(
+                released["build_inputs_sha256"],
+                hashlib.sha256(bundled.read_bytes()).hexdigest(),
+            )
+
+    def test_acquisition_waves_put_downloaded_payloads_before_materializers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state = StateStore(Path(temporary) / "state")
+            lock = {
+                "download_tasks": [
+                    {"task_id": "builder", "items": [{"kind": "builder", "driver": "repository_index"}]},
+                    {"task_id": "payload", "items": [{"kind": "hf_file"}]},
+                    {"task_id": "fresh", "items": [{"kind": "builder", "driver": "common_crawl_ranges"}]},
+                    {"task_id": "done", "items": [{"kind": "hf_file"}]},
+                    {"task_id": "github", "items": [{"kind": "builder", "driver": "github_discussions"}]},
+                ]
+            }
+            state.complete("download", "done", {"files": [{"kind": "hf_file"}]})
+            self.assertEqual(_pending_task_waves(lock, state), [(0, [1]), (1, [0, 2]), (2, [4])])
+
+    def test_github_builders_share_one_concurrency_lane(self) -> None:
+        profile = {
+            "acquisition": {
+                "driver_lanes": {
+                    "repository_index": "github",
+                    "github_discussions": "github",
+                },
+                "lane_max_workers": {"github": 1},
+            }
+        }
+        lock = {
+            "download_tasks": [
+                {"items": [{"kind": "builder", "driver": "repository_index"}]},
+                {"items": [{"kind": "builder", "driver": "github_discussions"}]},
+            ]
+        }
+        driver_lanes, semaphores = _lane_configuration(profile)
+        active = 0
+        maximum_active = 0
+        counter_lock = threading.Lock()
+
+        def fake_download(_profile: dict, task_index: int) -> dict:
+            nonlocal active, maximum_active
+            with counter_lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            time.sleep(0.02)
+            with counter_lock:
+                active -= 1
+            return {"task_index": task_index}
+
+        with mock.patch("metis_data.local_download.run_download_task", side_effect=fake_download):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [
+                    pool.submit(_run_task_in_lanes, profile, lock, index, driver_lanes, semaphores)
+                    for index in range(2)
+                ]
+                for future in futures:
+                    future.result()
+        self.assertEqual(maximum_active, 1)
+
+    def test_screen_launcher_never_puts_tokens_on_screen_command_line(self) -> None:
+        script = (Path(__file__).resolve().parents[1] / "ops" / "start-acquisition.sh").read_text(
+            encoding="utf-8"
+        )
+        screen_lines = [line for line in script.splitlines() if line.strip().startswith("screen -DmS")]
+        self.assertEqual(len(screen_lines), 1)
+        self.assertNotIn("HF_TOKEN", screen_lines[0])
+        self.assertNotIn("GITHUB_TOKEN", screen_lines[0])
 
 
 class SelectionAndTokenizerTests(unittest.TestCase):
