@@ -193,14 +193,17 @@ def _submit_array_chunks(
 
 BUILD_GRAPH = (
     ("normalize", "normalize_tasks"),
+    ("cleanup_raw", None),
     ("exact_signature", "normalize_tasks"),
     ("exact_find", "exact_find_tasks"),
     ("exact_filter", "normalize_tasks"),
+    ("cleanup_exact", None),
     ("span_prefilter_signature", "normalize_tasks"),
     ("span_prefilter_find", "span_buckets"),
     ("span_signature", "normalize_tasks"),
     ("span_find", "span_buckets"),
     ("span_filter", "normalize_tasks"),
+    ("cleanup_span", None),
     ("minhash_signature", "normalize_tasks"),
     ("minhash_buckets", "minhash_buckets"),
     ("minhash_components", None),
@@ -209,21 +212,29 @@ BUILD_GRAPH = (
     ("minhash_priority_finalize", "normalize_tasks"),
     ("minhash_priority_verify", None),
     ("minhash_filter", "normalize_tasks"),
+    ("cleanup_minhash", None),
     ("code_signature", "normalize_tasks"),
     ("code_find", "code_buckets"),
     ("code_filter", "normalize_tasks"),
+    ("cleanup_code", None),
     ("decontam_index", None),
     ("decontam_filter", "normalize_tasks"),
+    ("cleanup_decontam", None),
     ("final_hash_signature", "normalize_tasks"),
     ("final_hash_find", "final_hash_buckets"),
     ("final_hash_filter", "normalize_tasks"),
+    ("cleanup_final_hash", None),
     ("tokenizer_sample", None),
     ("tokenizer_train", None),
+    ("cleanup_tokenizer_sample", None),
     ("token_count", "normalize_tasks"),
     ("select", None),
+    ("cleanup_selection_inputs", None),
     ("pack", "pack_tasks"),
     ("verify", None),
+    ("cleanup_pack_inputs", None),
     ("release", None),
+    ("cleanup_release_workspace", None),
 )
 
 
@@ -309,9 +320,16 @@ def submit_graph(
         }
         for stage, count_key in BUILD_GRAPH:
             if count_key:
+                incomplete = [
+                    index
+                    for index in range(counts[count_key])
+                    if not state.is_complete(stage, f"task-{index:06d}")
+                ]
+                if not incomplete:
+                    continue
                 stage_jobs = _submit_array_chunks(
                     stage=stage,
-                    global_indices=range(counts[count_key]),
+                    global_indices=incomplete,
                     profile_path=profile_path,
                     profile=profile,
                     dependency=dependency,
@@ -320,6 +338,8 @@ def submit_graph(
                 jobs.extend(stage_jobs)
                 dependency = ":".join(job.job_id for job in stage_jobs)
             else:
+                if state.is_complete(stage, "task-000000"):
+                    continue
                 job = submit_stage(
                     stage=stage,
                     profile_path=profile_path,

@@ -525,7 +525,7 @@ architecture. So:
   `manifests/metis-1.6.yaml`: 525B web, 160B code, 85B math, 125B science/technical,
   70B synthetic pedagogical/factual, 25B books/reference/legal, and 10B translated/native
   multilingual. The 90B freshness layer (35B web + 35B software + 10B science + 10B official
-  documentation) is inside the trillion. Target 875B unique tokens plus 125B controlled replay;
+  documentation) is inside the trillion. Target 950B unique tokens plus 50B premium replay;
   no generated data is eligible for Phase C. New 65,536-vocab byte-level BPE; packed at 4096 with
   EOS separators, document boundaries, and Mamba state reset at document boundaries.
 - **Keep `<think>` chain-of-thought traces** in SFT (`keep_think=True` on OpenThoughts/OpenR1/
@@ -846,9 +846,9 @@ now-locked 1T data schedule.
 
 Metis-1.6 now uses **exactly 1,000,000,000,000 final-tokenizer-measured training exposures**. The
 release contract is declarative in `manifests/metis-1.6.yaml`; detailed source rows are under
-`manifests/sources/`. The three phases are fixed at **700B / 250B / 50B**. The first 875B exposures
-are unique after global exact and near-duplicate removal. Phase B contains 75B controlled replay,
-and Phase C is a 50B premium cooldown made entirely from high-priority, non-generated records.
+`manifests/sources/`. The three phases are fixed at **700B / 250B / 50B**. The first 950B exposures
+are unique after global exact and near-duplicate removal. Phase B contains no replay, and Phase C is
+a 50B premium cooldown made entirely from high-priority, non-generated records.
 
 The embedded freshness layer is **90B**, not an addition to the trillion: 35B fresh general web,
 35B fresh software, 10B recent open science, and 10B current official documentation. Every target
@@ -1096,7 +1096,7 @@ cross-job interference as an explicit experimental condition.
   N-gram memory**;
   tune table slots against exact controller counts to land at 12.0B stored.
 - ✅ **1T PT exposures, locked** — 700B broad foundation, 250B capability intensification, 50B
-  premium cooldown; 875B unique plus 125B controlled replay; 90B embedded freshness; no generated
+  premium cooldown; 950B unique plus 50B premium replay; 90B embedded freshness; no generated
   data in Phase C. The historical Azure/300B cost table in §6 is not a launch estimate.
 - Per-pass LoRA/gate on the shared looped attention (Zamba2 finding) — implement as config flag; A/B.
 - Continuation estimator inside the locked per-pass halting architecture: cumulative hazard vs

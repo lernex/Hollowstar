@@ -10,15 +10,15 @@ The pipeline only needs the environment facts below.
 - Acquisition root: `/lus/lustre1/vollmerc/metis-1.6`.
 - Python: `/usr/bin/python3.11`.
 - GNU Screen, Apptainer, `lfs`, Hugging Face/GitHub/Common Crawl HTTPS access: available.
-- A `0/0` quota report is ambiguous; confirm at least 25TB usable capacity before launch. The
-  launcher also checks filesystem free space and refuses to start below that floor.
+- A `0/0` quota report is ambiguous; confirm at least 3TB free for acquisition (5TB recommended).
+  The launcher checks filesystem free space and refuses to start below the configured floor.
 - The repository uses the user's Hugging Face read token. Never send the token by email or commit it.
 - The token-owning account must accept the HLE and GPQA gates in addition to the NVIDIA dataset
   gates, because those evaluation-only records are required for fail-closed decontamination.
 - First-run bootstrap also needs HTTPS access to PyPI package files, and the account owner needs
   read access to the private `lernex/Metis` GitHub repository.
 
-After cloning the release branch, the account owner runs exactly:
+After cloning `main`, the account owner runs exactly:
 
 ```bash
 ./ops/start-acquisition.sh \

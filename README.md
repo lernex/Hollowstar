@@ -21,7 +21,7 @@ source of truth is [`manifests/metis-1.6.yaml`](manifests/metis-1.6.yaml).
 Split login2/Rhea/Portage operator interface:
 
 ```bash
-git clone --branch codex/metis16-data-acquisition git@github.com:lernex/Metis.git
+git clone git@github.com:lernex/Metis.git
 cd Metis
 ./ops/start-acquisition.sh \
   --lustre-root /lus/lustre1/vollmerc/metis-1.6 \

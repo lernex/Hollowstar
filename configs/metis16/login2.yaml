@@ -31,7 +31,7 @@ acquisition:
   common_crawl:
     range_workers: 4
     shard_count: 128
-    keep_index_files: true
+    keep_index_files: false
     # Retryable shortfalls double the deterministic per-partition sample in
     # the same Screen run. Round 8 is the fail-closed upper bound.
     maximum_selection_round: 8
@@ -54,11 +54,12 @@ storage:
   # Production acquisition must not interpret that as unlimited implicitly.
   require_explicit_quota_acknowledgement: true
   quota_unknown_acknowledgement: ${METIS_LUSTRE_QUOTA_ACKNOWLEDGEMENT:-}
-  minimum_free_tb: 25
+  minimum_free_tb: 3
   minimum_free_inodes: 100000
-  recommended_free_tb: 40
-  safety_free_tb: 5
-  raw_retention: until_release_verified
+  recommended_free_tb: 5
+  safety_free_tb: 0.5
+  raw_retention: until_normalized_successor_hash_verified
+  intermediate_retention: delete_after_successor_hash_verified
   normalized_format: jsonl.zst
   final_token_dtype: uint16
   final_shard_tokens: 1000000000
@@ -107,4 +108,4 @@ gates:
   require_clean_repository: true
   require_final_tokenizer_counts: true
   maximum_generated_share: 0.15
-  minimum_unique_tokens: 875000000000
+  minimum_unique_tokens: 950000000000

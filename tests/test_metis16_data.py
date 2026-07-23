@@ -59,6 +59,16 @@ class ManifestTests(unittest.TestCase):
         self.assertTrue(result.ok, result.errors)
         manifest = result.manifest
         self.assertEqual(manifest["schedule"]["target_tokens"], 1_000_000_000_000)
+        self.assertEqual(manifest["schedule"]["unique_target_tokens"], 950_000_000_000)
+        self.assertEqual(manifest["schedule"]["replay_target_tokens"], 50_000_000_000)
+        self.assertEqual(
+            manifest["schedule"]["phases"]["phase_b"]["unique_tokens"],
+            250_000_000_000,
+        )
+        self.assertEqual(
+            manifest["schedule"]["phases"]["phase_b"]["replay_tokens"],
+            0,
+        )
         self.assertEqual(manifest["freshness_layer"]["target_tokens"], 90_000_000_000)
         self.assertEqual(manifest["tokenizer"]["vocabulary_size_including_special_tokens"], 65_536)
         source_ids = [source["id"] for source in manifest["sources"]]
@@ -547,6 +557,82 @@ class AcquisitionTruthTests(unittest.TestCase):
             stages.index("minhash_priority_verify"),
             stages.index("minhash_filter"),
         )
+        self.assertEqual(stages[stages.index("normalize") + 1], "cleanup_raw")
+        self.assertEqual(stages[stages.index("exact_filter") + 1], "cleanup_exact")
+        self.assertEqual(stages[stages.index("span_filter") + 1], "cleanup_span")
+        self.assertEqual(stages[stages.index("minhash_filter") + 1], "cleanup_minhash")
+        self.assertEqual(stages[stages.index("code_filter") + 1], "cleanup_code")
+        self.assertEqual(stages[stages.index("decontam_filter") + 1], "cleanup_decontam")
+        self.assertEqual(
+            stages[stages.index("final_hash_filter") + 1],
+            "cleanup_final_hash",
+        )
+
+    def test_verified_cleanup_hashes_successor_before_retiring_predecessor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = StateStore(root / "state")
+            state.write("build.inputs.json", payload={"input_count": 1})
+            state.complete(
+                "normalize",
+                "task-000000",
+                {"execution_contract_sha256": "contract"},
+            )
+            normalized = root / "normalized"
+            normalized.mkdir()
+            (normalized / "task-000000.jsonl").write_text(
+                '{"text":"verified successor"}\n',
+                encoding="utf-8",
+            )
+            raw = root / "raw"
+            raw.mkdir()
+            (raw / "candidate.jsonl").write_text(
+                '{"text":"raw predecessor"}\n',
+                encoding="utf-8",
+            )
+            cache = root / "cache" / "huggingface"
+            cache.mkdir(parents=True)
+            (cache / "blob").write_bytes(b"cached")
+            profile = {
+                "storage": {
+                    "lustre_root": str(root),
+                    "directories": {
+                        "raw": "raw",
+                        "normalized": "normalized",
+                        "eligible": "eligible",
+                        "dedup": "dedup",
+                        "contamination": "contamination",
+                        "cache": "cache",
+                        "state": "state",
+                    },
+                },
+                "scheduler": {
+                    "exact_dedup": {"find_tasks": 1},
+                    "repeated_span": {"finder_tasks": 1},
+                    "minhash": {"num_buckets": 1},
+                    "minhash_priority": {"bucket_count": 1},
+                    "code_structural": {"finder_tasks": 1},
+                    "final_hash": {"finder_tasks": 1},
+                },
+            }
+            with mock.patch(
+                "metis_data.stage_runner._stage_execution_contract",
+                return_value="contract",
+            ):
+                receipt = stage_runner._cleanup_filter_intermediate(
+                    profile,
+                    "cleanup_raw",
+                )
+            self.assertFalse(raw.exists())
+            self.assertFalse(cache.exists())
+            self.assertTrue(normalized.exists())
+            self.assertEqual(receipt["content"]["files"], 1)
+            self.assertFalse(receipt["content"]["retained"])
+            stage_runner._validate_content_receipt(
+                profile,
+                receipt["content"],
+                require_live_content=True,
+            )
 
     def test_slurm_wrapper_adds_array_id_to_exported_offset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

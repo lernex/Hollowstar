@@ -284,7 +284,7 @@ def build_selection(
             # Replay is allowed to draw only from token spans that were
             # actually emitted as unique data. Persisting the entire source
             # document here could otherwise turn an unselected tail into
-            # "replay" and overstate the 875B unique-token contract.
+            # "replay" and overstate the 950B unique-token contract.
             replay_record = dict(record)
             replay_record["token_count"] = consumed
             replay_pool.write(

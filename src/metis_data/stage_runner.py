@@ -385,6 +385,106 @@ def _write_directory_content_receipt(
     }
 
 
+def _validate_content_receipt(
+    profile: dict[str, Any],
+    content: dict[str, Any],
+    *,
+    require_live_content: bool,
+) -> None:
+    """Validate a stage-content manifest, even after its files were retired."""
+
+    lustre_root = Path(profile["storage"]["lustre_root"]).resolve()
+    source_root = Path(str(content.get("root", ""))).resolve()
+    manifest_path = Path(str(content.get("manifest", ""))).resolve()
+    for path in (source_root, manifest_path):
+        try:
+            path.relative_to(lustre_root)
+        except ValueError as exc:
+            raise RuntimeError(f"Verified stage artifact escapes Lustre root: {path}") from exc
+    if (
+        not manifest_path.is_file()
+        or sha256_file(manifest_path) != content.get("manifest_sha256")
+    ):
+        raise RuntimeError(f"Verified stage manifest changed: {manifest_path}")
+    rows = [
+        json.loads(line)
+        for line in manifest_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    tree = hashlib.sha256()
+    total_bytes = 0
+    for row in rows:
+        relative = str(row.get("path", ""))
+        size = int(row.get("size", -1))
+        digest = str(row.get("sha256", ""))
+        if not relative or size < 0 or len(digest) != 64:
+            raise RuntimeError(f"Verified stage manifest has an invalid row: {row}")
+        tree.update(relative.encode("utf-8"))
+        tree.update(b"\0")
+        tree.update(str(size).encode("ascii"))
+        tree.update(b"\0")
+        tree.update(digest.encode("ascii"))
+        tree.update(b"\n")
+        total_bytes += size
+    if (
+        len(rows) != int(content.get("files", -1))
+        or total_bytes != int(content.get("bytes", -1))
+        or tree.hexdigest() != content.get("tree_sha256")
+    ):
+        raise RuntimeError(f"Verified stage aggregate changed for {source_root}")
+    if not require_live_content:
+        return
+    current_files = sorted(
+        path
+        for path in source_root.rglob("*")
+        if path.is_file()
+        and not path.name.endswith(".incomplete")
+        and ".incomplete" not in path.parts
+    )
+    if [str(path.relative_to(source_root)) for path in current_files] != [
+        str(row["path"]) for row in rows
+    ]:
+        raise RuntimeError(f"Verified stage file inventory changed for {source_root}")
+    for row, path in zip(rows, current_files):
+        if (
+            path.stat().st_size != int(row["size"])
+            or sha256_file(path) != row["sha256"]
+        ):
+            raise RuntimeError(f"Verified stage artifact changed: {path}")
+
+
+def _verified_content_for_filter_chain(
+    profile: dict[str, Any],
+    state: StateStore,
+    name: str,
+    output: Path,
+    destination: Path,
+) -> dict[str, Any]:
+    cleanup = state.read("cleanup", f"{name}.json")
+    if not cleanup:
+        content = _write_directory_content_receipt(output, destination)
+        content["retained"] = True
+        return content
+    unsigned = {key: value for key, value in cleanup.items() if key != "cleanup_sha256"}
+    if (
+        cleanup.get("schema") != "metis.verified-cleanup/v1"
+        or cleanup.get("name") != name
+        or cleanup.get("cleanup_sha256") != _json_sha256(unsigned)
+    ):
+        raise RuntimeError(f"Cleanup receipt is corrupt for {name}")
+    content = dict(cleanup.get("content") or {})
+    _validate_content_receipt(profile, content, require_live_content=False)
+    for deletion in cleanup.get("deletions", []):
+        path = Path(str(deletion.get("path", ""))).resolve()
+        try:
+            path.relative_to(Path(profile["storage"]["lustre_root"]).resolve())
+        except ValueError as exc:
+            raise RuntimeError(f"Cleanup path escapes Lustre root: {path}") from exc
+        if path.exists():
+            raise RuntimeError(f"Cleanup receipt says retired path still exists: {path}")
+    return content
+
+
 def _contamination_input_receipt(contamination: Path) -> dict[str, Any]:
     index = contamination / "index.json"
     holdouts = contamination / "holdouts.jsonl"
@@ -499,8 +599,12 @@ def _write_filter_chain_receipt(
                     )
                     for stage, count in completions
                 ],
-                "content": _write_directory_content_receipt(
-                    output, content_root / f"{name}.jsonl"
+                "content": _verified_content_for_filter_chain(
+                    profile,
+                    state,
+                    name,
+                    output,
+                    content_root / f"{name}.jsonl",
                 ),
             }
         )
@@ -532,63 +636,11 @@ def _validate_filter_chain_artifacts(
     lustre_root = Path(profile["storage"]["lustre_root"]).resolve()
     for stage in payload.get("stages", []):
         content = stage.get("content", {})
-        source_root = Path(str(content.get("root", ""))).resolve()
-        manifest_path = Path(str(content.get("manifest", ""))).resolve()
-        for path in (source_root, manifest_path):
-            try:
-                path.relative_to(lustre_root)
-            except ValueError as exc:
-                raise RuntimeError(
-                    f"Filter-chain artifact escapes Lustre root: {path}"
-                ) from exc
-        if (
-            not manifest_path.is_file()
-            or sha256_file(manifest_path) != content.get("manifest_sha256")
-        ):
-            raise RuntimeError(
-                f"Filter-chain content manifest changed: {manifest_path}"
-            )
-        rows = [
-            json.loads(line)
-            for line in manifest_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        current_files = sorted(
-            path
-            for path in source_root.rglob("*")
-            if path.is_file()
-            and not path.name.endswith(".incomplete")
-            and ".incomplete" not in path.parts
+        _validate_content_receipt(
+            profile,
+            content,
+            require_live_content=bool(content.get("retained", True)),
         )
-        if [str(path.relative_to(source_root)) for path in current_files] != [
-            str(row.get("path", "")) for row in rows
-        ]:
-            raise RuntimeError(
-                f"Filter-chain file inventory changed for stage {stage.get('name')}"
-            )
-        tree = hashlib.sha256()
-        total_bytes = 0
-        for row, path in zip(rows, current_files):
-            size = path.stat().st_size
-            digest = sha256_file(path)
-            if size != int(row.get("size", -1)) or digest != row.get("sha256"):
-                raise RuntimeError(f"Filter-chain artifact changed: {path}")
-            relative = str(path.relative_to(source_root))
-            tree.update(relative.encode("utf-8"))
-            tree.update(b"\0")
-            tree.update(str(size).encode("ascii"))
-            tree.update(b"\0")
-            tree.update(digest.encode("ascii"))
-            tree.update(b"\n")
-            total_bytes += size
-        if (
-            len(rows) != int(content.get("files", -1))
-            or total_bytes != int(content.get("bytes", -1))
-            or tree.hexdigest() != content.get("tree_sha256")
-        ):
-            raise RuntimeError(
-                f"Filter-chain aggregate changed for stage {stage.get('name')}"
-            )
     for record in payload.get("contamination_inputs", {}).get("artifacts", []):
         path = Path(str(record.get("path", ""))).resolve()
         try:
@@ -603,6 +655,461 @@ def _validate_filter_chain_artifacts(
             or sha256_file(path) != record.get("sha256")
         ):
             raise RuntimeError(f"Contamination artifact changed: {path}")
+
+
+def _safe_retire_path(root: Path, path: Path) -> dict[str, Any]:
+    root = root.resolve()
+    path = path.resolve()
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(f"Refusing to retire path outside Lustre root: {path}") from exc
+    if not relative.parts:
+        raise RuntimeError("Refusing to retire the Lustre root")
+    existed = path.exists()
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+    if path.exists():
+        raise RuntimeError(f"Verified intermediate could not be retired: {path}")
+    return {"path": str(path), "relative_path": str(relative), "existed": existed}
+
+
+def _cleanup_filter_intermediate(
+    profile: dict[str, Any],
+    cleanup_stage: str,
+) -> dict[str, Any]:
+    """Hash a successor corpus, then retire only its verified predecessor."""
+
+    root, state = _paths(profile)
+    directories = profile["storage"]["directories"]
+    eligible = root / directories["eligible"]
+    dedup = root / directories["dedup"]
+    total_tasks = build_input_count(state)
+    exact_finders = int(profile["scheduler"]["exact_dedup"]["find_tasks"])
+    span_finders = int(profile["scheduler"]["repeated_span"]["finder_tasks"])
+    minhash_buckets = int(profile["scheduler"]["minhash"]["num_buckets"])
+    minhash_priority_buckets = int(
+        profile["scheduler"].get("minhash_priority", {}).get("bucket_count", 256)
+    )
+    code_finders = int(profile["scheduler"]["code_structural"]["finder_tasks"])
+    final_finders = int(profile["scheduler"]["final_hash"]["finder_tasks"])
+    cache = root / directories["cache"]
+    specs: dict[str, dict[str, Any]] = {
+        "cleanup_raw": {
+            "name": "normalize",
+            "output": root / directories["normalized"],
+            "completions": [("normalize", total_tasks)],
+            "delete": [
+                root / directories["raw"],
+                cache / "huggingface",
+                cache / "common-crawl",
+                cache / "tmp" / "materializers",
+            ],
+        },
+        "cleanup_exact": {
+            "name": "exact_sha256",
+            "output": eligible / "exact",
+            "completions": [
+                ("exact_signature", total_tasks),
+                ("exact_find", exact_finders),
+                ("exact_filter", total_tasks),
+            ],
+            "delete": [root / directories["normalized"], dedup / "exact"],
+        },
+        "cleanup_span": {
+            "name": "repeated_span",
+            "output": eligible / "repeated-span-deduped",
+            "completions": [
+                ("span_prefilter_signature", total_tasks),
+                ("span_prefilter_find", span_finders),
+                ("span_signature", total_tasks),
+                ("span_find", span_finders),
+                ("span_filter", total_tasks),
+            ],
+            "delete": [eligible / "exact", dedup / "repeated-span"],
+        },
+        "cleanup_minhash": {
+            "name": "minhash",
+            "output": eligible / "near-deduped",
+            "completions": [
+                ("minhash_signature", total_tasks),
+                ("minhash_buckets", minhash_buckets),
+                ("minhash_components", 1),
+                ("minhash_priority_candidates", total_tasks),
+                ("minhash_priority_resolve", minhash_priority_buckets),
+                ("minhash_priority_finalize", total_tasks),
+                ("minhash_priority_verify", 1),
+                ("minhash_filter", total_tasks),
+            ],
+            "delete": [eligible / "repeated-span-deduped", dedup / "minhash"],
+        },
+        "cleanup_code": {
+            "name": "code_structural",
+            "output": eligible / "code-structural-deduped",
+            "completions": [
+                ("code_signature", total_tasks),
+                ("code_find", code_finders),
+                ("code_filter", total_tasks),
+            ],
+            "delete": [eligible / "near-deduped", dedup / "code-structural"],
+        },
+        "cleanup_decontam": {
+            "name": "decontamination",
+            "output": eligible / "decontaminated",
+            "completions": [("decontam_index", 1), ("decontam_filter", total_tasks)],
+            "delete": [
+                eligible / "code-structural-deduped",
+                root / directories["contamination"] / "quarantine",
+            ],
+        },
+        "cleanup_final_hash": {
+            "name": "final_sha256",
+            "output": eligible / "final",
+            "completions": [
+                ("final_hash_signature", total_tasks),
+                ("final_hash_find", final_finders),
+                ("final_hash_filter", total_tasks),
+            ],
+            "delete": [eligible / "decontaminated", dedup / "final-sha256"],
+        },
+    }
+    try:
+        spec = specs[cleanup_stage]
+    except KeyError as exc:
+        raise RuntimeError(f"Unknown verified cleanup stage: {cleanup_stage}") from exc
+    name = str(spec["name"])
+    final = state.read("cleanup", f"{name}.json")
+    if final:
+        unsigned = {key: value for key, value in final.items() if key != "cleanup_sha256"}
+        if (
+            final.get("schema") != "metis.verified-cleanup/v1"
+            or final.get("cleanup_sha256") != _json_sha256(unsigned)
+        ):
+            raise RuntimeError(f"Existing cleanup receipt is corrupt for {name}")
+        _validate_content_receipt(
+            profile, dict(final["content"]), require_live_content=False
+        )
+        for deletion in final.get("deletions", []):
+            if Path(str(deletion["path"])).exists():
+                raise RuntimeError(
+                    f"Retired intermediate unexpectedly reappeared: {deletion['path']}"
+                )
+        return final
+    completion_receipts = [
+        _completion_inventory(
+            state,
+            stage,
+            count,
+            expected_execution_contract_sha256=_stage_execution_contract(
+                profile, state, stage
+            ),
+        )
+        for stage, count in spec["completions"]
+    ]
+    pending = state.read("cleanup", "pending", f"{name}.json")
+    if pending:
+        unsigned_pending = {
+            key: value for key, value in pending.items() if key != "pending_sha256"
+        }
+        if (
+            pending.get("schema") != "metis.verified-cleanup-pending/v1"
+            or pending.get("pending_sha256") != _json_sha256(unsigned_pending)
+            or pending.get("completions") != completion_receipts
+        ):
+            raise RuntimeError(f"Pending cleanup receipt is corrupt for {name}")
+        content = dict(pending["content"])
+        _validate_content_receipt(profile, content, require_live_content=False)
+    else:
+        content = _write_directory_content_receipt(
+            Path(spec["output"]),
+            state.path("verified-content", f"{name}.jsonl"),
+        )
+        pending = {
+            "schema": "metis.verified-cleanup-pending/v1",
+            "name": name,
+            "cleanup_stage": cleanup_stage,
+            "content": content,
+            "completions": completion_receipts,
+            "created_at": utc_now(),
+        }
+        pending["pending_sha256"] = _json_sha256(pending)
+        state.write("cleanup", "pending", f"{name}.json", payload=pending)
+        _validate_content_receipt(profile, content, require_live_content=True)
+    deletions = [_safe_retire_path(root, Path(path)) for path in spec["delete"]]
+    content["retained"] = False
+    payload: dict[str, Any] = {
+        "schema": "metis.verified-cleanup/v1",
+        "name": name,
+        "cleanup_stage": cleanup_stage,
+        "content": content,
+        "completions": completion_receipts,
+        "deletions": deletions,
+        "completed_at": utc_now(),
+    }
+    payload["cleanup_sha256"] = _json_sha256(payload)
+    state.write("cleanup", f"{name}.json", payload=payload)
+    state.path("cleanup", "pending", f"{name}.json").unlink(missing_ok=True)
+    state.complete(cleanup_stage, "task-000000", payload)
+    return payload
+
+
+def _cleanup_tokenizer_sample(profile: dict[str, Any]) -> dict[str, Any]:
+    root, state = _paths(profile)
+    existing = state.read("cleanup", "tokenizer_sample.json")
+    if existing:
+        unsigned = {key: value for key, value in existing.items() if key != "cleanup_sha256"}
+        if existing.get("cleanup_sha256") != _json_sha256(unsigned):
+            raise RuntimeError("Tokenizer-sample cleanup receipt is corrupt")
+        for deletion in existing.get("deletions", []):
+            if Path(str(deletion["path"])).exists():
+                raise RuntimeError("Retired tokenizer sample unexpectedly reappeared")
+        return existing
+    contract = _production_tokenizer_contract(profile)
+    pending = state.read("cleanup", "pending", "tokenizer_sample.json")
+    if pending:
+        unsigned_pending = {
+            key: value for key, value in pending.items() if key != "pending_sha256"
+        }
+        if (
+            pending.get("pending_sha256") != _json_sha256(unsigned_pending)
+            or pending.get("tokenizer_contract") != contract
+        ):
+            raise RuntimeError("Pending tokenizer-sample cleanup receipt is corrupt")
+    else:
+        pending = {
+            "schema": "metis.verified-cleanup-pending/v1",
+            "name": "tokenizer_sample",
+            "tokenizer_contract": contract,
+            "created_at": utc_now(),
+        }
+        pending["pending_sha256"] = _json_sha256(pending)
+        state.write(
+            "cleanup", "pending", "tokenizer_sample.json", payload=pending
+        )
+    sample = root / profile["storage"]["directories"]["tokenizer"] / "sample.jsonl"
+    deletion = _safe_retire_path(root, sample)
+    payload: dict[str, Any] = {
+        "schema": "metis.verified-cleanup/v1",
+        "name": "tokenizer_sample",
+        "tokenizer_contract": contract,
+        "deletions": [deletion],
+        "completed_at": utc_now(),
+    }
+    payload["cleanup_sha256"] = _json_sha256(payload)
+    state.write("cleanup", "tokenizer_sample.json", payload=payload)
+    state.path("cleanup", "pending", "tokenizer_sample.json").unlink(missing_ok=True)
+    state.complete("cleanup_tokenizer_sample", "task-000000", payload)
+    return payload
+
+
+def _cleanup_selection_inputs(profile: dict[str, Any]) -> dict[str, Any]:
+    root, state = _paths(profile)
+    directories = profile["storage"]["directories"]
+    selected = root / directories["selected"]
+    selection_path = selected / "SELECTION.json"
+    existing = state.read("cleanup", "selection_inputs.json")
+    if existing:
+        unsigned = {key: value for key, value in existing.items() if key != "cleanup_sha256"}
+        if (
+            existing.get("cleanup_sha256") != _json_sha256(unsigned)
+            or not selection_path.is_file()
+            or sha256_file(selection_path) != existing.get("selection_sha256")
+        ):
+            raise RuntimeError("Selection-input cleanup receipt is corrupt or stale")
+        _validate_content_receipt(
+            profile, dict(existing["content"]), require_live_content=True
+        )
+        for deletion in existing.get("deletions", []):
+            if Path(str(deletion["path"])).exists():
+                raise RuntimeError("Retired selection input unexpectedly reappeared")
+        return existing
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    pending = state.read("cleanup", "pending", "selection_inputs.json")
+    if pending:
+        unsigned_pending = {
+            key: value for key, value in pending.items() if key != "pending_sha256"
+        }
+        if (
+            pending.get("pending_sha256") != _json_sha256(unsigned_pending)
+            or pending.get("selection_sha256") != sha256_file(selection_path)
+        ):
+            raise RuntimeError("Pending selection-input cleanup receipt is corrupt")
+        content = dict(pending["content"])
+        _validate_content_receipt(profile, content, require_live_content=True)
+    else:
+        _validate_selection_artifacts(
+            profile,
+            state,
+            selection,
+            deep_token_count_validation=True,
+        )
+        content = _write_directory_content_receipt(
+            selected,
+            state.path("verified-content", "selection.jsonl"),
+        )
+        _validate_content_receipt(profile, content, require_live_content=True)
+        pending = {
+            "schema": "metis.verified-cleanup-pending/v1",
+            "name": "selection_inputs",
+            "selection_sha256": sha256_file(selection_path),
+            "content": content,
+            "created_at": utc_now(),
+        }
+        pending["pending_sha256"] = _json_sha256(pending)
+        state.write(
+            "cleanup", "pending", "selection_inputs.json", payload=pending
+        )
+    deletions = [
+        _safe_retire_path(root, root / directories["token_counts"]),
+        _safe_retire_path(root, root / directories["eligible"] / "final"),
+    ]
+    payload: dict[str, Any] = {
+        "schema": "metis.verified-cleanup/v1",
+        "name": "selection_inputs",
+        "selection_sha256": sha256_file(selection_path),
+        "content": content,
+        "deletions": deletions,
+        "completed_at": utc_now(),
+    }
+    payload["cleanup_sha256"] = _json_sha256(payload)
+    state.write("cleanup", "selection_inputs.json", payload=payload)
+    state.path("cleanup", "pending", "selection_inputs.json").unlink(
+        missing_ok=True
+    )
+    state.complete("cleanup_selection_inputs", "task-000000", payload)
+    return payload
+
+
+def _cleanup_pack_inputs(profile: dict[str, Any]) -> dict[str, Any]:
+    root, state = _paths(profile)
+    existing = state.read("cleanup", "pack_inputs.json")
+    if existing:
+        unsigned = {key: value for key, value in existing.items() if key != "cleanup_sha256"}
+        if existing.get("cleanup_sha256") != _json_sha256(unsigned):
+            raise RuntimeError("Pack-input cleanup receipt is corrupt")
+        for deletion in existing.get("deletions", []):
+            if Path(str(deletion["path"])).exists():
+                raise RuntimeError("Retired pack input unexpectedly reappeared")
+        return existing
+    verification = state.read("VERIFICATION.json")
+    if not verification:
+        raise RuntimeError("Pack inputs cannot be retired before VERIFICATION.json exists")
+    unsigned = {key: value for key, value in verification.items() if key != "verification_sha256"}
+    if (
+        verification.get("ok") is not True
+        or verification.get("verification_sha256") != _json_sha256(unsigned)
+    ):
+        raise RuntimeError("Pack inputs cannot be retired against an invalid verification")
+    pending = state.read("cleanup", "pending", "pack_inputs.json")
+    if pending:
+        unsigned_pending = {
+            key: value for key, value in pending.items() if key != "pending_sha256"
+        }
+        if (
+            pending.get("pending_sha256") != _json_sha256(unsigned_pending)
+            or pending.get("verification_sha256")
+            != verification["verification_sha256"]
+        ):
+            raise RuntimeError("Pending pack-input cleanup receipt is corrupt")
+    else:
+        pending = {
+            "schema": "metis.verified-cleanup-pending/v1",
+            "name": "pack_inputs",
+            "verification_sha256": verification["verification_sha256"],
+            "created_at": utc_now(),
+        }
+        pending["pending_sha256"] = _json_sha256(pending)
+        state.write("cleanup", "pending", "pack_inputs.json", payload=pending)
+    selected = root / profile["storage"]["directories"]["selected"]
+    deletions = [
+        _safe_retire_path(root, selected / "schedule"),
+        _safe_retire_path(root, selected / "replay-pool"),
+    ]
+    payload: dict[str, Any] = {
+        "schema": "metis.verified-cleanup/v1",
+        "name": "pack_inputs",
+        "verification_sha256": verification["verification_sha256"],
+        "deletions": deletions,
+        "completed_at": utc_now(),
+    }
+    payload["cleanup_sha256"] = _json_sha256(payload)
+    state.write("cleanup", "pack_inputs.json", payload=payload)
+    state.path("cleanup", "pending", "pack_inputs.json").unlink(missing_ok=True)
+    state.complete("cleanup_pack_inputs", "task-000000", payload)
+    return payload
+
+
+def _cleanup_release_workspace(profile: dict[str, Any]) -> dict[str, Any]:
+    root, state = _paths(profile)
+    directories = profile["storage"]["directories"]
+    release_root = root / directories["release"]
+    from .training_contract import validate_training_release
+
+    validated = validate_training_release(
+        release_root,
+        repository_root() / "configs" / "metis16" / "pretraining.yaml",
+    )
+    existing = state.read("cleanup", "release_workspace.json")
+    if existing:
+        unsigned = {key: value for key, value in existing.items() if key != "cleanup_sha256"}
+        if (
+            existing.get("cleanup_sha256") != _json_sha256(unsigned)
+            or existing.get("release") != validated
+        ):
+            raise RuntimeError("Release-workspace cleanup receipt is corrupt or stale")
+        for deletion in existing.get("deletions", []):
+            if Path(str(deletion["path"])).exists():
+                raise RuntimeError("Retired release workspace unexpectedly reappeared")
+        return existing
+    pending = state.read("cleanup", "pending", "release_workspace.json")
+    if pending:
+        unsigned_pending = {
+            key: value for key, value in pending.items() if key != "pending_sha256"
+        }
+        if (
+            pending.get("pending_sha256") != _json_sha256(unsigned_pending)
+            or pending.get("release") != validated
+        ):
+            raise RuntimeError("Pending release-workspace cleanup receipt is corrupt")
+    else:
+        pending = {
+            "schema": "metis.verified-cleanup-pending/v1",
+            "name": "release_workspace",
+            "release": validated,
+            "created_at": utc_now(),
+        }
+        pending["pending_sha256"] = _json_sha256(pending)
+        state.write(
+            "cleanup", "pending", "release_workspace.json", payload=pending
+        )
+    candidates = [
+        root / directories[name]
+        for name in ("raw", "normalized", "eligible", "dedup", "token_counts", "selected")
+    ] + [
+        root / directories["tokenizer"],
+        root / directories["cache"],
+    ]
+    deletions = [
+        _safe_retire_path(root, path)
+        for path in candidates
+        if path.resolve() != release_root.resolve()
+    ]
+    payload: dict[str, Any] = {
+        "schema": "metis.verified-cleanup/v1",
+        "name": "release_workspace",
+        "release": validated,
+        "deletions": deletions,
+        "completed_at": utc_now(),
+    }
+    payload["cleanup_sha256"] = _json_sha256(payload)
+    state.write("cleanup", "release_workspace.json", payload=payload)
+    state.path("cleanup", "pending", "release_workspace.json").unlink(
+        missing_ok=True
+    )
+    state.complete("cleanup_release_workspace", "task-000000", payload)
+    return payload
 
 
 def _normalize_task(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
@@ -1988,10 +2495,10 @@ def _require_metis16_schedule_contract(manifest: dict[str, Any]) -> None:
     if int(schedule.get("target_tokens", -1)) != 1_000_000_000_000:
         raise RuntimeError("Metis-1.6 schedule is not exactly 1T")
     if (
-        int(schedule.get("unique_target_tokens", -1)) != 875_000_000_000
-        or int(schedule.get("replay_target_tokens", -1)) != 125_000_000_000
+        int(schedule.get("unique_target_tokens", -1)) != 950_000_000_000
+        or int(schedule.get("replay_target_tokens", -1)) != 50_000_000_000
     ):
-        raise RuntimeError("Metis-1.6 schedule is not exactly 875B unique/125B replay")
+        raise RuntimeError("Metis-1.6 schedule is not exactly 950B unique/50B replay")
     unique_sum = 0
     replay_sum = 0
     for phase, target in expected_targets.items():
@@ -2008,8 +2515,8 @@ def _require_metis16_schedule_contract(manifest: dict[str, Any]) -> None:
             raise RuntimeError(f"Metis-1.6 {phase} schedule contract is invalid")
         unique_sum += unique
         replay_sum += replay
-    if unique_sum != 875_000_000_000 or replay_sum != 125_000_000_000:
-        raise RuntimeError("Per-phase unique/replay sums do not equal 875B/125B")
+    if unique_sum != 950_000_000_000 or replay_sum != 50_000_000_000:
+        raise RuntimeError("Per-phase unique/replay sums do not equal 950B/50B")
     for source in manifest.get("sources", []):
         if any(
             int(source.get("phase_tokens", {}).get(phase, 0)) < 0
@@ -2041,11 +2548,11 @@ def _validate_selection_contract(
     if (
         unique_tokens != declared_unique
         or replay_tokens != declared_replay
-        or declared_unique != 875_000_000_000
-        or declared_replay != 125_000_000_000
+        or declared_unique != 950_000_000_000
+        or declared_replay != 50_000_000_000
     ):
         raise RuntimeError(
-            "Manifest/derived unique-replay contract is not exactly 875B/125B"
+            "Manifest/derived unique-replay contract is not exactly 950B/50B"
         )
     if unique_tokens + replay_tokens != target_tokens:
         raise RuntimeError("Unique plus replay selection does not equal the 1T exposure schedule")
@@ -2185,7 +2692,9 @@ def _verify(profile: dict[str, Any]) -> dict[str, Any]:
         profile,
         state,
         selection,
-        deep_token_count_validation=True,
+        deep_token_count_validation=not bool(
+            state.read("cleanup", "selection_inputs.json")
+        ),
     )
     selection_contract = _validate_selection_contract(profile, manifest, selection)
     selection_sha = sha256_file(selection_path)
@@ -2424,7 +2933,8 @@ def _release(profile: dict[str, Any]) -> dict[str, Any]:
         profile,
         state,
         selection_payload,
-        deep_token_count_validation=True,
+        deep_token_count_validation=False,
+        validate_all_schedule=not bool(state.read("cleanup", "pack_inputs.json")),
     )
     current_selection_contract = _validate_selection_contract(
         profile,
@@ -2644,6 +3154,16 @@ def run_stage(profile: dict[str, Any], stage: str, task_index: int) -> dict[str,
     if stage == "normalize":
         return _normalize_task(profile, task_index)
     if stage in {
+        "cleanup_raw",
+        "cleanup_exact",
+        "cleanup_span",
+        "cleanup_minhash",
+        "cleanup_code",
+        "cleanup_decontam",
+        "cleanup_final_hash",
+    }:
+        return _cleanup_filter_intermediate(profile, stage)
+    if stage in {
         "exact_signature", "exact_find", "exact_filter", "span_prefilter_signature",
         "span_prefilter_find", "span_signature", "span_find", "span_filter",
         "minhash_signature", "minhash_buckets", "minhash_components",
@@ -2659,16 +3179,24 @@ def run_stage(profile: dict[str, Any], stage: str, task_index: int) -> dict[str,
         return _tokenizer_sample(profile)
     if stage == "tokenizer_train":
         return _tokenizer_train(profile)
+    if stage == "cleanup_tokenizer_sample":
+        return _cleanup_tokenizer_sample(profile)
     if stage == "token_count":
         return _token_count(profile, task_index)
     if stage == "select":
         return _select(profile)
+    if stage == "cleanup_selection_inputs":
+        return _cleanup_selection_inputs(profile)
     if stage == "pack":
         return _pack(profile, task_index)
     if stage == "verify":
         return _verify(profile)
+    if stage == "cleanup_pack_inputs":
+        return _cleanup_pack_inputs(profile)
     if stage == "release":
         return _release(profile)
+    if stage == "cleanup_release_workspace":
+        return _cleanup_release_workspace(profile)
     raise RuntimeError(f"Unknown stage {stage!r}")
 
 

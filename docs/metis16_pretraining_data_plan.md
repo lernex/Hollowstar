@@ -138,9 +138,9 @@ it passes the diversity-tail profile and contributes coverage missing from the p
 ### Phase B — 700B to 950B: capability intensification
 
 Phase B shifts toward code, math, science, worked explanations, grounded synthetic material, and
-structured reasoning. It contains **175B unique tokens plus 75B controlled replay**. Replay is
-Hamilton-apportioned across the declared Phase B source targets, uses only already accepted records,
-and never takes a record beyond four total exposures.
+structured reasoning. It contains **250B unique tokens and no replay**. This preserves the full
+knowledge-expansion window through token 950B instead of spending Phase B capacity on repeated
+documents.
 
 ### Phase C — 950B to 1T: premium cooldown
 
@@ -211,15 +211,22 @@ is a planning heuristic, not a quota:
 it excludes the amplification from Git repository objects, WARC/HTML retrieval, extraction,
 Parquet metadata, deduplication indices, sort spill, and temporary copies.
 
-Plan at least **25TB free** before acquisition and prefer **40TB or more** at peak. The final token
-IDs alone occupy about 1.82TiB as uint16. Before every large stage the operator profile reserves a
-5TB safety floor. HPE administrators must provide the correct Lustre path, quota, inode policy, and
+The acquisition-only login2 profile now requires **3TB free** and recommends **5TB**. The Rhea
+build profile requires **8TB** and recommends **12TB**; these are operational gates, not claims that
+the final corpus is that large. Final uint16 token IDs occupy about 1.82TiB, and the complete release
+is expected to remain in the roughly 3–5TB range after indexes, tokenizer artifacts, manifests, and
+reports. HPE administrators must still provide the correct Lustre path, quota, inode policy, and
 striping recommendation for the actual allocation.
 
 Candidate reservoirs are selected by pinned file manifests and deterministic source-specific
 headroom. The pipeline does not mirror all 6.6T Nemotron-CC-v2 tokens, all 24T Essential-Web tokens,
-or complete Common Crawl snapshots. Rejected raw shards may be removed only after provenance,
-hashes, rejection statistics, and the final release have been verified.
+or complete Common Crawl snapshots. Every large successor generation receives a full SHA-256 file
+inventory and aggregate receipt. Only after that receipt and all predecessor-stage completion
+markers reconcile does a dependent cleanup job remove the prior copy and its scratch data. Raw
+candidates are retired after normalized outputs are verified; normalized, exact, span, MinHash,
+code, decontaminated, token-count, and selection intermediates are retired in turn. The final cleanup
+keeps the verified release, provenance/state, logs, and small contamination records rather than every
+historical corpus copy.
 
 Small, bounded Common Pile snapshots marked `take_all` are the exception: their candidate
 multipliers represent the complete published UTF-8 inventory at the planning assumption of four
@@ -251,7 +258,7 @@ training material. Each materializer has a bounded fixture and the acquisition h
 zero unresolved remote plans.
 
 The login2 launch is operationally gated by two live facts the repository cannot manufacture: the
-account owner must have at least 25TB of genuinely available Lustre capacity (40TB preferred), and
+account owner must have at least 3TB free for acquisition (5TB recommended), and
 the exact clean repository commit used for acquisition must be available to clone. Rhea remains a
 separate later gate until its Lustre mount path and Slurm settings are confirmed. Those limitations
 do not require Portage compute nodes or an S3 gateway for acquisition; the confirmed login2 host has
@@ -415,9 +422,9 @@ per-domain fertility. The trillion-token count runs only after this report is ac
 ## Exact selection, packing, and release
 
 Final-token counts are calculated per document with one end-of-document token. Deterministic
-selection fills each source/phase unique quota, builds bounded replay pools, and writes an exact
-phase schedule. No source is allowed to be short; same-category substitution requires a new manifest
-revision rather than an implicit runtime choice.
+selection fills the Phase A and Phase B unique quotas, builds a bounded 50B Phase C premium replay
+pool, and writes an exact phase schedule. No source is allowed to be short; same-category
+substitution requires a new manifest revision rather than an implicit runtime choice.
 
 The schedule is packed into **1,000 shards of exactly 1B token IDs** with a sidecar index recording
 document offsets, source IDs, replay status, and content hashes. The verifier rehashes every shard,
@@ -458,12 +465,12 @@ Acquisition runs in GNU Screen on `login2`, the server that hosts/mounts Lustre;
 Slurm job**. The later normalization, quality, deduplication, decontamination, tokenizer, token
 counting, selection, and packing stages run as Slurm jobs on Rhea against the same immutable
 acquisition. Portage is used later for model training. Secrets stay in the user's shell/credential
-stores, never in Git. Before handoff, commit and push this implementation to the documented release
-branch. The source lock records the exact clean commit, so later branch movement cannot change an
+stores, never in Git. Before handoff, commit and push this implementation to `main`.
+The source lock records the exact clean commit, so later repository movement cannot change an
 acquisition already in progress.
 
 ```bash
-git clone --branch codex/metis16-data-acquisition git@github.com:lernex/Metis.git
+git clone git@github.com:lernex/Metis.git
 cd Metis
 ./ops/start-acquisition.sh \
   --lustre-root /lus/lustre1/vollmerc/metis-1.6 \

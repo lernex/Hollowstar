@@ -26,8 +26,8 @@ tokenizer:
 
 schedule:
   target_tokens: 1000000000000
-  unique_target_tokens: 875000000000
-  replay_target_tokens: 125000000000
+  unique_target_tokens: 950000000000
+  replay_target_tokens: 50000000000
   phases:
     phase_a:
       start_token: 0
@@ -38,8 +38,8 @@ schedule:
     phase_b:
       start_token: 700000000000
       target_tokens: 250000000000
-      unique_tokens: 175000000000
-      replay_tokens: 75000000000
+      unique_tokens: 250000000000
+      replay_tokens: 0
       purpose: capability intensification in code, math, science, and structured reasoning
     phase_c:
       start_token: 950000000000
@@ -119,4 +119,3 @@ source_files:
   - sources/synthetic.yaml
   - sources/reference.yaml
   - sources/multilingual.yaml
-

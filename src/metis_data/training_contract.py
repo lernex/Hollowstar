@@ -203,12 +203,12 @@ def validate_training_release(
         raise RuntimeError("Verification and release provenance hashes disagree")
     selection_contract = verification.get("selection_contract", {})
     if (
-        int(selection_contract.get("unique_tokens", -1)) != 875_000_000_000
-        or int(selection_contract.get("replay_tokens", -1)) != 125_000_000_000
-        or int(verification.get("packed_unique_tokens", -1)) != 875_000_000_000
-        or int(verification.get("packed_replay_tokens", -1)) != 125_000_000_000
+        int(selection_contract.get("unique_tokens", -1)) != 950_000_000_000
+        or int(selection_contract.get("replay_tokens", -1)) != 50_000_000_000
+        or int(verification.get("packed_unique_tokens", -1)) != 950_000_000_000
+        or int(verification.get("packed_replay_tokens", -1)) != 50_000_000_000
     ):
-        raise RuntimeError("Verified release is not exactly 875B unique plus 125B replay")
+        raise RuntimeError("Verified release is not exactly 950B unique plus 50B replay")
 
     released_manifest = validate_manifest(manifest_path).require_valid()
     if (

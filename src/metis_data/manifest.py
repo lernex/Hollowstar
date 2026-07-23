@@ -84,9 +84,9 @@ def validate_manifest(path: str | Path | None = None) -> ValidationResult:
         errors.append(f"phase schedule must be 700B/250B/50B, got {scheduled_by_phase}")
     unique = int(schedule.get("unique_target_tokens", 0))
     replay = int(schedule.get("replay_target_tokens", 0))
-    if (unique, replay) != (875_000_000_000, 125_000_000_000):
+    if (unique, replay) != (950_000_000_000, 50_000_000_000):
         errors.append(
-            "schedule unique/replay targets must be exactly 875B/125B, "
+            "schedule unique/replay targets must be exactly 950B/50B, "
             f"got {unique:,}/{replay:,}"
         )
     if unique + replay != target:

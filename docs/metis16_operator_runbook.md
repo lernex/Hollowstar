@@ -16,7 +16,7 @@ The three environments have deliberately separate responsibilities:
 - `login2` is the permitted acquisition host.
 - GNU Screen, `/usr/bin/python3.11`, Cray Python modules, Apptainer, and the Lustre tools are present.
 - Hugging Face, GitHub, and Common Crawl HTTPS endpoints are reachable without a proxy.
-- A `0/0` default quota report does not prove that 25–40TB has been assigned. Capacity confirmation
+- A `0/0` default quota report does not prove that usable capacity has been assigned. Capacity confirmation
   remains an operator prerequisite.
 - Rhea's scheduler account, partition, QoS policy, array limit, node memory, wall-time limit, and
   view of the Lustre filesystem are not yet known. Its profile therefore fails closed.
@@ -29,7 +29,8 @@ Before the first login2 launch, confirm three remaining account-level prerequisi
 - a read-only GitHub token with repository Metadata access is available, or `gh auth` is already
   configured for the account, so FreshGitHub can reject forks and mirrors fail-closed;
 - `pypi.org`/Python package-file HTTPS is reachable for the first hash-locked runtime install, and
-  at least 25TB of usable Lustre capacity is genuinely assigned despite the ambiguous `0/0` report.
+  at least 3TB free for acquisition (5TB recommended) is genuinely available despite the ambiguous
+  `0/0` report. Rhea later requires 8TB free (12TB recommended) while it builds the release.
 
 Portage's `parry` partition, `MaxArraySize=1001`, 10,000-job limit, five-day wall-time limit, and
 roughly 512,000MB nodes are Portage facts. They are not copied into the Rhea profile.
@@ -39,7 +40,7 @@ roughly 512,000MB nodes are Portage facts. They are not copied into the Rhea pro
 From the account owner's home directory:
 
 ```bash
-git clone --branch codex/metis16-data-acquisition git@github.com:lernex/Metis.git
+git clone git@github.com:lernex/Metis.git
 cd Metis
 ```
 

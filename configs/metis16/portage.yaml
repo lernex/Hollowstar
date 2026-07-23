@@ -18,10 +18,11 @@ storage:
   require_explicit_root: true
   forbidden_roots: ['/', /lus, /lus/lustre1]
   expected_filesystem: lustre
-  minimum_free_tb: 25
-  recommended_free_tb: 40
-  safety_free_tb: 5
-  raw_retention: until_release_verified
+  minimum_free_tb: 4
+  recommended_free_tb: 6
+  safety_free_tb: 1
+  raw_retention: released_shards_only
+  intermediate_retention: release_only
   normalized_format: jsonl.zst
   final_token_dtype: uint16
   final_shard_tokens: 1000000000
@@ -149,4 +150,4 @@ gates:
   license_review_complete: false
   require_final_tokenizer_counts: true
   maximum_generated_share: 0.15
-  minimum_unique_tokens: 875000000000
+  minimum_unique_tokens: 950000000000
