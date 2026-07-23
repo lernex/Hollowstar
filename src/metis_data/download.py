@@ -320,25 +320,64 @@ def _materialize_common_crawl(
             "locked_candidate_tokens": locked_candidate_target,
             "final_opt_out_reserve_multiplier": reserve_multiplier,
         }
-    freshweb_options = freshweb_options_for_item(materialization_item, profile)
     maximum_selection_round = int(common_crawl.get("maximum_selection_round", 8))
     if maximum_selection_round < 0:
         raise ValueError("acquisition.common_crawl.maximum_selection_round must be non-negative")
-    while True:
-        receipt = materialize_freshweb(
-            materialization_item,
-            root=root,
-            cache_root=cache_root,
-            options=freshweb_options,
+    reserve_crawls = [
+        str(crawl)
+        for crawl in materialization_item.get("access", {}).get(
+            "reserve_crawls", []
         )
-        if receipt.get("candidate_target_met") and receipt.get("ready_for_training_build"):
-            break
-        current_round = int(receipt.get("selection_round", 0))
-        next_round = int(receipt.get("next_selection_round", current_round))
-        if (
-            receipt.get("automatic_widening") is not True
-            or next_round <= current_round
-            or next_round > maximum_selection_round
+    ]
+    materialization_tiers: list[tuple[str, dict[str, Any]]] = [
+        ("primary", materialization_item)
+    ]
+    if reserve_crawls:
+        primary_crawls = [
+            str(crawl)
+            for crawl in materialization_item.get("access", {}).get("crawls", [])
+        ]
+        merged_crawls = list(dict.fromkeys([*primary_crawls, *reserve_crawls]))
+        materialization_tiers.append(
+            (
+                "cold_reserve",
+                {
+                    **materialization_item,
+                    "access": {
+                        **materialization_item["access"],
+                        "crawls": merged_crawls,
+                    },
+                },
+            )
+        )
+    receipt: dict[str, Any] = {}
+    activated_tier = "primary"
+    active_materialization_item = materialization_item
+    for tier_name, tier_item in materialization_tiers:
+        activated_tier = tier_name
+        active_materialization_item = tier_item
+        freshweb_options = freshweb_options_for_item(tier_item, profile)
+        while True:
+            receipt = materialize_freshweb(
+                tier_item,
+                root=root,
+                cache_root=cache_root,
+                options=freshweb_options,
+            )
+            if receipt.get("candidate_target_met") and receipt.get(
+                "ready_for_training_build"
+            ):
+                break
+            current_round = int(receipt.get("selection_round", 0))
+            next_round = int(receipt.get("next_selection_round", current_round))
+            if (
+                receipt.get("automatic_widening") is not True
+                or next_round <= current_round
+                or next_round > maximum_selection_round
+            ):
+                break
+        if receipt.get("candidate_target_met") and receipt.get(
+            "ready_for_training_build"
         ):
             break
     if not receipt.get("candidate_target_met") or not receipt.get("ready_for_training_build"):
@@ -351,7 +390,7 @@ def _materialize_common_crawl(
         raise RuntimeError(
             f"Common Crawl route {route!r} for {item['source_id']} did not meet its "
             f"candidate target with license qualification: {qualified_tokens:,} of "
-            f"{int(receipt.get('candidate_token_target', materialization_item['candidate_tokens'])):,} "
+            f"{int(receipt.get('candidate_token_target', active_materialization_item['candidate_tokens'])):,} "
             "estimated tokens"
         )
     if license_required and (
@@ -419,6 +458,10 @@ def _materialize_common_crawl(
         ),
         "materialized": True,
         "ready_for_training_build": True,
+        "replacement_reserve_tier": activated_tier,
+        "reserve_crawls_activated": (
+            reserve_crawls if activated_tier == "cold_reserve" else []
+        ),
     }
 
 

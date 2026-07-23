@@ -26,6 +26,7 @@ import zstandard as zstd
 from .code_dedup import code_hygiene_reason
 from .config import repository_root
 from .manifest import load_manifest
+from .replacement import replacement_chains
 from .repository_license import (
     DEFAULT_REPOSITORY_LICENSE_ALLOWLIST,
     classify_repository_archive,
@@ -1636,7 +1637,12 @@ def _cleanup_committed_repository_spools(
 
 
 def _materialize_repository_index(
-    item: dict[str, Any], *, profile: dict[str, Any], root: Path, source: dict[str, Any]
+    item: dict[str, Any],
+    *,
+    profile: dict[str, Any],
+    root: Path,
+    source: dict[str, Any],
+    manifest: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     output_root = root / "raw" / source["id"] / "materialized"
     cache_root = root / "raw" / source["id"] / "repository-index-cache"
@@ -1935,12 +1941,14 @@ def _materialize_repository_index(
     if not outputs:
         raise MaterializationError(f"{source['id']}: repository-index hydration produced no licensed source files")
     if target_text_bytes and accepted_text_bytes < target_text_bytes:
-        raise MaterializationError(
-            f"{source['id']}: repository-index metadata exhausted at {accepted_text_bytes:,} accepted text bytes "
-            f"(~{int(accepted_text_bytes / bytes_per_token):,} estimated tokens), below the "
-            f"{target_text_bytes:,}-byte / {int(item.get('candidate_tokens', 0)):,}-token candidate target; "
-            "expand the pinned metadata or revise the reviewed byte/token estimator"
-        )
+        chains, _ = replacement_chains(manifest or {"sources": [source]})
+        if not manifest or not chains.get(source["id"]):
+            raise MaterializationError(
+                f"{source['id']}: repository-index metadata exhausted at {accepted_text_bytes:,} accepted text bytes "
+                f"(~{int(accepted_text_bytes / bytes_per_token):,} estimated tokens), below the "
+                f"{target_text_bytes:,}-byte / {int(item.get('candidate_tokens', 0)):,}-token candidate target "
+                "with no compatible reserve"
+            )
     for output_index, output in enumerate(outputs):
         output["candidate_token_estimate"] = (
             int(accepted_text_bytes / bytes_per_token) if output_index == 0 else 0
@@ -1961,5 +1969,11 @@ def run_production_materializer(
     if driver in {"canonical_web", "canonical_http"}:
         return _materialize_canonical_web_http(item, profile=profile, root=root, source=source)
     if driver == "repository_index":
-        return _materialize_repository_index(item, profile=profile, root=root, source=source)
+        return _materialize_repository_index(
+            item,
+            profile=profile,
+            root=root,
+            source=source,
+            manifest=manifest,
+        )
     raise AssertionError(driver)

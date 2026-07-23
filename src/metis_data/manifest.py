@@ -52,6 +52,10 @@ def load_manifest(path: str | Path | None = None) -> dict[str, Any]:
             source["_manifest_file"] = str(source_path)
             sources.append(source)
     manifest["sources"] = sources
+    replacement_path = manifest.get("replacement_policy_file")
+    if replacement_path:
+        replacement_payload = load_yaml((manifest_path.parent / replacement_path).resolve())
+        manifest["replacement_policy"] = replacement_payload
     manifest["_path"] = str(manifest_path)
     return manifest
 
@@ -208,6 +212,39 @@ def validate_manifest(path: str | Path | None = None) -> ValidationResult:
     if target and generated_tokens / target > 0.12:
         warnings.append(f"explicitly generated/transformed share is {generated_tokens / target:.1%}; review before release")
 
+    from .replacement import (
+        replacement_resilience_report,
+        validate_replacement_policy,
+    )
+    from .selection import replay_quotas, unique_quotas
+
+    errors.extend(validate_replacement_policy(manifest))
+    if not errors:
+        plan_rows = []
+        for source in sources:
+            final_tokens = total_phase_tokens(source)
+            multiplier = Decimal(
+                str(source["acquisition"].get("candidate_multiplier", 1.0))
+            )
+            plan_rows.append(
+                (source["id"], int(Decimal(final_tokens) * multiplier))
+            )
+        resilience = replacement_resilience_report(
+            manifest,
+            requirements=unique_quotas(manifest, replay_quotas(manifest)),
+            candidate_tokens=dict(plan_rows),
+        )
+        if not resilience["all_sources_have_automatic_shortfall_path"]:
+            missing_paths = sorted(
+                source_id
+                for source_id, row in resilience["sources"].items()
+                if not row["automatic_shortfall_path_available"]
+            )
+            errors.append(
+                "replacement policy lacks an automatic donor or cold-reserve path for "
+                f"{missing_paths}"
+            )
+
     return ValidationResult(manifest=manifest, errors=tuple(errors), warnings=tuple(warnings))
 
 
@@ -231,11 +268,21 @@ def candidate_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 "fresh": bool(source["provenance"].get("fresh")),
             }
         )
+    from .replacement import replacement_resilience_report
+    from .selection import replay_quotas, unique_quotas
+
+    candidate_tokens = {row["id"]: int(row["candidate_tokens"]) for row in rows}
+    unique = unique_quotas(manifest, replay_quotas(manifest))
     return {
         "release": manifest["release"],
         "target_tokens": manifest["schedule"]["target_tokens"],
         "planned_candidate_tokens": sum(row["candidate_tokens"] for row in rows),
         "planned_download_bytes": sum(row["planned_download_bytes"] for row in rows),
+        "replacement_resilience": replacement_resilience_report(
+            manifest,
+            requirements=unique,
+            candidate_tokens=candidate_tokens,
+        ),
         "sources": rows,
     }
 

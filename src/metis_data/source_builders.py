@@ -29,7 +29,10 @@ def _common_crawl(item: dict[str, Any], root: Path) -> dict[str, Any]:
     response = requests.get("https://index.commoncrawl.org/collinfo.json", timeout=60)
     response.raise_for_status()
     available = {entry["id"]: entry for entry in response.json()}
-    crawls = item["access"]["crawls"]
+    crawls = [
+        *item["access"]["crawls"],
+        *item["access"].get("reserve_crawls", []),
+    ]
     missing = [crawl for crawl in crawls if crawl not in available]
     if missing:
         raise RuntimeError(f"Common Crawl releases are unavailable: {missing}")

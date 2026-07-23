@@ -26,7 +26,7 @@ sources:
       gated: auto
       allow_patterns: [3/**]
     license: {status: requires_acceptance, expression: NVIDIA-Data-Agreement-for-Model-Training}
-    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.60, compressed_bytes_per_token: 0.78}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 2.30, compressed_bytes_per_token: 0.78}
     processing: {quality_profile: math_score3_v1, dedup_namespace: global_math_web, priority: 85}
 
   - id: nemotron_math_proofs

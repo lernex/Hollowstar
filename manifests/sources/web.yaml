@@ -26,7 +26,7 @@ sources:
       gated: manual
       allow_patterns: [High-Quality/**, Medium-High-Quality/**]
     license: {status: requires_acceptance, expression: NVIDIA-Data-Agreement-for-Model-Training}
-    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.25, compressed_bytes_per_token: 0.72}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.60, compressed_bytes_per_token: 0.72}
     processing: {quality_profile: web_hq_v1, dedup_namespace: global_web, priority: 95}
 
   - id: fineweb_edu
@@ -112,13 +112,14 @@ sources:
     access:
       type: common_crawl
       crawls: [CC-MAIN-2026-08, CC-MAIN-2026-12, CC-MAIN-2026-17, CC-MAIN-2026-21, CC-MAIN-2026-25]
+      reserve_crawls: [CC-MAIN-2026-04]
       url_index: s3://commoncrawl/cc-index/table/cc-main/warc/
       warc_root: https://data.commoncrawl.org/
       route: general_web
       cutoff_start: '2025-01-01'
       cutoff_end: '2026-06-30'
     license: {status: per_record_required, expression: source-page-terms-plus-Common-Crawl-terms}
-    acquisition: {driver: common_crawl_ranges, candidate_multiplier: 2.60, compressed_bytes_per_token: 1.10}
+    acquisition: {driver: common_crawl_ranges, candidate_multiplier: 3.00, compressed_bytes_per_token: 1.10}
     processing: {quality_profile: fresh_web_2026_v1, dedup_namespace: global_web, priority: 100}
 
   - id: fineweb_diversity_tail

@@ -17,6 +17,9 @@ Metis-1.6's production data recipe is separate from the local teaching flow belo
 The exact recipe and operational gates are documented in
 [`docs/metis16_pretraining_data_plan.md`](docs/metis16_pretraining_data_plan.md); the machine-readable
 source of truth is [`manifests/metis-1.6.yaml`](manifests/metis-1.6.yaml).
+Every planned source also has an ordered, fail-closed automatic shortfall path in
+[`manifests/replacements.yaml`](manifests/replacements.yaml); see the
+[`replacement research and policy`](docs/metis16_replacement_data_research.md).
 
 Split login2/Rhea/Portage operator interface:
 

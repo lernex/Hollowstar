@@ -82,7 +82,7 @@ freshness_layer:
 
 selection:
   seed: 16062026
-  source_deficit_policy: same_category_only
+  source_deficit_policy: ordered_same_category_replacement
   global_fallback: forbidden
   require_final_tokenizer_counts: true
   fail_on_source_exhaustion: true
@@ -119,3 +119,5 @@ source_files:
   - sources/synthetic.yaml
   - sources/reference.yaml
   - sources/multilingual.yaml
+
+replacement_policy_file: replacements.yaml

@@ -16,7 +16,7 @@ sources:
     provenance: {generated: false, transformed: false, fresh: false}
     access: {type: huggingface, repo_id: allenai/peS2o, revision: 636a503e44a3ca1b58e01fb61eab0825cd574de0, gated: false, allow_patterns: ['**/*.jsonl.gz']}
     license: {status: per_record_required, expression: per-paper-license}
-    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.35, compressed_bytes_per_token: 0.70}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 2.30, compressed_bytes_per_token: 0.70}
     processing: {quality_profile: scientific_paper_v1, dedup_namespace: global_science, priority: 92}
 
   - id: pmc_open_access
@@ -69,13 +69,14 @@ sources:
     access:
       type: common_crawl
       crawls: [CC-MAIN-2026-08, CC-MAIN-2026-12, CC-MAIN-2026-17, CC-MAIN-2026-21, CC-MAIN-2026-25]
+      reserve_crawls: [CC-MAIN-2026-04]
       url_index: s3://commoncrawl/cc-index/table/cc-main/warc/
       warc_root: https://data.commoncrawl.org/
       route: fresh_science
       cutoff_start: '2025-01-01'
       cutoff_end: '2026-06-30'
     license: {status: per_record_required, expression: open-access-only}
-    acquisition: {driver: common_crawl_ranges, candidate_multiplier: 1.80, compressed_bytes_per_token: 0.82}
+    acquisition: {driver: common_crawl_ranges, candidate_multiplier: 2.50, compressed_bytes_per_token: 0.82}
     processing: {quality_profile: fresh_science_v1, dedup_namespace: global_science, priority: 100}
 
   - id: metis_freshdocs_2025_26
@@ -86,13 +87,14 @@ sources:
     access:
       type: common_crawl
       crawls: [CC-MAIN-2026-08, CC-MAIN-2026-12, CC-MAIN-2026-17, CC-MAIN-2026-21, CC-MAIN-2026-25]
+      reserve_crawls: [CC-MAIN-2026-04]
       url_index: s3://commoncrawl/cc-index/table/cc-main/warc/
       warc_root: https://data.commoncrawl.org/
       route: official_docs
       cutoff_start: '2025-01-01'
       cutoff_end: '2026-06-30'
     license: {status: per_record_required, expression: canonical-source-license}
-    acquisition: {driver: common_crawl_ranges, candidate_multiplier: 1.70, compressed_bytes_per_token: 0.88}
+    acquisition: {driver: common_crawl_ranges, candidate_multiplier: 2.50, compressed_bytes_per_token: 0.88}
     processing: {quality_profile: official_docs_v1, dedup_namespace: global_docs, priority: 100}
 
   - id: patents_engineering_reports

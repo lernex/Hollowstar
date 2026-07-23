@@ -23,6 +23,7 @@ from .quality import evaluate_quality, priority_score
 from .state import StateStore, atomic_json, utc_now
 from .tokenizer import train_tokenizer, validate_tokenizer
 from .selection import build_selection, hamilton_apportion, replay_quotas, unique_quotas
+from .replacement import allocate_replacements
 from .download import sha256_file
 from .code_dedup import code_hygiene_reason
 from .final_dedup import content_sha256
@@ -2359,6 +2360,8 @@ def _pack(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
     written = 0
     documents = 0
     source_tokens: dict[str, int] = {}
+    quota_source_tokens: dict[str, int] = {}
+    replacement_tokens: dict[str, dict[str, int]] = {}
     license_tokens: dict[str, dict[str, int]] = {}
     generated_tokens = 0
     transformed_tokens = 0
@@ -2394,6 +2397,13 @@ def _pack(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
                         "start": written,
                         "end": written + count,
                         "source_id": record["source_id"],
+                        "quota_source_id": record.get(
+                            "quota_source_id", record["source_id"]
+                        ),
+                        "replacement_for_source_id": record.get(
+                            "replacement_for_source_id"
+                        ),
+                        "replacement": bool(record.get("replacement", False)),
                         "doc_id": record["doc_id"],
                         "replay": bool(record["replay"]),
                         "exposure": int(record.get("exposure", 0)),
@@ -2416,6 +2426,18 @@ def _pack(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
                 unique_tokens += count
             documents += 1
             source_tokens[record["source_id"]] = source_tokens.get(record["source_id"], 0) + count
+            quota_source_id = str(
+                record.get("quota_source_id", record["source_id"])
+            )
+            quota_source_tokens[quota_source_id] = (
+                quota_source_tokens.get(quota_source_id, 0) + count
+            )
+            if bool(record.get("replacement", False)):
+                by_target = replacement_tokens.setdefault(quota_source_id, {})
+                actual_source_id = str(record["source_id"])
+                by_target[actual_source_id] = (
+                    by_target.get(actual_source_id, 0) + count
+                )
             license_expression = str(record.get("license") or "")
             if not license_expression:
                 missing_license_tokens += count
@@ -2446,6 +2468,8 @@ def _pack(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
         "tokens": written,
         "documents": documents,
         "source_tokens": source_tokens,
+        "quota_source_tokens": quota_source_tokens,
+        "replacement_tokens": replacement_tokens,
         "license_tokens": license_tokens,
         "missing_license_tokens": missing_license_tokens,
         "generated_tokens": generated_tokens,
@@ -2540,6 +2564,22 @@ def _validate_selection_contract(
     for field, expected in comparisons.items():
         if _integer_tree(selection.get(field)) != _integer_tree(expected):
             raise RuntimeError(f"Selection {field} does not match the immutable manifest quota")
+    replacement_allocation = selection.get("replacement_allocation")
+    if not isinstance(replacement_allocation, dict):
+        raise RuntimeError("Selection replacement allocation is missing")
+    rebuilt_replacement = allocate_replacements(
+        manifest,
+        requirements=expected_unique,
+        available_tokens=replacement_allocation.get("available_tokens", {}),
+    )
+    if replacement_allocation != rebuilt_replacement:
+        raise RuntimeError(
+            "Selection replacement allocation does not match the immutable policy"
+        )
+    if int(selection.get("replacement_tokens", -1)) != int(
+        rebuilt_replacement["replacement_tokens"]
+    ):
+        raise RuntimeError("Selection replacement-token total is inconsistent")
     unique_tokens = sum(sum(phases.values()) for phases in expected_unique.values())
     replay_tokens = sum(sum(phases.values()) for phases in expected_replay.values())
     target_tokens = int(manifest["schedule"]["target_tokens"])
@@ -2602,6 +2642,8 @@ def _audit_packed_index(
     cursor = 0
     documents = 0
     source_tokens: dict[str, int] = {}
+    quota_source_tokens: dict[str, int] = {}
+    replacement_tokens: dict[str, dict[str, int]] = {}
     license_tokens: dict[str, dict[str, int]] = {}
     missing_license_tokens = 0
     unique_tokens = 0
@@ -2641,6 +2683,31 @@ def _audit_packed_index(
                     f"Packed index source is missing at {index_path}:{documents + 1}"
                 )
             source_tokens[source_id] = source_tokens.get(source_id, 0) + count
+            quota_source_id = str(row.get("quota_source_id") or source_id)
+            if not quota_source_id:
+                raise RuntimeError(
+                    f"Packed index quota source is missing at {index_path}:{documents + 1}"
+                )
+            replacement = bool(row.get("replacement", False))
+            replacement_for = row.get("replacement_for_source_id")
+            if replacement != (quota_source_id != source_id):
+                raise RuntimeError(
+                    f"Packed replacement flag is inconsistent at {index_path}:{documents + 1}"
+                )
+            if replacement and str(replacement_for or "") != quota_source_id:
+                raise RuntimeError(
+                    f"Packed replacement target is inconsistent at {index_path}:{documents + 1}"
+                )
+            if not replacement and replacement_for not in (None, ""):
+                raise RuntimeError(
+                    f"Non-replacement row carries a replacement target at {index_path}:{documents + 1}"
+                )
+            quota_source_tokens[quota_source_id] = (
+                quota_source_tokens.get(quota_source_id, 0) + count
+            )
+            if replacement:
+                by_target = replacement_tokens.setdefault(quota_source_id, {})
+                by_target[source_id] = by_target.get(source_id, 0) + count
             if replay:
                 replay_tokens += count
             else:
@@ -2670,6 +2737,8 @@ def _audit_packed_index(
     return {
         "documents": documents,
         "source_tokens": source_tokens,
+        "quota_source_tokens": quota_source_tokens,
+        "replacement_tokens": replacement_tokens,
         "license_tokens": license_tokens,
         "missing_license_tokens": missing_license_tokens,
         "unique_tokens": unique_tokens,
@@ -2748,6 +2817,8 @@ def _verify(profile: dict[str, Any]) -> dict[str, Any]:
         for field in (
             "documents",
             "source_tokens",
+            "quota_source_tokens",
+            "replacement_tokens",
             "license_tokens",
             "missing_license_tokens",
             "unique_tokens",
@@ -2777,12 +2848,20 @@ def _verify(profile: dict[str, Any]) -> dict[str, Any]:
             "Packed unique/replay totals do not match SELECTION.json: "
             f"{packed_unique_tokens:,}/{packed_replay_tokens:,}"
         )
-    generated_tokens = sum(
+    generated_or_transformed_tokens = sum(
         int(report.get("generated_or_transformed_tokens", 0))
         for report in pack_reports
     )
+    actual_generated_tokens = sum(
+        int(report.get("generated_tokens", 0)) for report in pack_reports
+    )
+    actual_transformed_tokens = sum(
+        int(report.get("transformed_tokens", 0)) for report in pack_reports
+    )
     target_tokens = int(manifest["schedule"]["target_tokens"])
-    generated_share = generated_tokens / target_tokens if target_tokens else 0.0
+    generated_share = (
+        generated_or_transformed_tokens / target_tokens if target_tokens else 0.0
+    )
     maximum_generated_share = float(profile.get("gates", {}).get("maximum_generated_share", 1.0))
     if generated_share > maximum_generated_share:
         raise RuntimeError(
@@ -2792,32 +2871,78 @@ def _verify(profile: dict[str, Any]) -> dict[str, Any]:
         source["id"]: {phase: 0 for phase in ("phase_a", "phase_b", "phase_c")}
         for source in manifest["sources"]
     }
+    quota_actual: dict[str, dict[str, int]] = {
+        source["id"]: {phase: 0 for phase in ("phase_a", "phase_b", "phase_c")}
+        for source in manifest["sources"]
+    }
     phase_tokens = {phase: 0 for phase in ("phase_a", "phase_b", "phase_c")}
     for report in pack_reports:
         phase = report["phase"]
         phase_tokens[phase] += int(report["tokens"])
         for source_id, tokens in report["source_tokens"].items():
             actual[source_id][phase] += int(tokens)
+        for source_id, tokens in report["quota_source_tokens"].items():
+            quota_actual[source_id][phase] += int(tokens)
     expected_phase = {phase: int(manifest["schedule"]["phases"][phase]["target_tokens"]) for phase in phase_tokens}
     if phase_tokens != expected_phase:
         raise RuntimeError(f"Phase totals mismatch: {phase_tokens} != {expected_phase}")
     mismatches = {}
     for source in manifest["sources"]:
         expected = {phase: int(source["phase_tokens"].get(phase, 0)) for phase in phase_tokens}
-        if actual[source["id"]] != expected:
-            mismatches[source["id"]] = {"actual": actual[source["id"]], "expected": expected}
+        if quota_actual[source["id"]] != expected:
+            mismatches[source["id"]] = {
+                "quota_actual": quota_actual[source["id"]],
+                "expected": expected,
+            }
     if mismatches:
         raise RuntimeError(f"Source/phase token mismatches: {mismatches}")
     expected_generated = sum(
         sum(int(value) for value in source["phase_tokens"].values())
         for source in manifest["sources"]
         if source["provenance"].get("generated")
-        or source["provenance"].get("transformed")
     )
-    if generated_tokens != expected_generated:
+    if actual_generated_tokens > expected_generated:
         raise RuntimeError(
-            "Packed generated/transformed provenance does not match manifest source quotas: "
-            f"{generated_tokens:,} != {expected_generated:,}"
+            "Replacement increased generated provenance above the manifest ceiling: "
+            f"{actual_generated_tokens:,} > {expected_generated:,}"
+        )
+    source_metadata = {source["id"]: source for source in manifest["sources"]}
+    actual_category_phase = {
+        category["id"]: {phase: 0 for phase in phase_tokens}
+        for category in manifest["categories"]
+    }
+    actual_fresh_buckets: dict[str, int] = {}
+    for source_id, phases in actual.items():
+        source = source_metadata[source_id]
+        category = str(source["category"])
+        for phase, tokens in phases.items():
+            actual_category_phase[category][phase] += int(tokens)
+        provenance = source.get("provenance", {})
+        if provenance.get("fresh"):
+            bucket = str(provenance.get("freshness_bucket") or "")
+            actual_fresh_buckets[bucket] = actual_fresh_buckets.get(bucket, 0) + sum(
+                int(value) for value in phases.values()
+            )
+    expected_category_phase = {
+        category["id"]: {
+            phase: int(category["phase_tokens"].get(phase, 0))
+            for phase in phase_tokens
+        }
+        for category in manifest["categories"]
+    }
+    if actual_category_phase != expected_category_phase:
+        raise RuntimeError(
+            "Replacement changed category/phase totals: "
+            f"{actual_category_phase} != {expected_category_phase}"
+        )
+    expected_fresh_buckets = {
+        str(bucket): int(tokens)
+        for bucket, tokens in manifest["freshness_layer"]["buckets"].items()
+    }
+    if actual_fresh_buckets != expected_fresh_buckets:
+        raise RuntimeError(
+            "Replacement changed freshness-bucket totals: "
+            f"{actual_fresh_buckets} != {expected_fresh_buckets}"
         )
     release_root = root / directories["release"]
     provenance_root = release_root / "provenance"
@@ -2872,7 +2997,14 @@ def _verify(profile: dict[str, Any]) -> dict[str, Any]:
         "verified_at": utc_now(),
         "target_tokens": sum(phase_tokens.values()),
         "phase_tokens": phase_tokens,
-        "source_phase_tokens": actual,
+        "source_phase_tokens": quota_actual,
+        "actual_source_phase_tokens": actual,
+        "replacement_tokens": sum(
+            sum(int(tokens) for tokens in donors.values())
+            for report in pack_reports
+            for donors in report.get("replacement_tokens", {}).values()
+        ),
+        "replacement_allocation": selection.get("replacement_allocation"),
         "manifest_sha256": sha256_file(Path(manifest["_path"])),
         "manifest_contract_sha256": _manifest_contract_sha256(manifest),
         "source_lock_sha256": sha256_file(state.path("sources.lock.json")),
@@ -2885,7 +3017,9 @@ def _verify(profile: dict[str, Any]) -> dict[str, Any]:
         "selection_contract": selection_contract,
         "packed_unique_tokens": packed_unique_tokens,
         "packed_replay_tokens": packed_replay_tokens,
-        "generated_tokens": generated_tokens,
+        "generated_tokens": actual_generated_tokens,
+        "transformed_tokens": actual_transformed_tokens,
+        "generated_or_transformed_tokens": generated_or_transformed_tokens,
         "generated_share": generated_share,
         "maximum_generated_share": maximum_generated_share,
         "filter_chain": str(filter_chain_path),
@@ -3012,6 +3146,16 @@ def _release(profile: dict[str, Any]) -> dict[str, Any]:
         shutil.copy2(source, release_tokenizer / name)
     shutil.copy2(Path(manifest["_path"]), release_manifests / "metis-1.6.yaml")
     manifest_repository = repository_root() / "manifests"
+    replacement_policy_file = manifest.get("replacement_policy_file")
+    if replacement_policy_file or manifest.get("replacement_policy"):
+        replacement_policy_path = manifest_repository / str(
+            replacement_policy_file or "replacements.yaml"
+        )
+        if not replacement_policy_path.is_file():
+            raise RuntimeError(
+                f"Replacement policy is missing from the repository: {replacement_policy_path}"
+            )
+        shutil.copy2(replacement_policy_path, release_manifests / "replacements.yaml")
     for subdirectory in ("sources", "contamination", "registries", "licenses"):
         source_directory = manifest_repository / subdirectory
         if source_directory.exists():

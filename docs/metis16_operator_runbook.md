@@ -113,6 +113,13 @@ Successful acquisition emits `state/metis-1.6-data-r1/ACQUISITION_READY.json`. I
 - the evaluation holdout bundle;
 - the clean repository commit used for acquisition.
 
+It also reports measured per-source candidate counts and the deterministic replacement allocation.
+If one source is short, compatible donor surplus is assigned automatically without changing the
+source category, phase, or freshness target. The handoff stops if those reserves are insufficient.
+For the three singleton fresh Common Crawl routes, acquisition first widens the five preferred 2026
+crawls and then automatically activates `CC-MAIN-2026-04`; it never substitutes historical generic
+web. No operator flag is needed for either path.
+
 When a materializer represents its output as a directory, the directory inode is never treated as
 an artifact. The handoff records and verifies its acquisition receipt plus every shard named by the
 receipt.

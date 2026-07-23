@@ -13,6 +13,9 @@ and counts from another tokenizer never satisfy the release target.
 The machine-readable source of truth is [`manifests/metis-1.6.yaml`](../manifests/metis-1.6.yaml).
 Every individual source, pinned Hugging Face revision, target, provenance flag, license disposition,
 quality profile, and deduplication namespace is declared in [`manifests/sources/`](../manifests/sources/).
+The ordered, exhaustive shortfall policy is
+[`manifests/replacements.yaml`](../manifests/replacements.yaml), with its evidence and rationale in
+[`metis16_replacement_data_research.md`](metis16_replacement_data_research.md).
 The CLI refuses a manifest whose source, category, phase, freshness, replay, tokenizer, or exclusion
 totals do not reconcile exactly.
 
@@ -39,9 +42,11 @@ The exact source tables are:
 
 ### Exact source allocations
 
-These are final-tokenizer-measured training exposures, not raw reservoir sizes. “Generated or
-transformed” is provenance, not the capability category; for example, translated text remains in
-the multilingual category and verified synthetic code remains in code.
+These are immutable final-tokenizer quota exposures, not raw reservoir sizes. The named source
+supplies its own quota when it has enough accepted material; an audited compatible donor may supply
+a shortfall while retaining the named row as `quota_source_id`. The release reports both amounts.
+“Generated or transformed” is provenance, not the capability category; for example, translated
+text remains in the multilingual category and verified synthetic code remains in code.
 
 | Category | Source | Phase A | Phase B | Phase C | Total | Fresh | Generated or transformed |
 |---|---|---:|---:|---:|---:|:---:|:---:|
@@ -168,8 +173,8 @@ overrides the quality, privacy, license, or contamination gates.
 
 The four WARC-backed freshness rows total **65B final exposures**: 35B general web, 10B current
 software documentation, 10B recent science, and 10B current official documentation. Every row is
-selected across exactly `CC-MAIN-2026-08`, `-12`, `-17`, `-21`, and `-25`. The materializer reads
-all 1,500 WARC URL-index Parquet partitions through the bulk columnar index, deterministically
+selected first across `CC-MAIN-2026-08`, `-12`, `-17`, `-21`, and `-25`. The materializer reads
+every columnar URL-index Parquet partition advertised for the selected crawls, deterministically
 selects bounded candidates, and retrieves validated record byte ranges from WARC files; it never
 mirrors a complete crawl or substitutes structure-poor WET text.
 
@@ -198,15 +203,32 @@ selection remains exactly 1T tokens, and the handoff recount fails if the final 
 leaves any locked source below target.
 
 These gates intentionally prefer a reported shortfall over unverifiable freshness. Candidate
-selection is oversampled by route and the receipts report every rejection reason. If a route is
-short, expand its bounded candidate scan or add a separately licensed canonical source in a new
-manifest revision; do not weaken the evidence rules or silently borrow tokens from another bucket.
+selection is oversampled by route and the receipts report every rejection reason. If all permitted
+selection rounds over the five preferred crawls are short, the materializer automatically activates
+`CC-MAIN-2026-04` as a January 2026 cold reserve and reapplies the identical gates. If that is also
+short, acquisition stops; it never weakens the evidence rules or borrows historical generic web.
+
+## Automatic source replacement
+
+All 56 planned sources have an explicit ordered replacement path. The production sequence is:
+original-source widening, measured final-tokenizer counts, compatible donor surplus, then a
+fail-closed stop. Replacements preserve category, phase, freshness bucket, and immutable source
+quota. Generated data cannot replace organic data, and Phase C remains generated-free. The exact
+policy and source-by-source donor matrix are documented in
+[`metis16_replacement_data_research.md`](metis16_replacement_data_research.md).
+
+The planner currently verifies complete-loss donor coverage for 53 sources. The three singleton
+fresh WARC routes use the January cold reserve instead, because substituting a historical dataset
+would violate their freshness contract. Acquisition, handoff, selection, packed indexes, and final
+verification all retain both the physical source and the quota source for auditability.
 
 ## Candidate acquisition budget
 
 The manifest intentionally requests more candidate material than the final exposure target. Current
-source-lock headroom totals are **1.586231T candidate-token estimates** and approximately **1.264871TB
-of planned compressed candidate payload**, before the 5% FreshWeb opt-out reserve. The byte estimate
+source-lock headroom totals are **1.7207509T candidate-token estimates** and approximately
+**1.369685297TB of planned compressed candidate payload**, before the 5% FreshWeb opt-out reserve.
+The added headroom makes the declared donor pools operational; it does not change the 1T training
+schedule. The byte estimate
 is a planning heuristic, not a quota:
 it excludes the amplification from Git repository objects, WARC/HTML retrieval, extraction,
 Parquet metadata, deduplication indices, sort spill, and temporary copies.

@@ -11,6 +11,7 @@ from typing import Any, Iterable, Iterator
 import zstandard as zstd
 
 from .manifest import PHASES
+from .replacement import allocate_replacements
 from .state import atomic_json, utc_now
 
 
@@ -160,6 +161,9 @@ class ScheduleWriter:
                 target_shard.path,
                 {
                     "source_id": record["source_id"],
+                    "quota_source_id": record.get("quota_source_id", record["source_id"]),
+                    "replacement_for_source_id": record.get("replacement_for_source_id"),
+                    "replacement": bool(record.get("replacement", False)),
                     "doc_id": record["doc_id"],
                     "text": record["text"],
                     "token_start": offset,
@@ -231,18 +235,29 @@ def build_selection(
     if fallback_root.exists():
         for stale in fallback_root.glob("*.jsonl.zst"):
             stale.unlink()
-    required_unique = {source: sum(phases.values()) for source, phases in unique.items()}
-    for source_id, target in required_unique.items():
-        if eligible_tokens.get(source_id, 0) < target:
-            raise RuntimeError(
-                f"Source {source_id} has {eligible_tokens.get(source_id, 0):,} eligible tokens, "
-                f"below unique requirement {target:,}; same-category resolution is required"
-            )
-    thresholds = {
-        source_id: min(1.0, 1.10 * target / max(1, eligible_tokens[source_id]))
-        for source_id, target in required_unique.items()
+    replacement_allocation = allocate_replacements(
+        manifest,
+        requirements=unique,
+        available_tokens=eligible_tokens,
+    )
+    assignments = {
+        source_id: [
+            {**assignment, "remaining": int(assignment["tokens"])}
+            for assignment in source_assignments
+        ]
+        for source_id, source_assignments in replacement_allocation[
+            "assignments_by_actual_source"
+        ].items()
     }
-    remaining_unique = {source: dict(phases) for source, phases in unique.items()}
+    required_actual = {
+        source_id: sum(int(row["tokens"]) for row in rows)
+        for source_id, rows in assignments.items()
+    }
+    thresholds = {
+        source_id: min(1.0, 1.10 * target / max(1, eligible_tokens.get(source_id, 0)))
+        for source_id, target in required_actual.items()
+    }
+    assignment_cursor = {source_id: 0 for source_id in assignments}
     replay_pool = _AppendPool(maximum_open=24)
     fallback_pool = _AppendPool(maximum_open=24)
     phase_targets = {
@@ -252,50 +267,73 @@ def build_selection(
     schedule = ScheduleWriter(output_root / "schedule", phase_targets, shard_tokens)
     seed = int(manifest["selection"]["seed"])
     unique_written = {source: {phase: 0 for phase in PHASES} for source in unique}
+    actual_source_unique_written = {
+        source: {phase: 0 for phase in PHASES} for source in unique
+    }
     replay_pool_tokens = {source: 0 for source in unique}
 
     def consume(record: dict[str, Any]) -> None:
-        source_id = record["source_id"]
+        source_id = str(record["source_id"])
+        source_assignments = assignments.get(source_id, [])
+        cursor = assignment_cursor.get(source_id, 0)
         available = int(record["token_count"])
         consumed = 0
-        for phase in ("phase_a", "phase_b"):
-            needed = remaining_unique[source_id][phase]
-            if needed <= 0 or available <= 0:
+        while cursor < len(source_assignments) and available > 0:
+            assignment = source_assignments[cursor]
+            needed = int(assignment["remaining"])
+            if needed <= 0:
+                cursor += 1
                 continue
             take = min(needed, available)
+            target_source_id = str(assignment["target_source_id"])
+            phase = str(assignment["phase"])
+            selected_record = {
+                **record,
+                "quota_source_id": target_source_id,
+                "replacement_for_source_id": (
+                    target_source_id if target_source_id != source_id else None
+                ),
+                "replacement": target_source_id != source_id,
+            }
             schedule.write(
                 phase,
-                record,
+                selected_record,
                 take,
                 replay=False,
                 token_start=consumed,
                 exposure=0,
             )
-            unique_written[source_id][phase] += take
-            remaining_unique[source_id][phase] -= take
+            unique_written[target_source_id][phase] += take
+            actual_source_unique_written[source_id][phase] += take
+            assignment["remaining"] -= take
             available -= take
+            desired_replay_pool = sum(replay[target_source_id].values())
+            if (
+                take
+                and desired_replay_pool
+                and replay_pool_tokens[target_source_id] < desired_replay_pool
+            ):
+                # Replay may draw only from token spans actually emitted as
+                # unique data for this immutable quota source. The actual
+                # source remains explicit when a compatible donor filled it.
+                replay_record = dict(selected_record)
+                replay_record["token_count"] = take
+                replay_record["_selection_token_start"] = consumed
+                replay_pool.write(
+                    replay_pool_root / f"{target_source_id}.jsonl.zst",
+                    replay_record,
+                )
+                replay_pool_tokens[target_source_id] += take
             consumed += take
-        desired_replay_pool = sum(replay[source_id].values())
-        if (
-            consumed
-            and desired_replay_pool
-            and replay_pool_tokens[source_id] < desired_replay_pool
-        ):
-            # Replay is allowed to draw only from token spans that were
-            # actually emitted as unique data. Persisting the entire source
-            # document here could otherwise turn an unselected tail into
-            # "replay" and overstate the 950B unique-token contract.
-            replay_record = dict(record)
-            replay_record["token_count"] = consumed
-            replay_pool.write(
-                replay_pool_root / f"{source_id}.jsonl.zst",
-                replay_record,
-            )
-            replay_pool_tokens[source_id] += consumed
+            if int(assignment["remaining"]) == 0:
+                cursor += 1
+        assignment_cursor[source_id] = cursor
 
     for record in records:
-        source_id = record["source_id"]
-        if source_id not in required_unique or sum(remaining_unique[source_id].values()) <= 0:
+        source_id = str(record["source_id"])
+        if source_id not in required_actual or assignment_cursor[source_id] >= len(
+            assignments[source_id]
+        ):
             continue
         if _stable_fraction(source_id, record["doc_id"], seed) > thresholds[source_id]:
             fallback_pool.write(fallback_root / f"{source_id}.jsonl.zst", record)
@@ -303,19 +341,33 @@ def build_selection(
         consume(record)
     fallback_pool.close()
 
-    for source_id, phases in remaining_unique.items():
-        if sum(phases.values()) <= 0:
+    for source_id, source_assignments in assignments.items():
+        if all(int(row["remaining"]) <= 0 for row in source_assignments):
             continue
         fallback_path = fallback_root / f"{source_id}.jsonl.zst"
         if fallback_path.exists():
             for record in _iter_zstd(fallback_path):
                 consume(record)
-                if sum(remaining_unique[source_id].values()) <= 0:
+                if all(int(row["remaining"]) <= 0 for row in source_assignments):
                     break
     replay_pool.close()
-    short = {source: phases for source, phases in remaining_unique.items() if sum(phases.values())}
+    short = {
+        source_id: [
+            {
+                "target_source_id": row["target_source_id"],
+                "phase": row["phase"],
+                "tokens": int(row["remaining"]),
+            }
+            for row in source_assignments
+            if int(row["remaining"]) > 0
+        ]
+        for source_id, source_assignments in assignments.items()
+        if any(int(row["remaining"]) > 0 for row in source_assignments)
+    }
     if short:
-        raise RuntimeError(f"Deterministic selection was short of unique targets: {short}")
+        raise RuntimeError(
+            f"Deterministic replacement selection was short of assigned targets: {short}"
+        )
     for path in fallback_root.glob("*.jsonl.zst") if fallback_root.exists() else []:
         path.unlink()
     if fallback_root.exists():
@@ -344,7 +396,8 @@ def build_selection(
                         record,
                         take,
                         replay=True,
-                        token_start=consumed,
+                        token_start=int(record.get("_selection_token_start", 0))
+                        + consumed,
                         exposure=exposure,
                     )
                     replay_written[source_id][phase] += take
@@ -378,11 +431,14 @@ def build_selection(
         "unique_quotas": unique,
         "replay_quotas": replay,
         "unique_written": unique_written,
+        "actual_source_unique_written": actual_source_unique_written,
         "replay_written": replay_written,
         "unique_tokens": sum(sum(phases.values()) for phases in unique_written.values()),
         "replay_tokens": sum(sum(phases.values()) for phases in replay_written.values()),
         "maximum_document_exposures": maximum_exposures,
         "selection_seed": seed,
+        "replacement_allocation": replacement_allocation,
+        "replacement_tokens": int(replacement_allocation["replacement_tokens"]),
         "token_count_contract_sha256": token_count_contract_sha256,
         "tokenizer_contract": tokenizer_contract,
         "phase_tokens": phase_targets,

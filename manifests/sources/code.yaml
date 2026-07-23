@@ -26,7 +26,7 @@ sources:
       gated: manual
       allow_patterns: [data/**]
     license: {status: requires_acceptance, expression: NVIDIA-Data-Agreement-for-Model-Training}
-    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.30, compressed_bytes_per_token: 0.75}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 2.30, compressed_bytes_per_token: 0.75}
     processing: {quality_profile: code_interleaved_v1, dedup_namespace: global_code_web, priority: 95}
 
   - id: stack_edu
@@ -41,7 +41,7 @@ sources:
       gated: false
       allow_patterns: ['**/*.parquet']
     license: {status: per_record_required, expression: repository-license}
-    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.60, compressed_bytes_per_token: 0.65}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 2.00, compressed_bytes_per_token: 0.65}
     processing: {quality_profile: repository_code_v1, dedup_namespace: global_code, priority: 82}
 
   - id: stack_v2_unique
@@ -77,6 +77,7 @@ sources:
     access:
       type: common_crawl
       crawls: [CC-MAIN-2026-08, CC-MAIN-2026-12, CC-MAIN-2026-17, CC-MAIN-2026-21, CC-MAIN-2026-25]
+      reserve_crawls: [CC-MAIN-2026-04]
       url_index: s3://commoncrawl/cc-index/table/cc-main/warc/
       warc_root: https://data.commoncrawl.org/
       route: software_docs

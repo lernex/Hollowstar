@@ -1,0 +1,251 @@
+schema: metis.replacement-policy/v1
+version: metis-1.6-replacements-r1
+description: >-
+  Ordered, final-tokenizer-measured replacement pools for source shortfalls.
+  The original source is always widened first. Replacement never crosses a
+  capability category, never reduces a freshness bucket, and never introduces
+  generated or transformed data into a quota that was originally organic.
+
+defaults:
+  widen_original_source_first: true
+  preserve_category: true
+  preserve_freshness_bucket: true
+  no_generated_increase: true
+  no_transformed_increase: true
+  phase_resolution_order: [phase_b, phase_a, phase_c]
+  exhaustion_policy: fail_closed
+
+groups:
+  - id: web_organic
+    rationale: >-
+      Prefer NVIDIA's newest and highest-scored organic web, followed by
+      education-filtered and model-filtered web; diversity-tail material is
+      last because coverage, not average quality, is its purpose.
+    members:
+      - nemotron_cc_v2_organic
+      - nemotron_cc_v21_organic
+      - fineweb_edu
+      - dclm_baseline
+      - essential_web
+      - txt360
+      - zyda2_unique
+      - fineweb_diversity_tail
+    donor_order:
+      - nemotron_cc_v21_organic
+      - nemotron_cc_v2_organic
+      - fineweb_edu
+      - essential_web
+      - dclm_baseline
+      - txt360
+      - zyda2_unique
+      - fineweb_diversity_tail
+
+  - id: web_fresh_general
+    rationale: >-
+      Keep the 35B general-web freshness bucket exact. The source widens across
+      the preferred 2026 crawls and then activates CC-MAIN-2026-04 as a cold
+      reserve; unrelated historical web may not replace it.
+    members: [metis_freshweb_2026]
+    donor_order: [metis_freshweb_2026]
+    self_reserve_required: true
+
+  - id: code_organic
+    rationale: >-
+      Prefer pinned, license-reviewed repository code, then NVIDIA's
+      code-bearing web and Stack-Edu. Broad Stack v2 and the small formal
+      registry remain later coverage reserves.
+    members:
+      - nemotron_repository_code_v123
+      - nemotron_cc_code_v1
+      - stack_edu
+      - stack_v2_unique
+      - metis_systems_formal
+    donor_order:
+      - nemotron_repository_code_v123
+      - nemotron_cc_code_v1
+      - stack_edu
+      - stack_v2_unique
+      - metis_systems_formal
+
+  - id: code_fresh_software
+    rationale: >-
+      Preserve the 35B software freshness bucket while allowing current source,
+      official documentation, and engineering-discussion material to cover one
+      another after each original route is widened.
+    members:
+      - metis_freshgithub_2025_26
+      - metis_freshsoftwaredocs_2025_26
+      - metis_freshengineering_discussions_2025_26
+    donor_order:
+      - metis_freshgithub_2025_26
+      - metis_freshsoftwaredocs_2025_26
+      - metis_freshengineering_discussions_2025_26
+
+  - id: code_generated
+    rationale: >-
+      If verified synthetic code is short, prefer more of that partition and
+      then replace it with high-quality human code. Organic code may replace
+      generated code, but the reverse is forbidden.
+    members: [verified_synthetic_code]
+    donor_order:
+      - verified_synthetic_code
+      - nemotron_cc_code_v1
+      - stack_edu
+      - nemotron_repository_code_v123
+
+  - id: math_organic
+    rationale: >-
+      NVIDIA's equation-preserving 4plus and unique score-3 partitions lead
+      because their published comparisons outperform FineMath, MegaMath, and
+      OpenWebMath. Proof-Pile-2 and formal corpora preserve proof diversity.
+    members:
+      - nemotron_cc_math_4plus
+      - nemotron_cc_math_unique_3
+      - proof_pile2_math
+      - finemath_unique
+      - megamath_unique
+      - openwebmath_unique
+      - formal_theorem_corpora
+    donor_order:
+      - nemotron_cc_math_4plus
+      - nemotron_cc_math_unique_3
+      - proof_pile2_math
+      - finemath_unique
+      - megamath_unique
+      - openwebmath_unique
+      - formal_theorem_corpora
+
+  - id: math_generated_proofs
+    rationale: >-
+      Natural-language and Lean proof shortages first widen the NVIDIA proof
+      set, then use human proof and high-quality organic math. Generated proof
+      data is never used to replace an organic quota.
+    members: [nemotron_math_proofs]
+    donor_order:
+      - nemotron_math_proofs
+      - proof_pile2_math
+      - formal_theorem_corpora
+      - nemotron_cc_math_4plus
+      - finemath_unique
+
+  - id: science_organic
+    rationale: >-
+      FinePDFs-Edu is the broadest high-quality technical reserve, followed by
+      open scholarly papers and explicitly licensed biomedical primary text.
+      OpenStax and patents retain textbook and applied-engineering coverage.
+    members:
+      - finepdfs_edu_english
+      - pes2o
+      - pmc_open_access
+      - proof_pile2_science
+      - openstax
+      - patents_engineering_reports
+    donor_order:
+      - finepdfs_edu_english
+      - pes2o
+      - pmc_open_access
+      - proof_pile2_science
+      - openstax
+      - patents_engineering_reports
+
+  - id: science_fresh_publications
+    rationale: >-
+      Keep recent-publication evidence exact. Widen the 2026 WARC selection and
+      activate the January 2026 crawl before reporting a shortage.
+    members: [metis_freshscience_2025_26]
+    donor_order: [metis_freshscience_2025_26]
+    self_reserve_required: true
+
+  - id: science_fresh_official_docs
+    rationale: >-
+      Keep the official-documentation freshness bucket exact. Widen the
+      version-evidenced route and activate the January 2026 crawl before
+      reporting a shortage.
+    members: [metis_freshdocs_2025_26]
+    donor_order: [metis_freshdocs_2025_26]
+    self_reserve_required: true
+
+  - id: synthetic_grounded
+    rationale: >-
+      Grounded NVIDIA fact-seeking and DQA data lead; verified reasoning,
+      source-grounded textbooks, RQA, structured wiki explanations, and
+      Cosmopedia provide ordered pedagogical diversity without admitting
+      benchmark-style SFT collections.
+    members:
+      - nemotron_specialized_fact_seeking
+      - nemotron_v21_dqa
+      - nemotron_specialized_reasoning_scicode
+      - nemotron_wiki_rewrite
+      - cosmopedia_v2
+      - nemotron_math_textbooks
+      - nemotron_rqa_verified_reasoning
+    donor_order:
+      - nemotron_specialized_fact_seeking
+      - nemotron_v21_dqa
+      - nemotron_rqa_verified_reasoning
+      - nemotron_math_textbooks
+      - nemotron_specialized_reasoning_scicode
+      - nemotron_wiki_rewrite
+      - cosmopedia_v2
+
+  - id: reference_encyclopedic_qa
+    rationale: >-
+      Prefer the improved 2025 Wikipedia extraction, then filtered Wikimedia
+      and explanatory Stack Exchange material.
+    members:
+      - finewiki
+      - wikimedia_reference
+      - roots_stackexchange
+    donor_order:
+      - finewiki
+      - wikimedia_reference
+      - roots_stackexchange
+
+  - id: reference_open_books
+    rationale: >-
+      Keep replacement inside public-domain or openly licensed long-form and
+      textbook sources, preferring curated scholarly books before broader
+      historical collections.
+    members:
+      - public_domain_books_gutenberg
+      - public_domain_books_pre1929
+      - common_pile_loc_reference
+      - common_pile_doab_reference
+      - common_pile_libretexts_reference
+    donor_order:
+      - common_pile_doab_reference
+      - common_pile_libretexts_reference
+      - public_domain_books_gutenberg
+      - common_pile_loc_reference
+      - public_domain_books_pre1929
+
+  - id: reference_legal_government
+    rationale: >-
+      Primary public law and government records lead. Synthetic legal reasoning
+      may be replaced by primary law, but organic primary-law quotas may not be
+      replaced by generated material.
+    members:
+      - open_law_caselaw
+      - open_law_usgpo
+      - nemotron_legal_v1
+      - metis_govreference_uk_hansard
+      - metis_govreference_regulations
+    donor_order:
+      - open_law_caselaw
+      - open_law_usgpo
+      - metis_govreference_regulations
+      - metis_govreference_uk_hansard
+      - nemotron_legal_v1
+
+  - id: multilingual
+    rationale: >-
+      Widen each high-quality source first. FineWeb-2 and NVIDIA translated
+      knowledge may cover one another because both remain inside the explicitly
+      limited multilingual category.
+    members:
+      - nemotron_v21_translated_hq
+      - fineweb2_native_multilingual
+    donor_order:
+      - nemotron_v21_translated_hq
+      - fineweb2_native_multilingual
+    allow_transformed_increase: true

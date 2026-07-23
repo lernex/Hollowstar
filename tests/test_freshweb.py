@@ -1108,6 +1108,78 @@ class FreshWebDownloadDispatchTests(unittest.TestCase):
             self.assertTrue(result["ready_for_training_build"])
             self.assertEqual(result["candidate_token_estimate"], 120)
 
+    def test_download_wrapper_activates_cold_reserve_crawl_after_primary_exhaustion(
+        self,
+    ) -> None:
+        item = {
+            "source_id": "fresh-cold-reserve",
+            "license": {"status": "per_record_required"},
+            "access": {
+                "route": "general_web",
+                "crawls": ["CC-MAIN-2026-25"],
+                "reserve_crawls": ["CC-MAIN-2026-04"],
+            },
+            "candidate_tokens": 100,
+        }
+        short = {
+            "candidate_target_met": False,
+            "candidate_token_target": 100,
+            "estimated_license_eligible_tokens": 90,
+            "ready_for_training_build": False,
+            "selection_round": 0,
+            "next_selection_round": 1,
+            "automatic_widening": True,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            run_root = (
+                root
+                / "raw"
+                / "fresh-cold-reserve"
+                / "freshweb"
+                / "runs"
+                / "test"
+            )
+            documents = run_root / "documents"
+            documents.mkdir(parents=True)
+            shard = {"path": str(documents / "part-00000.jsonl.zst"), "size": 0}
+            complete = {
+                "candidate_target_met": True,
+                "candidate_token_target": 100,
+                "estimated_materialized_tokens": 120,
+                "estimated_license_eligible_tokens": 120,
+                "license_eligibility": {"required_for_candidate_target": True},
+                "ready_for_training_build": True,
+                "local_path": str(documents),
+                "shards": [shard],
+                "warc": {"records_extracted": 3},
+                "selection_round": 0,
+            }
+            (run_root / "ACQUISITION_RECEIPT.json").write_text(
+                json.dumps(complete), encoding="utf-8"
+            )
+            profile = {
+                "acquisition": {"common_crawl": {"maximum_selection_round": 0}}
+            }
+            with mock.patch(
+                "metis_data.download.materialize_freshweb",
+                side_effect=[short, complete],
+            ) as materialize:
+                result = _materialize_common_crawl(item, profile=profile, root=root)
+            self.assertEqual(materialize.call_count, 2)
+            self.assertEqual(
+                materialize.call_args_list[0].args[0]["access"]["crawls"],
+                ["CC-MAIN-2026-25"],
+            )
+            self.assertEqual(
+                materialize.call_args_list[1].args[0]["access"]["crawls"],
+                ["CC-MAIN-2026-25", "CC-MAIN-2026-04"],
+            )
+            self.assertEqual(result["replacement_reserve_tier"], "cold_reserve")
+            self.assertEqual(
+                result["reserve_crawls_activated"], ["CC-MAIN-2026-04"]
+            )
+
     def test_download_wrapper_materializes_final_opt_out_reserve(self) -> None:
         item = {
             "source_id": "fresh-reserve",

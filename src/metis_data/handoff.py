@@ -13,6 +13,8 @@ from .freshweb import OptOutPolicy, parse_opt_out_registry, snapshot_common_craw
 from .runtime_lock import runtime_contract, runtime_identity
 from .source_lock import validate_source_lock_integrity
 from .state import StateStore, utc_now
+from .replacement import allocate_replacements
+from .selection import replay_quotas, unique_quotas
 
 
 HANDOFF_SCHEMA = "metis.acquisition-handoff/v4"
@@ -365,34 +367,81 @@ def _validate_materialized_token_targets(
             estimators[source_id] = {
                 "final_opt_out_eligible_utf8_text_bytes_divided_by_4"
             }
-    report = {
-        source_id: {
-            "driver": drivers.get(source_id, ""),
-            "candidate_token_target": target,
-            "estimated_materialized_tokens": actual.get(source_id, 0),
-            "estimators": sorted(estimators.get(source_id, set())),
-            "final_opt_out_removals": opt_out_removals.get(
-                source_id, {"removed_tokens": 0, "removed_records": 0}
-            ),
-            "target_met": actual.get(source_id, 0) >= target,
+    replacement_allocation: dict[str, Any] | None = None
+    if manifest.get("replacement_policy"):
+        replay = replay_quotas(manifest)
+        unique = unique_quotas(manifest, replay)
+        unique_requirements = {
+            source_id: sum(int(tokens) for tokens in phases.values())
+            for source_id, phases in unique.items()
         }
-        for source_id, target in sorted(expected.items())
-    }
-    short = [source_id for source_id, row in report.items() if not row["target_met"]]
-    if short:
-        detail = ", ".join(
-            f"{source_id}={report[source_id]['estimated_materialized_tokens']:,}/"
-            f"{report[source_id]['candidate_token_target']:,}"
-            for source_id in short
+        replacement_allocation = allocate_replacements(
+            manifest,
+            requirements=unique,
+            available_tokens=actual,
         )
-        raise RuntimeError(f"Acquisition candidate-token target shortfall: {detail}")
+        received: dict[str, int] = {}
+        donated: dict[str, int] = {}
+        for transfer in replacement_allocation["transfers"]:
+            target_id = str(transfer["target_source_id"])
+            donor_id = str(transfer["actual_source_id"])
+            tokens = int(transfer["tokens"])
+            received[target_id] = received.get(target_id, 0) + tokens
+            donated[donor_id] = donated.get(donor_id, 0) + tokens
+        report = {
+            source_id: {
+                "driver": drivers.get(source_id, ""),
+                "candidate_token_target": expected.get(source_id, 0),
+                "final_unique_requirement": unique_requirements[source_id],
+                "estimated_materialized_tokens": actual.get(source_id, 0),
+                "estimators": sorted(estimators.get(source_id, set())),
+                "final_opt_out_removals": opt_out_removals.get(
+                    source_id, {"removed_tokens": 0, "removed_records": 0}
+                ),
+                "own_unique_requirement_met": (
+                    actual.get(source_id, 0) >= unique_requirements[source_id]
+                ),
+                "replacement_tokens_received": received.get(source_id, 0),
+                "reserve_tokens_donated": donated.get(source_id, 0),
+                "target_met": not bool(
+                    replacement_allocation.get("unresolved", {}).get(source_id)
+                ),
+            }
+            for source_id in sorted(unique_requirements)
+        }
+        category_targets = unique_requirements
+    else:
+        report = {
+            source_id: {
+                "driver": drivers.get(source_id, ""),
+                "candidate_token_target": target,
+                "estimated_materialized_tokens": actual.get(source_id, 0),
+                "estimators": sorted(estimators.get(source_id, set())),
+                "final_opt_out_removals": opt_out_removals.get(
+                    source_id, {"removed_tokens": 0, "removed_records": 0}
+                ),
+                "target_met": actual.get(source_id, 0) >= target,
+            }
+            for source_id, target in sorted(expected.items())
+        }
+        short = [
+            source_id for source_id, row in report.items() if not row["target_met"]
+        ]
+        if short:
+            detail = ", ".join(
+                f"{source_id}={report[source_id]['estimated_materialized_tokens']:,}/"
+                f"{report[source_id]['candidate_token_target']:,}"
+                for source_id in short
+            )
+            raise RuntimeError(f"Acquisition candidate-token target shortfall: {detail}")
+        category_targets = expected
 
     source_categories = {
         str(source["id"]): str(source["category"])
         for source in manifest.get("sources", [])
     }
     category_report: dict[str, dict[str, Any]] = {}
-    for source_id, target in expected.items():
+    for source_id, target in category_targets.items():
         category = source_categories.get(source_id)
         if not category:
             raise RuntimeError(f"Source lock contains an unknown manifest source: {source_id}")
@@ -412,7 +461,11 @@ def _validate_materialized_token_targets(
         raise RuntimeError(
             "Acquisition category candidate-token shortfall: " + ", ".join(category_short)
         )
-    return {"sources": report, "categories": dict(sorted(category_report.items()))}
+    return {
+        "sources": report,
+        "categories": dict(sorted(category_report.items())),
+        "replacement_allocation": replacement_allocation,
+    }
 
 
 def _uses_common_crawl(manifest: dict[str, Any]) -> bool:

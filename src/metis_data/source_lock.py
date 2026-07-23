@@ -11,6 +11,8 @@ from huggingface_hub import HfApi, get_token
 
 from .acquisition.github import month_windows
 from .manifest import candidate_plan, matches_any, total_phase_tokens
+from .replacement import allocate_replacements, replacement_chains
+from .selection import replay_quotas, unique_quotas
 from .runtime_lock import runtime_contract, runtime_identity
 from .state import StateStore, utc_now
 
@@ -340,13 +342,16 @@ def resolve_sources(manifest: dict[str, Any], profile: dict[str, Any], state: St
                         f"{access.get('allow_patterns', ['**/*.parquet', '**/*.jsonl*'])}"
                     )
                 if short:
-                    raise RuntimeError(
-                        f"Pinned Hugging Face source {repo_id}@{revision} exposes only "
-                        f"{sum(item['size'] for item in selected):,} matching bytes, below the "
-                        f"{per_repo_target:,}-byte candidate target; revise the manifest rather than underfill. "
-                        f"take_all={bool(access.get('take_all'))!r} means select every matching file, not "
-                        "permit a known acquisition shortfall"
-                    )
+                    chains, _ = replacement_chains(manifest)
+                    if not chains.get(source_id):
+                        raise RuntimeError(
+                            f"Pinned Hugging Face source {repo_id}@{revision} exposes only "
+                            f"{sum(item['size'] for item in selected):,} matching bytes, below the "
+                            f"{per_repo_target:,}-byte candidate target and has no compatible donor; "
+                            "revise the manifest rather than underfill. "
+                            f"take_all={bool(access.get('take_all'))!r} means select every matching file, not "
+                            "permit an unresolved acquisition shortfall"
+                        )
                 resolved_repo = {
                     "repo_id": repo_id,
                     "revision": revision,
@@ -439,6 +444,30 @@ def resolve_sources(manifest: dict[str, Any], profile: dict[str, Any], state: St
             )
         resolved_sources.append(resolved)
 
+    replacement_feasibility: dict[str, Any] | None = None
+    if manifest.get("replacement_policy") and manifest.get("schedule"):
+        replay = replay_quotas(manifest)
+        unique = unique_quotas(manifest, replay)
+        source_lock_available: dict[str, int] = {}
+        for source in resolved_sources:
+            source_id = str(source["id"])
+            if source.get("driver") == "hf_snapshot":
+                source_lock_available[source_id] = int(
+                    source.get("estimated_candidate_tokens_at_source_lock", 0)
+                )
+            else:
+                # Builders such as repository hydration, canonical Git,
+                # GitHub, and Common Crawl enforce materialized estimates at
+                # handoff. Their target is the honest lock-time estimate.
+                source_lock_available[source_id] = int(
+                    source.get("candidate_tokens", 0)
+                )
+        replacement_feasibility = allocate_replacements(
+            manifest,
+            requirements=unique,
+            available_tokens=source_lock_available,
+        )
+
     target_task_bytes = int(profile.get("scheduler", {}).get("download", {}).get("target_bytes_per_task", 20_000_000_000))
     tasks: list[dict[str, Any]] = []
     current: list[dict[str, Any]] = []
@@ -475,6 +504,7 @@ def resolve_sources(manifest: dict[str, Any], profile: dict[str, Any], state: St
         "runtime_contract": resolved_runtime_contract,
         "resolver_runtime": resolver_runtime,
         "sources": resolved_sources,
+        "replacement_feasibility": replacement_feasibility,
         "download_tasks": tasks,
     }
     lock["lock_sha256"] = source_lock_sha256(lock)

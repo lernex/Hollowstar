@@ -868,6 +868,15 @@ Wholesale Pile of Law was
 replaced by pinned Common Pile Caselaw Access Project and USGPO primary-law snapshots. These are
 source substitutions only: science remains 90B / 30B / 5B and reference remains 25B / 0 / 0.
 
+All 56 source rows now have ordered automatic shortfall handling. The pipeline widens the original
+source first, then allocates measured surplus only from quality-ranked donors that preserve the
+category and freshness bucket. It records both the physical source and immutable quota source
+through handoff, selection, packing, and verification. Generated material cannot replace an organic
+quota and Phase C remains generated-free. Fifty-three sources withstand a simulated complete source
+loss using other downloaded donor headroom; the three singleton fresh WARC routes instead activate
+the January 2026 Common Crawl cold reserve before failing closed. The detailed evidence and matrix
+are in `docs/metis16_replacement_data_research.md`.
+
 The operator interface is split by environment:
 
 1. after the Lustre administrator confirms sufficient capacity, on `login2`, run
