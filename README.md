@@ -10,7 +10,7 @@ The pipeline is:
 4. Train a roughly 10M-parameter causal language model with PyTorch
 5. Sample text from a saved checkpoint
 
-## Metis-1.6 Portage data factory
+## Metis-1.6 login2/Rhea data factory
 
 Metis-1.6's production data recipe is separate from the local teaching flow below. It locks exactly
 1T final-tokenizer-measured exposures across 700B/250B/50B phases, including a 90B freshness layer.
@@ -18,21 +18,22 @@ The exact recipe and operational gates are documented in
 [`docs/metis16_pretraining_data_plan.md`](docs/metis16_pretraining_data_plan.md); the machine-readable
 source of truth is [`manifests/metis-1.6.yaml`](manifests/metis-1.6.yaml).
 
-Portage operator interface:
+Split login2/Rhea/Portage operator interface:
 
 ```bash
-export METIS_LUSTRE_ROOT=/hpe/assigned/path/metis-1.6
-./ops/bootstrap.sh --profile portage
-./metisctl doctor --profile portage
-./metisctl submit download --profile portage
-./metisctl status --profile portage
-./metisctl report --profile portage
-./metisctl submit build --profile portage
+git clone --branch codex/metis16-data-acquisition git@github.com:lernex/Metis.git
+cd Metis
+./ops/start-acquisition.sh \
+  --lustre-root /lus/lustre1/vollmerc/metis-1.6 \
+  --quota-acknowledgement administrator-confirmed
 ```
 
-The production doctor remains fail-closed until the HPE-approved dynamic Common Crawl,
-GitHub/repository, canonical-source, and derived-data materializers have been connected. A resolved
-URL/WARC/repository selection plan is not treated as downloaded training data.
+That command securely prompts for the Hugging Face token and, when no `gh` credential is available,
+a read-only GitHub metadata token. It runs acquisition inside GNU Screen on `login2` and may safely outlive SSH. Rhea later
+runs CPU preparation with `--profile rhea`; Portage consumes only the verified release for model
+training. The profiles refuse an implicit path or `/lus/lustre1` itself, and Rhea stays sealed until
+its scheduler facts and direct view of the acquisition directory are confirmed. See
+[`docs/metis16_operator_runbook.md`](docs/metis16_operator_runbook.md).
 
 ## Why this setup
 

@@ -114,6 +114,9 @@ sources:
       crawls: [CC-MAIN-2026-08, CC-MAIN-2026-12, CC-MAIN-2026-17, CC-MAIN-2026-21, CC-MAIN-2026-25]
       url_index: s3://commoncrawl/cc-index/table/cc-main/warc/
       warc_root: https://data.commoncrawl.org/
+      route: general_web
+      cutoff_start: '2025-01-01'
+      cutoff_end: '2026-06-30'
     license: {status: per_record_required, expression: source-page-terms-plus-Common-Crawl-terms}
     acquisition: {driver: common_crawl_ranges, candidate_multiplier: 2.60, compressed_bytes_per_token: 1.10}
     processing: {quality_profile: fresh_web_2026_v1, dedup_namespace: global_web, priority: 100}

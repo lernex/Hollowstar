@@ -14,6 +14,20 @@ from .manifest import PHASES
 from .state import atomic_json, utc_now
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _json_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
 def hamilton_apportion(total: int, weights: dict[str, int]) -> dict[str, int]:
     positive = {key: value for key, value in weights.items() if value > 0}
     denominator = sum(positive.values())
@@ -125,6 +139,7 @@ class ScheduleWriter:
         *,
         replay: bool,
         token_start: int = 0,
+        exposure: int = 0,
     ) -> None:
         remaining = token_count
         offset = token_start
@@ -150,8 +165,11 @@ class ScheduleWriter:
                     "token_start": offset,
                     "token_count": take,
                     "replay": replay,
+                    "exposure": exposure,
                     "generated": bool(record.get("generated", False)),
+                    "transformed": bool(record.get("transformed", False)),
                     "content_sha256": record.get("content_sha256"),
+                    "text_sha256": record.get("text_sha256"),
                     "license": record.get("license"),
                     "license_status": record.get("license_status"),
                 },
@@ -176,6 +194,8 @@ class ScheduleWriter:
                         "global_index": shard.global_index,
                         "target_tokens": shard.target_tokens,
                         "path": str(shard.path),
+                        "size": shard.path.stat().st_size,
+                        "sha256": _sha256_file(shard.path),
                     }
                 )
         return rows
@@ -197,6 +217,8 @@ def build_selection(
     eligible_tokens: dict[str, int],
     output_root: Path,
     shard_tokens: int,
+    token_count_contract_sha256: str | None = None,
+    tokenizer_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     replay = replay_quotas(manifest)
     unique = unique_quotas(manifest, replay)
@@ -241,15 +263,35 @@ def build_selection(
             if needed <= 0 or available <= 0:
                 continue
             take = min(needed, available)
-            schedule.write(phase, record, take, replay=False, token_start=consumed)
+            schedule.write(
+                phase,
+                record,
+                take,
+                replay=False,
+                token_start=consumed,
+                exposure=0,
+            )
             unique_written[source_id][phase] += take
             remaining_unique[source_id][phase] -= take
             available -= take
             consumed += take
         desired_replay_pool = sum(replay[source_id].values())
-        if desired_replay_pool and replay_pool_tokens[source_id] < desired_replay_pool:
-            replay_pool.write(replay_pool_root / f"{source_id}.jsonl.zst", record)
-            replay_pool_tokens[source_id] += int(record["token_count"])
+        if (
+            consumed
+            and desired_replay_pool
+            and replay_pool_tokens[source_id] < desired_replay_pool
+        ):
+            # Replay is allowed to draw only from token spans that were
+            # actually emitted as unique data. Persisting the entire source
+            # document here could otherwise turn an unselected tail into
+            # "replay" and overstate the 875B unique-token contract.
+            replay_record = dict(record)
+            replay_record["token_count"] = consumed
+            replay_pool.write(
+                replay_pool_root / f"{source_id}.jsonl.zst",
+                replay_record,
+            )
+            replay_pool_tokens[source_id] += consumed
 
     for record in records:
         source_id = record["source_id"]
@@ -297,7 +339,14 @@ def build_selection(
                     if need <= 0 or available <= 0:
                         continue
                     take = min(need, available)
-                    schedule.write(phase, record, take, replay=True, token_start=consumed)
+                    schedule.write(
+                        phase,
+                        record,
+                        take,
+                        replay=True,
+                        token_start=consumed,
+                        exposure=exposure,
+                    )
                     replay_written[source_id][phase] += take
                     remaining[phase] -= take
                     available -= take
@@ -309,14 +358,35 @@ def build_selection(
         if sum(remaining.values()):
             raise RuntimeError(f"Replay cap of {maximum_exposures} exposures cannot satisfy {source_id}: {remaining}")
     shards = schedule.close()
+    schedule_contract = [
+        {
+            key: shard[key]
+            for key in (
+                "phase",
+                "phase_index",
+                "global_index",
+                "target_tokens",
+                "size",
+                "sha256",
+            )
+        }
+        for shard in shards
+    ]
     payload = {
-        "schema": "metis.selection-release/v1",
+        "schema": "metis.selection-release/v2",
         "created_at": utc_now(),
         "unique_quotas": unique,
         "replay_quotas": replay,
         "unique_written": unique_written,
         "replay_written": replay_written,
+        "unique_tokens": sum(sum(phases.values()) for phases in unique_written.values()),
+        "replay_tokens": sum(sum(phases.values()) for phases in replay_written.values()),
+        "maximum_document_exposures": maximum_exposures,
+        "selection_seed": seed,
+        "token_count_contract_sha256": token_count_contract_sha256,
+        "tokenizer_contract": tokenizer_contract,
         "phase_tokens": phase_targets,
+        "schedule_manifest_sha256": _json_sha256(schedule_contract),
         "shards": shards,
     }
     atomic_json(output_root / "SELECTION.json", payload)

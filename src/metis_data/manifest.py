@@ -84,15 +84,47 @@ def validate_manifest(path: str | Path | None = None) -> ValidationResult:
         errors.append(f"phase schedule must be 700B/250B/50B, got {scheduled_by_phase}")
     unique = int(schedule.get("unique_target_tokens", 0))
     replay = int(schedule.get("replay_target_tokens", 0))
+    if (unique, replay) != (875_000_000_000, 125_000_000_000):
+        errors.append(
+            "schedule unique/replay targets must be exactly 875B/125B, "
+            f"got {unique:,}/{replay:,}"
+        )
     if unique + replay != target:
         errors.append("unique_target_tokens + replay_target_tokens must equal target_tokens")
+    expected_start = 0
+    phase_unique_total = 0
+    phase_replay_total = 0
     for phase in PHASES:
         phase_payload = phases.get(phase, {})
-        if int(phase_payload.get("unique_tokens", 0)) + int(phase_payload.get("replay_tokens", 0)) != scheduled_by_phase[phase]:
+        phase_target = scheduled_by_phase[phase]
+        phase_unique = int(phase_payload.get("unique_tokens", 0))
+        phase_replay = int(phase_payload.get("replay_tokens", 0))
+        phase_start = int(phase_payload.get("start_token", -1))
+        if min(phase_target, phase_unique, phase_replay, phase_start) < 0:
+            errors.append(f"{phase} schedule values must be nonnegative")
+        if phase_start != expected_start:
+            errors.append(
+                f"{phase}.start_token must be the canonical contiguous cursor "
+                f"{expected_start:,}, got {phase_start:,}"
+            )
+        if phase_unique + phase_replay != phase_target:
             errors.append(f"{phase} unique_tokens + replay_tokens does not match phase target")
+        expected_start += phase_target
+        phase_unique_total += phase_unique
+        phase_replay_total += phase_replay
+    if expected_start != target:
+        errors.append(f"phase cursors end at {expected_start:,}, not target {target:,}")
+    if (phase_unique_total, phase_replay_total) != (unique, replay):
+        errors.append(
+            "phase unique/replay quotas do not reconcile with schedule totals: "
+            f"{phase_unique_total:,}/{phase_replay_total:,} versus {unique:,}/{replay:,}"
+        )
 
     categories = manifest.get("categories", [])
     category_ids = {item.get("id") for item in categories}
+    for category in categories:
+        if any(int(category.get("phase_tokens", {}).get(phase, 0)) < 0 for phase in PHASES):
+            errors.append(f"category {category.get('id')}: phase token targets must be nonnegative")
     category_by_phase = _sum_by_phase(categories)
     if category_by_phase != scheduled_by_phase:
         errors.append(f"category phase totals {category_by_phase} do not match schedule {scheduled_by_phase}")
@@ -113,6 +145,9 @@ def validate_manifest(path: str | Path | None = None) -> ValidationResult:
             errors.append(f"{source_id}: unknown category {category!r}")
             continue
         by_category[category].append(source)
+        phase_values = [int(source.get("phase_tokens", {}).get(phase, 0)) for phase in PHASES]
+        if any(value < 0 for value in phase_values):
+            errors.append(f"{source_id}: phase token targets must be nonnegative")
         if total_phase_tokens(source) <= 0:
             errors.append(f"{source_id}: source target must be positive")
         for key in ("provenance", "access", "license", "acquisition", "processing"):

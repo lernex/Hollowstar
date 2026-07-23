@@ -6,9 +6,21 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from tokenizers import Tokenizer
+
+from .manifest import validate_manifest
 
 
-PHASE_DIRECTORIES = {"phase_a": "phase-a", "phase_b": "phase-b", "phase_c": "phase-c"}
+PHASE_DIRECTORIES = {
+    "phase_a": "phase-a",
+    "phase_b": "phase-b",
+    "phase_c": "phase-c",
+}
+PHASE_TOKENS = {
+    "phase_a": 700_000_000_000,
+    "phase_b": 250_000_000_000,
+    "phase_c": 50_000_000_000,
+}
 
 
 def _sha256(path: Path) -> str:
@@ -19,69 +31,426 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_training_release(release_root: str | Path, contract_path: str | Path) -> dict[str, Any]:
+def _tree_sha256(root: Path) -> str:
+    digest = hashlib.sha256()
+    for candidate in root.rglob("*"):
+        if candidate.is_symlink():
+            raise RuntimeError(f"Manifest bundle may not contain symlinks: {candidate}")
+    for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+        digest.update(str(path.relative_to(root)).encode("utf-8"))
+        digest.update(b"\0")
+        with path.open("rb") as handle:
+            while chunk := handle.read(8 * 1024 * 1024):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _json_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _artifact(
+    root: Path,
+    artifacts: dict[str, Any],
+    name: str,
+    *,
+    directory: bool = False,
+) -> Path:
+    raw = artifacts.get(name)
+    if not isinstance(raw, str) or not raw or Path(raw).is_absolute():
+        raise RuntimeError(f"Release artifact {name!r} is not a safe relative path")
+    unresolved = root / raw
+    if unresolved.is_symlink():
+        raise RuntimeError(f"Release artifact {name!r} may not be a symlink")
+    path = unresolved.resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(f"Release artifact {name!r} escapes the release root") from exc
+    if directory:
+        if not path.is_dir():
+            raise RuntimeError(f"Release artifact directory is missing: {path}")
+    elif not path.is_file():
+        raise RuntimeError(f"Release artifact is missing: {path}")
+    return path
+
+
+def _unsigned_hash(payload: dict[str, Any], field: str) -> str:
+    return _json_sha256({key: value for key, value in payload.items() if key != field})
+
+
+def _manifest_contract_sha256(manifest: dict[str, Any]) -> str:
+    def public(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): public(item)
+                for key, item in value.items()
+                if not str(key).startswith("_")
+            }
+        if isinstance(value, list):
+            return [public(item) for item in value]
+        return value
+
+    return _json_sha256(public(manifest))
+
+
+def validate_training_release(
+    release_root: str | Path,
+    contract_path: str | Path,
+) -> dict[str, Any]:
     root = Path(release_root).expanduser().resolve()
-    contract = yaml.safe_load(Path(contract_path).expanduser().resolve().read_text(encoding="utf-8"))
+    if not root.is_dir():
+        raise RuntimeError(f"Verified data release directory is missing: {root}")
+    contract = yaml.safe_load(
+        Path(contract_path).expanduser().resolve().read_text(encoding="utf-8")
+    )
+    if (
+        contract.get("schema") != "metis.pretraining-contract/v1"
+        or contract.get("require_verified_release") is not True
+        or contract.get("token_dtype") != "uint16"
+        or int(contract.get("tokenizer_vocabulary_size", -1)) != 65_536
+    ):
+        raise RuntimeError("Pretraining contract is not the Metis-1.6 uint16/65,536 contract")
+
     release_path = root / "RELEASE.json"
-    if not release_path.exists():
+    if not release_path.is_file():
         raise RuntimeError(f"Verified data release is missing: {release_path}")
     release = json.loads(release_path.read_text(encoding="utf-8"))
-    if release.get("schema") != "metis.data-release/v1":
+    if release.get("schema") != "metis.data-release/v2":
         raise RuntimeError("Unexpected data release schema")
+    if release.get("release_sha256") != _unsigned_hash(release, "release_sha256"):
+        raise RuntimeError("RELEASE.json failed its self-hash check")
     if release.get("release") != contract.get("data_release"):
-        raise RuntimeError(f"Data release mismatch: {release.get('release')} != {contract.get('data_release')}")
-    if int(release.get("target_tokens", 0)) != int(contract.get("total_train_tokens", 0)):
-        raise RuntimeError("Training contract and release token targets differ")
+        raise RuntimeError(
+            f"Data release mismatch: {release.get('release')} != {contract.get('data_release')}"
+        )
+    if (
+        release.get("token_dtype") != "uint16"
+        or release.get("token_endianness") != "little"
+    ):
+        raise RuntimeError("Release is not explicitly little-endian uint16")
+    if (
+        int(release.get("target_tokens", 0))
+        != int(contract.get("total_train_tokens", 0))
+        or int(release.get("target_tokens", 0)) != 1_000_000_000_000
+    ):
+        raise RuntimeError("Training contract and release token targets differ from exact 1T")
+    if release.get("phase_tokens") != PHASE_TOKENS:
+        raise RuntimeError("Release phase schedule is not exactly 700B/250B/50B")
     if not release.get("verification", {}).get("ok"):
         raise RuntimeError("Training refuses an unverified data release")
-    tokenizer_path = root / release["artifacts"]["tokenizer"]
-    if _sha256(tokenizer_path) != release["tokenizer_sha256"]:
-        raise RuntimeError("Tokenizer hash does not match RELEASE.json")
-    shard_manifest_path = root / release["artifacts"]["shard_manifest"]
-    expected_manifest_sha = release["verification"]["shard_manifest_sha256"]
-    if _sha256(shard_manifest_path) != expected_manifest_sha:
-        raise RuntimeError("Shard manifest hash does not match RELEASE.json")
-    shard_rows = [json.loads(line) for line in shard_manifest_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if len(shard_rows) != int(release["verification"]["shards"]):
-        raise RuntimeError("Shard manifest row count does not match verification report")
-    for row in shard_rows:
-        binary = root / row["binary"]
-        index = root / row["index"]
-        if binary.stat().st_size != int(row["tokens"]) * 2:
-            raise RuntimeError(f"Shard byte size mismatch: {binary}")
-        if _sha256(binary) != row["binary_sha256"] or _sha256(index) != row["index_sha256"]:
-            raise RuntimeError(f"Shard or index hash mismatch: {binary}")
 
+    artifacts = release.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise RuntimeError("RELEASE.json is missing its artifact map")
+    verification_path = _artifact(root, artifacts, "verification")
+    selection_path = _artifact(root, artifacts, "selection")
+    token_count_path = _artifact(root, artifacts, "token_count_contract")
+    filter_chain_path = _artifact(root, artifacts, "filter_chain")
+    tokenizer_path = _artifact(root, artifacts, "tokenizer")
+    tokenizer_vocab_path = _artifact(root, artifacts, "tokenizer_vocab")
+    tokenizer_release_path = _artifact(root, artifacts, "tokenizer_release")
+    tokenizer_validation_path = _artifact(root, artifacts, "tokenizer_validation")
+    source_lock_path = _artifact(root, artifacts, "source_lock")
+    build_inputs_path = _artifact(root, artifacts, "build_inputs")
+    manifest_path = _artifact(root, artifacts, "manifest")
+    manifest_bundle = _artifact(root, artifacts, "manifest_bundle", directory=True)
+    license_ledger_path = _artifact(root, artifacts, "license_ledger")
+    shard_manifest_path = _artifact(root, artifacts, "shard_manifest")
+
+    expected_hashes = (
+        (verification_path, release.get("verification_file_sha256"), "verification"),
+        (selection_path, release.get("selection_sha256"), "selection"),
+        (token_count_path, release.get("token_count_contract_sha256"), "token-count contract"),
+        (filter_chain_path, release.get("filter_chain_sha256"), "filter chain"),
+        (tokenizer_path, release.get("tokenizer_sha256"), "tokenizer"),
+        (source_lock_path, release.get("source_lock_sha256"), "source lock"),
+        (build_inputs_path, release.get("build_inputs_sha256"), "build inputs"),
+        (manifest_path, release.get("manifest_sha256"), "data manifest"),
+        (license_ledger_path, release.get("license_ledger_sha256"), "license ledger"),
+        (shard_manifest_path, release.get("shard_manifest_sha256"), "shard manifest"),
+    )
+    for path, expected, label in expected_hashes:
+        if _sha256(path) != expected:
+            raise RuntimeError(f"{label.title()} hash does not match RELEASE.json")
+    if _tree_sha256(manifest_bundle) != release.get("manifest_bundle_sha256"):
+        raise RuntimeError("Manifest bundle hash does not match RELEASE.json")
+
+    verification = json.loads(verification_path.read_text(encoding="utf-8"))
+    if (
+        verification != release["verification"]
+        or verification.get("schema") != "metis.verification/v2"
+        or verification.get("verification_sha256")
+        != _unsigned_hash(verification, "verification_sha256")
+    ):
+        raise RuntimeError("Embedded verification contract is invalid")
+    if (
+        verification.get("manifest_sha256") != release.get("manifest_sha256")
+        or verification.get("manifest_contract_sha256")
+        != release.get("manifest_contract_sha256")
+        or verification.get("source_lock_sha256") != release.get("source_lock_sha256")
+        or verification.get("build_inputs_sha256") != release.get("build_inputs_sha256")
+        or verification.get("selection_sha256") != release.get("selection_sha256")
+        or verification.get("token_count_contract_sha256")
+        != release.get("token_count_contract_sha256")
+        or verification.get("license_ledger_sha256")
+        != release.get("license_ledger_sha256")
+        or verification.get("shard_manifest_sha256")
+        != release.get("shard_manifest_sha256")
+    ):
+        raise RuntimeError("Verification and release provenance hashes disagree")
+    selection_contract = verification.get("selection_contract", {})
+    if (
+        int(selection_contract.get("unique_tokens", -1)) != 875_000_000_000
+        or int(selection_contract.get("replay_tokens", -1)) != 125_000_000_000
+        or int(verification.get("packed_unique_tokens", -1)) != 875_000_000_000
+        or int(verification.get("packed_replay_tokens", -1)) != 125_000_000_000
+    ):
+        raise RuntimeError("Verified release is not exactly 875B unique plus 125B replay")
+
+    released_manifest = validate_manifest(manifest_path).require_valid()
+    if (
+        released_manifest.get("release") != release.get("release")
+        or _manifest_contract_sha256(released_manifest)
+        != release.get("manifest_contract_sha256")
+        or int(released_manifest["schedule"]["target_tokens"])
+        != int(release["target_tokens"])
+        or verification.get("source_phase_tokens")
+        != {
+            source["id"]: {
+                phase: int(source["phase_tokens"].get(phase, 0))
+                for phase in PHASE_DIRECTORIES
+            }
+            for source in released_manifest["sources"]
+        }
+    ):
+        raise RuntimeError("Bundled data manifest does not match verified source/phase quotas")
+    ledger_rows = [
+        json.loads(line)
+        for line in license_ledger_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    ledger_by_source = {
+        str(row.get("source_id", "")): row for row in ledger_rows
+    }
+    if (
+        len(ledger_by_source) != len(ledger_rows)
+        or set(ledger_by_source)
+        != {str(source["id"]) for source in released_manifest["sources"]}
+    ):
+        raise RuntimeError("License ledger does not contain exactly one row per source")
+    for source in released_manifest["sources"]:
+        row = ledger_by_source[str(source["id"])]
+        observed = row.get("observed_license_tokens", {})
+        observed_total = sum(int(value) for value in observed.values())
+        expected_total = sum(int(value) for value in source["phase_tokens"].values())
+        if (
+            row.get("license_status") != source["license"]["status"]
+            or row.get("license_expression") != source["license"]["expression"]
+            or row.get("training_recipe_disposition") != "verified_for_training"
+            or observed_total != expected_total
+        ):
+            raise RuntimeError(
+                f"License ledger does not reconcile source {source['id']}"
+            )
+
+    token_count = json.loads(token_count_path.read_text(encoding="utf-8"))
+    if (
+        token_count.get("schema") != "metis.token-count-set/v1"
+        or token_count.get("contract_sha256")
+        != _unsigned_hash(token_count, "contract_sha256")
+    ):
+        raise RuntimeError("Token-count contract failed its self-hash check")
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    if (
+        selection.get("schema") != "metis.selection-release/v2"
+        or selection.get("token_count_contract_sha256")
+        != release.get("token_count_contract_sha256")
+    ):
+        raise RuntimeError("Selection is not bound to the released token-count contract")
+
+    tokenizer_contract = release.get("tokenizer_contract", {})
+    if tokenizer_contract != verification.get("tokenizer_contract"):
+        raise RuntimeError("Tokenizer contract differs between release and verification")
+    if (
+        token_count.get("tokenizer_contract") != tokenizer_contract
+        or selection.get("tokenizer_contract") != tokenizer_contract
+    ):
+        raise RuntimeError(
+            "Token-count/selection artifacts are not bound to the released tokenizer"
+        )
+    tokenizer_hashes = (
+        (tokenizer_path, "tokenizer_sha256"),
+        (tokenizer_vocab_path, "vocab_sha256"),
+        (tokenizer_release_path, "tokenizer_release_sha256"),
+        (tokenizer_validation_path, "tokenizer_validation_sha256"),
+    )
+    for path, field in tokenizer_hashes:
+        if _sha256(path) != tokenizer_contract.get(field):
+            raise RuntimeError(f"Tokenizer artifact hash mismatch: {path.name}")
+    tokenizer = Tokenizer.from_file(str(tokenizer_path))
+    vocab = tokenizer.get_vocab()
+    ids = list(vocab.values())
+    if (
+        len(vocab) != 65_536
+        or len(set(ids)) != 65_536
+        or set(ids) != set(range(65_536))
+        or tokenizer_contract.get("token_dtype") != "uint16"
+        or tokenizer_contract.get("endianness") != "little"
+        or int(tokenizer_contract.get("vocabulary_size", -1)) != 65_536
+        or int(tokenizer_contract.get("maximum_id", -1)) != 65_535
+        or tokenizer_contract.get("contract_sha256")
+        != _unsigned_hash(tokenizer_contract, "contract_sha256")
+    ):
+        raise RuntimeError("Released tokenizer violates the 65,536-ID uint16 contract")
+    if json.loads(tokenizer_vocab_path.read_text(encoding="utf-8")) != vocab:
+        raise RuntimeError("Released vocab.json does not match tokenizer.json")
+    tokenizer_release = json.loads(tokenizer_release_path.read_text(encoding="utf-8"))
+    tokenizer_validation = json.loads(tokenizer_validation_path.read_text(encoding="utf-8"))
+    expected_special_tokens = {
+        str(token): tokenizer.token_to_id(str(token))
+        for token in released_manifest["tokenizer"]["special_tokens"]
+    }
+    if (
+        tokenizer_release.get("tokenizer_sha256") != _sha256(tokenizer_path)
+        or tokenizer_release.get("uint16_safe") is not True
+        or int(tokenizer_release.get("vocabulary_size", -1)) != 65_536
+        or tokenizer_release.get("special_tokens") != expected_special_tokens
+        or any(token_id is None for token_id in expected_special_tokens.values())
+        or tokenizer_validation.get("ok") is not True
+    ):
+        raise RuntimeError("Released tokenizer reports do not attest the tokenizer")
+
+    filter_chain = json.loads(filter_chain_path.read_text(encoding="utf-8"))
+    if (
+        filter_chain.get("schema") != "metis.filter-chain/v1"
+        or filter_chain.get("filter_chain_sha256")
+        != _unsigned_hash(filter_chain, "filter_chain_sha256")
+    ):
+        raise RuntimeError("Filtering/decontamination receipt failed its self-hash check")
+
+    shard_rows = [
+        json.loads(line)
+        for line in shard_manifest_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if len(shard_rows) != int(verification["shards"]):
+        raise RuntimeError("Shard manifest row count does not match verification report")
+    expected_tasks = set(range(len(shard_rows)))
+    if {int(row.get("task_index", -1)) for row in shard_rows} != expected_tasks:
+        raise RuntimeError("Shard task indices are not unique and contiguous")
+    listed_binaries: dict[str, set[Path]] = {phase: set() for phase in PHASE_DIRECTORIES}
+    listed_indices: dict[str, set[Path]] = {phase: set() for phase in PHASE_DIRECTORIES}
+    listed_phase_indices: dict[str, set[int]] = {
+        phase: set() for phase in PHASE_DIRECTORIES
+    }
+    phase_row_tokens = {phase: 0 for phase in PHASE_DIRECTORIES}
+    for row in shard_rows:
+        phase = str(row.get("phase", ""))
+        if phase not in PHASE_DIRECTORIES:
+            raise RuntimeError(f"Shard manifest contains unknown phase {phase!r}")
+        binary_raw = str(row.get("binary", ""))
+        index_raw = str(row.get("index", ""))
+        if Path(binary_raw).is_absolute() or Path(index_raw).is_absolute():
+            raise RuntimeError("Shard manifest paths must be relative to release root")
+        binary = (root / binary_raw).resolve()
+        index = (root / index_raw).resolve()
+        phase_root = (root / PHASE_DIRECTORIES[phase]).resolve()
+        try:
+            binary.relative_to(phase_root)
+            index.relative_to(phase_root)
+        except ValueError as exc:
+            raise RuntimeError(f"Shard path escapes phase directory: {binary}") from exc
+        phase_index = int(row.get("phase_index", -1))
+        if (
+            binary.name != f"shard-{phase_index:05d}.bin"
+            or index.name != f"shard-{phase_index:05d}.index.jsonl"
+        ):
+            raise RuntimeError(f"Shard filenames do not match phase index {phase_index}")
+        tokens = int(row["tokens"])
+        if (
+            binary.stat().st_size != tokens * 2
+            or _sha256(binary) != row["binary_sha256"]
+            or _sha256(index) != row["index_sha256"]
+        ):
+            raise RuntimeError(f"Shard or index hash mismatch: {binary}")
+        if binary in listed_binaries[phase] or index in listed_indices[phase]:
+            raise RuntimeError(f"Duplicate shard artifact in manifest: {binary}")
+        if phase_index in listed_phase_indices[phase]:
+            raise RuntimeError(
+                f"Duplicate phase shard index {phase_index} in {phase}"
+            )
+        listed_binaries[phase].add(binary)
+        listed_indices[phase].add(index)
+        listed_phase_indices[phase].add(phase_index)
+        phase_row_tokens[phase] += tokens
+    if phase_row_tokens != PHASE_TOKENS:
+        raise RuntimeError("Shard manifest token totals do not match 700B/250B/50B")
+
+    phases = contract.get("phases", [])
+    if [phase.get("id") for phase in phases] != list(PHASE_DIRECTORIES):
+        raise RuntimeError("Training phases must be ordered phase_a, phase_b, phase_c")
     phase_rows = []
     expected_cursor = 0
-    for phase in contract["phases"]:
-        phase_id = phase["id"]
+    for phase in phases:
+        phase_id = str(phase["id"])
+        if phase.get("data_directory") != PHASE_DIRECTORIES[phase_id]:
+            raise RuntimeError(f"Training phase directory is not canonical for {phase_id}")
         start = int(phase["start_token"])
         end = int(phase["end_token_exclusive"])
-        if start != expected_cursor or end <= start:
-            raise RuntimeError(f"Training phases are not contiguous at {phase_id}")
-        expected = int(release["phase_tokens"][phase_id])
-        if end - start != expected:
-            raise RuntimeError(f"Phase token mismatch for {phase_id}: {end - start:,} != {expected:,}")
-        phase_root = root / phase["data_directory"]
-        binaries = sorted(phase_root.glob("shard-*.bin"))
-        indices = sorted(phase_root.glob("shard-*.index.jsonl"))
-        if len(binaries) != len(indices) or not binaries:
-            raise RuntimeError(f"Phase {phase_id} has incomplete shard/index pairs")
-        bytes_on_disk = sum(path.stat().st_size for path in binaries)
+        expected = PHASE_TOKENS[phase_id]
+        if start != expected_cursor or end - start != expected:
+            raise RuntimeError(f"Training phase boundary mismatch for {phase_id}")
+        phase_root = (root / PHASE_DIRECTORIES[phase_id]).resolve()
+        actual_binaries = set(phase_root.glob("shard-*.bin"))
+        actual_indices = set(phase_root.glob("shard-*.index.jsonl"))
+        if (
+            actual_binaries != listed_binaries[phase_id]
+            or actual_indices != listed_indices[phase_id]
+            or not actual_binaries
+            or listed_phase_indices[phase_id]
+            != set(range(len(listed_phase_indices[phase_id])))
+        ):
+            raise RuntimeError(f"Phase {phase_id} on-disk shard inventory is not exact")
+        bytes_on_disk = sum(path.stat().st_size for path in actual_binaries)
         if bytes_on_disk != expected * 2:
             raise RuntimeError(f"Phase {phase_id} uint16 byte count mismatch")
-        phase_rows.append({"id": phase_id, "tokens": expected, "shards": len(binaries), "bytes": bytes_on_disk})
+        phase_rows.append(
+            {
+                "id": phase_id,
+                "tokens": expected,
+                "shards": len(actual_binaries),
+                "bytes": bytes_on_disk,
+            }
+        )
         expected_cursor = end
     if expected_cursor != int(contract["total_train_tokens"]):
         raise RuntimeError("Phase boundaries do not end at total_train_tokens")
+    if int(contract.get("ordering", {}).get("seed", -1)) != int(
+        selection_contract.get("selection_seed", -2)
+    ):
+        raise RuntimeError("Training shard-order seed differs from selection seed")
     return {
         "ok": True,
         "release": release["release"],
         "release_root": str(root),
         "tokenizer": str(tokenizer_path),
+        "token_dtype": "uint16",
+        "token_endianness": "little",
         "sequence_length": int(contract["sequence_length"]),
         "phases": phase_rows,
+        "shards": [
+            {
+                "task_index": int(row["task_index"]),
+                "phase": row["phase"],
+                "binary": str((root / row["binary"]).resolve()),
+                "index": str((root / row["index"]).resolve()),
+                "tokens": int(row["tokens"]),
+            }
+            for row in sorted(shard_rows, key=lambda item: int(item["task_index"]))
+        ],
         "total_tokens": expected_cursor,
     }
 

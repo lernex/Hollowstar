@@ -10,6 +10,7 @@ from typing import Any, Iterable
 from .config import repository_root
 from .manifest import load_manifest
 from .state import StateStore, utc_now
+from .build_inputs import prepare_build_inputs
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class SubmittedJob:
     job_id: str
     array: str | None
     dependency: str | None
+    task_offset: int
     command: tuple[str, ...]
 
 
@@ -76,6 +78,7 @@ def submit_stage(
     profile: dict[str, Any],
     indices: Iterable[int] | None = None,
     dependency: str | None = None,
+    task_offset: int = 0,
     dry_run: bool = False,
 ) -> SubmittedJob:
     scheduler = profile["scheduler"]
@@ -112,31 +115,108 @@ def submit_stage(
         command.append(f"--mem={int(stage_config['memory_gb'])}G")
     command.extend(
         [
-            f"--export=ALL,METIS_PROFILE={profile_path},METIS_STAGE={stage}",
+            f"--export=ALL,METIS_PROFILE={profile_path},METIS_STAGE={stage},METIS_TASK_OFFSET={int(task_offset)}",
             str(script),
         ]
     )
     array = next((arg.split("=", 1)[1] for arg in command if arg.startswith("--array=")), None)
     if dry_run:
-        return SubmittedJob(stage, f"dry-{stage}", array, dependency, tuple(command))
+        return SubmittedJob(stage, f"dry-{stage}", array, dependency, int(task_offset), tuple(command))
     if not shutil.which("sbatch"):
         raise RuntimeError("sbatch is unavailable; use --dry-run outside Portage")
     result = subprocess.run(command, check=True, capture_output=True, text=True)
     job_id = result.stdout.strip().split(";")[0]
-    return SubmittedJob(stage, job_id, array, dependency, tuple(command))
+    return SubmittedJob(stage, job_id, array, dependency, int(task_offset), tuple(command))
+
+
+def _contiguous_chunks(indices: Iterable[int], maximum_array_size: int) -> list[range]:
+    """Map arbitrary global task indices onto Slurm-safe local arrays.
+
+    Slurm sites commonly cap both the number of array entries and the largest
+    array task ID.  Every returned range is contiguous and no larger than the
+    configured cap, so it can be submitted as ``0..N-1`` with the range start
+    exported as ``METIS_TASK_OFFSET``.
+    """
+
+    if maximum_array_size <= 0:
+        raise ValueError("scheduler.max_array_size must be a positive integer")
+    values = sorted(set(int(index) for index in indices))
+    if not values:
+        return []
+    chunks: list[range] = []
+    run_start = run_previous = values[0]
+    for value in values[1:] + [values[-1] + 2]:
+        if value == run_previous + 1 and value - run_start < maximum_array_size:
+            run_previous = value
+            continue
+        chunks.append(range(run_start, run_previous + 1))
+        run_start = run_previous = value
+    return chunks
+
+
+def _submit_array_chunks(
+    *,
+    stage: str,
+    global_indices: Iterable[int],
+    profile_path: Path,
+    profile: dict[str, Any],
+    dependency: str | None,
+    dry_run: bool,
+) -> list[SubmittedJob]:
+    maximum_array_size = int(profile["scheduler"].get("max_array_size", 1000))
+    chunks = _contiguous_chunks(global_indices, maximum_array_size)
+    jobs: list[SubmittedJob] = []
+    for chunk_number, chunk in enumerate(chunks):
+        # Local array IDs always start at zero. The batch wrapper adds the
+        # immutable global offset before dispatching the Python stage.
+        job = submit_stage(
+            stage=stage,
+            profile_path=profile_path,
+            profile=profile,
+            indices=range(len(chunk)),
+            dependency=dependency,
+            task_offset=chunk.start,
+            dry_run=dry_run,
+        )
+        if dry_run and len(chunks) > 1:
+            job = SubmittedJob(
+                stage=job.stage,
+                job_id=f"{job.job_id}-chunk-{chunk_number:04d}",
+                array=job.array,
+                dependency=job.dependency,
+                task_offset=job.task_offset,
+                command=job.command,
+            )
+        jobs.append(job)
+    return jobs
 
 
 BUILD_GRAPH = (
-    ("normalize", "download_tasks"),
+    ("normalize", "normalize_tasks"),
     ("exact_signature", "normalize_tasks"),
     ("exact_find", "exact_find_tasks"),
     ("exact_filter", "normalize_tasks"),
+    ("span_prefilter_signature", "normalize_tasks"),
+    ("span_prefilter_find", "span_buckets"),
+    ("span_signature", "normalize_tasks"),
+    ("span_find", "span_buckets"),
+    ("span_filter", "normalize_tasks"),
     ("minhash_signature", "normalize_tasks"),
     ("minhash_buckets", "minhash_buckets"),
-    ("minhash_cluster", None),
+    ("minhash_components", None),
+    ("minhash_priority_candidates", "normalize_tasks"),
+    ("minhash_priority_resolve", "minhash_priority_buckets"),
+    ("minhash_priority_finalize", "normalize_tasks"),
+    ("minhash_priority_verify", None),
     ("minhash_filter", "normalize_tasks"),
+    ("code_signature", "normalize_tasks"),
+    ("code_find", "code_buckets"),
+    ("code_filter", "normalize_tasks"),
     ("decontam_index", None),
     ("decontam_filter", "normalize_tasks"),
+    ("final_hash_signature", "normalize_tasks"),
+    ("final_hash_find", "final_hash_buckets"),
+    ("final_hash_filter", "normalize_tasks"),
     ("tokenizer_sample", None),
     ("tokenizer_train", None),
     ("token_count", "normalize_tasks"),
@@ -165,43 +245,90 @@ def submit_graph(
     if include_download:
         incomplete = [index for index, task in enumerate(source_lock["download_tasks"]) if not state.is_complete("download", task["task_id"])]
         if incomplete:
-            job = submit_stage(
+            stage_jobs = _submit_array_chunks(
                 stage="download",
                 profile_path=profile_path,
                 profile=profile,
-                indices=incomplete,
+                global_indices=incomplete,
+                dependency=dependency,
                 dry_run=dry_run,
             )
-            jobs.append(job)
-            dependency = job.job_id
+            jobs.extend(stage_jobs)
+            dependency = ":".join(job.job_id for job in stage_jobs)
     if include_build:
-        normalize_tasks = max(1, download_count)
+        build_inputs = prepare_build_inputs(profile, state)
+        if profile.get("gates", {}).get("require_deep_handoff_verification", False):
+            from .handoff_verification import handoff_verification_plan
+
+            verification_plan = handoff_verification_plan(profile, state)
+            if not verification_plan["complete"]:
+                missing_indices = verification_plan["missing_indices"]
+                if missing_indices:
+                    stage_jobs = _submit_array_chunks(
+                        stage="handoff_signature",
+                        global_indices=missing_indices,
+                        profile_path=profile_path,
+                        profile=profile,
+                        dependency=dependency,
+                        dry_run=dry_run,
+                    )
+                    jobs.extend(stage_jobs)
+                    dependency = ":".join(job.job_id for job in stage_jobs)
+                reducer = submit_stage(
+                    stage="handoff_verify",
+                    profile_path=profile_path,
+                    profile=profile,
+                    dependency=dependency,
+                    dry_run=dry_run,
+                )
+                jobs.append(reducer)
+                dependency = reducer.job_id
+        normalize_tasks = int(build_inputs["input_count"])
         exact_find_tasks = int(profile["scheduler"].get("exact_dedup", {}).get("find_tasks", 256))
+        span_buckets = int(profile["scheduler"].get("repeated_span", {}).get("finder_tasks", 64))
         minhash_buckets = int(profile["scheduler"].get("minhash", {}).get("num_buckets", 20))
+        minhash_priority_buckets = int(
+            profile["scheduler"].get("minhash_priority", {}).get("bucket_count", 256)
+        )
+        code_buckets = int(profile["scheduler"].get("code_structural", {}).get("finder_tasks", 64))
+        final_hash_buckets = int(profile["scheduler"].get("final_hash", {}).get("finder_tasks", 64))
         manifest_path = Path(profile["manifest"])
         if not manifest_path.is_absolute():
             manifest_path = repository_root() / manifest_path
         target = int(load_manifest(manifest_path)["schedule"]["target_tokens"])
         shard_tokens = int(profile["storage"].get("final_shard_tokens", 1_000_000_000))
         counts = {
-            "download_tasks": download_count,
             "normalize_tasks": normalize_tasks,
             "exact_find_tasks": exact_find_tasks,
+            "span_buckets": span_buckets,
             "minhash_buckets": minhash_buckets,
+            "minhash_priority_buckets": minhash_priority_buckets,
+            "code_buckets": code_buckets,
+            "final_hash_buckets": final_hash_buckets,
             "pack_tasks": (target + shard_tokens - 1) // shard_tokens,
         }
         for stage, count_key in BUILD_GRAPH:
-            indices = range(counts[count_key]) if count_key else None
-            job = submit_stage(
-                stage=stage,
-                profile_path=profile_path,
-                profile=profile,
-                indices=indices,
-                dependency=dependency,
-                dry_run=dry_run,
-            )
-            jobs.append(job)
-            dependency = job.job_id
+            if count_key:
+                stage_jobs = _submit_array_chunks(
+                    stage=stage,
+                    global_indices=range(counts[count_key]),
+                    profile_path=profile_path,
+                    profile=profile,
+                    dependency=dependency,
+                    dry_run=dry_run,
+                )
+                jobs.extend(stage_jobs)
+                dependency = ":".join(job.job_id for job in stage_jobs)
+            else:
+                job = submit_stage(
+                    stage=stage,
+                    profile_path=profile_path,
+                    profile=profile,
+                    dependency=dependency,
+                    dry_run=dry_run,
+                )
+                jobs.append(job)
+                dependency = job.job_id
     payload = {
         "submitted_at": utc_now(),
         "dry_run": dry_run,

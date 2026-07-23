@@ -8,6 +8,7 @@ from typing import Any
 
 from .manifest import candidate_plan
 from .state import StateStore
+from .local_download import local_download_status
 
 
 def status(profile: dict[str, Any], state: StateStore) -> dict[str, Any]:
@@ -38,6 +39,9 @@ def status(profile: dict[str, Any], state: StateStore) -> dict[str, Any]:
         for stage_root in sorted(path for path in completed_root.iterdir() if path.is_dir()):
             stage_completion[stage_root.name] = len(list(stage_root.glob("*.json")))
     release_root = Path(profile["storage"]["lustre_root"]) / profile["storage"]["directories"]["release"]
+    handoff_path = state.path("ACQUISITION_READY.json")
+    handoff = state.read("ACQUISITION_READY.json", default={})
+    build_inputs = state.read("build.inputs.json", default={})
     return {
         "profile": profile["name"],
         "lustre_root": profile["storage"]["lustre_root"],
@@ -48,7 +52,22 @@ def status(profile: dict[str, Any], state: StateStore) -> dict[str, Any]:
             "pending": len(tasks) - complete,
             "materialized_files": materialized_files,
             "unresolved_remote_plans": unresolved_remote_plans,
-            "build_ready": complete == len(tasks) and unresolved_remote_plans == 0,
+            "build_ready": complete == len(tasks)
+            and unresolved_remote_plans == 0
+            and (Path(profile["storage"]["lustre_root"]) / profile["storage"]["directories"]["contamination"] / "holdouts.jsonl").exists()
+            and (
+                not profile.get("gates", {}).get("require_acquisition_handoff")
+                or handoff_path.is_file()
+            ),
+            "supervisor": local_download_status(profile, state),
+            "handoff_ready": handoff_path.is_file(),
+            "handoff_sha256": handoff.get("handoff_sha256"),
+            "dynamic_token_targets": handoff.get("materialized_token_targets", {}),
+        },
+        "rhea_build_inputs": {
+            "frozen": bool(build_inputs),
+            "files": int(build_inputs.get("input_count", 0)),
+            "bytes": int(build_inputs.get("input_bytes", 0)),
         },
         "stage_completion_markers": stage_completion,
         "release_ready": (release_root / "RELEASE.json").exists(),

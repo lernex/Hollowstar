@@ -32,7 +32,7 @@ sources:
   - id: nemotron_math_proofs
     label: Nemotron Math Proofs natural-language and Lean proofs
     category: math
-    phase_tokens: {phase_a: 3000000000, phase_b: 4000000000, phase_c: 0}
+    phase_tokens: {phase_a: 3600000000, phase_b: 5400000000, phase_c: 0}
     provenance: {generated: true, transformed: true, fresh: false}
     access: {type: huggingface, repo_id: nvidia/Nemotron-Math-Proofs-v1, revision: 97229c590831adfe96202f5cd071d444d535bf91, gated: false, allow_patterns: ['**/*.parquet']}
     license: {status: reviewed, expression: CC-BY-4.0}
@@ -42,7 +42,7 @@ sources:
   - id: proof_pile2_math
     label: Proof-Pile-2 mathematical subset
     category: math
-    phase_tokens: {phase_a: 3000000000, phase_b: 3000000000, phase_c: 2000000000}
+    phase_tokens: {phase_a: 3340000000, phase_b: 3510000000, phase_c: 2000000000}
     provenance: {generated: false, transformed: false, fresh: false}
     access: {type: huggingface, repo_id: EleutherAI/proof-pile-2, revision: 901a9273a770e9d4138c5ddd91802f9c5c6cdc4b, gated: false, allow_patterns: ['**/*.jsonl.zst']}
     license: {status: per_record_required, expression: per-component}
@@ -82,9 +82,9 @@ sources:
   - id: formal_theorem_corpora
     label: Lean, Isabelle AFP, Coq, and Metamath corpora
     category: math
-    phase_tokens: {phase_a: 1000000000, phase_b: 2000000000, phase_c: 0}
+    phase_tokens: {phase_a: 60000000, phase_b: 90000000, phase_c: 0}
     provenance: {generated: false, transformed: false, fresh: false}
-    access: {type: canonical_registry, registry: manifests/registries/systems_formal.yaml}
+    access: {type: canonical_registry, registry: manifests/registries/systems_formal.yaml, selector: formal_math}
     license: {status: per_record_required, expression: canonical-source-license}
-    acquisition: {driver: canonical_git, candidate_multiplier: 1.60, compressed_bytes_per_token: 0.72}
+    acquisition: {driver: canonical_git, candidate_multiplier: 1.00, compressed_bytes_per_token: 0.72}
     processing: {quality_profile: formal_proof_v1, dedup_namespace: global_formal, priority: 98}

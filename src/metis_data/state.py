@@ -62,7 +62,43 @@ class StateStore:
         try:
             lock.mkdir()
         except FileExistsError as exc:
-            raise RuntimeError(f"Task already has an active lock: {stage}/{task_id}") from exc
+            owner_path = lock / "OWNER.json"
+            owner: dict[str, Any] = {}
+            try:
+                owner = json.loads(owner_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+            owner_pid = int(owner.get("pid", 0) or 0)
+            same_host = owner.get("hostname") == socket.gethostname()
+            alive = False
+            if same_host and owner_pid > 0:
+                try:
+                    os.kill(owner_pid, 0)
+                    alive = True
+                except ProcessLookupError:
+                    alive = False
+                except (PermissionError, OSError):
+                    # Failure other than ESRCH does not prove the process is
+                    # gone; preserve the lock.
+                    alive = True
+            if same_host and owner_pid > 0 and not alive:
+                owner_path.unlink(missing_ok=True)
+                try:
+                    lock.rmdir()
+                    lock.mkdir()
+                except OSError as reclaim_error:
+                    raise RuntimeError(
+                        f"Could not reclaim dead task lock: {stage}/{task_id}"
+                    ) from reclaim_error
+            else:
+                detail = (
+                    f"pid={owner_pid} host={owner.get('hostname')}"
+                    if owner
+                    else "owner metadata unavailable"
+                )
+                raise RuntimeError(
+                    f"Task already has an active or unverified lock: {stage}/{task_id} ({detail})"
+                ) from exc
         try:
             atomic_json(
                 lock / "OWNER.json",
@@ -83,6 +119,26 @@ class StateStore:
             if lock.stat().st_mtime > cutoff:
                 continue
             owner = lock / "OWNER.json"
+            try:
+                owner_payload = json.loads(owner.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                # Age alone cannot prove abandonment. Preserve an unverifiable
+                # lock for manual inspection instead of risking two writers.
+                continue
+            if owner_payload.get("hostname") != socket.gethostname():
+                continue
+            owner_pid = int(owner_payload.get("pid", 0) or 0)
+            if owner_pid <= 0:
+                continue
+            try:
+                os.kill(owner_pid, 0)
+                # A legitimate acquisition/materialization task can run for
+                # days. Never reclaim a lock held by a live process.
+                continue
+            except ProcessLookupError:
+                pass
+            except (PermissionError, OSError):
+                continue
             owner.unlink(missing_ok=True)
             try:
                 lock.rmdir()

@@ -11,6 +11,14 @@ import yaml
 ENV_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}$")
 
 
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -48,16 +56,48 @@ def resolve_profile_path(profile: str | Path) -> Path:
 
 
 def infer_lustre_root(profile: dict[str, Any]) -> Path:
-    configured = str(profile.get("storage", {}).get("lustre_root", "auto"))
+    storage = profile.get("storage", {})
+    configured = str(storage.get("lustre_root", "auto"))
     if configured and configured.lower() != "auto":
-        return Path(configured).expanduser().resolve()
+        root = Path(configured).expanduser().resolve()
+        return validate_storage_root(profile, root)
+    if storage.get("require_explicit_root"):
+        raise RuntimeError(
+            "This production profile requires an explicit Lustre data directory. "
+            "Set METIS_LUSTRE_ROOT or pass --lustre-root to the operator launcher; "
+            "the shared Lustre filesystem root is not a valid data directory."
+        )
     for name in ("METIS_LUSTRE_ROOT", "SCRATCH", "PROJECT", "WORK"):
         value = os.environ.get(name)
         if value:
             base = Path(value).expanduser()
             suffix = "metis-1.6" if name != "METIS_LUSTRE_ROOT" else ""
-            return (base / suffix).resolve()
-    return (repository_root() / ".metis-portage").resolve()
+            return validate_storage_root(profile, (base / suffix).resolve())
+    return validate_storage_root(profile, (repository_root() / ".metis-portage").resolve())
+
+
+def validate_storage_root(profile: dict[str, Any], root: Path) -> Path:
+    """Reject shared filesystem roots and unapproved production locations.
+
+    A typo in the production root must not silently populate the repository or
+    the top of a shared Lustre mount with many terabytes of data.
+    """
+
+    storage = profile.get("storage", {})
+    resolved = root.expanduser().resolve()
+    forbidden = {
+        Path(value).expanduser().resolve()
+        for value in storage.get("forbidden_roots", ["/", "/lus", "/lus/lustre1"])
+    }
+    if resolved in forbidden:
+        raise RuntimeError(f"Refusing unsafe shared storage root: {resolved}")
+    prefixes = [Path(value).expanduser().resolve() for value in storage.get("allowed_root_prefixes", [])]
+    if prefixes and not any(_is_relative_to(resolved, prefix) and resolved != prefix for prefix in prefixes):
+        expected = ", ".join(str(path) for path in prefixes)
+        raise RuntimeError(f"Storage root {resolved} is outside the allowed project prefixes: {expected}")
+    if storage.get("must_exist") and not resolved.is_dir():
+        raise RuntimeError(f"Configured storage root does not exist on this host: {resolved}")
+    return resolved
 
 
 def load_profile(profile: str | Path) -> tuple[Path, dict[str, Any]]:
@@ -67,4 +107,3 @@ def load_profile(profile: str | Path) -> tuple[Path, dict[str, Any]]:
     payload.setdefault("storage", {})["lustre_root"] = str(infer_lustre_root(payload))
     payload["_path"] = str(path)
     return path, payload
-
