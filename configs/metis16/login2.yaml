@@ -4,7 +4,11 @@ manifest: manifests/metis-1.6.yaml
 
 operator:
   roles: [acquisition]
-  expected_host_patterns: ['login2', 'login2.*']
+  # Portage exposes this service host as portage-login2 (and as its FQDN).
+  # Retain the generic aliases for sites where hostname(1) strips the cluster
+  # prefix, but explicitly accept the real Portage names as well.
+  expected_host_patterns:
+    ['login2', 'login2.*', 'portage-login2', 'portage-login2.*']
 
 acquisition:
   mode: screen_foreground
