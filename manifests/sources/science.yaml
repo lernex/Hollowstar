@@ -14,7 +14,9 @@ sources:
     category: science
     phase_tokens: {phase_a: 19000000000, phase_b: 5000000000, phase_c: 0}
     provenance: {generated: false, transformed: false, fresh: false}
-    access: {type: huggingface, repo_id: allenai/peS2o, revision: 636a503e44a3ca1b58e01fb61eab0825cd574de0, gated: false, allow_patterns: ['**/*.jsonl.gz']}
+    # peS2o v2 is the publisher-recommended release at this pinned revision.
+    # Its training shards use .json.gz (not .jsonl.gz).
+    access: {type: huggingface, repo_id: allenai/peS2o, revision: 636a503e44a3ca1b58e01fb61eab0825cd574de0, gated: false, allow_patterns: ['data/v2/train-*.json.gz']}
     license: {status: per_record_required, expression: per-paper-license}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 2.30, compressed_bytes_per_token: 0.70}
     processing: {quality_profile: scientific_paper_v1, dedup_namespace: global_science, priority: 92}

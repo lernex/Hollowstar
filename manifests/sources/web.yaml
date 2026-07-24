@@ -84,7 +84,10 @@ sources:
       repo_id: LLM360/TxT360
       revision: 3337c47e3c09726092745da02aac0b6a7da055ed
       gated: false
-      allow_patterns: ['**/*.parquet']
+      # The pinned v1.1 release stores BestOfWeb as JSONL, not Parquet.
+      # Restrict acquisition to ProX-filtered, globally unique web documents;
+      # exclude the synthetic QA and transformed multilingual additions.
+      allow_patterns: ['v1.1/TxT360_BestOfWeb/cc_1-1/*.jsonl']
     license: {status: per_record_required, expression: per-component}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.40, compressed_bytes_per_token: 0.72}
     processing: {quality_profile: web_hq_v1, dedup_namespace: global_web, priority: 80}

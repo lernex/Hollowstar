@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from huggingface_hub import HfApi, get_token
+from huggingface_hub.errors import EntryNotFoundError
 
 from .acquisition.github import month_windows
 from .manifest import candidate_plan, matches_any, total_phase_tokens
@@ -18,7 +19,7 @@ from .state import StateStore, utc_now
 
 
 SOURCE_LOCK_SCHEMA = "metis.source-lock/v4"
-SOURCE_LOCK_RESOLVER_VERSION = "metis-source-resolver-2026-07-22-v4"
+SOURCE_LOCK_RESOLVER_VERSION = "metis-source-resolver-2026-07-24-v5"
 
 
 def _json_sha256(value: Any) -> str:
@@ -147,25 +148,82 @@ def _iter_repo_files(
     revision: str,
     patterns: Iterable[str],
 ) -> list[dict[str, Any]]:
-    files: list[dict[str, Any]] = []
-    for item in api.list_repo_tree(repo_id, repo_type="dataset", revision=revision, recursive=True, expand=True):
-        path = getattr(item, "path", "")
-        if not path or not matches_any(path, patterns):
+    pattern_list = tuple(str(pattern) for pattern in patterns)
+    files_by_path: dict[str, dict[str, Any]] = {}
+    for tree_root in _repo_tree_roots(pattern_list):
+        try:
+            tree = api.list_repo_tree(
+                repo_id,
+                path_in_repo=tree_root,
+                repo_type="dataset",
+                revision=revision,
+                recursive=True,
+                expand=True,
+            )
+            for item in tree:
+                path = getattr(item, "path", "")
+                if not path or not matches_any(path, pattern_list):
+                    continue
+                size = int(getattr(item, "size", 0) or 0)
+                if size <= 0:
+                    continue
+                lfs = getattr(item, "lfs", None)
+                lfs_sha256 = (
+                    lfs.get("sha256")
+                    if isinstance(lfs, dict)
+                    else getattr(lfs, "sha256", None)
+                )
+                files_by_path[path] = {
+                    "path": path,
+                    "size": size,
+                    "blob_id": getattr(item, "blob_id", None),
+                    "lfs_sha256": lfs_sha256,
+                }
+        except EntryNotFoundError:
+            # A stale literal prefix should produce the resolver's normal
+            # fail-closed "no files matching" error, not an opaque Hub 404.
             continue
-        size = int(getattr(item, "size", 0) or 0)
-        if size <= 0:
+    return [files_by_path[path] for path in sorted(files_by_path)]
+
+
+def _repo_tree_roots(patterns: Iterable[str]) -> tuple[str | None, ...]:
+    """Return the smallest safe Hub subtrees covering the allow-patterns.
+
+    Hugging Face's recursive root listing can contain tens of thousands of
+    entries. A source such as TxT360 already declares a literal partition
+    prefix, so walking the entire repository is both unnecessary and can turn
+    a preflight into a multi-hour metadata transfer.
+    """
+
+    roots: set[str | None] = set()
+    for raw_pattern in patterns:
+        pattern = str(raw_pattern).strip("/")
+        segments = pattern.split("/") if pattern else []
+        literal_segments: list[str] = []
+        saw_glob = False
+        for segment in segments:
+            if any(character in segment for character in "*?["):
+                saw_glob = True
+                break
+            literal_segments.append(segment)
+        if not literal_segments:
+            roots.add(None)
             continue
-        lfs = getattr(item, "lfs", None)
-        lfs_sha256 = lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)
-        files.append(
-            {
-                "path": path,
-                "size": size,
-                "blob_id": getattr(item, "blob_id", None),
-                "lfs_sha256": lfs_sha256,
-            }
-        )
-    return files
+        if not saw_glob:
+            # An exact pattern may name a file; listing its parent is safe.
+            literal_segments = literal_segments[:-1]
+        roots.add("/".join(literal_segments) or None)
+
+    if not roots or None in roots:
+        return (None,)
+    ordered = sorted(roots, key=lambda value: (len(str(value).split("/")), str(value)))
+    minimal: list[str] = []
+    for root in ordered:
+        assert root is not None
+        if any(root == parent or root.startswith(parent + "/") for parent in minimal):
+            continue
+        minimal.append(root)
+    return tuple(minimal)
 
 
 def _select_files(

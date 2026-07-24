@@ -34,8 +34,9 @@ sources:
     category: math
     phase_tokens: {phase_a: 3600000000, phase_b: 5400000000, phase_c: 0}
     provenance: {generated: true, transformed: true, fresh: false}
-    access: {type: huggingface, repo_id: nvidia/Nemotron-Math-Proofs-v1, revision: 97229c590831adfe96202f5cd071d444d535bf91, gated: false, allow_patterns: ['**/*.parquet']}
-    license: {status: reviewed, expression: CC-BY-4.0}
+    # This immutable release contains data/lean.jsonl; no Parquet payload exists.
+    access: {type: huggingface, repo_id: nvidia/Nemotron-Math-Proofs-v1, revision: 97229c590831adfe96202f5cd071d444d535bf91, gated: false, allow_patterns: ['data/*.jsonl']}
+    license: {status: reviewed, expression: CC-BY-SA-4.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.35, compressed_bytes_per_token: 0.75}
     processing: {quality_profile: proof_v1, dedup_namespace: global_math, priority: 95}
 
