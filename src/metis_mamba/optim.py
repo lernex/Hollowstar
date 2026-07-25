@@ -312,6 +312,33 @@ def _classify_param(
         return "adamw", "router_or_gate_control", True
     if "latent_proj" in lowered:
         return "adamw", "latent_moe_router_projection", True
+    if ".moe.latent_down." in lowered or ".moe.latent_up." in lowered:
+        return "muon", "metis16_latent_projection", True
+    if ".moe.local_experts." in lowered and (
+        ".gate_up." in lowered or ".down." in lowered
+    ):
+        if include_routed_experts:
+            return "muon", "metis16_routed_expert_projection", True
+        return "adamw", "metis16_routed_expert_waiting_ablation", True
+    if ".moe.shared_expert." in lowered and (
+        ".gate_up." in lowered or ".down." in lowered
+    ):
+        return "muon", "metis16_shared_expert_projection", True
+    if (
+        ".mixer.impl.qkv." in lowered
+        or ".mixer.impl.out." in lowered
+        or ".mixer.impl.pass_lora_" in lowered
+        or ".mixer.impl.mixer.in_proj." in lowered
+        or ".mixer.impl.mixer.out_proj." in lowered
+    ):
+        return "muon", "metis16_mixer_projection", True
+    if (
+        lowered.startswith("depth_memory.")
+        or lowered.startswith("ngram_memory.projection.")
+        or ".mixer_connection.controller." in lowered
+        or ".moe_connection.controller." in lowered
+    ) and param.ndim == 2:
+        return "muon", "metis16_control_or_memory_projection", True
     if ".attn." in lowered and ("qkv_proj" in lowered or "o_proj" in lowered):
         return "muon", "tpu_attention_projection", True
     if ".moe.down_proj" in lowered or ".moe.up_proj" in lowered:

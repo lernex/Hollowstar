@@ -121,3 +121,4 @@ source_files:
   - sources/multilingual.yaml
 
 replacement_policy_file: replacements.yaml
+context_extension_plan_file: context-extension.yaml

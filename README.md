@@ -17,6 +17,9 @@ Metis-1.6's production data recipe is separate from the local teaching flow belo
 The exact recipe and operational gates are documented in
 [`docs/metis16_pretraining_data_plan.md`](docs/metis16_pretraining_data_plan.md); the machine-readable
 source of truth is [`manifests/metis-1.6.yaml`](manifests/metis-1.6.yaml).
+The same acquisition command retrieves the extra long-document reserve for an
+exact 18B-token context extension with 6B/12B/18B promotion gates; see
+[`docs/metis16_context_extension_data.md`](docs/metis16_context_extension_data.md).
 Every planned source also has an ordered, fail-closed automatic shortfall path in
 [`manifests/replacements.yaml`](manifests/replacements.yaml); see the
 [`replacement research and policy`](docs/metis16_replacement_data_research.md).
@@ -33,8 +36,22 @@ cd Metis
 
 That command securely prompts for the Hugging Face token and, when no `gh` credential is available,
 a read-only GitHub metadata token. It runs acquisition inside GNU Screen on `login2` and may safely outlive SSH. Rhea later
-runs CPU preparation with `--profile rhea`; Portage consumes only the verified release for model
-training. The profiles refuse an implicit path or `/lus/lustre1` itself, and Rhea stays sealed until
+runs CPU preparation with `--profile rhea`. After Rhea has sealed both the
+tokenized base release and the required post-training umbrella, Portage runs
+the simultaneous Praxis/Logos base, context-extension, and post-training
+campaign with:
+
+```bash
+./ops/start-portage-training.sh
+```
+
+Tokenized shards alone are not a complete Portage handoff: the post-training
+DeepSeek capability, verifiers, evaluation bundles, sealed generation
+adapters, and a compatible Portage runtime are mandatory fail-closed inputs.
+The production campaign performs mixed 8K-131K SFT, cross-tokenizer sequence
+DPD, five independent Metis specialists, same-tokenizer OPD consolidation,
+preference alignment, and dynamic thinking-length control. The profiles refuse an
+implicit path or `/lus/lustre1` itself, and Rhea stays sealed until
 its scheduler facts and direct view of the acquisition directory are confirmed. See
 [`docs/metis16_operator_runbook.md`](docs/metis16_operator_runbook.md).
 

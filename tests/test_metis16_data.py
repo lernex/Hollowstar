@@ -25,6 +25,19 @@ from metis_data.dedup import deduplicate_records
 from metis_data.final_dedup import find_final_duplicates, load_final_removals, write_final_signatures
 from metis_data.holdouts import _benchmark_fragments, _benchmark_jobs
 from metis_data.config import load_profile, load_yaml, validate_storage_root
+from metis_data.context_extension import (
+    allocate_context_replacements,
+    build_context_pack_plan,
+    context_evaluation_domain_targets,
+    context_lane_quota_rows,
+    structural_evidence,
+)
+from metis_data.context_manifest import (
+    CONTEXT_GATES,
+    context_candidate_targets,
+    context_retrieval_reserve_tokens,
+    validate_context_plan,
+)
 from metis_data.build_inputs import prepare_build_inputs
 from metis_data.handoff import write_acquisition_handoff, verify_acquisition_handoff
 from metis_data.local_download import (
@@ -101,6 +114,143 @@ class ManifestTests(unittest.TestCase):
         self.assertTrue(matches_any("data.parquet", ["**/*.parquet"]))
         self.assertTrue(matches_any("nested/data.parquet", ["**/*.parquet"]))
         self.assertFalse(matches_any("data.jsonl", ["**/*.parquet"]))
+
+    def test_context_extension_plan_is_exact_and_autonomously_gated(self) -> None:
+        manifest = load_manifest()
+        plan = manifest["context_extension_plan"]
+        validate_context_plan(plan, base_manifest=manifest)
+        self.assertEqual(
+            sum(int(row["tokens"]) for row in plan["sources"]),
+            18_000_000_000,
+        )
+        self.assertEqual(tuple(plan["checkpoint_gates"]), CONTEXT_GATES)
+        self.assertEqual(
+            plan["selection"]["gate_evaluation_records"], 384
+        )
+        self.assertTrue(
+            plan["selection"]["long_range_filter"][
+                "model_calibration_at_context_gates"
+            ]
+        )
+        candidate = context_candidate_targets(plan)
+        reserve = context_retrieval_reserve_tokens(plan)
+        evaluation_domains = context_evaluation_domain_targets(plan)
+        self.assertEqual(sum(evaluation_domains.values()), 384)
+        self.assertEqual(
+            set(evaluation_domains),
+            {
+                str(group["id"])
+                for group in plan["fallbacks"]["groups"]
+            },
+        )
+        for row in plan["sources"]:
+            source_id = row["id"]
+            self.assertEqual(
+                candidate[source_id],
+                int(row["tokens"]) + reserve[source_id],
+            )
+
+    def test_context_pack_plan_and_lane_quotas_hit_every_gate_exactly(self) -> None:
+        plan = load_manifest()["context_extension_plan"]
+        rows = context_lane_quota_rows(plan)
+        for gate_index, gate in enumerate(CONTEXT_GATES):
+            previous = CONTEXT_GATES[gate_index - 1] if gate_index else 0
+            self.assertEqual(
+                sum(
+                    int(row["tokens"])
+                    for row in rows
+                    if int(row["gate_index"]) == gate_index
+                ),
+                gate - previous,
+            )
+        pack_plan = build_context_pack_plan(plan)
+        self.assertEqual(pack_plan["pack_tasks"], 96)
+        self.assertEqual(pack_plan["active_tokens"], 18_000_000_000)
+        self.assertEqual(
+            [
+                sum(
+                    int(task["active_tokens"])
+                    for task in pack_plan["tasks"]
+                    if int(task["gate_index"]) == gate
+                )
+                for gate in range(3)
+            ],
+            [6_000_000_000] * 3,
+        )
+        expected_domains = {
+            str(group["id"]) for group in plan["fallbacks"]["groups"]
+        }
+        for gate_index in range(3):
+            constructed = [
+                task
+                for task in pack_plan["tasks"]
+                if (
+                    int(task["gate_index"]) == gate_index
+                    and task["lane"] == "dependency_constructed"
+                )
+            ]
+            self.assertEqual(
+                {str(task["domain"]) for task in constructed},
+                expected_domains,
+            )
+            self.assertEqual(len(constructed), len(expected_domains))
+            for task in constructed:
+                expected_tokens = sum(
+                    int(row["tokens"])
+                    for row in rows
+                    if (
+                        int(row["gate_index"]) == gate_index
+                        and row["lane"] == "dependency_constructed"
+                        and row["domain"] == task["domain"]
+                    )
+                )
+                self.assertEqual(
+                    int(task["active_tokens"]),
+                    expected_tokens,
+                )
+
+    def test_context_fallbacks_never_cross_domains(self) -> None:
+        plan = load_manifest()["context_extension_plan"]
+        requirements = [
+            {
+                "gate_index": 0,
+                "gate_target_tokens": CONTEXT_GATES[0],
+                "lane": "natural_long",
+                "source_id": "finewiki",
+                "domain": "general_reference",
+                "tokens": 100,
+            }
+        ]
+        available = {
+            row["id"]: (
+                100 if row["id"] == "wikimedia_reference" else 0
+            )
+            for row in plan["sources"]
+        }
+        allocation = allocate_context_replacements(
+            plan,
+            requirements=requirements,
+            available_tokens=available,
+        )
+        self.assertEqual(len(allocation["assignments"]), 1)
+        replacement = allocation["assignments"][0]
+        self.assertEqual(
+            replacement["actual_source_id"], "wikimedia_reference"
+        )
+        self.assertEqual(replacement["domain"], "general_reference")
+        self.assertTrue(replacement["replacement"])
+
+    def test_structural_long_range_prefilter_detects_real_dependencies(self) -> None:
+        text = (
+            "# Chapter I\nSee theorem above and refer to section below.\n\n"
+            "import package\nclass Solver:\n    pass\n\n"
+        ) * 3_000
+        evidence = structural_evidence(
+            text,
+            {"repository": "metis/example"},
+        )
+        self.assertGreaterEqual(evidence["score"], 3)
+        self.assertGreater(evidence["code_dependencies"], 8)
 
 
 class QualityAndDedupTests(unittest.TestCase):
@@ -915,6 +1065,8 @@ class AcquisitionTruthTests(unittest.TestCase):
                 "vocab.json",
                 "TOKENIZER_RELEASE.json",
                 "TOKENIZER_VALIDATION.json",
+                "NGRAM_CANONICAL_IDS.json",
+                "NGRAM_CANONICAL_IDS.uint16",
             ):
                 (tokenizer_root / name).write_text(f"{name}\n", encoding="utf-8")
             selection_path = root / directories["selected"] / "SELECTION.json"
@@ -956,6 +1108,13 @@ class AcquisitionTruthTests(unittest.TestCase):
                 ).hexdigest(),
                 "tokenizer_validation_sha256": hashlib.sha256(
                     (tokenizer_root / "TOKENIZER_VALIDATION.json").read_bytes()
+                ).hexdigest(),
+                "ngram_canonical_map_manifest_sha256": hashlib.sha256(
+                    (tokenizer_root / "NGRAM_CANONICAL_IDS.json").read_bytes()
+                ).hexdigest(),
+                "ngram_canonical_map_self_sha256": "c" * 64,
+                "ngram_canonical_ids_sha256": hashlib.sha256(
+                    (tokenizer_root / "NGRAM_CANONICAL_IDS.uint16").read_bytes()
                 ).hexdigest(),
             }
             selection_contract = {"schema": "test-selection-contract"}

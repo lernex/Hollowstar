@@ -36,6 +36,7 @@ storage:
     tokenizer: tokenizer
     token_counts: token-counts
     selected: selected
+    context_release: releases/metis-1.6-context-extension-r1
     release: releases/metis-1.6-data-r1
     state: state/metis-1.6-data-r1
     logs: logs/metis-1.6-data-r1
@@ -83,6 +84,13 @@ scheduler:
   tokenizer_sample: {cpus_per_task: 16, memory_gb: 128, time: '24:00:00'}
   tokenizer_train: {cpus_per_task: 64, memory_gb: 480, time: '48:00:00'}
   token_count: {cpus_per_task: 8, memory_gb: 48, time: '48:00:00', max_concurrent: 400}
+  # Context selection is deliberately a serial two-pass reducer so exact
+  # source/lane quotas and fail-closed same-domain replacements remain
+  # deterministic. Packing then writes 96 disjoint mmap row ranges.
+  context_select: {cpus_per_task: 32, memory_gb: 192, time: '72:00:00'}
+  context_prepare: {cpus_per_task: 4, memory_gb: 16, time: '12:00:00'}
+  context_pack: {cpus_per_task: 16, memory_gb: 64, time: '36:00:00', max_concurrent: 96}
+  context_verify: {cpus_per_task: 16, memory_gb: 64, time: '72:00:00'}
   select: {cpus_per_task: 32, memory_gb: 480, time: '72:00:00'}
   pack: {cpus_per_task: 8, memory_gb: 32, time: '24:00:00', max_concurrent: 200}
   verify: {cpus_per_task: 16, memory_gb: 64, time: '48:00:00'}

@@ -1,0 +1,909 @@
+schema: metis.posttraining-pipeline/v1
+model: metis-1.6
+families: [praxis, logos]
+fail_closed: true
+
+# Every data/teacher/verifier input below is a sealed manifest. The orchestrator
+# refuses missing, partial, unpinned, tokenizer-incompatible, or hash-drifted
+# inputs; it never fabricates a substitute dataset or silently drops a stage.
+tokenizer:
+  vocabulary_size: 65536
+  manifest_env: METIS_TOKENIZER_MANIFEST
+
+research_basis:
+  nanbeige4_3b:
+    paper: https://arxiv.org/abs/2512.06266
+    used_for: [cold_start_sft, overall_sft, external_sequence_dpd, on_policy_filter, pairwise_reward_model]
+  nanbeige4_1_3b:
+    paper: https://arxiv.org/abs/2602.13367
+    used_for: [agentic_rl, turn_level_rewards, code_efficiency_gate, swap_consistency]
+  gspo:
+    paper: https://arxiv.org/abs/2507.18071
+    used_for: [sequence_ratio, asymmetric_clipping, moe_stability]
+  dapo:
+    paper: https://arxiv.org/abs/2503.14476
+    used_for: [no_kl, mask_truncated, asymmetric_clipping]
+  dast:
+    paper: https://arxiv.org/abs/2503.04472
+    used_for: [difficulty_adaptive_length_budget]
+  nemotron_nano_2:
+    paper: https://arxiv.org/abs/2508.14444
+    used_for: [single_jump_context_extension, overshoot, mixed_short_context]
+  nemotron_3:
+    paper: https://arxiv.org/abs/2512.20856
+    used_for: [nope_direct_context_extension]
+  minicpm5_1b:
+    source: https://github.com/OpenBMB/MiniCPM
+    used_for: [independent_rl_specialists, two_stage_reasoning_length, topk_union_opd]
+  deepseek_v4:
+    source: https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash
+    used_for: [external_teacher_bootstrap, independent_specialists, unified_opd]
+
+context_extension:
+  base_context: 4096
+  deploy_context: 131072
+  # A conservative 1.25x overshoot inside the 164k-200k plan range. The sealed
+  # data manifest must prove this length is supported by the actual document
+  # histogram; no staged 32k/64k ladder is permitted.
+  train_context: 163840
+  schedule: single_jump
+  positional_encoding: nope
+  token_budget: 18000000000
+  checkpoint_gates: [6000000000, 12000000000, 18000000000]
+  sequence_mix:
+    long: 0.90
+    base: 0.10
+  data_mix:
+    pretrain_style: 0.80
+    synthetic_long_context: 0.20
+
+dynamic_thinking_length:
+  enabled: true
+  difficulty_signal: avg_at_16_pass_rate
+  formula: two_sided_proximity_to_difficulty_budget
+  lambda: 0.05
+  deadband_fraction: 0.10
+  wrong_response_shaping: 0
+  truncated_response_policy: mask
+  note: This is a Metis RL adaptation of DAST's budget, not a claim that DAST itself used GSPO.
+
+stages:
+  - id: context_extension
+    input_stage: base_pretraining
+    enabled: true
+    output_kind: checkpoint
+    optimizer_state: preserve
+    sequence_length: 163840
+    deploy_context: 131072
+    token_budget: 18000000000
+    checkpoint_gates: [6000000000, 12000000000, 18000000000]
+    gate_policy:
+      checkpoint_at_first_optimizer_boundary_after_target: true
+      maximum_gate_overshoot_tokens: 65000000
+      retain_all_gate_checkpoints: true
+      promote_best_passing_gate: true
+      fail_on_nonfinite: true
+    optimizer:
+      schedule: warmup_then_cosine
+      warmup_fraction: 0.01
+      final_lr_ratio: 0.10
+      preserve_optimizer_moments: true
+    objective:
+      name: causal_language_modeling
+      document_boundaries: true
+      mamba_state_reset_at_document_boundary: true
+      attention_document_mask: true
+    requirements:
+      - name: context_extension_data
+        env: METIS_CONTEXT_EXTENSION_DATA
+        schema: metis.context-extension-data/v1
+        tokenizer_bound: true
+        minimum_tokens: 18000000000
+        maximum_tokens: 18000000000
+        required_metadata:
+          base_context: 4096
+          train_context: 163840
+          deploy_context: 131072
+          single_jump: true
+          long_sequence_fraction: 0.90
+          base_sequence_fraction: 0.10
+          pretrain_style_fraction: 0.80
+          synthetic_long_context_fraction: 0.20
+          document_length_histogram_verified: true
+          checkpoint_gates: [6000000000, 12000000000, 18000000000]
+          compact_layout: metis.compact-causal/v1
+
+  - id: cold_start_sft
+    input_stage: context_extension
+    enabled: true
+    output_kind: checkpoint
+    optimizer_state: reset
+    sequence_length: 65536
+    length_mix:
+      8192_to_32768: 0.92
+      32769_to_65536: 0.08
+    domain_mix:
+      math: 0.50
+      science: 0.30
+      code: 0.20
+    answer_modes:
+      direct: 0.15
+      think: 0.85
+    required_audits: [identity_scrub, safety_calibration, abstention, deduplication, contamination, answer_mode_balance]
+    objective:
+      name: response_only_cross_entropy
+      mask_prompt_tokens: true
+      keep_think: true
+    requirements:
+      - name: cold_start_sft_data
+        env: METIS_COLD_START_SFT_DATA
+        schema: metis.sft-data/v1
+        tokenizer_bound: true
+        # Nanbeige reports 30M source QA instructions, not 30M fully padded
+        # 32K tensors. Seal that source count separately from the number of
+        # document-isolated packed training sequences.
+        minimum_source_instructions: 30000000
+        required_metadata:
+          sequence_length: 65536
+          length_bucket_mass:
+            8192_to_32768: 0.92
+            32769_to_65536: 0.08
+          packed_sequences: true
+          hybrid_answer_modes: true
+          keep_think: true
+          identity_scrub_passed: true
+          safety_calibration_passed: true
+          abstention_passed: true
+          deduplication_passed: true
+          contamination_passed: true
+
+  - id: overall_sft
+    input_stage: cold_start_sft
+    enabled: true
+    output_kind: checkpoint
+    optimizer_state: preserve
+    sequence_length: 131072
+    length_mix:
+      8192_to_32768: 0.65
+      32769_to_65536: 0.25
+      65537_to_131072: 0.10
+    domain_mix:
+      reasoning: 0.40
+      general_qa_writing: 0.30
+      agent_tool_use: 0.20
+      code: 0.10
+    answer_modes:
+      direct: 0.30
+      think: 0.70
+    required_audits: [identity_scrub, safety_calibration, abstention, deduplication, contamination, answer_mode_balance]
+    objective:
+      name: response_only_cross_entropy
+      mask_prompt_tokens: true
+      keep_think: true
+      function_call_schema_loss: true
+    requirements:
+      - name: overall_sft_data
+        env: METIS_OVERALL_SFT_DATA
+        schema: metis.sft-data/v1
+        tokenizer_bound: true
+        required_metadata:
+          sequence_length: 131072
+          length_bucket_mass:
+            8192_to_32768: 0.65
+            32769_to_65536: 0.25
+            65537_to_131072: 0.10
+          hybrid_answer_modes: true
+          keep_think: true
+          function_call_schema_validated: true
+          solution_refinement_provenance_complete: true
+          cot_reconstruction_provenance_complete: true
+          identity_scrub_passed: true
+          safety_calibration_passed: true
+          abstention_passed: true
+          deduplication_passed: true
+          contamination_passed: true
+      - name: sft_teacher_pool
+        env: METIS_SFT_TEACHER_POOL
+        schema: metis.teacher-pool/v1
+        tokenizer_bound: false
+        required_metadata:
+          revisions_pinned: true
+          licenses_approved: true
+          evaluation_checklists_versioned: true
+
+  # DeepSeek uses a different tokenizer, so this is deliberately a
+  # cross-tokenizer sequence-level DPD bootstrap: teacher generations and
+  # preference margins are retokenized with Metis. Dense token OPD is deferred
+  # to the same-tokenizer Metis specialist consolidation below.
+  - id: deepseek_dpd_pilot
+    input_stage: overall_sft
+    enabled: true
+    output_kind: checkpoint
+    optimizer_state: reset
+    sequence_length: 65536
+    pilot_fraction: 0.10
+    objective:
+      name: dual_preference_distillation
+      teacher_interface: cross_tokenizer_sequence_preferences
+      positive_token_distillation: false
+      negative_token_distillation: false
+      sequence_preference: dpo_margin
+      reference_policy: frozen_overall_sft
+      beta: 0.10
+      token_distillation_weight: 0.0
+      sequence_preference_weight: 1.0
+    autotune:
+      selection_metric: composite_reasoning_self_correction_without_regression
+      beta_candidates: [0.03, 0.05, 0.10]
+      token_distillation_weight_candidates: [0.0]
+      sequence_preference_weight_candidates: [0.50, 1.0]
+      temperature_candidates: [1.0, 2.0]
+      maximum_candidates: 12
+      fail_on_nonfinite: true
+      live_canary:
+        schema: metis.posttraining-live-canary-policy/v1
+        training_optimizer_steps: 2
+        evaluator_implementation: metis.dpd-preference-replay/v1
+        minimum_evaluation_records: 128
+        maximum_reproduction_tolerance: 0.001
+        restore_parent_between_trials: true
+        restore_rng_between_trials: true
+        require_working_set_autotune: true
+        maximum_working_set_candidates: 8
+        working_set_warmup_trials: 1
+        working_set_measurement_trials: 3
+    promotion_gate:
+      require_no_primary_regression: true
+      minimum_reasoning_gain: 0.0
+      minimum_self_correction_gain: 0.0
+      maximum_loss_nonfinite_steps: 0
+    requirements:
+      - name: deepseek_dpd_pilot_data
+        env: METIS_DEEPSEEK_DPD_PILOT_DATA
+        schema: metis.external-dpd-data/v1
+        tokenizer_bound: true
+        family_bound: true
+        checkpoint_bound: true
+        generated_from_stage: overall_sft
+        required_metadata:
+          positive_teacher_verified: true
+          negative_student_generated: true
+          preference_margin_verified: true
+          teacher_generation_revision_bound: true
+          metis_reference_logprobs_present: true
+          cross_tokenizer_boundary_declared: true
+      - name: deepseek_teacher
+        env: METIS_DEEPSEEK_TEACHER
+        schema: metis.teacher-capabilities/v1
+        tokenizer_bound: false
+        required_metadata:
+          model_revision_pinned: true
+          license_approved: true
+          local_endpoint: true
+          sequence_generation: true
+          full_student_vocab_distribution: false
+          model_id: deepseek-ai/DeepSeek-V4-Flash
+          generation_adapter_present: true
+
+  - id: deepseek_dpd
+    input_stage: deepseek_dpd_pilot
+    enabled: true
+    output_kind: checkpoint
+    optimizer_state: preserve
+    sequence_length: 65536
+    objective:
+      name: dual_preference_distillation
+      teacher_interface: cross_tokenizer_sequence_preferences
+      positive_token_distillation: false
+      negative_token_distillation: false
+      sequence_preference: dpo_margin
+      reference_policy: frozen_overall_sft
+      beta: 0.10
+      token_distillation_weight: 0.0
+      sequence_preference_weight: 1.0
+      hyperparameters_from: deepseek_dpd_pilot
+    requirements:
+      - name: deepseek_dpd_data
+        env: METIS_DEEPSEEK_DPD_DATA
+        schema: metis.external-dpd-data/v1
+        tokenizer_bound: true
+        family_bound: true
+        checkpoint_bound: true
+        generated_from_stage: deepseek_dpd_pilot
+        required_metadata:
+          pilot_gate_passed: true
+          positive_teacher_verified: true
+          negative_student_generated: true
+          preference_margin_verified: true
+          teacher_generation_revision_bound: true
+          metis_reference_logprobs_present: true
+          cross_tokenizer_boundary_declared: true
+      - name: deepseek_teacher
+        env: METIS_DEEPSEEK_TEACHER
+        schema: metis.teacher-capabilities/v1
+        tokenizer_bound: false
+        required_metadata:
+          model_revision_pinned: true
+          license_approved: true
+          local_endpoint: true
+          sequence_generation: true
+          full_student_vocab_distribution: false
+          model_id: deepseek-ai/DeepSeek-V4-Flash
+          generation_adapter_present: true
+
+  - id: specialist_reasoning
+    input_stage: deepseek_dpd
+    branch_from: deepseek_dpd
+    preserves_unified_policy: true
+    enabled: true
+    output_kind: checkpoint
+    optimizer_state: reset
+    domain: stem
+    sequence_length: 65536
+    on_policy_filter:
+      samples_per_prompt: 16
+      strict_min_pass_rate: 0.10
+      strict_max_pass_rate: 0.90
+      generated_by_stage: deepseek_dpd
+    objective:
+      algorithm: gspo
+      ratio_unit: sequence
+      length_normalized_ratio: true
+      clip_low: 0.0003
+      clip_high: 0.0004
+      kl_penalty: 0
+      mask_truncated: true
+      dynamic_thinking_length: true
+      length_schedule:
+        correctness_only_fraction: 0.60
+        adaptive_budget_fraction: 0.40
+    autotune:
+      clip_pairs: [[0.0002, 0.0003], [0.0003, 0.0004], [0.0004, 0.0005]]
+      length_coefficients: [0.0, 0.02, 0.05]
+      gate:
+        name: stable_reward_and_entropy_with_no_eval_regression
+        minimum_reward_gain: 0.0
+        maximum_entropy_delta: 0.25
+        maximum_evaluation_regression: 0.0
+        maximum_nonfinite_steps: 0
+      live_canary:
+        schema: metis.posttraining-live-canary-policy/v1
+        training_optimizer_steps: 2
+        evaluator_implementation: metis.rlvr-offline-policy-replay/v1
+        minimum_evaluation_records: 128
+        maximum_reproduction_tolerance: 0.001
+        restore_parent_between_trials: true
+        restore_rng_between_trials: true
+        require_working_set_autotune: true
+        maximum_working_set_candidates: 8
+        working_set_warmup_trials: 1
+        working_set_measurement_trials: 3
+    reward:
+      correctness: binary_verifier
+      verifier: python_symbolic_numeric_equivalence
+      length_coefficient: 0.05
+    requirements:
+      - name: stem_rlvr_data
+        env: METIS_STEM_RLVR_DATA
+        schema: metis.rlvr-data/v1
+        tokenizer_bound: true
+        family_bound: true
+        checkpoint_bound: true
+        generated_from_stage: deepseek_dpd
+        required_metadata:
+          domain: stem
+          avg_at_k: 16
+          strict_filter_min: 0.10
+          strict_filter_max: 0.90
+          all_samples_in_band: true
+      - name: stem_verifier
+        env: METIS_STEM_VERIFIER
+        schema: metis.verifier-bundle/v1
+        tokenizer_bound: false
+        required_metadata:
+          domain: stem
+          deterministic: true
+          sandboxed: true
+          adversarially_validated: true
+          generation_adapter_present: true
+
+  - id: specialist_code
+    input_stage: deepseek_dpd
+    branch_from: deepseek_dpd
+    preserves_unified_policy: true
+    enabled: true
+    output_kind: checkpoint
+    optimizer_state: reset
+    domain: code
+    sequence_length: 65536
+    on_policy_filter:
+      samples_per_prompt: 16
+      strict_min_pass_rate: 0.10
+      strict_max_pass_rate: 0.90
+      generated_by_stage: deepseek_dpd
+    objective:
+      algorithm: gspo
+      ratio_unit: sequence
+      length_normalized_ratio: true
+      clip_low: 0.0003
+      clip_high: 0.0004
+      kl_penalty: 0
+      mask_truncated: true
+      dynamic_thinking_length: true
+      length_schedule:
+        correctness_only_fraction: 0.60
+        adaptive_budget_fraction: 0.40
+    autotune:
+      clip_pairs: [[0.0002, 0.0003], [0.0003, 0.0004], [0.0004, 0.0005]]
+      length_coefficients: [0.0, 0.02, 0.05]
+      gate:
+        name: stable_reward_and_entropy_with_no_eval_regression
+        minimum_reward_gain: 0.0
+        maximum_entropy_delta: 0.25
+        maximum_evaluation_regression: 0.0
+        maximum_nonfinite_steps: 0
+      live_canary:
+        schema: metis.posttraining-live-canary-policy/v1
+        training_optimizer_steps: 2
+        evaluator_implementation: metis.rlvr-offline-policy-replay/v1
+        minimum_evaluation_records: 128
+        maximum_reproduction_tolerance: 0.001
+        restore_parent_between_trials: true
+        restore_rng_between_trials: true
+        require_working_set_autotune: true
+        maximum_working_set_candidates: 8
+        working_set_warmup_trials: 1
+        working_set_measurement_trials: 3
+    reward:
+      correctness: sandbox_test_pass_fraction
+      efficiency_reward: gated_on_full_correctness
+      length_coefficient: 0.05
+    requirements:
+      - name: code_rlvr_data
+        env: METIS_CODE_RLVR_DATA
+        schema: metis.rlvr-data/v1
+        tokenizer_bound: true
+        family_bound: true
+        checkpoint_bound: true
+        generated_from_stage: deepseek_dpd
+        required_metadata:
+          domain: code
+          avg_at_k: 16
+          strict_filter_min: 0.10
+          strict_filter_max: 0.90
+          all_samples_in_band: true
+          private_tests_present: true
+      - name: code_verifier
+        env: METIS_CODE_VERIFIER
+        schema: metis.verifier-bundle/v1
+        tokenizer_bound: false
+        required_metadata:
+          domain: code
+          deterministic: true
+          sandboxed: true
+          network_disabled: true
+          resource_limits_enforced: true
+          adversarially_validated: true
+          generation_adapter_present: true
+
+  - id: specialist_knowledge
+    input_stage: deepseek_dpd
+    branch_from: deepseek_dpd
+    preserves_unified_policy: true
+    enabled: true
+    output_kind: checkpoint
+    optimizer_state: reset
+    domain: knowledge
+    sequence_length: 65536
+    on_policy_filter:
+      samples_per_prompt: 16
+      strict_min_pass_rate: 0.10
+      strict_max_pass_rate: 0.90
+      generated_by_stage: deepseek_dpd
+    objective:
+      algorithm: gspo
+      ratio_unit: sequence
+      length_normalized_ratio: true
+      clip_low: 0.0003
+      clip_high: 0.0004
+      kl_penalty: 0
+      mask_truncated: true
+      dynamic_thinking_length: true
+      length_schedule:
+        correctness_only_fraction: 0.60
+        adaptive_budget_fraction: 0.40
+    autotune:
+      clip_pairs: [[0.0002, 0.0003], [0.0003, 0.0004], [0.0004, 0.0005]]
+      length_coefficients: [0.0, 0.02, 0.05]
+      gate:
+        name: stable_reward_and_entropy_with_no_eval_regression
+        minimum_reward_gain: 0.0
+        maximum_entropy_delta: 0.25
+        maximum_evaluation_regression: 0.0
+        maximum_nonfinite_steps: 0
+      live_canary:
+        schema: metis.posttraining-live-canary-policy/v1
+        training_optimizer_steps: 2
+        evaluator_implementation: metis.rlvr-offline-policy-replay/v1
+        minimum_evaluation_records: 128
+        maximum_reproduction_tolerance: 0.001
+        restore_parent_between_trials: true
+        restore_rng_between_trials: true
+        require_working_set_autotune: true
+        maximum_working_set_candidates: 8
+        working_set_warmup_trials: 1
+        working_set_measurement_trials: 3
+    reward:
+      correctness: normalized_closed_book_alias_match
+      hallucination_penalty: source_checked_claims
+      length_coefficient: 0.02
+    requirements:
+      - name: knowledge_rl_data
+        env: METIS_KNOWLEDGE_RL_DATA
+        schema: metis.rlvr-data/v1
+        tokenizer_bound: true
+        family_bound: true
+        checkpoint_bound: true
+        generated_from_stage: deepseek_dpd
+        required_metadata:
+          domain: knowledge
+          avg_at_k: 16
+          strict_filter_min: 0.10
+          strict_filter_max: 0.90
+          all_samples_in_band: true
+          aliases_source_checked: true
+      - name: knowledge_verifier
+        env: METIS_KNOWLEDGE_VERIFIER
+        schema: metis.verifier-bundle/v1
+        tokenizer_bound: false
+        required_metadata:
+          domain: knowledge
+          deterministic: true
+          source_snapshot_pinned: true
+          adversarially_validated: true
+          generation_adapter_present: true
+
+  - id: specialist_writing
+    input_stage: deepseek_dpd
+    branch_from: deepseek_dpd
+    preserves_unified_policy: true
+    enabled: true
+    output_kind: checkpoint
+    optimizer_state: reset
+    domain: writing
+    sequence_length: 65536
+    on_policy_filter:
+      samples_per_prompt: 16
+      strict_min_pass_rate: 0.10
+      strict_max_pass_rate: 0.90
+      generated_by_stage: deepseek_dpd
+    objective:
+      algorithm: gspo
+      ratio_unit: sequence
+      length_normalized_ratio: true
+      clip_low: 0.0003
+      clip_high: 0.0004
+      kl_penalty: 0
+      mask_truncated: true
+      dynamic_thinking_length: false
+    autotune:
+      clip_pairs: [[0.0002, 0.0003], [0.0003, 0.0004], [0.0004, 0.0005]]
+      length_coefficients: [0.0]
+      gate:
+        name: stable_reward_and_entropy_with_no_eval_regression
+        minimum_reward_gain: 0.0
+        maximum_entropy_delta: 0.25
+        maximum_evaluation_regression: 0.0
+        maximum_nonfinite_steps: 0
+      live_canary:
+        schema: metis.posttraining-live-canary-policy/v1
+        training_optimizer_steps: 2
+        evaluator_implementation: metis.rlvr-offline-policy-replay/v1
+        minimum_evaluation_records: 128
+        maximum_reproduction_tolerance: 0.001
+        restore_parent_between_trials: true
+        restore_rng_between_trials: true
+        require_working_set_autotune: true
+        maximum_working_set_candidates: 8
+        working_set_warmup_trials: 1
+        working_set_measurement_trials: 3
+    reward:
+      correctness: calibrated_pairwise_judge_score
+      style_constraints: deterministic_lint
+      length_coefficient: 0.0
+    requirements:
+      - name: writing_rl_data
+        env: METIS_WRITING_RL_DATA
+        schema: metis.rlvr-data/v1
+        tokenizer_bound: true
+        family_bound: true
+        checkpoint_bound: true
+        generated_from_stage: deepseek_dpd
+        required_metadata:
+          domain: writing
+          avg_at_k: 16
+          strict_filter_min: 0.10
+          strict_filter_max: 0.90
+          all_samples_in_band: true
+          pairwise_judge_calibrated: true
+          style_lints_present: true
+      - name: writing_verifier
+        env: METIS_WRITING_VERIFIER
+        schema: metis.verifier-bundle/v1
+        tokenizer_bound: false
+        required_metadata:
+          domain: writing
+          judge_revision_pinned: true
+          calibration_set_pinned: true
+          adversarially_validated: true
+          generation_adapter_present: true
+
+  - id: specialist_agentic
+    input_stage: deepseek_dpd
+    branch_from: deepseek_dpd
+    preserves_unified_policy: true
+    enabled: true
+    output_kind: checkpoint
+    optimizer_state: reset
+    domain: agentic
+    sequence_length: 131072
+    on_policy_filter:
+      samples_per_prompt: 16
+      strict_min_pass_rate: 0.10
+      strict_max_pass_rate: 0.90
+      generated_by_stage: deepseek_dpd
+    objective:
+      algorithm: gspo
+      ratio_unit: sequence
+      length_normalized_ratio: true
+      clip_low: 0.0003
+      clip_high: 0.0004
+      kl_penalty: 0
+      mask_truncated: true
+      dynamic_thinking_length: true
+      turn_level_advantages: true
+      length_schedule:
+        correctness_only_fraction: 0.60
+        adaptive_budget_fraction: 0.40
+    autotune:
+      clip_pairs: [[0.0002, 0.0003], [0.0003, 0.0004], [0.0004, 0.0005]]
+      length_coefficients: [0.0, 0.02, 0.05]
+      gate:
+        name: stable_reward_and_entropy_with_no_eval_regression
+        minimum_reward_gain: 0.0
+        maximum_entropy_delta: 0.25
+        maximum_evaluation_regression: 0.0
+        maximum_nonfinite_steps: 0
+      live_canary:
+        schema: metis.posttraining-live-canary-policy/v1
+        training_optimizer_steps: 2
+        evaluator_implementation: metis.rlvr-offline-policy-replay/v1
+        minimum_evaluation_records: 128
+        maximum_reproduction_tolerance: 0.001
+        restore_parent_between_trials: true
+        restore_rng_between_trials: true
+        require_working_set_autotune: true
+        maximum_working_set_candidates: 8
+        working_set_warmup_trials: 1
+        working_set_measurement_trials: 3
+    reward:
+      turn_level: [logical_soundness, tool_call_accuracy, information_gain]
+      trajectory_level: grounded_answer_correctness
+      length_coefficient: 0.05
+    requirements:
+      - name: agentic_rlvr_data
+        env: METIS_AGENTIC_RLVR_DATA
+        schema: metis.rlvr-data/v1
+        tokenizer_bound: true
+        family_bound: true
+        checkpoint_bound: true
+        generated_from_stage: deepseek_dpd
+        required_metadata:
+          domain: agentic
+          avg_at_k: 16
+          strict_filter_min: 0.10
+          strict_filter_max: 0.90
+          all_samples_in_band: true
+          turn_level_labels_present: true
+          trajectory_rewards_present: true
+      - name: agentic_environment
+        env: METIS_AGENTIC_ENVIRONMENT
+        schema: metis.verifier-bundle/v1
+        tokenizer_bound: false
+        required_metadata:
+          domain: agentic
+          environment_revision_pinned: true
+          search_snapshot_pinned: true
+          page_extractor_pinned: true
+          sandboxed: true
+          adversarially_validated: true
+          generation_adapter_present: true
+
+  - id: opd_consolidation
+    input_stage: deepseek_dpd
+    enabled: true
+    output_kind: checkpoint
+    optimizer_state: reset
+    sequence_length: 131072
+    teacher_stages:
+      - specialist_reasoning
+      - specialist_code
+      - specialist_knowledge
+      - specialist_writing
+      - specialist_agentic
+    objective:
+      algorithm: on_policy_distillation
+      divergence: reverse_kl
+      trajectory_source: current_unified_student
+      teacher_routing: sealed_prompt_domain
+      top_k_per_model: 32
+      union_student_and_teacher_top_k: true
+      one_epoch_single_use: true
+      response_only: true
+      temperature: 1.0
+    requirements:
+      - name: specialist_opd_rollouts
+        env: METIS_SPECIALIST_OPD_ROLLOUTS
+        schema: metis.opd-data/v1
+        tokenizer_bound: true
+        family_bound: true
+        checkpoint_bound: true
+        generated_from_stages:
+          - deepseek_dpd
+          - specialist_reasoning
+          - specialist_code
+          - specialist_knowledge
+          - specialist_writing
+          - specialist_agentic
+        required_metadata:
+          on_policy: true
+          single_use_rollouts: true
+          student_checkpoint_bound: true
+          all_specialist_checkpoints_bound: true
+          teacher_routing_sealed: true
+          top_k_per_model: 32
+          union_student_and_teacher_top_k: true
+          reverse_kl: true
+      - name: opd_generation_adapter
+        env: METIS_OPD_GENERATION_ADAPTER
+        schema: metis.opd-generation-capabilities/v1
+        tokenizer_bound: true
+        required_metadata:
+          same_tokenizer: true
+          unified_and_specialist_checkpoint_loading: true
+          topk_logits: true
+          generation_adapter_present: true
+
+  - id: pairwise_reward_model
+    input_stage: opd_consolidation
+    enabled: true
+    output_kind: reward_model
+    optimizer_state: reset
+    preserves_policy_checkpoint: true
+    sequence_length: 65536
+    loss: bradley_terry_with_swap_consistency
+    swap_consistency_weight: 0.10
+    requirements:
+      - name: pairwise_preference_data
+        env: METIS_PAIRWISE_PREFERENCE_DATA
+        schema: metis.preference-data/v1
+        tokenizer_bound: true
+        required_metadata:
+          human_preference_provenance_complete: true
+          strong_weak_pairs_present: true
+          single_and_multi_turn_present: true
+          position_balanced: true
+          safety_calibrated: true
+          generation_adapter_present: true
+
+  - id: preference_alignment
+    input_stage: pairwise_reward_model
+    enabled: true
+    output_kind: checkpoint
+    optimizer_state: reset
+    sequence_length: 65536
+    reward_source: pairwise_reward_model
+    reward_scoring: frozen_parent_checkpoint_offline
+    reward_score_contract: metis.frozen-reward-scores/v1
+    reference_response_required: true
+    objective:
+      algorithm: gspo
+      ratio_unit: sequence
+      length_normalized_ratio: true
+      clip_low: 0.0003
+      clip_high: 0.0004
+      kl_penalty: 0
+      mask_truncated: true
+    requirements:
+      - name: preference_alignment_prompts
+        env: METIS_PREFERENCE_ALIGNMENT_PROMPTS
+        schema: metis.preference-prompts/v1
+        tokenizer_bound: true
+        family_bound: true
+        checkpoint_bound: true
+        generated_from_stage: pairwise_reward_model
+        required_metadata:
+          reference_responses_present: true
+          reference_model_revisions_pinned: true
+          frozen_reward_scores_present: true
+          reward_model_manifest_bound: true
+          scoring_backbone_checkpoint_bound: true
+          challenging_and_clear_prompts: true
+          safety_calibrated: true
+
+  - id: evaluation
+    input_stage: preference_alignment
+    enabled: true
+    output_kind: evaluation
+    optimizer_state: none
+    gate:
+      fail_on_missing_metric: true
+      metrics:
+        - {name: base_validation_loss, comparison: no_regression_vs_context_extension, relative_tolerance: 0.01, higher_is_better: false}
+        - {name: ruler_131k, comparison: suite_threshold}
+        - {name: needle_131k, comparison: suite_threshold}
+        - {name: aime, comparison: no_regression_vs_specialist_reasoning, relative_tolerance: 0.01}
+        - {name: gpqa, comparison: no_regression_vs_specialist_knowledge, relative_tolerance: 0.01}
+        - {name: livecodebench, comparison: no_regression_vs_specialist_code, relative_tolerance: 0.01}
+        - {name: bfcl_v4, comparison: no_regression_vs_overall_sft, relative_tolerance: 0.01}
+        - {name: arena_hard_v2, comparison: improve_vs_specialist_agentic, minimum_delta: 0.1}
+        - {name: safety_harm_refusal, comparison: suite_threshold}
+        - {name: benign_overrefusal, comparison: suite_threshold}
+        - {name: hallucination_abstention, comparison: suite_threshold}
+        - {name: repetition_rate, comparison: suite_threshold}
+        - {name: moe_expert_utilization, comparison: suite_threshold}
+        - {name: recursion_depth_distribution, comparison: suite_threshold}
+        - {name: underthinking_rate, comparison: suite_threshold}
+        - {name: overthinking_rate, comparison: suite_threshold}
+      repeated_sampling:
+        reasoning: 8
+        other_generative: 3
+      contamination_recheck: true
+      tool_augmented_grounding: true
+    requirements:
+      - name: evaluation_results
+        env: METIS_EVALUATION_RESULTS
+        schema: metis.evaluation-results/v1
+        tokenizer_bound: true
+        family_bound: true
+        checkpoint_bound: true
+        generated_from_stage: preference_alignment
+        required_metadata:
+          backend_contract: metis.evaluation-results/v1
+          checkpoint_bound: true
+          contamination_recheck_passed: true
+          tool_augmented_grounding_passed: true
+      - name: evaluation_suite
+        env: METIS_EVALUATION_SUITE
+        schema: metis.evaluation-suite/v1
+        tokenizer_bound: true
+        required_metadata:
+          benchmarks_pinned: true
+          holdouts_sealed: true
+          contamination_checked: true
+          tool_environments_pinned: true
+          metric_thresholds_locked: true
+          generation_adapter_present: true
+
+  - id: publish_gate
+    input_stage: evaluation
+    enabled: true
+    output_kind: publish
+    optimizer_state: none
+    requires_evaluation_pass: true
+    external_upload: false
+    output: sealed_local_release_candidate
+    requirements:
+      - name: release_audit
+        env: METIS_RELEASE_AUDIT
+        schema: metis.release-audit/v1
+        tokenizer_bound: true
+        family_bound: true
+        checkpoint_bound: true
+        required_metadata:
+          data_licenses_approved: true
+          teacher_licenses_approved: true
+          model_card_complete: true
+          evaluation_card_complete: true
+          checkpoint_lineage_complete: true
+          known_limitations_documented: true

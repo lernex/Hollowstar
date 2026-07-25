@@ -1,0 +1,481 @@
+#!/usr/bin/env python3
+"""Run a release-sealed post-training adapter and seal its distributed result.
+
+This file is copied byte-for-byte into the Rhea post-training release.  The
+release index pins its SHA-256, so Portage never executes an unsealed ad-hoc
+generator.  Stage-specific logic (DeepSeek DPD, verifier-backed RLVR, OPD, or
+reward scoring) is supplied by an executable that is itself a payload of a
+deep-verified static requirement.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Iterable, Mapping
+
+
+SHA256_LENGTH = 64
+ADAPTER_SCHEMA = "metis.generation-adapter/v1"
+SEALED_SCHEMA = "metis.sealed-artifact/v1"
+RANK_RECEIPT_SCHEMA = "metis.generation-hook-rank-receipt/v1"
+REDUCER_RECEIPT_SCHEMA = "metis.generation-hook-receipt/v2"
+
+
+def canonical_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def json_hash(value: Any, *, omit: Iterable[str] = ()) -> str:
+    omitted = set(omit)
+    if isinstance(value, dict):
+        value = {
+            key: item for key, item in value.items() if key not in omitted
+        }
+    return hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(16 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def read_json(path: Path, *, label: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"{label} is not valid JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{label} must contain a JSON object")
+    return payload
+
+
+def atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, raw_temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(raw_temporary)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o640)
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def safe_relative(root: Path, raw: Any, *, label: str) -> Path:
+    if (
+        not isinstance(raw, str)
+        or not raw
+        or Path(raw).is_absolute()
+        or ".." in Path(raw).parts
+    ):
+        raise RuntimeError(f"{label} is not a safe relative path")
+    path = (root / raw).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(f"{label} escapes its release root") from exc
+    if path.is_symlink():
+        raise RuntimeError(f"{label} may not be a symlink")
+    return path
+
+
+def required_environment(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"required environment variable {name} is missing")
+    return value
+
+
+def validate_request() -> tuple[dict[str, Any], Path]:
+    request_path = Path(
+        required_environment("METIS_GENERATION_REQUEST")
+    ).expanduser().resolve()
+    request = read_json(request_path, label="generation request")
+    expected = required_environment("METIS_GENERATION_REQUEST_SHA256")
+    hook = request.get("hook")
+    if (
+        request.get("schema")
+        != "metis.deferred-materialization-request/v1"
+        or request.get("request_sha256")
+        != json_hash(request, omit=("request_sha256",))
+        or request.get("request_sha256") != expected
+        or file_hash(request_path)
+        != required_environment("METIS_GENERATION_REQUEST_FILE_SHA256")
+        or request.get("family") != required_environment("METIS_FAMILY")
+        or request.get("stage") != required_environment("METIS_STAGE_ID")
+        or request.get("requirement")
+        != required_environment("METIS_REQUIREMENT_NAME")
+        or request.get("parent_checkpoint_sha256")
+        != required_environment("METIS_PARENT_CHECKPOINT_SHA256")
+        or not isinstance(hook, Mapping)
+        or hook.get("output_manifest")
+        != required_environment("METIS_OUTPUT_MANIFEST")
+        or hook.get("reducer_receipt")
+        != required_environment("METIS_GENERATION_RECEIPT")
+        or hook.get("rank_receipts")
+        != required_environment(
+            "METIS_GENERATION_RANK_RECEIPT_DIRECTORY"
+        )
+        or hook.get("world_size")
+        != int(required_environment("METIS_GENERATION_WORLD_SIZE"))
+    ):
+        raise RuntimeError("generation request lineage changed")
+    return request, request_path
+
+
+def validate_sealed_manifest(path: Path) -> dict[str, Any]:
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError(f"sealed adapter requirement is missing: {path}")
+    payload = read_json(path, label="sealed adapter requirement")
+    files = payload.get("files")
+    if (
+        payload.get("envelope_schema") != SEALED_SCHEMA
+        or payload.get("complete") is not True
+        or payload.get("manifest_sha256")
+        != json_hash(payload, omit=("manifest_sha256",))
+        or not isinstance(files, list)
+        or not files
+    ):
+        raise RuntimeError("adapter requirement is not a complete sealed artifact")
+    root = path.parent.resolve()
+    seen: set[str] = set()
+    for raw_record in files:
+        if not isinstance(raw_record, Mapping):
+            raise RuntimeError("adapter payload record is invalid")
+        relative = raw_record.get("path")
+        payload_path = safe_relative(
+            root, relative, label="adapter payload"
+        )
+        if (
+            relative in seen
+            or not payload_path.is_file()
+            or payload_path.stat().st_size != int(raw_record.get("bytes", -1))
+            or file_hash(payload_path) != raw_record.get("sha256")
+        ):
+            raise RuntimeError(f"adapter payload changed: {relative}")
+        seen.add(str(relative))
+    return payload
+
+
+def resolve_adapter(
+    request: Mapping[str, Any],
+    *,
+    source_stage: str,
+    source_requirement: str,
+) -> tuple[Path, list[str], Path, dict[str, Any]]:
+    index_path = Path(str(request["release_index_path"])).resolve()
+    index = read_json(index_path, label="family release index")
+    if (
+        index.get("schema") != "metis.posttraining-release-index/v1"
+        or index.get("family") != request["family"]
+        or index.get("index_sha256")
+        != json_hash(index, omit=("index_sha256",))
+        or file_hash(index_path) != request["release_index_file_sha256"]
+        or index.get("index_sha256") != request["release_index_sha256"]
+    ):
+        raise RuntimeError("family release index changed")
+    try:
+        record = index["requirements"][source_stage][source_requirement]
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError(
+            "adapter source requirement is absent from the release index"
+        ) from exc
+    if not isinstance(record, Mapping) or record.get("state") != "sealed":
+        raise RuntimeError("generation adapter must come from a sealed requirement")
+    root = index_path.parent.resolve()
+    manifest_path = safe_relative(
+        root, record.get("path"), label="adapter requirement manifest"
+    )
+    if file_hash(manifest_path) != record.get("sha256"):
+        raise RuntimeError("adapter requirement manifest bytes changed")
+    manifest = validate_sealed_manifest(manifest_path)
+    metadata = manifest.get("metadata")
+    adapter = (
+        metadata.get("generation_adapter")
+        if isinstance(metadata, Mapping)
+        else None
+    )
+    stages = adapter.get("stages") if isinstance(adapter, Mapping) else None
+    requirements = (
+        adapter.get("requirements") if isinstance(adapter, Mapping) else None
+    )
+    if (
+        not isinstance(adapter, Mapping)
+        or adapter.get("schema") != ADAPTER_SCHEMA
+        or adapter.get("adapter_sha256")
+        != json_hash(adapter, omit=("adapter_sha256",))
+        or adapter.get("output_envelope_schema") != SEALED_SCHEMA
+        or not isinstance(stages, list)
+        or not all(isinstance(item, str) for item in stages)
+        or request["stage"] not in stages
+        or not isinstance(requirements, list)
+        or not all(isinstance(item, str) for item in requirements)
+        or request["requirement"] not in requirements
+        or not isinstance(adapter.get("args"), list)
+        or not all(isinstance(item, str) for item in adapter["args"])
+    ):
+        raise RuntimeError("sealed generation adapter contract is invalid")
+    executable = safe_relative(
+        manifest_path.parent.resolve(),
+        adapter.get("executable"),
+        label="generation adapter executable",
+    )
+    declared_files = {
+        str(record["path"]): record
+        for record in manifest["files"]
+        if isinstance(record, Mapping)
+    }
+    relative = executable.relative_to(manifest_path.parent.resolve()).as_posix()
+    file_record = declared_files.get(relative)
+    if (
+        not isinstance(file_record, Mapping)
+        or not executable.is_file()
+        or not os.access(executable, os.X_OK)
+        or file_hash(executable) != adapter.get("executable_sha256")
+        or file_hash(executable) != file_record.get("sha256")
+    ):
+        raise RuntimeError("sealed generation adapter executable changed")
+    return executable, list(adapter["args"]), manifest_path, dict(adapter)
+
+
+def validate_output(
+    path: Path,
+    *,
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    output = validate_sealed_manifest(path)
+    metadata = output.get("metadata")
+    if (
+        output.get("schema") != request["requirement_schema"]
+        or not isinstance(metadata, Mapping)
+        or metadata.get("family") != request["family"]
+        or metadata.get("generated_from_checkpoint_sha256")
+        != request["parent_checkpoint_sha256"]
+    ):
+        raise RuntimeError("generated output is not bound to the live checkpoint")
+    return output
+
+
+def rank_and_world() -> tuple[int, int]:
+    world = int(required_environment("METIS_GENERATION_WORLD_SIZE"))
+    rank = int(
+        os.environ.get(
+            "SLURM_PROCID",
+            os.environ.get("PMI_RANK", os.environ.get("RANK", "0")),
+        )
+    )
+    if world <= 0 or not 0 <= rank < world:
+        raise RuntimeError("generation rank/world is invalid")
+    return rank, world
+
+
+def write_rank_receipt(
+    *,
+    request: Mapping[str, Any],
+    rank: int,
+    world: int,
+    adapter_manifest: Path,
+    adapter: Mapping[str, Any],
+) -> Path:
+    root = Path(
+        required_environment("METIS_GENERATION_RANK_RECEIPT_DIRECTORY")
+    ).resolve()
+    path = root / f"rank-{rank:05d}.json"
+    receipt: dict[str, Any] = {
+        "schema": RANK_RECEIPT_SCHEMA,
+        "request_sha256": request["request_sha256"],
+        "family": request["family"],
+        "stage": request["stage"],
+        "requirement": request["requirement"],
+        "parent_checkpoint_sha256": request["parent_checkpoint_sha256"],
+        "stage_bindings": request["stage_bindings"],
+        "rank": rank,
+        "world_size": world,
+        "adapter_manifest": str(adapter_manifest),
+        "adapter_manifest_file_sha256": file_hash(adapter_manifest),
+        "adapter_contract_sha256": adapter["adapter_sha256"],
+        "adapter_executable_sha256": adapter["executable_sha256"],
+        "success": True,
+    }
+    receipt["receipt_sha256"] = json_hash(receipt)
+    atomic_json(path, receipt)
+    return path
+
+
+def reduce_receipts(
+    *,
+    request: Mapping[str, Any],
+    world: int,
+    output_path: Path,
+    timeout_seconds: float,
+    adapter_manifest: Path,
+    adapter: Mapping[str, Any],
+) -> None:
+    rank_root = Path(
+        required_environment("METIS_GENERATION_RANK_RECEIPT_DIRECTORY")
+    ).resolve()
+    deadline = time.monotonic() + timeout_seconds
+    paths = [rank_root / f"rank-{rank:05d}.json" for rank in range(world)]
+    while not all(path.is_file() for path in paths):
+        if time.monotonic() >= deadline:
+            raise RuntimeError("timed out waiting for generation rank receipts")
+        time.sleep(0.2)
+    rows: list[dict[str, Any]] = []
+    for rank, path in enumerate(paths):
+        receipt = read_json(path, label=f"rank {rank} generation receipt")
+        if (
+            receipt.get("schema") != RANK_RECEIPT_SCHEMA
+            or receipt.get("request_sha256") != request["request_sha256"]
+            or receipt.get("rank") != rank
+            or receipt.get("world_size") != world
+            or receipt.get("success") is not True
+            or receipt.get("receipt_sha256")
+            != json_hash(receipt, omit=("receipt_sha256",))
+        ):
+            raise RuntimeError(f"generation rank {rank} receipt is invalid")
+        rows.append(
+            {
+                "rank": rank,
+                "file_sha256": file_hash(path),
+                "receipt_sha256": receipt["receipt_sha256"],
+            }
+        )
+    output = validate_output(output_path, request=request)
+    hook = request["hook"]
+    executable_path = Path(str(hook["executable"])).resolve()
+    reducer: dict[str, Any] = {
+        "schema": REDUCER_RECEIPT_SCHEMA,
+        "request_sha256": request["request_sha256"],
+        "family": request["family"],
+        "stage": request["stage"],
+        "requirement": request["requirement"],
+        "parent_checkpoint_sha256": request["parent_checkpoint_sha256"],
+        "stage_bindings": request["stage_bindings"],
+        "release_index_file_sha256": request["release_index_file_sha256"],
+        "release_index_sha256": request["release_index_sha256"],
+        "record_sha256": request["record_sha256"],
+        "deep_verification_file_sha256": request["deep_verification"][
+            "file_sha256"
+        ],
+        "deep_verification_receipt_sha256": request["deep_verification"][
+            "receipt_sha256"
+        ],
+        "executable_sha256": file_hash(executable_path),
+        "execution_protocol": hook["execution"]["protocol"],
+        "world_size": world,
+        "adapter_manifest": str(adapter_manifest),
+        "adapter_manifest_file_sha256": file_hash(adapter_manifest),
+        "adapter_contract_sha256": adapter["adapter_sha256"],
+        "adapter_executable_sha256": adapter["executable_sha256"],
+        "output_manifest_sha256": file_hash(output_path),
+        "output_manifest_self_sha256": output["manifest_sha256"],
+        "success": True,
+        "rank_receipts": rows,
+    }
+    reducer["receipt_sha256"] = json_hash(reducer)
+    atomic_json(
+        Path(required_environment("METIS_GENERATION_RECEIPT")).resolve(),
+        reducer,
+    )
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser()
+    result.add_argument("--adapter-stage", required=True)
+    result.add_argument("--adapter-requirement", required=True)
+    result.add_argument(
+        "--reducer-timeout-seconds", type=float, default=1_800.0
+    )
+    return result
+
+
+def main() -> int:
+    args = parser().parse_args()
+    if not 1.0 <= args.reducer_timeout_seconds <= 86_400.0:
+        raise RuntimeError("reducer timeout must be in [1,86400] seconds")
+    request, request_path = validate_request()
+    del request_path
+    rank, world = rank_and_world()
+    executable, adapter_args, adapter_manifest, adapter = resolve_adapter(
+        request,
+        source_stage=args.adapter_stage,
+        source_requirement=args.adapter_requirement,
+    )
+    output_path = Path(required_environment("METIS_OUTPUT_MANIFEST")).resolve()
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "METIS_GENERATION_RANK": str(rank),
+            "METIS_GENERATION_WORLD_SIZE": str(world),
+            "METIS_GENERATION_ADAPTER_MANIFEST": str(adapter_manifest),
+            "METIS_GENERATION_ADAPTER_MANIFEST_FILE_SHA256": file_hash(
+                adapter_manifest
+            ),
+            "METIS_GENERATION_ADAPTER_CONTRACT_SHA256": adapter[
+                "adapter_sha256"
+            ],
+        }
+    )
+    completed = subprocess.run(
+        [str(executable), *adapter_args],
+        env=environment,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"sealed generation adapter exited {completed.returncode}"
+        )
+    write_rank_receipt(
+        request=request,
+        rank=rank,
+        world=world,
+        adapter_manifest=adapter_manifest,
+        adapter=adapter,
+    )
+    if rank == 0:
+        reduce_receipts(
+            request=request,
+            world=world,
+            output_path=output_path,
+            timeout_seconds=float(args.reducer_timeout_seconds),
+            adapter_manifest=adapter_manifest,
+            adapter=adapter,
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"metis16-posttraining-materialize: {exc}", file=sys.stderr)
+        raise SystemExit(2)

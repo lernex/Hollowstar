@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME="${METIS_RUNTIME_DIR:-$ROOT/.metis-runtime}"
+PYTHON="${METIS_PYTHON:-$RUNTIME/bin/python}"
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage:
+  ./metis-posttraining-release --config PATH --write-template PATH
+  ./metis-posttraining-release --config PATH --spec PATH [--workers N]
+                               [--json-output PATH]
+
+Build and byte-verify the sealed Rhea post-training release consumed on Portage.
+EOF
+  exit 0
+fi
+
+if [[ ! -x "$PYTHON" ]]; then
+  PYTHON="${PYTHON_FALLBACK:-python3}"
+fi
+
+if ! "$PYTHON" -c 'import numpy, tokenizers, yaml' >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+Metis Rhea data runtime is not ready.
+Run this once from the repository root:
+  ./ops/bootstrap.sh --profile rhea --role compute --lustre-root /confirmed/lustre/path
+
+For an existing compatible environment, set METIS_PYTHON to its Python executable.
+EOF
+  exit 1
+fi
+
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$PYTHON" -m metis_portage.posttraining_builder "$@"

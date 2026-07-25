@@ -1,0 +1,143 @@
+schema: metis.context-extension-plan/v1
+release: metis-1.6-context-extension-r1
+status: production_recipe
+description: >-
+  Tokenizer-bound continued-pretraining data for extending Metis-1.6 from
+  4,096 to a deployed 131,072-token context. The source mixture remains
+  domain-balanced; long documents are upsampled within each source rather than
+  replacing the base mixture with a book-only corpus.
+
+token_budget: 18000000000
+unique_active_tokens: 18000000000
+train_context: 163840
+deploy_context: 131072
+checkpoint_gates: [6000000000, 12000000000, 18000000000]
+packing_multiple_records: 12288
+
+sequence_mix:
+  natural_long: 0.70
+  dependency_constructed: 0.20
+  short_replay: 0.10
+
+selection:
+  seed: 16062027
+  minimum_long_document_tokens: 8192
+  preferred_long_document_tokens: 32768
+  short_replay_document_tokens: 4096
+  dependency_chunk_tokens: 4096
+  minimum_structural_score: 3
+  gate_evaluation_records: 384
+  gate_evaluation_context: 131072
+  gate_evaluation_tail_tokens: 4096
+  gate_evaluation_probe_prefix_tokens: 8
+  long_range_filter:
+    implementation: metis.long-range-information/v1
+    require_structural_prefilter: true
+    model_calibration_at_context_gates: true
+    model_rescore_full_corpus: false
+    score: full_context_nll_gain_over_4096
+    promotion_quantile: 0.55
+  constructed_sequence:
+    implementation: metis.negative-document-extension/v1
+    anchor_fraction: 0.50
+    distractor_fraction: 0.50
+    same_domain_distractors: true
+    preserve_source_text: true
+    generated_text: false
+  fail_on_source_exhaustion: true
+  exact_gate_domain_balance: true
+
+# These are exposure quotas after final-tokenizer counting. Acquisition adds
+# the declared reserve to the existing 1T source request so the same download
+# supervisor fetches enough long candidates without duplicating raw corpora.
+sources:
+  - {id: nemotron_repository_code_v123, domain: repository_code, tokens: 1800000000, retrieval_multiplier: 2.20}
+  - {id: stack_edu, domain: repository_code, tokens: 900000000, retrieval_multiplier: 2.50}
+  - {id: nemotron_cc_code_v1, domain: repository_code, tokens: 900000000, retrieval_multiplier: 2.25}
+
+  - {id: finepdfs_edu_english, domain: science, tokens: 1200000000, retrieval_multiplier: 2.50}
+  - {id: pes2o, domain: science, tokens: 1000000000, retrieval_multiplier: 2.20}
+  - {id: pmc_open_access, domain: science, tokens: 600000000, retrieval_multiplier: 2.20}
+  - {id: proof_pile2_science, domain: science, tokens: 400000000, retrieval_multiplier: 2.40}
+  - {id: openstax, domain: science, tokens: 100000000, retrieval_multiplier: 1.00}
+  - {id: patents_engineering_reports, domain: science, tokens: 300000000, retrieval_multiplier: 2.80}
+
+  - {id: public_domain_books_gutenberg, domain: longform_reference, tokens: 600000000, retrieval_multiplier: 1.60}
+  - {id: public_domain_books_pre1929, domain: longform_reference, tokens: 500000000, retrieval_multiplier: 1.60}
+  - {id: common_pile_doab_reference, domain: longform_reference, tokens: 400000000, retrieval_multiplier: 1.50}
+  - {id: common_pile_libretexts_reference, domain: longform_reference, tokens: 300000000, retrieval_multiplier: 1.30}
+  - {id: common_pile_loc_reference, domain: longform_reference, tokens: 300000000, retrieval_multiplier: 1.80}
+  - {id: open_law_caselaw, domain: longform_reference, tokens: 300000000, retrieval_multiplier: 2.00}
+  - {id: metis_govreference_uk_hansard, domain: longform_reference, tokens: 150000000, retrieval_multiplier: 1.70}
+  - {id: metis_govreference_regulations, domain: longform_reference, tokens: 150000000, retrieval_multiplier: 2.00}
+
+  - {id: fineweb_edu, domain: educational_web, tokens: 1800000000, retrieval_multiplier: 3.00}
+  - {id: nemotron_cc_v21_organic, domain: educational_web, tokens: 1200000000, retrieval_multiplier: 3.00}
+  - {id: essential_web, domain: educational_web, tokens: 600000000, retrieval_multiplier: 3.25}
+
+  - {id: nemotron_cc_math_4plus, domain: math_formal, tokens: 800000000, retrieval_multiplier: 2.60}
+  - {id: proof_pile2_math, domain: math_formal, tokens: 400000000, retrieval_multiplier: 2.20}
+  - {id: finemath_unique, domain: math_formal, tokens: 300000000, retrieval_multiplier: 2.80}
+  - {id: formal_theorem_corpora, domain: math_formal, tokens: 300000000, retrieval_multiplier: 2.40}
+
+  - {id: roots_stackexchange, domain: technical_discussion, tokens: 700000000, retrieval_multiplier: 3.00}
+  - {id: metis_freshdocs_2025_26, domain: technical_discussion, tokens: 400000000, retrieval_multiplier: 2.80}
+  - {id: metis_freshsoftwaredocs_2025_26, domain: technical_discussion, tokens: 400000000, retrieval_multiplier: 2.80}
+  - {id: metis_freshengineering_discussions_2025_26, domain: technical_discussion, tokens: 300000000, retrieval_multiplier: 3.00}
+
+  - {id: finewiki, domain: general_reference, tokens: 350000000, retrieval_multiplier: 2.00}
+  - {id: wikimedia_reference, domain: general_reference, tokens: 250000000, retrieval_multiplier: 2.00}
+  - {id: metis_freshweb_2026, domain: general_reference, tokens: 300000000, retrieval_multiplier: 3.00}
+
+fallbacks:
+  exhaustion_policy: fail_closed
+  preserve_domain: true
+  generated_donor_forbidden: true
+  groups:
+    - id: repository_code
+      members: [nemotron_repository_code_v123, stack_edu, nemotron_cc_code_v1]
+      donor_order: [nemotron_repository_code_v123, nemotron_cc_code_v1, stack_edu]
+    - id: science
+      members: [finepdfs_edu_english, pes2o, pmc_open_access, proof_pile2_science, openstax, patents_engineering_reports]
+      donor_order: [finepdfs_edu_english, pes2o, pmc_open_access, proof_pile2_science, openstax, patents_engineering_reports]
+    - id: longform_reference
+      members: [public_domain_books_gutenberg, public_domain_books_pre1929, common_pile_doab_reference, common_pile_libretexts_reference, common_pile_loc_reference, open_law_caselaw, metis_govreference_uk_hansard, metis_govreference_regulations]
+      donor_order: [common_pile_doab_reference, common_pile_libretexts_reference, public_domain_books_gutenberg, public_domain_books_pre1929, common_pile_loc_reference, open_law_caselaw, metis_govreference_uk_hansard, metis_govreference_regulations]
+    - id: educational_web
+      members: [fineweb_edu, nemotron_cc_v21_organic, essential_web]
+      donor_order: [fineweb_edu, nemotron_cc_v21_organic, essential_web]
+    - id: math_formal
+      members: [nemotron_cc_math_4plus, proof_pile2_math, finemath_unique, formal_theorem_corpora]
+      donor_order: [nemotron_cc_math_4plus, proof_pile2_math, finemath_unique, formal_theorem_corpora]
+    - id: technical_discussion
+      members: [roots_stackexchange, metis_freshdocs_2025_26, metis_freshsoftwaredocs_2025_26, metis_freshengineering_discussions_2025_26]
+      donor_order: [metis_freshdocs_2025_26, metis_freshsoftwaredocs_2025_26, roots_stackexchange, metis_freshengineering_discussions_2025_26]
+    - id: general_reference
+      members: [finewiki, wikimedia_reference, metis_freshweb_2026]
+      donor_order: [finewiki, wikimedia_reference, metis_freshweb_2026]
+
+gate_policy:
+  schema: metis.context-gate-policy/v1
+  checkpoints: [6000000000, 12000000000, 18000000000]
+  checkpoint_at_first_optimizer_boundary_after_target: true
+  # One optimizer boundary is one global 163,840-token sequence per APU.
+  # This covers the larger 384-APU Logos family (62.9M tokens/boundary) while
+  # still rejecting a mistakenly accumulated multi-boundary gate.
+  maximum_gate_overshoot_tokens: 65000000
+  fail_on_nonfinite: true
+  base_validation_relative_tolerance: 0.01
+  long_validation_relative_tolerance: 0.005
+  require_needle_gain_after_first_gate: true
+  promotion_metric: harmonic_long_nll_and_needle
+  retain_all_gate_checkpoints: true
+  promote_best_passing_gate: true
+
+research_basis:
+  - paper: https://arxiv.org/abs/2402.10171
+    use: per-source length upsampling and domain balance
+  - paper: https://arxiv.org/abs/2410.02660
+    use: repository code, books, high-quality short-data retention, train-length overshoot
+  - paper: https://arxiv.org/abs/2510.25804
+    use: long-range information gain rather than raw length alone
+  - paper: https://arxiv.org/abs/2501.12766
+    use: dependency-preserving negative-document construction

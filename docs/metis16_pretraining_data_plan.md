@@ -4,6 +4,12 @@ Status: Data Manifest v1.0
 Release name: `metis-1.6-data-r1`  
 Effective date: 2026-07-21
 
+The 1T acquisition also retrieves the reserve for the later 18B
+131K-context continued-pretraining release. Its research basis, source
+quotas, same-domain fallbacks, exact 6B/12B/18B gates, and Rhea packing path
+are documented in
+[`metis16_context_extension_data.md`](metis16_context_extension_data.md).
+
 ## Release contract
 
 Metis-1.6 trains on exactly **1,000,000,000,000 token exposures**, counted only after the final

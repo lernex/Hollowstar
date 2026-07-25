@@ -228,6 +228,10 @@ BUILD_GRAPH = (
     ("tokenizer_train", None),
     ("cleanup_tokenizer_sample", None),
     ("token_count", "normalize_tasks"),
+    ("context_select", None),
+    ("context_prepare", None),
+    ("context_pack", "context_pack_tasks"),
+    ("context_verify", None),
     ("select", None),
     ("cleanup_selection_inputs", None),
     ("pack", "pack_tasks"),
@@ -316,6 +320,7 @@ def submit_graph(
             "minhash_priority_buckets": minhash_priority_buckets,
             "code_buckets": code_buckets,
             "final_hash_buckets": final_hash_buckets,
+            "context_pack_tasks": 96,
             "pack_tasks": (target + shard_tokens - 1) // shard_tokens,
         }
         for stage, count_key in BUILD_GRAPH:

@@ -4,9 +4,9 @@ The three environments have deliberately separate responsibilities:
 
 | Environment | Responsibility | Profile |
 |---|---|---|
-| `login2` | Authenticate, acquire raw candidates and evaluation holdouts onto Lustre | `login2` |
-| Rhea | Normalize, filter, deduplicate, decontaminate, train the tokenizer, tokenize, select, and shard | `rhea` |
-| Portage | Consume the verified immutable release for model pretraining | trainer configuration, not a data-prep profile |
+| `login2` | Authenticate, acquire 1T-base candidates, the 25.91B-token context reserve, and evaluation holdouts onto Lustre | `login2` |
+| Rhea | Normalize, filter, deduplicate, decontaminate, train the tokenizer, tokenize, select, and shard both the 1T base and exact 18B context release | `rhea` |
+| Portage | Consume the verified immutable base and post-training releases for simultaneous Praxis/Logos base training, context extension, and post-training | autonomous trainer configuration, not a data-prep profile |
 
 ## Information confirmed by the account owner
 
@@ -34,6 +34,22 @@ Before the first login2 launch, confirm three remaining account-level prerequisi
 
 Portage's `parry` partition, `MaxArraySize=1001`, 10,000-job limit, five-day wall-time limit, and
 roughly 512,000MB nodes are Portage facts. They are not copied into the Rhea profile.
+
+The later one-command Portage model-training handoff, autonomous probe ladder, dual-family
+allocation, requeue behavior, and evidence gates are specified in
+`docs/metis16_portage_training_runbook.md`.
+
+Portage is not ready from tokenized shards alone. Before the Portage command,
+Rhea must also build the sealed post-training umbrella containing static
+SFT inputs, the DeepSeek capability, verifiers, preference/evaluation data,
+and sealed generation adapters. The release builder installs the common
+checkpoint-bound hook itself. Portage must also expose a compatible
+site runtime or pinned offline bundle. Once those release gates are complete,
+the only Portage launch/resume command is:
+
+```bash
+./ops/start-portage-training.sh
+```
 
 ## Clone once, then one login2 command
 
@@ -87,6 +103,13 @@ Crawl, pinned repository, canonical-source, and recent-GitHub materializers seco
 discussion extraction only after the repository-license cache exists. A failed wave prevents every
 dependent wave from starting. Network concurrency is bounded independently for Hugging Face,
 Common Crawl, canonical sites, and public GitHub archives.
+
+The same source requests include the continued-pretraining reserve: 43.91B
+long-document candidates in total, 25.91B beyond the candidates already
+needed by the 1T plan. The reserve reuses 31 audited base-source families and
+their download fallbacks; it does not download the foreign-tokenized ProLong
+release. See
+[`metis16_context_extension_data.md`](metis16_context_extension_data.md).
 
 ```bash
 screen -r metis16-acquisition
@@ -160,6 +183,14 @@ export METIS_SLURM_MAX_ARRAY_SIZE=CONFIRMED
 ./metisctl verify-handoff --profile rhea
 ./metisctl submit build --profile rhea
 ```
+
+After ordinary base selection, the dependency graph runs `context_select`,
+`context_prepare`, 96 restartable `context_pack` tasks, and
+`context_verify`. The result contains exactly 18B active Metis-tokenizer
+tokens, compact 163,840-token rows, exact 6B/12B/18B gate tranches, and 384
+training-disjoint 131K calibration records. A short source, cross-domain
+fallback, token-count mismatch, or incomplete calibration set stops the
+release.
 
 Do not set `scheduler.site_values_confirmed: true` until those values are measured on Rhea. If Rhea
 cannot mount the same acquisition content at any path, stop: a separately verified transfer/staging

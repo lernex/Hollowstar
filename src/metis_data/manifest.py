@@ -56,6 +56,14 @@ def load_manifest(path: str | Path | None = None) -> dict[str, Any]:
     if replacement_path:
         replacement_payload = load_yaml((manifest_path.parent / replacement_path).resolve())
         manifest["replacement_policy"] = replacement_payload
+    context_path = manifest.get("context_extension_plan_file")
+    if context_path:
+        from .context_manifest import load_context_plan
+
+        manifest["context_extension_plan"] = load_context_plan(
+            (manifest_path.parent / context_path).resolve(),
+            base_manifest={**manifest, "sources": sources},
+        )
     manifest["_path"] = str(manifest_path)
     return manifest
 
@@ -249,12 +257,25 @@ def validate_manifest(path: str | Path | None = None) -> ValidationResult:
 
 
 def candidate_plan(manifest: dict[str, Any]) -> dict[str, Any]:
+    context_reserve: dict[str, int] = {}
+    context_targets: dict[str, int] = {}
+    context_plan = manifest.get("context_extension_plan")
+    if context_plan:
+        from .context_manifest import (
+            context_candidate_targets,
+            context_retrieval_reserve_tokens,
+        )
+
+        context_reserve = context_retrieval_reserve_tokens(context_plan)
+        context_targets = context_candidate_targets(context_plan)
     rows = []
     for source in manifest["sources"]:
         final_tokens = total_phase_tokens(source)
         acquisition = source["acquisition"]
         multiplier = Decimal(str(acquisition.get("candidate_multiplier", 1.0)))
-        candidate_tokens = int(Decimal(final_tokens) * multiplier)
+        base_candidate_tokens = int(Decimal(final_tokens) * multiplier)
+        reserve_tokens = int(context_reserve.get(source["id"], 0))
+        candidate_tokens = base_candidate_tokens + reserve_tokens
         bytes_per_token = Decimal(str(acquisition.get("compressed_bytes_per_token", 0.8)))
         rows.append(
             {
@@ -262,6 +283,11 @@ def candidate_plan(manifest: dict[str, Any]) -> dict[str, Any]:
                 "category": source["category"],
                 "driver": acquisition["driver"],
                 "final_exposure_tokens": final_tokens,
+                "base_candidate_tokens": base_candidate_tokens,
+                "context_extension_retrieval_reserve_tokens": reserve_tokens,
+                "context_extension_candidate_target_tokens": int(
+                    context_targets.get(source["id"], 0)
+                ),
                 "candidate_tokens": candidate_tokens,
                 "planned_download_bytes": int(Decimal(candidate_tokens) * bytes_per_token),
                 "phase_tokens": source["phase_tokens"],
@@ -278,6 +304,19 @@ def candidate_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         "target_tokens": manifest["schedule"]["target_tokens"],
         "planned_candidate_tokens": sum(row["candidate_tokens"] for row in rows),
         "planned_download_bytes": sum(row["planned_download_bytes"] for row in rows),
+        "context_extension": (
+            {
+                "release": context_plan["release"],
+                "token_budget": int(context_plan["token_budget"]),
+                "checkpoint_gates": list(context_plan["checkpoint_gates"]),
+                "candidate_targets": context_targets,
+                "additional_retrieval_reserve_tokens": sum(
+                    context_reserve.values()
+                ),
+            }
+            if context_plan
+            else None
+        ),
         "replacement_resilience": replacement_resilience_report(
             manifest,
             requirements=unique,

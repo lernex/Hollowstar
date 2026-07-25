@@ -1,0 +1,120 @@
+schema: metis.portage-training/v1
+
+# These are architecture contracts, not site guesses.  Every mutable site fact
+# is rediscovered and recorded before a production allocation is submitted.
+site:
+  expected_cluster_regex: '(?i)portage'
+  partition: parry
+  nodes: 128
+  accelerators_per_node: 4
+  cpu_cores_per_node: 24
+  expected_gpu_arch: gfx942
+  minimum_hbm_bytes_per_apu: 118000000000
+  require_gpu_tres: true
+  require_lustre: true
+  require_cxi_counters: true
+  maximum_partition_wall_seconds: 432000
+  production_segment_time: '4-20:00:00'
+  checkpoint_signal_seconds: 900
+  account: ${METIS_SLURM_ACCOUNT:-}
+  qos: ${METIS_SLURM_QOS:-}
+  reservation: ${METIS_SLURM_RESERVATION:-}
+
+storage:
+  lustre_root: ${METIS_LUSTRE_ROOT:-/lus/lustre1/vollmerc/metis-1.6}
+  release_root: ${METIS_DATA_RELEASE:-/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r1}
+  posttraining_release_index: ${METIS_POSTTRAINING_RELEASE_INDEX:-}
+  state_root: ${METIS_PORTAGE_STATE_ROOT:-/lus/lustre1/vollmerc/metis-1.6/training/metis-1.6/portage}
+
+training:
+  command: [python3, -m, metis_training.train]
+  pretraining_contract: configs/metis16/pretraining.yaml
+  runtime_policy: configs/metis16/portage-runtime.yaml
+  posttraining_contract: configs/metis16/posttraining.yaml
+  require_clean_repository: true
+  resume: auto
+  campaign_stage: all
+  output_subdirectory: runs
+
+families:
+  praxis:
+    manifest: configs/metis16/praxis.yaml
+    nodes: 32
+    world_size: 128
+    relative_node: 0
+    expert_parallel_size: 128
+    expert_replicas: 1
+  logos:
+    manifest: configs/metis16/logos.yaml
+    nodes: 96
+    world_size: 384
+    relative_node: 32
+    expert_parallel_size: 192
+    expert_replicas: 2
+
+bringup:
+  stages:
+    - {id: compute_inventory, nodes: 1, tasks: 1, gpus_per_node: 1, time: '00:20:00'}
+    - {id: single_apu, nodes: 1, tasks: 1, gpus_per_node: 1, time: '00:45:00'}
+    - {id: node_collectives, nodes: 1, tasks: 4, gpus_per_node: 4, time: '00:45:00'}
+    - {id: multinode_collectives, nodes: 4, tasks: 16, gpus_per_node: 4, time: '01:00:00'}
+    - {id: release_verification, nodes: 32, tasks: 128, gpus_per_node: 4, time: '04:00:00'}
+  collective_bytes: [1024, 1048576, 16777216, 67108864, 268435456]
+  warmup_iterations: 4
+  timed_iterations: 12
+  maximum_collective_cv: 0.25
+  minimum_multinode_bus_bandwidth_gbps: 1.0
+  fp8_max_relative_error: 0.08
+  precision_probe_minimum_fp8_speedup: 1.0
+  precision_probe_maximum_rows: 2048
+  precision_probe_maximum_activation_elements: 16777216
+  mhc_canary_tokens: 257
+  mhc_max_forward_relative_error: 0.03
+  mhc_max_backward_relative_error: 0.08
+  mhc_minimum_speedup: 1.0
+  retries_per_probe: 2
+
+autotune:
+  maximum_trials_per_family: 24
+  probe_steps: 8
+  optimizer_probe_steps: 32
+  cache_schema: metis.portage-autotune/v1
+  require_fresh_profile: true
+  maximum_profile_age_days: 30
+  # Memory is coherent on MI300A, but reserve headroom for RCCL, compiler
+  # workspaces, checkpoint staging, and route imbalance.
+  default_maximum_hbm_fraction: 0.88
+  fp8_dense_peak_flops_per_apu: 1961000000000000
+  topology_placements: [contiguous, interleaved]
+
+telemetry:
+  interval_seconds: 30
+  require_training_jsonl: true
+  require_alltoall_metrics: true
+  cxi_paths: [/run/cxi]
+  cxi_counter_names:
+    - sct_timeouts
+    - spt_timeouts
+    - connections_cancelled
+    - nack_no_matching_conn
+    - nack_no_target_conn
+    - nack_no_target_mst
+    - hni_rx_paused_0
+    - hni_rx_paused_1
+    - hni_tx_paused_0
+    - hni_tx_paused_1
+    - parbs_tarb_pi_posted_blocked_cnt
+    - parbs_tarb_pi_non_posted_blocked_cnt
+
+autonomy:
+  maximum_automatic_restarts: 8
+  maximum_deferred_materialization_attempts: 3
+  maximum_deferred_materializations_per_family: 32
+  transient_backoff_seconds: 120
+  fail_closed: true
+  recognized_transient_states: [NODE_FAIL, PREEMPTED, REQUEUED]
+  recognized_transient_patterns:
+    - 'node failure'
+    - 'connection reset by peer'
+    - 'temporarily unavailable'
+    - 'Slurm job step aborted'

@@ -34,6 +34,24 @@ from .normalization_evidence import (
     final_common_crawl_opt_out_reason,
     load_frozen_common_crawl_opt_out,
 )
+from .ngram_canonical import (
+    CANONICAL_IDS_BINARY,
+    CANONICAL_IDS_MANIFEST,
+    validate_canonical_id_sidecar,
+)
+from .context_extension import (
+    CONTEXT_PACK_PLAN_SCHEMA,
+    build_context_pack_plan,
+    build_context_selection,
+    context_group_id,
+    initialize_context_arrays,
+    pack_context_evaluation,
+    pack_context_task,
+    structural_evidence,
+    validate_context_pack_receipt,
+    validate_context_selection,
+    verify_and_seal_context_release,
+)
 
 
 def _paths(profile: dict[str, Any]) -> tuple[Path, StateStore]:
@@ -207,6 +225,8 @@ def _production_tokenizer_contract(
         "vocab": tokenizer_root / "vocab.json",
         "release": tokenizer_root / "TOKENIZER_RELEASE.json",
         "validation": tokenizer_root / "TOKENIZER_VALIDATION.json",
+        "ngram_canonical_manifest": tokenizer_root / CANONICAL_IDS_MANIFEST,
+        "ngram_canonical_ids": tokenizer_root / CANONICAL_IDS_BINARY,
     }
     missing = [str(path) for path in paths.values() if not path.is_file()]
     if missing:
@@ -250,6 +270,28 @@ def _production_tokenizer_contract(
     saved_vocab = json.loads(paths["vocab"].read_text(encoding="utf-8"))
     if saved_vocab != vocab:
         raise RuntimeError("vocab.json does not match tokenizer.json")
+    canonical_descriptor, _canonical_ids = validate_canonical_id_sidecar(
+        manifest_path=paths["ngram_canonical_manifest"],
+        binary_path=paths["ngram_canonical_ids"],
+        tokenizer_path=paths["tokenizer"],
+        expected_vocabulary_size=expected_size,
+        expected_manifest_sha256=release.get(
+            "ngram_canonical_ids_manifest_sha256"
+        ),
+        expected_binary_sha256=release.get("ngram_canonical_ids_sha256"),
+        recompute_from_tokenizer=True,
+    )
+    if (
+        release.get("ngram_canonical_ids_manifest") != CANONICAL_IDS_MANIFEST
+        or release.get("ngram_canonical_ids_binary") != CANONICAL_IDS_BINARY
+        or release.get("ngram_canonicalization_algorithm")
+        != canonical_descriptor["algorithm"]
+        or int(release.get("ngram_canonical_vocabulary_size", -1))
+        != int(canonical_descriptor["canonical_vocabulary_size"])
+    ):
+        raise RuntimeError(
+            "TOKENIZER_RELEASE.json does not attest the canonical-ID sidecar"
+        )
 
     eos_token = str(manifest["tokenizer"]["special_tokens"][0])
     eos_id = tokenizer.token_to_id(eos_token)
@@ -261,6 +303,20 @@ def _production_tokenizer_contract(
         "vocab_sha256": sha256_file(paths["vocab"]),
         "tokenizer_release_sha256": sha256_file(paths["release"]),
         "tokenizer_validation_sha256": sha256_file(paths["validation"]),
+        "ngram_canonical_map_manifest_sha256": sha256_file(
+            paths["ngram_canonical_manifest"]
+        ),
+        "ngram_canonical_map_self_sha256": canonical_descriptor[
+            "manifest_sha256"
+        ],
+        "ngram_canonical_ids_sha256": sha256_file(paths["ngram_canonical_ids"]),
+        "ngram_canonicalization_algorithm": canonical_descriptor["algorithm"],
+        "ngram_canonical_entry_count": int(canonical_descriptor["entry_count"]),
+        "ngram_canonical_vocabulary_size": int(
+            canonical_descriptor["canonical_vocabulary_size"]
+        ),
+        "ngram_canonical_dtype": canonical_descriptor["dtype"],
+        "ngram_canonical_endianness": canonical_descriptor["endianness"],
         "vocabulary_size": expected_size,
         "minimum_id": min(ids),
         "maximum_id": max(ids),
@@ -2024,6 +2080,12 @@ def _token_count(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
                                 "priority": int(metadata.get("priority", 1)),
                                 "license": metadata.get("license"),
                                 "license_status": metadata.get("license_status"),
+                                "context_group_id": context_group_id(
+                                    source_id, doc_id, metadata
+                                ),
+                                "context_structure": structural_evidence(
+                                    text, metadata
+                                ),
                             }
                             handle.write(
                                 json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
@@ -2146,6 +2208,265 @@ def _token_count_contract(
     }
     payload["contract_sha256"] = _json_sha256(payload)
     return payload, reports
+
+
+class _RestartableTokenCountRows:
+    def __init__(self, token_root: Path, tasks: list[dict[str, Any]]) -> None:
+        self.token_root = token_root
+        self.tasks = tasks
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        for task in self.tasks:
+            yield from _iter_rows(self.token_root / task["output"]["path"])
+
+
+def _context_output_root(profile: dict[str, Any]) -> Path:
+    root = Path(profile["storage"]["lustre_root"])
+    directories = profile["storage"]["directories"]
+    relative = str(
+        directories.get(
+            "context_release",
+            "releases/metis-1.6-context-extension-r1",
+        )
+    )
+    output_root = (root / relative).resolve()
+    try:
+        output_root.relative_to(root.resolve())
+    except ValueError as exc:
+        raise RuntimeError("context-extension release escapes the Lustre root") from exc
+    return output_root
+
+
+def _context_plan(profile: dict[str, Any]) -> tuple[dict[str, Any], Path]:
+    manifest = _manifest(profile)
+    plan = manifest.get("context_extension_plan")
+    if not isinstance(plan, dict):
+        raise RuntimeError("manifest has no validated context-extension plan")
+    path = Path(str(plan.get("_path") or "")).resolve()
+    if not path.is_file():
+        raise RuntimeError("context-extension plan file is missing")
+    return plan, path
+
+
+def _load_or_create_context_pack_plan(
+    output_root: Path,
+    plan: dict[str, Any],
+) -> dict[str, Any]:
+    path = output_root / "PACK_PLAN.json"
+    if path.exists():
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        unsigned = {
+            key: value for key, value in payload.items() if key != "plan_sha256"
+        }
+        if (
+            payload.get("schema") != CONTEXT_PACK_PLAN_SCHEMA
+            or payload.get("release") != plan["release"]
+            or payload.get("plan_sha256") != _json_sha256(unsigned)
+            or int(payload.get("pack_tasks", -1)) != 96
+        ):
+            raise RuntimeError("persisted context PACK_PLAN.json is stale or corrupt")
+        return payload
+    output_root.mkdir(parents=True, exist_ok=True)
+    payload = build_context_pack_plan(plan)
+    atomic_json(path, payload)
+    return payload
+
+
+def _context_token_count_contract(
+    profile: dict[str, Any],
+    state: StateStore,
+    output_root: Path,
+) -> tuple[dict[str, Any], str]:
+    path = output_root / "TOKEN_COUNT_CONTRACT.json"
+    rebuilt, _reports = _token_count_contract(profile, state)
+    if path.exists():
+        persisted = json.loads(path.read_text(encoding="utf-8"))
+        unsigned = {
+            key: value for key, value in persisted.items() if key != "contract_sha256"
+        }
+        if (
+            persisted.get("schema") != "metis.token-count-set/v1"
+            or persisted.get("contract_sha256") != _json_sha256(unsigned)
+        ):
+            raise RuntimeError("context token-count contract is corrupt")
+        rebuilt["created_at"] = persisted.get("created_at")
+        rebuilt["contract_sha256"] = _json_sha256(
+            {
+                key: value
+                for key, value in rebuilt.items()
+                if key != "contract_sha256"
+            }
+        )
+        if rebuilt != persisted:
+            raise RuntimeError(
+                "context token-count inputs changed after selection began"
+            )
+        contract = persisted
+    else:
+        output_root.mkdir(parents=True, exist_ok=True)
+        atomic_json(path, rebuilt)
+        contract = rebuilt
+    return contract, sha256_file(path)
+
+
+def _context_select(profile: dict[str, Any]) -> dict[str, Any]:
+    root, state = _paths(profile)
+    directories = profile["storage"]["directories"]
+    output_root = _context_output_root(profile)
+    plan, _plan_path = _context_plan(profile)
+    pack_plan = _load_or_create_context_pack_plan(output_root, plan)
+    token_contract, token_contract_file_sha = _context_token_count_contract(
+        profile, state, output_root
+    )
+    tokenizer_contract = dict(token_contract["tokenizer_contract"])
+    selection_path = output_root / "SELECTION.json"
+    if selection_path.exists():
+        payload = validate_context_selection(
+            output_root,
+            plan=plan,
+            pack_plan=pack_plan,
+            token_count_contract_sha256=token_contract_file_sha,
+            tokenizer_contract=tokenizer_contract,
+        )
+        state.complete("context_select", "task-000000", payload)
+        return payload
+    token_root = root / directories["token_counts"]
+    records = _RestartableTokenCountRows(
+        token_root, [dict(row) for row in token_contract["tasks"]]
+    )
+    payload = build_context_selection(
+        records,
+        plan=plan,
+        pack_plan=pack_plan,
+        output_root=output_root,
+        token_count_contract_sha256=token_contract_file_sha,
+        tokenizer_contract=tokenizer_contract,
+    )
+    state.complete("context_select", "task-000000", payload)
+    return payload
+
+
+def _context_prepare(profile: dict[str, Any]) -> dict[str, Any]:
+    root, state = _paths(profile)
+    directories = profile["storage"]["directories"]
+    output_root = _context_output_root(profile)
+    plan, _plan_path = _context_plan(profile)
+    pack_plan = _load_or_create_context_pack_plan(output_root, plan)
+    token_contract, token_contract_file_sha = _context_token_count_contract(
+        profile, state, output_root
+    )
+    validate_context_selection(
+        output_root,
+        plan=plan,
+        pack_plan=pack_plan,
+        token_count_contract_sha256=token_contract_file_sha,
+        tokenizer_contract=token_contract["tokenizer_contract"],
+    )
+    payload = initialize_context_arrays(
+        output_root,
+        pack_plan=pack_plan,
+        plan=plan,
+    )
+    tokenizer_contract = dict(token_contract["tokenizer_contract"])
+    evaluation = pack_context_evaluation(
+        output_root,
+        plan=plan,
+        tokenizer_path=(
+            root / directories["tokenizer"] / "tokenizer.json"
+        ),
+        tokenizer_sha256=str(tokenizer_contract["tokenizer_sha256"]),
+        eos_id=int(tokenizer_contract["eos_token_id"]),
+    )
+    payload["gate_evaluation_receipt_sha256"] = evaluation[
+        "receipt_sha256"
+    ]
+    payload["initialization_sha256"] = _json_sha256(
+        {
+            key: value
+            for key, value in payload.items()
+            if key != "initialization_sha256"
+        }
+    )
+    atomic_json(output_root / "ARRAYS_INITIALIZED.json", payload)
+    state.complete("context_prepare", "task-000000", payload)
+    return payload
+
+
+def _context_pack(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
+    root, state = _paths(profile)
+    directories = profile["storage"]["directories"]
+    output_root = _context_output_root(profile)
+    plan, _plan_path = _context_plan(profile)
+    pack_plan = _load_or_create_context_pack_plan(output_root, plan)
+    token_contract, token_contract_file_sha = _context_token_count_contract(
+        profile, state, output_root
+    )
+    tokenizer_contract = dict(token_contract["tokenizer_contract"])
+    validate_context_selection(
+        output_root,
+        plan=plan,
+        pack_plan=pack_plan,
+        token_count_contract_sha256=token_contract_file_sha,
+        tokenizer_contract=tokenizer_contract,
+    )
+    initialization_path = output_root / "ARRAYS_INITIALIZED.json"
+    if not initialization_path.is_file():
+        raise RuntimeError("context arrays were not initialized before packing")
+    task_id = f"task-{task_index:06d}"
+    receipt_path = output_root / "pack-receipts" / f"{task_id}.json"
+    if receipt_path.exists():
+        payload = validate_context_pack_receipt(
+            output_root,
+            pack_plan=pack_plan,
+            tokenizer_sha256=str(tokenizer_contract["tokenizer_sha256"]),
+            task_index=task_index,
+            deep_array_validation=True,
+        )
+        state.complete("context_pack", task_id, payload)
+        return payload
+    tokenizer_path = root / directories["tokenizer"] / "tokenizer.json"
+    eos_id = int(tokenizer_contract["eos_token_id"])
+    payload = pack_context_task(
+        output_root,
+        pack_plan=pack_plan,
+        plan=plan,
+        tokenizer_path=tokenizer_path,
+        tokenizer_sha256=str(tokenizer_contract["tokenizer_sha256"]),
+        eos_id=eos_id,
+        # The compact causal loader masks padding, so EOS is the safest
+        # tokenizer-defined padding value when the tokenizer has no pad token.
+        pad_id=eos_id,
+        task_index=task_index,
+    )
+    state.complete("context_pack", task_id, payload)
+    return payload
+
+
+def _context_verify(profile: dict[str, Any]) -> dict[str, Any]:
+    _root, state = _paths(profile)
+    output_root = _context_output_root(profile)
+    plan, plan_path = _context_plan(profile)
+    pack_plan = _load_or_create_context_pack_plan(output_root, plan)
+    token_contract, token_contract_file_sha = _context_token_count_contract(
+        profile, state, output_root
+    )
+    selection = validate_context_selection(
+        output_root,
+        plan=plan,
+        pack_plan=pack_plan,
+        token_count_contract_sha256=token_contract_file_sha,
+        tokenizer_contract=token_contract["tokenizer_contract"],
+    )
+    payload = verify_and_seal_context_release(
+        output_root,
+        plan=plan,
+        pack_plan=pack_plan,
+        selection=selection,
+        tokenizer_contract=token_contract["tokenizer_contract"],
+        context_plan_path=plan_path,
+    )
+    state.complete("context_verify", "task-000000", payload)
+    return payload
 
 
 def _validate_selection_artifacts(
@@ -3139,7 +3460,14 @@ def _release(profile: dict[str, Any]) -> dict[str, Any]:
     release_manifests.mkdir(parents=True, exist_ok=True)
     release_reports.mkdir(parents=True, exist_ok=True)
     tokenizer_root = tokenizer.parent
-    for name in ("tokenizer.json", "vocab.json", "TOKENIZER_RELEASE.json", "TOKENIZER_VALIDATION.json"):
+    for name in (
+        "tokenizer.json",
+        "vocab.json",
+        "TOKENIZER_RELEASE.json",
+        "TOKENIZER_VALIDATION.json",
+        CANONICAL_IDS_MANIFEST,
+        CANONICAL_IDS_BINARY,
+    ):
         source = tokenizer_root / name
         if not source.exists():
             raise RuntimeError(f"Tokenizer release artifact is missing: {source}")
@@ -3215,6 +3543,16 @@ def _release(profile: dict[str, Any]) -> dict[str, Any]:
             current_tokenizer_contract["tokenizer_validation_sha256"],
             "tokenizer validation report",
         ),
+        (
+            release_tokenizer / CANONICAL_IDS_MANIFEST,
+            current_tokenizer_contract["ngram_canonical_map_manifest_sha256"],
+            "N-gram canonical-ID manifest",
+        ),
+        (
+            release_tokenizer / CANONICAL_IDS_BINARY,
+            current_tokenizer_contract["ngram_canonical_ids_sha256"],
+            "N-gram canonical-ID binary",
+        ),
     )
     for copied, expected_sha, label in copied_hashes:
         if sha256_file(copied) != expected_sha:
@@ -3230,6 +3568,15 @@ def _release(profile: dict[str, Any]) -> dict[str, Any]:
         "token_dtype": profile["storage"]["final_token_dtype"],
         "token_endianness": "little",
         "tokenizer_sha256": current_tokenizer_contract["tokenizer_sha256"],
+        "ngram_canonical_map_manifest_sha256": current_tokenizer_contract[
+            "ngram_canonical_map_manifest_sha256"
+        ],
+        "ngram_canonical_map_self_sha256": current_tokenizer_contract[
+            "ngram_canonical_map_self_sha256"
+        ],
+        "ngram_canonical_ids_sha256": current_tokenizer_contract[
+            "ngram_canonical_ids_sha256"
+        ],
         "tokenizer_contract": current_tokenizer_contract,
         "selection_sha256": verification["selection_sha256"],
         "token_count_contract_sha256": verification[
@@ -3250,6 +3597,8 @@ def _release(profile: dict[str, Any]) -> dict[str, Any]:
             "tokenizer_vocab": "tokenizer/vocab.json",
             "tokenizer_release": "tokenizer/TOKENIZER_RELEASE.json",
             "tokenizer_validation": "tokenizer/TOKENIZER_VALIDATION.json",
+            "ngram_canonical_map": f"tokenizer/{CANONICAL_IDS_MANIFEST}",
+            "ngram_canonical_ids": f"tokenizer/{CANONICAL_IDS_BINARY}",
             "manifest": "manifests/metis-1.6.yaml",
             "manifest_bundle": "manifests",
             "source_lock": "manifests/sources.lock.json",
@@ -3327,6 +3676,14 @@ def run_stage(profile: dict[str, Any], stage: str, task_index: int) -> dict[str,
         return _cleanup_tokenizer_sample(profile)
     if stage == "token_count":
         return _token_count(profile, task_index)
+    if stage == "context_select":
+        return _context_select(profile)
+    if stage == "context_prepare":
+        return _context_prepare(profile)
+    if stage == "context_pack":
+        return _context_pack(profile, task_index)
+    if stage == "context_verify":
+        return _context_verify(profile)
     if stage == "select":
         return _select(profile)
     if stage == "cleanup_selection_inputs":

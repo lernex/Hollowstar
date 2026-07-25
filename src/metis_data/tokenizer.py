@@ -8,6 +8,12 @@ from typing import Any, Iterable, Iterator
 
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, processors, trainers
 
+from .ngram_canonical import (
+    CANONICAL_IDS_BINARY,
+    CANONICAL_IDS_MANIFEST,
+    build_canonical_id_sidecar,
+    canonicalize_decoded_token,
+)
 from .state import atomic_json, utc_now
 
 
@@ -70,6 +76,11 @@ def train_tokenizer(
         raise RuntimeError("Tokenizer IDs do not fit uint16")
 
     sha256 = hashlib.sha256(tokenizer_path.read_bytes()).hexdigest()
+    canonical_ids = build_canonical_id_sidecar(
+        tokenizer,
+        tokenizer_path=tokenizer_path,
+        output_dir=output,
+    )
     release = {
         "schema": "metis.tokenizer-release/v1",
         "created_at": utc_now(),
@@ -81,6 +92,14 @@ def train_tokenizer(
         "eos_token_id": eos_id,
         "tokenizer_sha256": sha256,
         "uint16_safe": max(vocab.values(), default=0) < 65_536,
+        "ngram_canonicalization_algorithm": canonical_ids["algorithm"],
+        "ngram_canonical_ids_manifest": CANONICAL_IDS_MANIFEST,
+        "ngram_canonical_ids_manifest_sha256": canonical_ids["manifest_sha256"],
+        "ngram_canonical_ids_binary": CANONICAL_IDS_BINARY,
+        "ngram_canonical_ids_sha256": canonical_ids["binary_sha256"],
+        "ngram_canonical_vocabulary_size": canonical_ids[
+            "canonical_vocabulary_size"
+        ],
     }
     atomic_json(output / "TOKENIZER_RELEASE.json", release)
     (output / "vocab.json").write_text(json.dumps(vocab, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME="${METIS_RUNTIME_DIR:-$ROOT/.metis-runtime}"
+
+if [[ "${1:-}" == "run" || "${1:-}" == "status" ]]; then
+  COMMAND="$1"
+  shift
+  CONFIG=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --portage-config)
+        [[ $# -ge 2 ]] || {
+          echo "FAIL: --portage-config requires a path." >&2
+          exit 2
+        }
+        CONFIG="$2"
+        shift 2
+        ;;
+      -h|--help)
+        echo "Usage: ./metis-posttrain $COMMAND [--portage-config PATH]"
+        exit 0
+        ;;
+      *)
+        echo "FAIL: unknown $COMMAND argument: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+  ARGV=("$ROOT/ops/start-portage-training.sh")
+  if [[ -n "$CONFIG" ]]; then
+    ARGV+=(--config "$CONFIG")
+  fi
+  if [[ "$COMMAND" == "status" ]]; then
+    ARGV+=(--status)
+  fi
+  exec "${ARGV[@]}"
+fi
+
+export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+
+python_is_usable() {
+  local candidate="$1"
+  if [[ "$candidate" == */* ]]; then
+    [[ -x "$candidate" ]] || return 1
+  else
+    command -v "$candidate" >/dev/null 2>&1 || return 1
+  fi
+  "$candidate" -c \
+    'import numpy, torch, yaml; import metis_training.posttraining_cli' \
+    >/dev/null 2>&1
+}
+
+if [[ -n "${METIS_PYTHON:-}" ]]; then
+  if ! python_is_usable "$METIS_PYTHON"; then
+    echo "FAIL: METIS_PYTHON is not an executable Metis training runtime: $METIS_PYTHON" >&2
+    echo "Required imports: numpy, torch, yaml, and metis_training." >&2
+    exit 2
+  fi
+  PYTHON="$METIS_PYTHON"
+else
+  PYTHON=""
+  CANDIDATES=(
+    "$RUNTIME/bin/python"
+    "$ROOT/.venv/bin/python"
+    "${PYTHON_FALLBACK:-python3}"
+  )
+  for CANDIDATE in "${CANDIDATES[@]}"; do
+    if python_is_usable "$CANDIDATE"; then
+      PYTHON="$CANDIDATE"
+      break
+    fi
+  done
+  if [[ -z "$PYTHON" ]]; then
+    echo "FAIL: no complete Metis training runtime was found." >&2
+    echo "On Portage, run ./ops/start-portage-training.sh to bootstrap and validate it." >&2
+    echo "For local checks, create .venv or set METIS_PYTHON to a compatible interpreter." >&2
+    exit 2
+  fi
+fi
+
+exec "$PYTHON" -m metis_training.posttraining_cli "$@"

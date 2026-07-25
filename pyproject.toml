@@ -24,6 +24,9 @@ dependencies = [
 
 [project.scripts]
 metis-data = "metis_data.cli:main"
+metis-posttrain = "metis_training.posttraining_cli:main"
+metis-posttraining-release = "metis_portage.posttraining_builder:main"
+metis-portage = "metis_portage.launcher:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

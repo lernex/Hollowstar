@@ -9,6 +9,7 @@ import yaml
 from tokenizers import Tokenizer
 
 from .manifest import validate_manifest
+from .ngram_canonical import validate_canonical_id_sidecar
 
 
 PHASE_DIRECTORIES = {
@@ -153,6 +154,10 @@ def validate_training_release(
     tokenizer_vocab_path = _artifact(root, artifacts, "tokenizer_vocab")
     tokenizer_release_path = _artifact(root, artifacts, "tokenizer_release")
     tokenizer_validation_path = _artifact(root, artifacts, "tokenizer_validation")
+    ngram_canonical_manifest_path = _artifact(
+        root, artifacts, "ngram_canonical_map"
+    )
+    ngram_canonical_ids_path = _artifact(root, artifacts, "ngram_canonical_ids")
     source_lock_path = _artifact(root, artifacts, "source_lock")
     build_inputs_path = _artifact(root, artifacts, "build_inputs")
     manifest_path = _artifact(root, artifacts, "manifest")
@@ -166,6 +171,16 @@ def validate_training_release(
         (token_count_path, release.get("token_count_contract_sha256"), "token-count contract"),
         (filter_chain_path, release.get("filter_chain_sha256"), "filter chain"),
         (tokenizer_path, release.get("tokenizer_sha256"), "tokenizer"),
+        (
+            ngram_canonical_manifest_path,
+            release.get("ngram_canonical_map_manifest_sha256"),
+            "N-gram canonical-ID manifest",
+        ),
+        (
+            ngram_canonical_ids_path,
+            release.get("ngram_canonical_ids_sha256"),
+            "N-gram canonical-ID binary",
+        ),
         (source_lock_path, release.get("source_lock_sha256"), "source lock"),
         (build_inputs_path, release.get("build_inputs_sha256"), "build inputs"),
         (manifest_path, release.get("manifest_sha256"), "data manifest"),
@@ -286,6 +301,11 @@ def validate_training_release(
         (tokenizer_vocab_path, "vocab_sha256"),
         (tokenizer_release_path, "tokenizer_release_sha256"),
         (tokenizer_validation_path, "tokenizer_validation_sha256"),
+        (
+            ngram_canonical_manifest_path,
+            "ngram_canonical_map_manifest_sha256",
+        ),
+        (ngram_canonical_ids_path, "ngram_canonical_ids_sha256"),
     )
     for path, field in tokenizer_hashes:
         if _sha256(path) != tokenizer_contract.get(field):
@@ -309,6 +329,19 @@ def validate_training_release(
         raise RuntimeError("Released vocab.json does not match tokenizer.json")
     tokenizer_release = json.loads(tokenizer_release_path.read_text(encoding="utf-8"))
     tokenizer_validation = json.loads(tokenizer_validation_path.read_text(encoding="utf-8"))
+    canonical_descriptor, _canonical_ids = validate_canonical_id_sidecar(
+        manifest_path=ngram_canonical_manifest_path,
+        binary_path=ngram_canonical_ids_path,
+        tokenizer_path=tokenizer_path,
+        expected_vocabulary_size=65_536,
+        expected_manifest_sha256=tokenizer_contract.get(
+            "ngram_canonical_map_self_sha256"
+        ),
+        expected_binary_sha256=tokenizer_contract.get(
+            "ngram_canonical_ids_sha256"
+        ),
+        recompute_from_tokenizer=True,
+    )
     expected_special_tokens = {
         str(token): tokenizer.token_to_id(str(token))
         for token in released_manifest["tokenizer"]["special_tokens"]
@@ -318,6 +351,20 @@ def validate_training_release(
         or tokenizer_release.get("uint16_safe") is not True
         or int(tokenizer_release.get("vocabulary_size", -1)) != 65_536
         or tokenizer_release.get("special_tokens") != expected_special_tokens
+        or tokenizer_release.get("ngram_canonical_ids_manifest_sha256")
+        != canonical_descriptor.get("manifest_sha256")
+        or tokenizer_release.get("ngram_canonical_ids_sha256")
+        != canonical_descriptor.get("binary_sha256")
+        or tokenizer_release.get("ngram_canonicalization_algorithm")
+        != canonical_descriptor.get("algorithm")
+        or int(tokenizer_release.get("ngram_canonical_vocabulary_size", -1))
+        != int(canonical_descriptor.get("canonical_vocabulary_size", -2))
+        or tokenizer_contract.get("ngram_canonical_dtype") != "uint16"
+        or tokenizer_contract.get("ngram_canonical_endianness") != "little"
+        or int(tokenizer_contract.get("ngram_canonical_entry_count", -1))
+        != 65_536
+        or int(tokenizer_contract.get("ngram_canonical_vocabulary_size", -1))
+        != int(canonical_descriptor.get("canonical_vocabulary_size", -2))
         or any(token_id is None for token_id in expected_special_tokens.values())
         or tokenizer_validation.get("ok") is not True
     ):
@@ -437,6 +484,8 @@ def validate_training_release(
         "release": release["release"],
         "release_root": str(root),
         "tokenizer": str(tokenizer_path),
+        "ngram_canonical_map": str(ngram_canonical_manifest_path),
+        "ngram_canonical_ids": str(ngram_canonical_ids_path),
         "token_dtype": "uint16",
         "token_endianness": "little",
         "sequence_length": int(contract["sequence_length"]),

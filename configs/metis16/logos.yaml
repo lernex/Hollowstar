@@ -1,0 +1,139 @@
+schema: metis.model-family/v1
+family: logos
+name: Metis-1.6-Logos
+architecture:
+  model_type: metis16_more
+
+vocab_size: 65536
+sequence_length: 4096
+final_context_length: 131072
+context_extension_train_length: 163840
+d_model: 2560
+n_layers: 20
+attention_indices: [5, 10, 15]
+n_heads: 40
+n_kv_heads: 10
+head_dim: 64
+no_position_embeddings: true
+attention_pass_lora_rank: 8
+attention_backend: varlen_fused_required
+
+mamba_expand: 2
+mamba_d_state: 128
+mamba_d_conv: 4
+mamba_head_dim: 64
+mamba_ngroups: 10
+mamba_chunk_size: 256
+mamba_backend: fused_required
+
+n_streams: 4
+mhc_pass_embedding_dim: 64
+mhc_sinkhorn_iterations: 8
+mhc_backend: fused_required
+
+latent_dim: 1024
+n_routed_experts: 192
+n_shared_experts: 1
+expert_intermediate_dim: 768
+min_routed_k: 1
+max_routed_k: 8
+target_mean_routed_k: 4.0
+topology:
+  world_size: 384
+  expert_parallel_size: 192
+  expert_replica_count: 2
+
+max_passes: 5
+target_mean_passes: 2.0
+route_feature_dim: 256
+memory_dim: 256
+memory_heads: 4
+memory_gate_init: -6.0
+continuation_gate_init: 0.0
+router_z_loss_coefficient: 0.001
+expert_balance_coefficient: 0.0
+expert_balance_bias_update_rate: 0.001
+k_budget_coefficient: 0.01
+depth_budget_coefficient: 0.01
+continuation_entropy_coefficient: 0.001
+tie_embeddings: true
+activation_recompute_policy: pass
+
+ngram_memory:
+  orders: [2, 3]
+  tables_per_order: 8
+  value_dim: 64
+  # Tuned after exact controller count: total manifest is 12,000,001,676 params.
+  slots_by_order:
+    '2': [1723303, 1724299, 1725301, 1726303, 1727317, 1728317, 1729307, 1730101]
+    '3': [1730507, 1731311, 1732301, 1733297, 1734311, 1735301, 1736303, 1737161]
+  hash_seeds: [2654435761, 2246822519, 3266489917, 668265263, 374761393, 3550635117, 4251991749, 3043081225]
+  table_mode: replicated
+  sparse_gradients: true
+  optimizer: sparse_adam
+  learning_rate_scale: 2.0
+  weight_decay: 0.0
+  injection_layers: [2, 5]
+  canonicalization: tokenizer_sidecar_required
+
+precision:
+  backend: auto
+  fp8_format: hybrid_e4m3_e5m2
+  parameter_dtype: bfloat16
+  activation_dtype: bfloat16
+  master_weight_dtype: float32
+  optimizer_state_dtype: float32
+  router_dtype: float32
+  reduction_dtype: float32
+  fp8_roles:
+    [mamba_in_projection, mamba_out_projection, attention_qkv_projection,
+     attention_out_projection, attention_pass_lora_down, attention_pass_lora_up,
+     expert_gate_up_projection, expert_down_projection, latent_down_projection,
+     latent_up_projection, memory_state_write_projection,
+     memory_metadata_write_projection, memory_query_projection,
+     memory_key_projection, memory_value_projection, memory_output_projection,
+     memory_route_projection, mhc_controller, ngram_projection, lm_head]
+  bf16_roles:
+    [embedding, ngram_table, residual_stream, mamba_state, normalization, gate, collective]
+  fp32_roles:
+    [master_weight, optimizer_state, router_logits, sinkhorn,
+     memory_attention_logits, loss_accumulation, mamba_sensitive]
+  require_fp8_validation: true
+  allow_bf16_fallback: true
+
+autotune:
+  status: bounded_canary_candidates_not_validated_optima
+  bounds:
+    micro_batch_sizes: [2, 1]
+    grad_accum_steps: [1, 2, 4, 8]
+    global_token_batch: {min: 1572864, max: 12582912, target: 6291456}
+    learning_rates: [0.00005, 0.00008, 0.00012, 0.00016]
+    preferred_learning_rate: 0.00012
+    compile_modes: [default, reduce-overhead, none]
+    precision_profiles: [fp8, bf16]
+    dispatch_overlap: ['on', 'off']
+    ngram_table_modes: [replicated, row_sharded]
+  gates:
+    max_hbm_fraction: 0.90
+    max_fp8_loss_relative_error: 0.02
+    max_ngram_layout_loss_relative_error: 0.001
+    max_update_to_weight_ratio: 0.01
+    max_grad_norm: 100.0
+
+expected_parameter_audit:
+  embedding: 167772160
+  mixers: 833409535
+  mhc: 176320
+  latent_projections: 104857600
+  routed_experts: 9059696640
+  shared_experts: 47185920
+  expert_routers: 6107040
+  depth_memory: 4211972
+  continuation: 2032129
+  ngram_tables: 1771823360
+  ngram_fusion: 2726440
+  final_norm: 2560
+  stored_total: 12000001676
+  active_per_pass_min: 1047896460
+  active_per_pass_mean: 1189454220
+  active_per_pass_max: 1378197900

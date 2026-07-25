@@ -1,0 +1,90 @@
+schema: metis.portage-runtime-policy/v1
+
+# This policy is intentionally a compatibility envelope for site-provided
+# stacks, not an instruction to fetch "latest" packages.  The launcher seals
+# every accepted version and ABI into runtime/runtime.json.  If it must augment
+# a site stack, it accepts only a local metis.portage-runtime-bundle/v1 whose
+# wheels/source archives carry exact SHA-256 digests.
+python:
+  implementation: cpython
+  minimum: '3.11'
+  maximum_exclusive: '3.13'
+
+packages:
+  mandatory:
+    - {distribution: PyYAML, import: yaml, minimum: '6.0', maximum_exclusive: '7'}
+    - {distribution: numpy, import: numpy, minimum: '1.26', maximum_exclusive: '3'}
+    - {distribution: tokenizers, import: tokenizers, minimum: '0.15', maximum_exclusive: '1'}
+    - {distribution: safetensors, import: safetensors, minimum: '0.4', maximum_exclusive: '1'}
+  torch:
+    distribution: torch
+    import: torch
+    minimum: '2.5'
+    maximum_exclusive: '3'
+    require_rocm: true
+  accelerators:
+    - distribution: triton
+      import: triton
+      minimum: '3'
+      maximum_exclusive: '5'
+      capability: fused_mhc
+      required_when_manifest: mhc_backend=fused_required
+    - distribution: transformer-engine
+      import: transformer_engine
+      minimum: '1.12'
+      maximum_exclusive: '3'
+      capability: fp8
+      required: false
+    - distribution: mamba-ssm
+      import: mamba_ssm
+      minimum: '2.2.4'
+      maximum_exclusive: '3'
+      capability: fused_mamba2
+      required_when_manifest: mamba_backend=fused_required
+    - distribution: causal-conv1d
+      import: causal_conv1d
+      minimum: '1.4'
+      maximum_exclusive: '2'
+      capability: fused_mamba2
+      required_when_manifest: mamba_backend=fused_required
+    - distribution: aiter
+      import: aiter
+      minimum: '0'
+      maximum_exclusive: '2'
+      capability: aiter
+      required: false
+    - distribution: flash-attn
+      import: flash_attn
+      minimum: '2'
+      maximum_exclusive: '4'
+      capability: flash_attention
+      required_when_manifest: attention_backend=varlen_fused_required
+
+hardware:
+  gpu_arch: gfx942
+  require_bf16: true
+  require_hipblaslt: true
+  # CK may arrive as a standalone install, inside hipBLASLt, or through AITER.
+  # Its absence is recorded and leaves the measured PyTorch/hipBLASLt lane,
+  # while fused Mamba2 remains a hard manifest gate.
+  require_standalone_ck: false
+
+discovery:
+  maximum_module_candidates: 80
+  bundle_filenames: [runtime-bundle.json, metis-portage-runtime-bundle.json]
+  container_sidecar_suffix: .sha256
+  search_roots:
+    - ${METIS_PORTAGE_RUNTIME_ASSETS:-}
+    - ${METIS_LUSTRE_ROOT:-/lus/lustre1/vollmerc/metis-1.6}/runtime/portage
+    - runtime/portage
+  allow_network: false
+  allow_unhashed_artifacts: false
+  allow_source_builds: true
+
+compute_smoke:
+  sequence_length: 32
+  reset_index: 16
+  fp8_relative_error_limit: 0.08
+  document_isolation_max_abs_error: 0.001
+  document_isolation_max_gradient_error: 0.001
+  document_isolation_min_control_delta: 0.01

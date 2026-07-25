@@ -1,0 +1,132 @@
+schema: metis.training-runtime/v1
+model: metis-1.6
+data_contract: configs/metis16/pretraining.yaml
+
+data:
+  token_dtype: uint16
+  byte_order: little
+  vocabulary_size: 65536
+  sequence_length: 4096
+  shard_order_seed: 16062026
+  mask_cross_document_targets: true
+  reset_mamba_after_eos: true
+  document_isolated_attention: true
+  prefetch_micro_batches: 2
+  mmap_cache_shards: 4
+
+optimizer:
+  name: adamuon
+  fp32_master_weights: true
+  states_dtype: fp32
+  beta1: 0.9
+  beta2: 0.95
+  eps: 1.0e-8
+  weight_decay: 0.1
+  grad_clip: 1.0
+  muon:
+    beta: 0.95
+    newton_schulz_steps: 5
+    nesterov: true
+    include_routed_experts: true
+  sparse_tables:
+    optimizer: sparse_adam
+    states_dtype: fp32
+    master_weights_dtype: fp32
+
+schedule:
+  token_axis: globally_emitted_non_padding_tokens
+  phases:
+    - id: phase_a
+      start_token: 0
+      end_token_exclusive: 700000000000
+      segment: warmup_then_broad_cosine
+      warmup_tokens: 2000000000
+      end_lr_ratio: 0.55
+    - id: phase_b
+      start_token: 700000000000
+      end_token_exclusive: 950000000000
+      segment: capability_intensification
+      start_lr_ratio: 0.55
+      end_lr_ratio: 0.20
+    - id: phase_c
+      start_token: 950000000000
+      end_token_exclusive: 1000000000000
+      segment: final_decay_cooldown
+      start_lr_ratio: 0.20
+      end_lr_ratio: 0.02
+  curriculum:
+    warm_start_fraction: 0.075
+    initial_depth: 1
+    initial_routed_k: 4
+    initial_memory_gate: 0.0
+    target_mean_depth: 2.0
+    target_mean_routed_k: 4.0
+    ramp_fraction: 0.075
+    max_passes: 5
+    routed_k_min: 1
+    routed_k_max: 8
+
+precision:
+  target: fp8_first
+  fp8_format: hybrid_e4m3_e5m2
+  fp8_surfaces:
+    - routed_expert_gemms
+    - shared_expert_gemms
+    - latent_projections
+    - attention_projections
+    - mamba_input_output_projections
+    - memory_projections
+    - mhc_controller_projections
+    - ngram_fusion_projections
+    - lm_head
+  bf16_surfaces:
+    - embeddings
+    - ngram_rows
+    - residual_streams
+    - mamba_state
+    - normalization
+    - gates
+    - activation_boundaries
+    - gradients
+    - collectives
+  fp32_surfaces:
+    - master_weights
+    - optimizer_states
+    - router_logits
+    - continuation_logits
+    - sinkhorn
+    - depth_attention_logits
+    - loss_accumulation
+  require_bf16_parity_probe: true
+  allow_bf16_fallback: true
+  allow_fp8_collectives_only_after_probe: true
+  forbid_nvfp4: true
+
+checkpoint:
+  format: metis.distributed-checkpoint/v1
+  layout: metis.tensor-chunks/v1
+  max_staging_bytes: 268435456
+  interval_tokens: 2000000000
+  keep_last: 3
+  keep_phase_boundaries: true
+  signal_checkpoint: [SIGUSR1, SIGTERM]
+  requeue_exit_code: 75
+  require_fsync: true
+  require_resume_roundtrip_probe: true
+
+health:
+  abort_on_nonfinite: true
+  abort_on_token_drop: true
+  maximum_moe_overflow_drop_tokens: 0
+  minimum_expert_entropy_ratio: 0.20
+  maximum_expert_load_cv: 2.0
+  maximum_halt_collapse_fraction: 0.98
+  require_structural_telemetry: true
+  maximum_sinkhorn_marginal_error: 0.005
+  maximum_ponder_exit_mass_error: 0.001
+  # This is deliberately only an exact-collapse tripwire. The one-APU canary
+  # measures the healthy operating distribution before the campaign starts.
+  minimum_mhc_stream_diversity: 1.0e-12
+  maximum_checkpoint_age_tokens: 4000000000
+  telemetry_interval_steps: 10
+  eval_interval_tokens: 1000000000
