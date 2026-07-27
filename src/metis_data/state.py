@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import sqlite3
 import tempfile
 import time
 import socket
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 
 def utc_now() -> str:
@@ -28,6 +30,127 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
         os.replace(temporary_path, path)
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+class ScratchBackedDatabase:
+    """A SQLite database that may be worked on node-local disk.
+
+    SQLite is explicitly not designed for network filesystems: POSIX advisory
+    locking is unreliable there and every small write pays a round trip.  An
+    acquisition builder whose hot tables are keyed by a hash inserts at random
+    positions in a large B-tree, so once the tree outgrows the page cache it
+    spends nearly all of its wall-clock waiting on single-page reads from
+    Lustre.
+
+    When ``scratch_root`` is configured the working copy lives on local disk
+    and is republished to the durable root at checkpoints.  Losing the node
+    between checkpoints rewinds the database to the last published state, so
+    callers must keep their durable side effects recoverable from it: publish
+    output only after the ledger that records it has been checkpointed, or
+    reconcile the two on restart.
+
+    The publication counter lives in the caller's own settings table, so a
+    checkpoint is atomic with the data it describes and a resumed run can tell
+    which of the two copies is newer without trusting clocks across two
+    filesystems.
+    """
+
+    def __init__(
+        self,
+        durable_path: Path,
+        *,
+        connect: Callable[[Path, bool], sqlite3.Connection],
+        scratch_root: str | None = None,
+        checkpoint_seconds: float = 300.0,
+        identity: str = "",
+        settings_table: str = "metadata",
+        sequence_key: str = "state_sequence",
+    ) -> None:
+        self.durable_path = durable_path
+        self.checkpoint_seconds = checkpoint_seconds
+        self.settings_table = settings_table
+        self.sequence_key = sequence_key
+        self.working_path = durable_path
+        if scratch_root:
+            token = _digest(f"{identity}\0{durable_path}")[:32]
+            self.working_path = (
+                Path(scratch_root).expanduser() / f"metis-{token}" / durable_path.name
+            )
+            self._seed_working_copy()
+        self.local = self.working_path != durable_path
+        self.connection = connect(self.working_path, self.local)
+        self._last_checkpoint = time.monotonic()
+
+    def _seed_working_copy(self) -> None:
+        self.working_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.durable_path.is_file():
+            return
+        if self.working_path.is_file() and self._sequence(self.working_path) >= self._sequence(
+            self.durable_path
+        ):
+            # A resumed run on the same node already holds the newer copy.
+            return
+        temporary = self.working_path.with_name(f".{self.working_path.name}.seed")
+        temporary.unlink(missing_ok=True)
+        shutil.copyfile(self.durable_path, temporary)
+        os.replace(temporary, self.working_path)
+
+    def _sequence(self, path: Path) -> int:
+        try:
+            connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=60)
+        except sqlite3.Error:
+            return -1
+        try:
+            row = connection.execute(
+                f"SELECT value FROM {self.settings_table} WHERE key = ?", (self.sequence_key,)
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except (sqlite3.Error, TypeError, ValueError):
+            return -1
+        finally:
+            connection.close()
+
+    def checkpoint(self, *, force: bool = False) -> None:
+        """Publish the working database to the durable root."""
+
+        if not self.local:
+            return
+        if not force and time.monotonic() - self._last_checkpoint < self.checkpoint_seconds:
+            return
+        row = self.connection.execute(
+            f"SELECT value FROM {self.settings_table} WHERE key = ?", (self.sequence_key,)
+        ).fetchone()
+        self.connection.execute(
+            f"INSERT INTO {self.settings_table}(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (self.sequence_key, str(int(row[0]) + 1 if row else 1)),
+        )
+        self.connection.commit()
+        self.durable_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.durable_path.with_name(
+            f".{self.durable_path.name}.{os.getpid()}.publish"
+        )
+        temporary.unlink(missing_ok=True)
+        published = sqlite3.connect(temporary, timeout=600)
+        try:
+            self.connection.backup(published)
+            published.commit()
+        finally:
+            published.close()
+        os.replace(temporary, self.durable_path)
+        self._last_checkpoint = time.monotonic()
+
+    def close(self) -> None:
+        try:
+            self.checkpoint(force=True)
+        finally:
+            self.connection.close()
+
+
+def _digest(value: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 class StateStore:

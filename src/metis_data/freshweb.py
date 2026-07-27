@@ -33,7 +33,6 @@ import math
 import os
 import random
 import re
-import shutil
 import sqlite3
 import threading
 import time
@@ -45,7 +44,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
-from .state import atomic_json, utc_now
+from .state import ScratchBackedDatabase, atomic_json, utc_now
 
 
 FRESHWEB_SCHEMA = "metis.freshweb-materialization/v2"
@@ -2774,20 +2773,16 @@ def _connect_state(path: Path, *, local: bool = False) -> sqlite3.Connection:
 STATE_SEQUENCE_KEY = "state_sequence"
 
 
-class _StateDatabase:
-    """The acquisition ledger, optionally worked on node-local scratch.
+class _StateDatabase(ScratchBackedDatabase):
+    """The FreshWeb acquisition ledger, optionally worked on node-local scratch.
 
-    SQLite's own guidance is not to run a database over a network filesystem:
-    POSIX advisory locking is unreliable there, and every small write pays a
-    lock round trip.  The URL-index phase commits once per partition and barely
-    notices, but the WARC phase commits once per fetched group, which is where
-    a Lustre-resident ledger costs real wall-clock.
+    The URL-index phase commits once per partition and barely notices where the
+    ledger lives, but the WARC phase commits once per fetched group, which is
+    where a Lustre-resident ledger costs real wall-clock.
 
-    When ``state_scratch_root`` is configured the working copy lives on local
-    disk and is republished to the durable root at checkpoints.  Losing the node
-    between checkpoints rewinds the ledger but never the published shards, and
-    ``_recover_shards`` truncates each shard back to the ledger's committed
-    offset, so the run resumes from the last checkpoint rather than the start.
+    Rewinding to the last checkpoint is safe here: the ledger can only ever be
+    behind the published shards, and ``_recover_shards`` truncates each shard
+    back to the offset the ledger committed.
     """
 
     def __init__(
@@ -2798,75 +2793,15 @@ class _StateDatabase:
         checkpoint_seconds: float = 300.0,
         identity: str = "",
     ) -> None:
-        self.durable_path = durable_path
-        self.checkpoint_seconds = checkpoint_seconds
-        self.working_path = durable_path
-        if scratch_root:
-            token = _sha256_bytes(f"{identity}\0{durable_path}".encode("utf-8"))[:32]
-            self.working_path = Path(scratch_root).expanduser() / f"metis-freshweb-{token}" / durable_path.name
-            self._seed_working_copy()
-        self.connection = _connect_state(self.working_path, local=self.working_path != durable_path)
-        self._last_checkpoint = time.monotonic()
-
-    def _seed_working_copy(self) -> None:
-        self.working_path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.durable_path.is_file():
-            return
-        if self.working_path.is_file() and self._sequence(self.working_path) >= self._sequence(
-            self.durable_path
-        ):
-            # A resumed run on the same node already holds the newer ledger.
-            return
-        temporary = self.working_path.with_name(f".{self.working_path.name}.seed")
-        temporary.unlink(missing_ok=True)
-        shutil.copyfile(self.durable_path, temporary)
-        os.replace(temporary, self.working_path)
-
-    @staticmethod
-    def _sequence(path: Path) -> int:
-        try:
-            connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=60)
-        except sqlite3.Error:
-            return -1
-        try:
-            row = connection.execute(
-                "SELECT value FROM metadata WHERE key = ?", (STATE_SEQUENCE_KEY,)
-            ).fetchone()
-            return int(row[0]) if row else 0
-        except (sqlite3.Error, TypeError, ValueError):
-            return -1
-        finally:
-            connection.close()
-
-    def checkpoint(self, *, force: bool = False) -> None:
-        """Publish the working ledger to the durable root."""
-
-        if self.working_path == self.durable_path:
-            return
-        if not force and time.monotonic() - self._last_checkpoint < self.checkpoint_seconds:
-            return
-        with self.connection:
-            current = _metadata_value(self.connection, STATE_SEQUENCE_KEY)
-            _set_metadata(
-                self.connection, STATE_SEQUENCE_KEY, str(int(current or 0) + 1)
-            )
-        self.durable_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.durable_path.with_name(f".{self.durable_path.name}.{os.getpid()}.publish")
-        temporary.unlink(missing_ok=True)
-        published = sqlite3.connect(temporary, timeout=120)
-        try:
-            self.connection.backup(published)
-            published.commit()
-        finally:
-            published.close()
-        os.replace(temporary, self.durable_path)
-        self._last_checkpoint = time.monotonic()
-
-    def close(self) -> None:
-        try:
-            self.checkpoint(force=True)
-        finally:
-            self.connection.close()
+        super().__init__(
+            durable_path,
+            connect=lambda path, local: _connect_state(path, local=local),
+            scratch_root=scratch_root,
+            checkpoint_seconds=checkpoint_seconds,
+            identity=identity,
+            settings_table="metadata",
+            sequence_key=STATE_SEQUENCE_KEY,
+        )
 
 
 def _metadata_value(connection: sqlite3.Connection, key: str) -> str | None:

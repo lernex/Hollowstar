@@ -15,7 +15,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import quote, urlparse
 
 import pyarrow.parquet as pq
@@ -31,7 +31,7 @@ from .repository_license import (
     DEFAULT_REPOSITORY_LICENSE_ALLOWLIST,
     classify_repository_archive,
 )
-from .state import atomic_json, utc_now
+from .state import ScratchBackedDatabase, atomic_json, utc_now
 
 
 SUPPORTED_MATERIALIZER_DRIVERS = {
@@ -53,6 +53,16 @@ TEXT_SUFFIXES = {
     ".ts", ".tsx", ".txt", ".v", ".vb", ".vue", ".xml", ".yaml", ".yml", ".zig",
 }
 REPOSITORY_INDEX_SCHEMA = "repository_index_codeload/v2"
+
+# Page cache for the repository request index, in MiB.  The Nemotron metadata
+# resolves to tens of millions of randomly keyed rows, so the shipped 128MiB
+# left the builder reading a page from Lustre for nearly every insert.
+REPOSITORY_INDEX_CACHE_MIB = 2_048
+
+# Rows buffered before an insert flush.  Each flush is sorted into primary-key
+# order first, so a larger buffer turns scattered single-page writes into runs
+# that share pages.
+REPOSITORY_INDEX_FLUSH_ROWS = 250_000
 REPOSITORY_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
 GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REPOSITORY_NOISY_PARTS = {
@@ -1008,13 +1018,30 @@ def _index_truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
 
 
-def _repository_index_connection(path: Path) -> sqlite3.Connection:
+def _repository_index_connection(
+    path: Path, *, cache_mib: int = REPOSITORY_INDEX_CACHE_MIB, local: bool = False
+) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=600, isolation_level=None)
-    connection.execute("PRAGMA journal_mode=WAL")
+    if local:
+        # A node-local working copy is republished to the durable root at
+        # checkpoints, so it can use the write-ahead log SQLite recommends for
+        # local disks.
+        connection.execute("PRAGMA journal_mode=WAL")
+    else:
+        # The write-ahead log needs an mmap-backed shared-memory index beside
+        # the database, which a network filesystem serves badly, and a large
+        # WAL makes every read consult it.  A rollback journal is appended
+        # sequentially and leaves reads on the database file itself.
+        connection.execute("PRAGMA journal_mode=TRUNCATE")
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("PRAGMA temp_store=FILE")
-    connection.execute("PRAGMA cache_size=-131072")
+    # Both hot tables are WITHOUT ROWID B-trees keyed on sha256(repo, commit),
+    # so inserts land at uniformly random positions.  Once the tree outgrows
+    # this cache every insert becomes a page read, and on Lustre a page read is
+    # a network round trip.  Size it to hold the tree's interior nodes and a
+    # working set of leaves.
+    connection.execute(f"PRAGMA cache_size=-{max(16, int(cache_mib)) * 1024}")
     connection.execute(
         "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
     )
@@ -1112,8 +1139,17 @@ def _ingest_repository_metadata(
     *,
     source: dict[str, Any],
     metadata_files: Iterable[tuple[dict[str, Any], Path]],
+    flush_rows: int = REPOSITORY_INDEX_FLUSH_ROWS,
+    checkpoint: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    """Group all index rows on disk before fetching a single source archive."""
+    """Group all index rows on disk before fetching a single source archive.
+
+    This is the phase that dominates a cold build: the Nemotron metadata
+    resolves to tens of millions of randomly keyed rows and nothing can be
+    fetched until all of them are grouped.  ``checkpoint`` is invoked between
+    units, never inside one, so a node-local working copy is published only at
+    a transaction boundary.
+    """
 
     counters: dict[str, int] = {}
     units_completed = 0
@@ -1150,11 +1186,17 @@ def _ingest_repository_metadata(
                     nonlocal requests_inserted
                     if not request_batch:
                         return
+                    # Both targets are WITHOUT ROWID trees keyed on a hash, so
+                    # metadata order is random order.  Presenting each flush in
+                    # primary-key order keeps a run of inserts on the same
+                    # pages instead of revisiting the whole tree per row; the
+                    # rows inserted, and therefore the count, are unchanged.
                     connection.executemany(
                         "INSERT OR IGNORE INTO repo_commits(repo_key, repo, commit_id, rank_key) VALUES(?,?,?,?)",
-                        repo_batch.values(),
+                        sorted(repo_batch.values(), key=lambda row: row[0]),
                     )
                     before_requests = connection.total_changes
+                    request_batch.sort(key=lambda row: (row[0], row[1]))
                     connection.executemany(
                         "INSERT OR IGNORE INTO requested_paths("
                         "repo_key, rel_path, language, index_license, metadata_unit_key"
@@ -1185,7 +1227,7 @@ def _ingest_repository_metadata(
                         commit,
                         _stable_id(source["id"], repo, commit),
                     )
-                    if len(request_batch) >= 10_000:
+                    if len(request_batch) >= flush_rows:
                         flush()
                 flush()
                 connection.execute(
@@ -1198,6 +1240,8 @@ def _ingest_repository_metadata(
                 connection.execute("ROLLBACK")
                 raise
             units_completed += 1
+            if checkpoint is not None:
+                checkpoint()
     request_count = int(connection.execute("SELECT COUNT(*) FROM requested_paths").fetchone()[0])
     repository_count = int(connection.execute("SELECT COUNT(*) FROM repo_commits").fetchone()[0])
     if request_count == 0:
@@ -1670,7 +1714,29 @@ def _materialize_repository_index(
     target_text_bytes = int(int(item.get("candidate_tokens", 0)) * bytes_per_token)
     outputs: list[dict[str, Any]] = []
     accepted_text_bytes = 0
-    connection = _repository_index_connection(cache_root / "requests.sqlite3")
+    index_cache_mib = max(
+        16, int(acquisition.get("repository_index_cache_mib", REPOSITORY_INDEX_CACHE_MIB))
+    )
+    index_flush_rows = max(
+        1_000, int(acquisition.get("repository_index_flush_rows", REPOSITORY_INDEX_FLUSH_ROWS))
+    )
+    scratch_root = acquisition.get("repository_index_scratch_root") or runtime.get(
+        "state_scratch_root"
+    )
+    index = ScratchBackedDatabase(
+        cache_root / "requests.sqlite3",
+        connect=lambda path, local: _repository_index_connection(
+            path, cache_mib=index_cache_mib, local=local
+        ),
+        scratch_root=str(scratch_root) if scratch_root else None,
+        checkpoint_seconds=float(
+            acquisition.get("repository_index_checkpoint_seconds", 900.0)
+        ),
+        identity=f"{source['id']}/repository-index",
+        settings_table="settings",
+        sequence_key="state_sequence",
+    )
+    connection = index.connection
     rejected_repositories: dict[str, int] = {}
     accepted_repositories = 0
     resumed_repositories = 0
@@ -1679,7 +1745,12 @@ def _materialize_repository_index(
             connection,
             source=source,
             metadata_files=_metadata_files(root, source),
+            flush_rows=index_flush_rows,
+            checkpoint=index.checkpoint,
         )
+        # Nothing has been fetched yet, so the whole grouping phase is durable
+        # before a single archive is requested.
+        index.checkpoint(force=True)
         missing_batch_states = int(
             connection.execute(
                 "SELECT COUNT(*) FROM repository_state s "
@@ -1785,6 +1856,10 @@ def _materialize_repository_index(
                 for entry in current_batch.entries
             )
             current_batch.cleanup_spools()
+            # The batch's shards are published on Lustre now, so the ledger that
+            # names them must be too: a working copy that rewound past this
+            # point would re-fetch the batch and orphan what it already wrote.
+            index.checkpoint(force=True)
             next_batch_sequence += 1
             current_batch = _RepositoryOutputBatch(
                 source=source,
@@ -1915,7 +1990,7 @@ def _materialize_repository_index(
         if current_batch.entries:
             commit_current_batch()
     finally:
-        connection.close()
+        index.close()
     report = {
         "schema": "metis.repository-index-materialization/v2",
         "source_id": source["id"],

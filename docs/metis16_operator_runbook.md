@@ -163,6 +163,53 @@ offset the ledger committed:
 METIS_CC_STATE_SCRATCH=/local/scratch/$USER ./ops/start-acquisition.sh --lustre-root /lus/lustre1/vollmerc/metis-1.6
 ```
 
+### The repository index is a random-write database, and Lustre is the wrong disk for one
+
+The Nemotron repository builder groups every metadata row on disk before it
+fetches a single archive, and both of its hot tables are `WITHOUT ROWID` B-trees
+keyed on `sha256(repo, commit)`. That key is uniformly random, so each of the
+tens of millions of inserts lands at a random position in a multi-gigabyte tree.
+Once the tree outgrows the page cache, every insert becomes a page read — and on
+Lustre a page read is a network round trip. That is what a report like
+
+> 20,468,796 repository commits indexed. 45,840,280 requested paths indexed.
+> 0 repositories processed. 0 output batches produced.
+
+means: the builder is healthy and grouping, just at storage speed rather than CPU
+speed. Watch it with:
+
+```bash
+"$HOME/.cache/metis/runtime-login2/bin/python" -c "import sqlite3,sys;c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True);print({k:c.execute('SELECT COUNT(*) FROM '+k).fetchone()[0] for k in ('repo_commits','requested_paths','metadata_units','repository_state','output_batches')})" /lus/lustre1/vollmerc/metis-1.6/raw/nemotron_repository_code_v123/repository-index-cache/requests.sqlite3
+```
+
+`metadata_units` is the resume unit — one Parquet row group. A restart re-reads
+only the units that table does not already name, so an interrupted build never
+starts over.
+
+If login2 exposes node-local disk, point the index at it. This is by far the
+largest lever, because it converts every one of those page reads from a network
+round trip into a local one:
+
+```bash
+METIS_REPO_INDEX_SCRATCH=/local/scratch/$USER ./ops/start-acquisition.sh --lustre-root /lus/lustre1/vollmerc/metis-1.6
+```
+
+The working copy is republished to Lustre between metadata units and after every
+committed output batch, so a lost node rewinds to the last checkpoint and never
+past published output. Without scratch the build still runs on Lustre with a much
+larger page cache (`repository_index_cache_mib`, default 2048; raise it with
+`METIS_REPO_INDEX_CACHE_MIB` if login2 has memory to spare) and sorted bulk
+inserts, both of which cut the number of pages touched.
+
+`repository_index` now has its own scheduling lane. Its grouping phase does no
+network work at all, and while it held the single GitHub slot the repository and
+discussion builders were blocked behind it for days with idle workers. The two
+lanes together put at most two consumers on public GitHub endpoints.
+
+The command remains fail-closed if the root is unsafe, capacity is insufficient, a credential or
+gated source is unavailable, a materializer has not passed its fixture, a source remains a remote
+plan, the repository is dirty, holdouts are incomplete, or an artifact hash/size no longer matches.
+
 The command remains fail-closed if the root is unsafe, capacity is insufficient, a credential or
 gated source is unavailable, a materializer has not passed its fixture, a source remains a remote
 plan, the repository is dirty, holdouts are incomplete, or an artifact hash/size no longer matches.

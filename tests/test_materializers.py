@@ -26,6 +26,7 @@ from metis_data.materializers import (
     _repository_index_connection,
     _registry_web_entries,
 )
+from metis_data.state import ScratchBackedDatabase
 
 
 MIT_LICENSE = """MIT License
@@ -520,6 +521,149 @@ class MaterializerContractTests(unittest.TestCase):
             )
             parquet = pq.ParquetFile(path)
             self.assertEqual(set(parquet.schema.names), {"repo", "rel_path", "language", "commit_id"})
+
+
+class RepositoryIndexStorageTests(unittest.TestCase):
+    """The request index is the phase a cold Nemotron build spends days in."""
+
+    @staticmethod
+    def _metadata(path: Path, rows: int, *, seed: int) -> None:
+        # Deliberately unsorted: the real metadata arrives in arbitrary order,
+        # and both index tables are keyed on sha256(repo, commit).
+        order = [(index * 7919 + seed) % rows for index in range(rows)]
+        pq.write_table(
+            pa.table(
+                {
+                    "repo": [f"Owner{value % 97}/Repo{value}" for value in order],
+                    "rel_path": [f"src/module_{value % 13}.py" for value in order],
+                    "language": ["Python"] * rows,
+                    "commit_id": [hashlib.sha1(str(value).encode()).hexdigest() for value in order],
+                    "license": ["MIT"] * rows,
+                }
+            ),
+            path,
+        )
+
+    def _ingest(self, root: Path, name: str, metadata: Path, *, flush_rows: int) -> dict[str, object]:
+        connection = _repository_index_connection(root / name)
+        try:
+            report = _ingest_repository_metadata(
+                connection,
+                source={"id": "repository-code"},
+                metadata_files=[({"repo_id": "nvidia/code-v1", "revision": "a" * 40}, metadata)],
+                flush_rows=flush_rows,
+            )
+            rows = connection.execute(
+                "SELECT repo_key, rel_path FROM requested_paths ORDER BY repo_key, rel_path"
+            ).fetchall()
+            repos = connection.execute(
+                "SELECT repo_key, repo, commit_id FROM repo_commits ORDER BY repo_key"
+            ).fetchall()
+            return {"report": report, "rows": rows, "repos": repos}
+        finally:
+            connection.close()
+
+    def test_sorted_flushes_do_not_change_what_is_indexed(self) -> None:
+        """Insert order is a performance choice; the index must not depend on it."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = root / "metadata.parquet"
+            self._metadata(metadata, 4_000, seed=11)
+            small = self._ingest(root, "small.sqlite3", metadata, flush_rows=1_000)
+            large = self._ingest(root, "large.sqlite3", metadata, flush_rows=250_000)
+            self.assertEqual(small["rows"], large["rows"])
+            self.assertEqual(small["repos"], large["repos"])
+            self.assertEqual(
+                small["report"]["requested_paths"], large["report"]["requested_paths"]
+            )
+            self.assertEqual(small["report"]["repositories"], large["report"]["repositories"])
+            self.assertGreater(small["report"]["requested_paths"], 0)
+
+    def test_journal_mode_follows_the_filesystem_the_index_lives_on(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            durable = _repository_index_connection(root / "durable.sqlite3", local=False)
+            try:
+                # A write-ahead log needs an mmap-backed shared-memory index
+                # beside the database, which Lustre serves badly.
+                self.assertEqual(
+                    durable.execute("PRAGMA journal_mode").fetchone()[0], "truncate"
+                )
+            finally:
+                durable.close()
+            local = _repository_index_connection(root / "local.sqlite3", local=True)
+            try:
+                self.assertEqual(local.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+            finally:
+                local.close()
+
+    def test_page_cache_is_large_enough_to_hold_a_hash_keyed_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            connection = _repository_index_connection(Path(temporary) / "index.sqlite3")
+            try:
+                # Negative cache_size is a KiB budget, not a page count.
+                cache_kib = -int(connection.execute("PRAGMA cache_size").fetchone()[0])
+                self.assertGreaterEqual(cache_kib, 512 * 1024)
+            finally:
+                connection.close()
+
+    def test_scratch_backed_index_publishes_and_reseeds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = root / "metadata.parquet"
+            self._metadata(metadata, 500, seed=3)
+            durable = root / "lustre" / "requests.sqlite3"
+
+            index = ScratchBackedDatabase(
+                durable,
+                connect=lambda path, local: _repository_index_connection(path, local=local),
+                scratch_root=str(root / "scratch"),
+                checkpoint_seconds=0.0,
+                identity="repository-code/repository-index",
+                settings_table="settings",
+                sequence_key="state_sequence",
+            )
+            try:
+                self.assertTrue(index.local)
+                self.assertFalse(durable.exists())
+                report = _ingest_repository_metadata(
+                    index.connection,
+                    source={"id": "repository-code"},
+                    metadata_files=[
+                        ({"repo_id": "nvidia/code-v1", "revision": "a" * 40}, metadata)
+                    ],
+                    checkpoint=index.checkpoint,
+                )
+                self.assertGreater(report["requested_paths"], 0)
+            finally:
+                index.close()
+            self.assertTrue(durable.is_file())
+
+            # A resume that lost the node re-seeds from Lustre and skips the
+            # units the published copy already records as complete.
+            elsewhere = ScratchBackedDatabase(
+                durable,
+                connect=lambda path, local: _repository_index_connection(path, local=local),
+                scratch_root=str(root / "other-scratch"),
+                checkpoint_seconds=0.0,
+                identity="repository-code/repository-index",
+                settings_table="settings",
+                sequence_key="state_sequence",
+            )
+            try:
+                resumed = _ingest_repository_metadata(
+                    elsewhere.connection,
+                    source={"id": "repository-code"},
+                    metadata_files=[
+                        ({"repo_id": "nvidia/code-v1", "revision": "a" * 40}, metadata)
+                    ],
+                )
+                self.assertEqual(resumed["metadata_units_reused"], 1)
+                self.assertEqual(resumed["metadata_units_completed"], 0)
+                self.assertEqual(resumed["requested_paths"], report["requested_paths"])
+            finally:
+                elsewhere.close()
 
 
 if __name__ == "__main__":

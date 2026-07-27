@@ -22,16 +22,23 @@ acquisition:
   host_role: lustre_server
   # GitHub repository, discussion, and metadata-hydration builders share one
   # public-archive lane to keep transfer pressure bounded.
+  # The repository index has its own lane. Its long opening phase groups tens
+  # of millions of metadata rows with no network at all, and sharing the
+  # single GitHub slot left the repository and discussion builders blocked
+  # behind it for days. The two lanes together put at most two consumers on
+  # public GitHub endpoints; move repository_index back to `github` if that
+  # ever needs to be one.
   driver_lanes:
     common_crawl_ranges: common_crawl
     github_repositories: github
     github_discussions: github
-    repository_index: github
+    repository_index: repository_index
     canonical_web: canonical
     canonical_git: canonical
     canonical_http: canonical
     derived_after_download: derived
-  lane_max_workers: {github: 1, common_crawl: 1, canonical: 1, derived: 1}
+  lane_max_workers:
+    {github: 1, common_crawl: 1, repository_index: 1, canonical: 1, derived: 1}
   common_crawl:
     range_workers: 4
     shard_count: 128
@@ -63,6 +70,21 @@ acquisition:
     # an underfill. The handoff still checks the original locked target.
     final_opt_out_reserve_multiplier: 1.05
   repository_index_workers: 4
+  # The Nemotron metadata resolves to tens of millions of rows keyed on
+  # sha256(repo, commit), so both index tables are WITHOUT ROWID B-trees that
+  # are written at uniformly random positions. Once the tree outgrows the page
+  # cache every insert becomes a page read, and on Lustre a page read is a
+  # network round trip -- which is what left the builder still grouping rows
+  # after 60 hours without fetching a single repository.
+  repository_index_cache_mib: ${METIS_REPO_INDEX_CACHE_MIB:-2048}
+  repository_index_flush_rows: 250000
+  # Strongly preferred if login2 exposes node-local disk: this workload is
+  # nearly pure small random I/O, which is the case SQLite's own documentation
+  # says not to put on a network filesystem. The working copy is published back
+  # to Lustre between metadata units and after every committed output batch, so
+  # a lost node rewinds to the last checkpoint, never past published output.
+  repository_index_scratch_root: ${METIS_REPO_INDEX_SCRATCH:-}
+  repository_index_checkpoint_seconds: 900
 
 storage:
   # /lus/lustre1 itself is shared and is deliberately rejected. The account
