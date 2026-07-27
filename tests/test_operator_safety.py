@@ -18,6 +18,7 @@ from metis_data import cli as cli_module
 from metis_data.build_inputs import prepare_build_inputs
 from metis_data.config import load_profile
 from metis_data.doctor import _lustre_quota_check
+from metis_data.local_download import _lane_configuration
 from metis_data.download import run_download_task
 from metis_data.handoff import (
     _validate_materialized_token_targets,
@@ -505,6 +506,39 @@ class OperatorSafetyTests(unittest.TestCase):
             os.utime(lock, (old, old))
             self.assertEqual(state.clear_stale_locks(60), [])
             self.assertTrue(lock.is_dir())
+
+
+class AcquisitionLaneTests(unittest.TestCase):
+    def test_every_configured_lane_is_gated(self) -> None:
+        """A lane with no configured limit runs ungated, not serialized.
+
+        ``_run_task_in_lanes`` acquires ``semaphores.get(lane)`` and skips a
+        lane it cannot find, so routing a driver to a lane that
+        ``lane_max_workers`` never names silently removes its concurrency
+        bound instead of failing.
+        """
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "metis-1.6"
+            root.mkdir(parents=True)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "METIS_LUSTRE_ROOT": str(root),
+                    "METIS_LUSTRE_QUOTA_ACKNOWLEDGEMENT": "unlimited",
+                },
+            ):
+                with mock.patch(
+                    "metis_data.config.validate_storage_root", side_effect=lambda _profile, path: path
+                ):
+                    _, profile = load_profile("login2")
+
+        driver_lanes, semaphores = _lane_configuration(profile)
+        self.assertEqual(driver_lanes["repository_index"], "repository_index")
+        ungated = sorted(set(driver_lanes.values()) - set(semaphores))
+        self.assertEqual(ungated, [], f"lanes without a configured limit: {ungated}")
+        for lane in ("github", "common_crawl", "repository_index"):
+            self.assertIn(lane, semaphores)
 
 
 if __name__ == "__main__":
