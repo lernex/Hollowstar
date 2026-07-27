@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import base64
+import dataclasses
 import gzip
 import hashlib
+import inspect
+import itertools
 import json
+import re
 import tempfile
 import threading
 import unittest
@@ -17,13 +21,20 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import zstandard
 
+from metis_data import freshweb
 from metis_data.freshweb import (
+    CATEGORY_PRIORITY,
+    DEFAULT_CATEGORY_WEIGHTS,
+    INDEX_COLUMNS,
+    REQUIRED_INDEX_COLUMNS,
     FreshWebError,
     FreshWebOptions,
     OptOutPolicy,
+    PrefilterTally,
     _HttpClient,
     _connect_state,
     _download_resumable,
+    _prefilter_index_batch,
     _prepare_index_selection_round,
     _extract_warc_member,
     _url_index_integrity_path,
@@ -33,6 +44,7 @@ from metis_data.freshweb import (
     metadata_candidate,
     parse_opt_out_registry,
     select_exact_candidates,
+    select_partition_candidates,
     snapshot_common_crawl_opt_out,
 )
 from metis_data.download import (
@@ -1221,6 +1233,483 @@ class FreshWebDownloadDispatchTests(unittest.TestCase):
             self.assertEqual(materialized_item["candidate_tokens"], 105)
             self.assertEqual(materialized_item["locked_candidate_tokens"], 100)
             self.assertEqual(result["candidate_token_estimate"], 110)
+
+
+class FreshWebScanTests(unittest.TestCase):
+    """The URL-index scan is the multi-day phase; guard its fast paths."""
+
+    crawl = "CC-MAIN-2026-25"
+
+    @staticmethod
+    def _options(**overrides: object) -> FreshWebOptions:
+        options = FreshWebOptions(
+            route="general_web",
+            allowed_categories=tuple(CATEGORY_PRIORITY),
+            category_weights=DEFAULT_CATEGORY_WEIGHTS,
+            max_workers=1,
+            retry_base_seconds=0,
+            request_timeout_seconds=10,
+            **overrides,
+        )
+        options.validate()
+        return options
+
+    @staticmethod
+    def _policy() -> OptOutPolicy:
+        return OptOutPolicy(
+            domains=frozenset({"blocked.example"}),
+            url_paths=frozenset({("docs.example.org", "/private")}),
+            snapshot_sha256="0" * 64,
+            last_updated="2026-07-21",
+        )
+
+    def _index_row(self, url: str, **overrides: object) -> dict[str, object]:
+        parsed = urlsplit(url)
+        row: dict[str, object] = {
+            "url": url,
+            "url_host_registered_domain": parsed.hostname,
+            "url_host_private_domain": parsed.hostname,
+            "url_host_registry_suffix": (parsed.hostname or "").rsplit(".", 1)[-1],
+            "fetch_time": "2026-06-18T12:00:00Z",
+            "fetch_status": 200,
+            "content_digest": _payload_digest(url.encode("utf-8")),
+            "content_mime_type": "text/html",
+            "content_mime_detected": "text/html",
+            "content_charset": "UTF-8",
+            "content_languages": "eng",
+            "content_truncated": None,
+            "warc_record_id": "fixture",
+            "warc_filename": f"crawl-data/{self.crawl}/segments/1/warc/a.warc.gz",
+            "warc_record_offset": 0,
+            "warc_record_length": 4_096,
+            "warc_segment": "1",
+        }
+        row.update(overrides)
+        return row
+
+    _INDEX_SCHEMA = pa.schema(
+        [
+            ("url", pa.string()),
+            ("url_host_registered_domain", pa.string()),
+            ("url_host_private_domain", pa.string()),
+            ("url_host_registry_suffix", pa.string()),
+            ("fetch_time", pa.string()),
+            ("fetch_status", pa.int16()),
+            ("content_digest", pa.string()),
+            ("content_mime_type", pa.string()),
+            ("content_mime_detected", pa.string()),
+            ("content_charset", pa.string()),
+            ("content_languages", pa.string()),
+            ("content_truncated", pa.string()),
+            ("warc_record_id", pa.string()),
+            ("warc_filename", pa.string()),
+            ("warc_record_offset", pa.int32()),
+            ("warc_record_length", pa.int32()),
+            ("warc_segment", pa.string()),
+        ]
+    )
+
+    def test_vectorized_pre_gate_matches_the_reference_row_gates(self) -> None:
+        """The pre-gate must never change the selected set or the audit tally.
+
+        It resolves the leading gates in Arrow, so its agreement with
+        ``metadata_candidate`` is what keeps a scanned partition reproducible.
+        Values it cannot decide -- non-ASCII, embedded newlines, odd spacing --
+        must fall through to the reference gates rather than be guessed at.
+        """
+
+        statuses = [200, 0, 404, 301, None, -1]
+        truncations = [None, "", "length", "disconnect", "0", " "]
+        digests = [
+            None, "", "A" * 32, "a" * 32, "sha1:" + "A" * 32, "SHA1:" + "B" * 32,
+            "Z" * 32, "1" * 32, "A" * 31, "A" * 33, "A" * 16 + "\n" + "A" * 15,
+            "É" * 32, "sha1:", "234567" * 5 + "AB",
+        ]
+        mimes = [
+            None, "", "text/html", "TEXT/HTML", "text/html; charset=utf-8",
+            " text/html ", "text/html;", "application/xhtml+xml", "text/plain",
+            "application/pdf", "image/png", "text/htm", "TEXT/HTML;CHARSET=X",
+            "text/html\n; x", "tëxt/html", ";text/html", "text/html;\ncharset=y",
+        ]
+        languages = [
+            None, "", "eng", "ENG", "eng,fra", "fra,eng", "fra", "engx", "xeng",
+            "eng,", ",eng", " eng", "eng ", "eng , fra", "en", "english",
+            "eng\n", "ENG,DEU", "zho,eng,spa", "e", "éng", "eng;fra", "deu,fra",
+        ]
+
+        rows: list[dict[str, object]] = []
+        for status, truncated in itertools.product(statuses, truncations):
+            rows.append(
+                self._index_row(
+                    "https://docs.example.org/guide/topic",
+                    fetch_status=status,
+                    content_truncated=truncated,
+                )
+            )
+        for digest in digests:
+            rows.append(
+                self._index_row("https://docs.example.org/guide", content_digest=digest)
+            )
+        for sent, detected in itertools.product(mimes, mimes):
+            rows.append(
+                self._index_row(
+                    "https://docs.example.org/guide",
+                    content_mime_type=sent,
+                    content_mime_detected=detected,
+                )
+            )
+        for language in languages:
+            rows.append(
+                self._index_row(
+                    "https://docs.example.org/guide", content_languages=language
+                )
+            )
+        # Gates the pre-filter never claims still have to be attributed by the
+        # reference implementation, and only after the earlier gates.
+        rows.append(self._index_row("https://blocked.example/article"))
+        rows.append(self._index_row("https://docs.example.org/private"))
+        rows.append(self._index_row("https://docs.example.org/login"))
+        rows.append(self._index_row("https://docs.example.org/a", warc_record_length=8))
+        rows.append(
+            self._index_row(
+                "https://blocked.example/x", content_languages="fra", fetch_status=404
+            )
+        )
+
+        batch = pa.RecordBatch.from_pylist(rows, schema=self._INDEX_SCHEMA)
+        policy = self._policy()
+        for require_english in (True, False):
+            with self.subTest(require_english=require_english):
+                options = self._options(require_english=require_english)
+                reference, reference_stats = select_partition_candidates(
+                    batch.to_pylist(),
+                    crawl=self.crawl,
+                    source_id="scan",
+                    policy=policy,
+                    options=options,
+                    capacity=1_000,
+                )
+                tally = PrefilterTally()
+                tally.scanned = batch.num_rows
+                kept = _prefilter_index_batch(batch, options=options, tally=tally)
+                gated, gated_stats = select_partition_candidates(
+                    kept.to_pylist(),
+                    crawl=self.crawl,
+                    source_id="scan",
+                    policy=policy,
+                    options=options,
+                    capacity=1_000,
+                    tally=tally,
+                )
+                self.assertEqual(reference, gated)
+                self.assertEqual(reference_stats, gated_stats)
+                self.assertEqual(gated_stats["scanned"], batch.num_rows)
+                # The pre-gate has to actually carry its weight, not just agree.
+                self.assertLess(kept.num_rows, batch.num_rows)
+
+    def test_scan_projection_covers_every_column_the_gates_read(self) -> None:
+        """A narrowed Parquet projection must not silently starve a gate."""
+
+        source = "".join(
+            inspect.getsource(function)
+            for function in (metadata_candidate, freshweb._fresh_category)
+        )
+        read = set(re.findall(r"""row(?:\.get\(|\[)["']([a-z_]+)["']""", source))
+        self.assertTrue(read)
+        self.assertEqual(
+            read - set(freshweb.SCAN_INDEX_COLUMNS),
+            set(),
+            "SCAN_INDEX_COLUMNS omits a column the reference gates read",
+        )
+        self.assertEqual(set(freshweb.SCAN_INDEX_COLUMNS) - set(INDEX_COLUMNS), set())
+        self.assertEqual(REQUIRED_INDEX_COLUMNS - set(freshweb.SCAN_INDEX_COLUMNS), set())
+
+    def test_run_identity_ignores_operational_tuning(self) -> None:
+        """Retuning throughput must resume an acquisition, never orphan it.
+
+        A five-crawl URL-index scan runs for days.  If a worker count or a
+        scratch path reached the run fingerprint, raising it would strand every
+        partition already scanned under the old identity.
+        """
+
+        operational = {
+            field.name
+            for field in dataclasses.fields(FreshWebOptions)
+            if field.name not in freshweb.FINGERPRINT_OPTION_FIELDS
+        }
+        self.assertEqual(
+            operational,
+            {"index_scan_workers", "state_scratch_root", "state_checkpoint_seconds"},
+        )
+        selective = {
+            field.name for field in dataclasses.fields(FreshWebOptions)
+        } - operational
+        self.assertEqual(selective, set(freshweb.FINGERPRINT_OPTION_FIELDS))
+
+        def identity(options: FreshWebOptions) -> str:
+            values = dataclasses.asdict(options)
+            return json.dumps(
+                {name: values[name] for name in freshweb.FINGERPRINT_OPTION_FIELDS},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+
+        self.assertEqual(
+            identity(self._options()),
+            identity(
+                self._options(
+                    index_scan_workers=8,
+                    state_scratch_root="/local/scratch",
+                    state_checkpoint_seconds=30.0,
+                )
+            ),
+        )
+        # A change that can move the selected set still must move identity.
+        self.assertNotEqual(
+            identity(self._options()), identity(self._options(seed="other"))
+        )
+
+    def _serve_partitions(self, root: Path, partitions: list[list[dict[str, object]]]):
+        files: dict[str, bytes] = {}
+        relatives: list[str] = []
+        for index, rows in enumerate(partitions):
+            path = root / f"part-{index:05d}.parquet"
+            pq.write_table(
+                pa.Table.from_pylist(rows, schema=self._INDEX_SCHEMA), path
+            )
+            relative = (
+                f"cc-index/table/cc-main/warc/crawl={self.crawl}/subset=warc/"
+                f"part-{index:05d}-fixture.c000.gz.parquet"
+            )
+            files["/" + relative] = path.read_bytes()
+            relatives.append(relative)
+        return files, relatives
+
+    def test_parallel_index_scan_commits_in_partition_order(self) -> None:
+        """A parallel scan must select exactly what a serial scan selects.
+
+        ``URL_UPSERT`` keeps the incumbent when two captures tie on every
+        ranking key, so the winner depends on commit order.  Results are
+        therefore committed in partition order even though they are produced
+        out of order -- here the first partition is by far the slowest, so a
+        completion-ordered commit would hand the tie to a later partition.
+        """
+
+        shared = "https://docs.example.org/shared-guide"
+        shared_digest = _payload_digest(b"shared")
+        partitions: list[list[dict[str, object]]] = []
+        for index in range(4):
+            warc = f"crawl-data/{self.crawl}/segments/1/warc/part{index}.warc.gz"
+            rows = [
+                # The same capture, tied on every ranking key, in every
+                # partition: only the WARC coordinate differs.
+                self._index_row(
+                    shared,
+                    content_digest=shared_digest,
+                    warc_filename=warc,
+                    warc_record_offset=4_096 * index,
+                )
+            ]
+            if index == 0:
+                rows.extend(
+                    self._index_row(
+                        f"https://docs.example.org/filler/{position}",
+                        warc_filename=warc,
+                        warc_record_offset=8_192 + position,
+                    )
+                    for position in range(6_000)
+                )
+            partitions.append(rows)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files, relatives = self._serve_partitions(root, partitions)
+            with _FixtureServer(files) as server:
+                results = {}
+                for workers in (1, 3):
+                    options = self._options(
+                        index_scan_workers=workers, keep_index_files=True
+                    )
+                    connection = _connect_state(root / f"state-{workers}.sqlite3")
+                    try:
+                        freshweb._scan_index_partitions(
+                            connection,
+                            [
+                                freshweb._IndexScanJob(
+                                    order=order,
+                                    relative_path=relative,
+                                    crawl=self.crawl,
+                                    url=server.root + relative,
+                                    local_path=str(
+                                        root / f"cache-{workers}" / f"{order}.parquet"
+                                    ),
+                                    selected_path=str(
+                                        root / f"spill-{workers}" / f"{order}.jsonl.zst"
+                                    ),
+                                    capacity=10_000,
+                                    source_id="scan",
+                                    policy=self._policy(),
+                                    options=options,
+                                )
+                                for order, relative in enumerate(relatives)
+                            ],
+                            options=options,
+                        )
+                        results[workers] = [
+                            tuple(row)
+                            for row in connection.execute(
+                                "SELECT canonical_url, content_digest, warc_filename,"
+                                " warc_record_offset FROM url_winners"
+                                " ORDER BY canonical_url"
+                            )
+                        ]
+                        self.assertEqual(
+                            connection.execute(
+                                "SELECT COUNT(*) FROM partitions"
+                            ).fetchone()[0],
+                            len(relatives),
+                        )
+                    finally:
+                        connection.close()
+
+                self.assertEqual(results[1], results[3])
+                winner = next(row for row in results[3] if row[0] == shared)
+                self.assertTrue(
+                    winner[2].endswith("part0.warc.gz"),
+                    f"tie was awarded out of partition order: {winner}",
+                )
+
+    def test_index_scan_resumes_at_the_first_unfinished_partition(self) -> None:
+        partitions = [
+            [self._index_row(f"https://docs.example.org/p{index}/{position}")
+             for position in range(4)]
+            for index in range(3)
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files, relatives = self._serve_partitions(root, partitions)
+            with _FixtureServer(files) as server:
+                options = self._options(keep_index_files=True)
+                jobs = [
+                    freshweb._IndexScanJob(
+                        order=order,
+                        relative_path=relative,
+                        crawl=self.crawl,
+                        url=server.root + relative,
+                        local_path=str(root / "cache" / f"{order}.parquet"),
+                        selected_path=str(root / "spill" / f"{order}.jsonl.zst"),
+                        capacity=100,
+                        source_id="scan",
+                        policy=self._policy(),
+                        options=options,
+                    )
+                    for order, relative in enumerate(relatives)
+                ]
+                connection = _connect_state(root / "state.sqlite3")
+                try:
+                    freshweb._scan_index_partitions(
+                        connection, jobs[:1], options=options
+                    )
+                    served = sum(server.counts["/" + r] for r in relatives)
+                    self.assertEqual(served, 1)
+
+                    # A resume rebuilds the job list from the ledger and must
+                    # not re-fetch or re-scan what is already committed.
+                    scanned = {
+                        str(row["relative_path"])
+                        for row in connection.execute(
+                            "SELECT relative_path FROM partitions"
+                            " WHERE selection_capacity >= ?",
+                            (100,),
+                        )
+                    }
+                    self.assertEqual(scanned, {relatives[0]})
+                    outstanding = [
+                        job for job in jobs if job.relative_path not in scanned
+                    ]
+                    self.assertEqual(len(outstanding), 2)
+                    freshweb._scan_index_partitions(
+                        connection, outstanding, options=options
+                    )
+                    self.assertEqual(
+                        sum(server.counts["/" + r] for r in relatives), 3
+                    )
+                    self.assertEqual(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM partitions"
+                        ).fetchone()[0],
+                        3,
+                    )
+                finally:
+                    connection.close()
+
+
+class FreshWebStateDatabaseTests(unittest.TestCase):
+    def test_scratch_ledger_is_published_to_the_durable_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            durable = root / "lustre" / "state.sqlite3"
+            scratch = root / "scratch"
+
+            state = freshweb._StateDatabase(
+                durable, scratch_root=str(scratch), checkpoint_seconds=0.0, identity="run"
+            )
+            self.assertNotEqual(state.working_path, durable)
+            self.assertFalse(durable.exists())
+            with state.connection:
+                freshweb._set_metadata(state.connection, "fingerprint", "abc")
+            state.checkpoint(force=True)
+            self.assertTrue(durable.is_file())
+            state.close()
+
+            # A run that resumes on another node seeds from the durable copy.
+            elsewhere = freshweb._StateDatabase(
+                durable,
+                scratch_root=str(root / "other-scratch"),
+                checkpoint_seconds=0.0,
+                identity="run",
+            )
+            try:
+                self.assertEqual(
+                    freshweb._metadata_value(elsewhere.connection, "fingerprint"), "abc"
+                )
+            finally:
+                elsewhere.close()
+
+            # A newer working copy is never rewound by an older durable one.
+            resumed = freshweb._StateDatabase(
+                durable, scratch_root=str(scratch), checkpoint_seconds=3_600.0, identity="run"
+            )
+            try:
+                with resumed.connection:
+                    freshweb._set_metadata(resumed.connection, "fingerprint", "newer")
+                resumed.checkpoint(force=True)
+            finally:
+                resumed.close()
+            again = freshweb._StateDatabase(
+                durable, scratch_root=str(scratch), checkpoint_seconds=3_600.0, identity="run"
+            )
+            try:
+                self.assertEqual(
+                    freshweb._metadata_value(again.connection, "fingerprint"), "newer"
+                )
+            finally:
+                again.close()
+
+    def test_ledger_without_scratch_stays_on_the_durable_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            durable = Path(temporary) / "state.sqlite3"
+            state = freshweb._StateDatabase(durable)
+            try:
+                self.assertEqual(state.working_path, durable)
+                self.assertEqual(
+                    state.connection.execute("PRAGMA journal_mode").fetchone()[0],
+                    "delete",
+                )
+                state.checkpoint(force=True)
+            finally:
+                state.close()
+            self.assertTrue(durable.is_file())
 
 
 if __name__ == "__main__":

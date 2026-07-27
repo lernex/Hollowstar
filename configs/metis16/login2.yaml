@@ -36,6 +36,25 @@ acquisition:
     range_workers: 4
     shard_count: 128
     keep_index_files: false
+    # The URL-index scan is the throughput lever for Common Crawl acquisition:
+    # each crawl publishes 300 Parquet partitions of roughly seven million rows,
+    # and the per-row gates are pure Python. Each worker is a process that also
+    # fetches its own partition, so this bounds concurrent index requests too.
+    # Raise it toward the number of cores login2 can spare; 16 is the ceiling.
+    #
+    # Retuning this resumes an in-flight acquisition: throughput settings are
+    # deliberately excluded from the run fingerprint. range_workers,
+    # shard_count, keep_index_files, and final_opt_out_reserve_multiplier are
+    # NOT — changing any of those starts a new run under a new fingerprint and
+    # abandons every partition already scanned.
+    index_scan_workers: ${METIS_CC_INDEX_SCAN_WORKERS:-8}
+    # Optional node-local working copy of the acquisition ledger. SQLite is not
+    # designed for network filesystems, and the WARC phase commits once per
+    # fetched group. When set, the ledger is worked on local disk and published
+    # back to Lustre every state_checkpoint_seconds; a crash rewinds to the last
+    # checkpoint, never past it. Leave empty to keep the ledger on Lustre.
+    state_scratch_root: ${METIS_CC_STATE_SCRATCH:-}
+    state_checkpoint_seconds: 300
     # Retryable shortfalls double the deterministic per-partition sample in
     # the same Screen run. Round 8 is the fail-closed upper bound.
     maximum_selection_round: 8

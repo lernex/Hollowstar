@@ -3,13 +3,18 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import shutil
 from pathlib import Path
 from typing import Any
 
 from huggingface_hub import hf_hub_download
 
-from .freshweb import FreshWebOptions, materialize_freshweb
+from .freshweb import (
+    MAXIMUM_INDEX_SCAN_WORKERS,
+    FreshWebOptions,
+    materialize_freshweb,
+)
 from .state import StateStore, utc_now
 
 
@@ -247,6 +252,22 @@ def freshweb_options_for_item(item: dict[str, Any], profile: dict[str, Any]) -> 
         max(1, int(common_crawl.get("range_workers", acquisition.get("max_workers", 10)))),
     )
     max_records = common_crawl.get("max_records_per_partition")
+    # The URL-index scan is CPU-bound pure Python over billions of rows, so it
+    # is the throughput lever for Common Crawl acquisition.  Each worker also
+    # fetches its own partition, so this bounds concurrent index requests too.
+    # Default conservatively: acquisition runs on a shared login host.
+    index_scan_workers = min(
+        MAXIMUM_INDEX_SCAN_WORKERS,
+        max(
+            1,
+            int(
+                common_crawl.get(
+                    "index_scan_workers", max(1, min(8, (os.cpu_count() or 2) // 2))
+                )
+            ),
+        ),
+    )
+    scratch_root = common_crawl.get("state_scratch_root") or runtime.get("state_scratch_root")
     options = FreshWebOptions(
         collinfo_url=str(common_crawl.get("collinfo_url", FreshWebOptions.collinfo_url)),
         data_root=str(access.get("warc_root") or common_crawl.get("data_root") or FreshWebOptions.data_root),
@@ -281,6 +302,11 @@ def freshweb_options_for_item(item: dict[str, Any], profile: dict[str, Any]) -> 
         ),
         freshness_cutoff_end=(
             str(access["cutoff_end"]) if access.get("cutoff_end") else None
+        ),
+        index_scan_workers=index_scan_workers,
+        state_scratch_root=str(scratch_root) if scratch_root else None,
+        state_checkpoint_seconds=float(
+            common_crawl.get("state_checkpoint_seconds", 300.0)
         ),
     )
     options.validate()

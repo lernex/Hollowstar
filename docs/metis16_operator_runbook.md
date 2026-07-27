@@ -120,6 +120,53 @@ tail -f /lus/lustre1/vollmerc/metis-1.6/logs/metis-1.6-data-r1/acquisition/scree
 Rerunning the launcher is the resume operation. Completed content-addressed tasks are skipped, and
 the singleton lock prevents two supervisors from writing the same acquisition concurrently.
 
+### Common Crawl acquisition is bounded by the URL-index scan, not by the network
+
+Each Common Crawl release publishes 300 Parquet URL-index partitions in `subset=warc`, roughly
+570 MB and seven million rows each — about 172 GB and 2.1 billion rows per crawl, and each of the
+four fresh routes scans all five crawls. The download is a rounding error next to the scan: the
+per-row metadata gates are pure Python, so a route that appears "stuck downloading" is almost
+always scanning. Judge progress by partitions committed, not by bytes moved:
+
+```bash
+sqlite3 "$(ls -d /lus/lustre1/vollmerc/metis-1.6/raw/*/freshweb/runs/*/state.sqlite3 | head -1)" \
+  "SELECT COUNT(*), SUM(scanned), SUM(selected) FROM partitions"
+```
+
+`index_scan_workers` in the `login2` profile is the throughput lever. Each worker is a process
+that scans one partition end to end, and it also fetches that partition, so the setting bounds
+concurrent index requests as well. Raise it toward the cores login2 can spare (16 is the ceiling)
+or override it per run:
+
+```bash
+METIS_CC_INDEX_SCAN_WORKERS=12 ./ops/start-acquisition.sh --lustre-root /lus/lustre1/vollmerc/metis-1.6
+```
+
+Throughput, retry, and cache settings are deliberately excluded from the run fingerprint, so
+retuning them **resumes** an in-flight acquisition. Partitions already committed to the ledger are
+never rescanned. `range_workers`, `shard_count`, `keep_index_files`, and
+`final_opt_out_reserve_multiplier` are *not* excluded: changing any of those mints a new fingerprint
+and abandons every partition already scanned. Leave them alone mid-run.
+
+`keep_index_files: false` makes each route re-fetch the index rather than hold ~860 GB of Parquet on
+Lustre. That trade is now cheap — fetching a partition costs a few percent of scanning it — but it
+is fingerprinted, so it can only be reconsidered for a new generation, not for a run in flight.
+
+The acquisition ledger is a SQLite database, which is not designed for a network filesystem. The
+URL-index phase commits once per partition and does not care, but the WARC phase commits once per
+fetched group. If login2 exposes node-local scratch, point the ledger at it; the working copy is
+published back to Lustre every `state_checkpoint_seconds`, and a crash rewinds to the last
+checkpoint rather than to the start, because shard recovery truncates each shard back to the
+offset the ledger committed:
+
+```bash
+METIS_CC_STATE_SCRATCH=/local/scratch/$USER ./ops/start-acquisition.sh --lustre-root /lus/lustre1/vollmerc/metis-1.6
+```
+
+The command remains fail-closed if the root is unsafe, capacity is insufficient, a credential or
+gated source is unavailable, a materializer has not passed its fixture, a source remains a remote
+plan, the repository is dirty, holdouts are incomplete, or an artifact hash/size no longer matches.
+
 The command remains fail-closed if the root is unsafe, capacity is insufficient, a credential or
 gated source is unavailable, a materializer has not passed its fixture, a source remains a remote
 plan, the repository is dirty, holdouts are incomplete, or an artifact hash/size no longer matches.

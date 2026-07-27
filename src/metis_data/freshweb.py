@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import functools
 import gzip
 import hashlib
 import heapq
@@ -32,6 +33,7 @@ import math
 import os
 import random
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -97,6 +99,91 @@ REQUIRED_INDEX_COLUMNS = {
     "warc_record_offset",
     "warc_record_length",
 }
+
+# The subset of ``INDEX_COLUMNS`` that ``metadata_candidate`` and
+# ``_fresh_category`` actually read.  A URL-index partition holds roughly seven
+# million rows, so decoding the unread columns (``url_surtkey`` in particular)
+# costs real wall-clock for every partition of every crawl.  Keep this in sync
+# with the gates below; ``test_freshweb`` asserts the two agree.
+SCAN_INDEX_COLUMNS = (
+    "url",
+    "url_host_registered_domain",
+    "url_host_private_domain",
+    "url_host_registry_suffix",
+    "fetch_time",
+    "fetch_status",
+    "content_digest",
+    "content_mime_type",
+    "content_mime_detected",
+    "content_charset",
+    "content_languages",
+    "content_truncated",
+    "warc_record_id",
+    "warc_filename",
+    "warc_record_offset",
+    "warc_record_length",
+    "warc_segment",
+)
+
+ACCEPTED_MIME_TYPES = ("text/html", "application/xhtml+xml", "text/plain")
+
+# The vectorized pre-gate below only decides a row when the raw column value is
+# printable ASCII.  Over that subset ``ascii_lower``, RE2, and
+# ``utf8_trim_whitespace`` are provably identical to the reference ``str.lower``,
+# ``re``, and ``str.strip`` gates in ``metadata_candidate``; anything else falls
+# through to the reference implementation unchanged.
+_PRINTABLE_ASCII_PATTERN = "^[\\x20-\\x7e]*$"
+_BASE32_DIGEST_PATTERN = "^[a-z2-7]{32}$"
+_LANGUAGE_TOKENS_PATTERN = "^[a-z]{2,8}(,[a-z]{2,8})*$"
+_ENGLISH_TOKEN_PATTERN = "(^|,)eng(,|$)"
+
+# ``ipaddress.ip_address`` only accepts dotted-decimal IPv4 or colon-bearing
+# IPv6 text, so every other host shape can skip a raised-and-discarded
+# ``ValueError`` on the hottest path in the scan.
+_IP_LITERAL_SHAPE = re.compile(r"\A[0-9.]+\Z").match
+_HOST_LABEL = re.compile(r"[a-z0-9-]+").fullmatch
+_HOST_TOKEN_SPLIT = re.compile(r"[.\-_]").split
+_PATH_TOKEN_SPLIT = re.compile(r"[/._\-]").split
+
+# A URL-index scan across five crawls is a multi-day job, so run identity must
+# not move when its throughput is retuned.  This tuple is frozen at the set of
+# options that existed when acquisition started: every one of them can change
+# the selected set or the published layout, and adding a new operational field
+# to ``FreshWebOptions`` must leave every existing run's fingerprint untouched
+# so an interrupted acquisition resumes instead of restarting.
+FINGERPRINT_OPTION_FIELDS = (
+    "allow_domains",
+    "allowed_categories",
+    "category_weights",
+    "coalesce_gap_bytes",
+    "collinfo_url",
+    "data_root",
+    "deny_domains",
+    "estimated_tokens_per_document",
+    "freshness_cutoff_end",
+    "freshness_cutoff_start",
+    "keep_index_files",
+    "max_records_per_partition",
+    "max_retries",
+    "max_workers",
+    "maximum_span_bytes",
+    "minimum_characters",
+    "opt_out_csv_url",
+    "parquet_batch_rows",
+    "request_timeout_seconds",
+    "require_english",
+    "require_reusable_open_license",
+    "retry_base_seconds",
+    "route",
+    "seed",
+    "selection_oversample",
+    "shard_count",
+    "user_agent",
+)
+
+# Each URL-index scan worker downloads its own partition, so this also bounds
+# concurrent requests against the bulk data host.
+MAXIMUM_INDEX_SCAN_WORKERS = 16
 
 TRACKING_QUERY_KEYS = {
     "_ga",
@@ -197,6 +284,12 @@ class FreshWebOptions:
     deny_domains: tuple[str, ...] = ()
     freshness_cutoff_start: str | None = None
     freshness_cutoff_end: str | None = None
+    # Operational-only fields.  They are deliberately excluded from run identity
+    # (see FINGERPRINT_OPTION_FIELDS) so retuning throughput resumes an
+    # in-flight acquisition instead of orphaning it under a new fingerprint.
+    index_scan_workers: int = 1
+    state_scratch_root: str | None = None
+    state_checkpoint_seconds: float = 300.0
 
     def validate(self) -> None:
         if self.max_records_per_partition is not None and self.max_records_per_partition <= 0:
@@ -221,6 +314,14 @@ class FreshWebOptions:
             raise ValueError("shard_count must be positive")
         if not 1 <= self.max_workers <= 10:
             raise ValueError("max_workers must be between 1 and 10 for polite Common Crawl access")
+        if not 1 <= self.index_scan_workers <= MAXIMUM_INDEX_SCAN_WORKERS:
+            raise ValueError(
+                f"index_scan_workers must be between 1 and {MAXIMUM_INDEX_SCAN_WORKERS}"
+            )
+        if self.state_scratch_root is not None and not self.state_scratch_root.strip():
+            raise ValueError("state_scratch_root must be a non-empty path when configured")
+        if not math.isfinite(self.state_checkpoint_seconds) or self.state_checkpoint_seconds <= 0:
+            raise ValueError("state_checkpoint_seconds must be positive")
         if self.max_retries < 1:
             raise ValueError("max_retries must be positive")
         if self.request_timeout_seconds <= 0 or self.retry_base_seconds < 0:
@@ -289,6 +390,22 @@ class OptOutPolicy:
     input_entries: int = 0
     unparsed_entries: int = 0
 
+    @functools.cached_property
+    def _rules_by_host(self) -> dict[str, tuple[OptOutUrlRule, ...]]:
+        """Group the URL rules by the host each is registered under.
+
+        ``reason`` runs once for every surviving URL-index row, so testing every
+        rule against every row is billions of string comparisons across a crawl.
+        A rule applies to its own host and to that host's subdomains -- the same
+        label walk the domain check already performs -- and every rule that
+        matches returns the same reason, so grouping cannot change the verdict.
+        """
+
+        grouped: dict[str, list[OptOutUrlRule]] = {}
+        for rule in self.url_rules:
+            grouped.setdefault(rule.host, []).append(rule)
+        return {host: tuple(rules) for host, rules in grouped.items()}
+
     def reason(self, url: str) -> str | None:
         try:
             parsed = urlsplit(url)
@@ -298,16 +415,21 @@ class OptOutPolicy:
         if not host:
             return "invalid_url"
         labels = host.split(".")
-        for index in range(len(labels)):
-            if ".".join(labels[index:]) in self.domains:
+        suffixes = [".".join(labels[index:]) for index in range(len(labels))]
+        for suffix in suffixes:
+            if suffix in self.domains:
                 return "common_crawl_opt_out_domain"
         path = _normalise_path(parsed.path)
         if (host, path) in self.url_paths:
             return "common_crawl_opt_out_url"
+        if not self.url_rules:
+            return None
+        by_host = self._rules_by_host
+        applicable = [rule for suffix in suffixes for rule in by_host.get(suffix, ())]
+        if not applicable:
+            return None
         query = _normalise_query(parsed.query)
-        for rule in self.url_rules:
-            if host != rule.host and not host.endswith("." + rule.host):
-                continue
+        for rule in applicable:
             if rule.path_prefix:
                 if not path.startswith(rule.path):
                     continue
@@ -347,6 +469,7 @@ class PermanentHttpError(FreshWebError):
     """An HTTP response which should stop rather than be retried."""
 
 
+@functools.lru_cache(maxsize=262_144)
 def _normalise_host(host: str) -> str:
     host = host.strip().strip(".").lower()
     if not host:
@@ -355,11 +478,13 @@ def _normalise_host(host: str) -> str:
         normalized = host.encode("idna").decode("ascii")
     except UnicodeError:
         return ""
-    try:
-        ipaddress.ip_address(normalized.strip("[]"))
-        return normalized.strip("[]")
-    except ValueError:
-        pass
+    bare = normalized.strip("[]")
+    if ":" in bare or _IP_LITERAL_SHAPE(bare):
+        try:
+            ipaddress.ip_address(bare)
+            return bare
+        except ValueError:
+            pass
     if len(normalized) > 253:
         return ""
     labels = normalized.split(".")
@@ -368,7 +493,7 @@ def _normalise_host(host: str) -> str:
         or len(label) > 63
         or label.startswith("-")
         or label.endswith("-")
-        or not re.fullmatch(r"[a-z0-9-]+", label)
+        or not _HOST_LABEL(label)
         for label in labels
     ):
         return ""
@@ -833,8 +958,8 @@ def _fresh_category(row: Mapping[str, Any], canonical_url: str) -> str:
     host = parsed.hostname or ""
     path = parsed.path.lower()
     registry_suffix = str(row.get("url_host_registry_suffix") or "").lower()
-    host_tokens = set(re.split(r"[.\-_]", host))
-    path_tokens = set(filter(None, re.split(r"[/._\-]", path)))
+    host_tokens = set(_HOST_TOKEN_SPLIT(host))
+    path_tokens = set(filter(None, _PATH_TOKEN_SPLIT(path)))
     all_tokens = host_tokens | path_tokens
     if (
         registry_suffix in {"gov", "gov.uk", "gc.ca", "gouv.fr"}
@@ -880,6 +1005,124 @@ def _record_id(value: Any) -> str | None:
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value).hex()
     return str(value)
+
+
+class PrefilterTally:
+    """Rows the vectorized pre-gate resolved before any Python row was built."""
+
+    __slots__ = ("scanned", "rejections")
+
+    def __init__(self) -> None:
+        self.scanned = 0
+        self.rejections: Counter[str] = Counter()
+
+
+def _batch_column(batch: Any, name: str) -> Any | None:
+    try:
+        return batch.column(name)
+    except KeyError:
+        return None
+
+
+def _is_string_column(column: Any) -> bool:
+    import pyarrow as pa
+
+    return pa.types.is_string(column.type) or pa.types.is_large_string(column.type)
+
+
+def _normalized_mime_column(batch: Any, name: str) -> tuple[Any, Any] | tuple[None, None]:
+    """Vectorized ``lower().split(";", 1)[0].strip()`` plus its decidability mask."""
+
+    import pyarrow.compute as pc
+
+    column = _batch_column(batch, name)
+    if column is None or not _is_string_column(column):
+        return None, None
+    value = pc.fill_null(column, "")
+    decidable = pc.match_substring_regex(value, _PRINTABLE_ASCII_PATTERN)
+    normalized = pc.utf8_trim_whitespace(
+        pc.ascii_lower(pc.replace_substring_regex(value, ";.*$", ""))
+    )
+    return normalized, decidable
+
+
+def _prefilter_index_batch(batch: Any, *, options: FreshWebOptions, tally: PrefilterTally) -> Any:
+    """Apply the leading ``metadata_candidate`` gates without leaving Arrow.
+
+    These five gates reject roughly four rows in five and depend only on scalar
+    columns, so resolving them vectorially keeps the expensive per-row Python
+    work — URL canonicalization, opt-out matching, categorization — for the rows
+    that can still be selected.  A row is only rejected here when the vectorized
+    computation is provably identical to the reference gate, and the rejection is
+    tallied under the same reason the reference would have reported, so both the
+    selected set and the audited rejection counters are unchanged.
+    """
+
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    alive = pa.array([True] * batch.num_rows, type=pa.bool_())
+
+    def reject(mask: Any | None, reason: str) -> None:
+        nonlocal alive
+        if mask is None:
+            return
+        definite = pc.and_(alive, pc.fill_null(mask, False))
+        count = pc.sum(definite).as_py()
+        if count:
+            tally.rejections[reason] += int(count)
+            alive = pc.and_(alive, pc.invert(definite))
+
+    status = _batch_column(batch, "fetch_status")
+    if status is not None and pa.types.is_integer(status.type):
+        reject(pc.not_equal(pc.fill_null(status, 0), 200), "http_status")
+
+    truncated = _batch_column(batch, "content_truncated")
+    if truncated is not None and _is_string_column(truncated):
+        reject(pc.not_equal(pc.fill_null(truncated, ""), ""), "content_truncated")
+
+    digest = _batch_column(batch, "content_digest")
+    if digest is not None and _is_string_column(digest):
+        value = pc.fill_null(digest, "")
+        canonical = pc.replace_substring_regex(pc.ascii_lower(value), "^sha1:", "")
+        valid = pc.and_(
+            pc.equal(pc.binary_length(canonical), 32),
+            pc.match_substring_regex(canonical, _BASE32_DIGEST_PATTERN),
+        )
+        reject(
+            pc.and_(
+                pc.match_substring_regex(value, _PRINTABLE_ASCII_PATTERN),
+                pc.invert(valid),
+            ),
+            "missing_or_invalid_digest",
+        )
+
+    sent, sent_decidable = _normalized_mime_column(batch, "content_mime_type")
+    detected, detected_decidable = _normalized_mime_column(batch, "content_mime_detected")
+    if sent is not None:
+        accepted_set = pa.array(ACCEPTED_MIME_TYPES, type=pa.string())
+        accepted = pc.is_in(sent, value_set=accepted_set)
+        decidable = sent_decidable
+        if detected is not None:
+            accepted = pc.or_(accepted, pc.is_in(detected, value_set=accepted_set))
+            decidable = pc.and_(decidable, detected_decidable)
+        reject(pc.and_(decidable, pc.invert(accepted)), "mime")
+
+    languages = _batch_column(batch, "content_languages")
+    if options.require_english and languages is not None and _is_string_column(languages):
+        value = pc.fill_null(languages, "")
+        lowered = pc.ascii_lower(value)
+        decidable = pc.or_(
+            pc.equal(value, ""),
+            pc.and_(
+                pc.match_substring_regex(value, _PRINTABLE_ASCII_PATTERN),
+                pc.match_substring_regex(lowered, _LANGUAGE_TOKENS_PATTERN),
+            ),
+        )
+        english = pc.match_substring_regex(lowered, _ENGLISH_TOKEN_PATTERN)
+        reject(pc.and_(decidable, pc.invert(english)), "language")
+
+    return batch.filter(alive)
 
 
 def metadata_candidate(
@@ -931,7 +1174,10 @@ def metadata_candidate(
         if (
             not warc_filename.startswith(f"crawl-data/{crawl}/")
             or not warc_filename.endswith(".warc.gz")
-            or ".." in Path(warc_filename).parts
+            # Equivalent to ``".." in Path(warc_filename).parts`` for the
+            # relative, slash-separated names this gate has already pinned, and
+            # it does not build a PurePath for every row of every partition.
+            or ".." in warc_filename.split("/")
         ):
             return None, "warc_path"
         fetch_time, fetch_epoch = _timestamp(row.get("fetch_time"))
@@ -999,8 +1245,15 @@ def select_partition_candidates(
     policy: OptOutPolicy,
     options: FreshWebOptions,
     capacity: int,
+    tally: PrefilterTally | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Deterministically select a taxonomy-balanced bounded partition."""
+    """Deterministically select a taxonomy-balanced bounded partition.
+
+    ``tally`` carries the rows a vectorized pre-gate already rejected while
+    ``rows`` was produced.  It is folded back into the reported counters so the
+    statistics describe the whole partition, not just the rows that reached the
+    per-row gates.
+    """
 
     quotas = _allocate(capacity, options.category_weights)
     category_heaps: dict[str, list[_HeapCandidate]] = defaultdict(list)
@@ -1008,21 +1261,25 @@ def select_partition_candidates(
     rejections: Counter[str] = Counter()
     scanned = eligible = 0
 
-    def retain(heap: list[_HeapCandidate], limit: int, candidate: dict[str, Any]) -> None:
+    def heap_key(candidate: Mapping[str, Any]) -> tuple[int, str, str, int, str, int]:
+        return (
+            -int(candidate["sample_hash"], 16),
+            candidate["canonical_url"],
+            candidate["content_digest"],
+            int(candidate["fetch_epoch"]),
+            candidate["warc_filename"],
+            int(candidate["warc_record_offset"]),
+        )
+
+    def retain(
+        heap: list[_HeapCandidate],
+        limit: int,
+        candidate: dict[str, Any],
+        key: tuple[int, str, str, int, str, int],
+    ) -> None:
         if limit <= 0:
             return
-        sample = int(candidate["sample_hash"], 16)
-        item = _HeapCandidate(
-            key=(
-                -sample,
-                candidate["canonical_url"],
-                candidate["content_digest"],
-                int(candidate["fetch_epoch"]),
-                candidate["warc_filename"],
-                int(candidate["warc_record_offset"]),
-            ),
-            candidate=candidate,
-        )
+        item = _HeapCandidate(key=key, candidate=candidate)
         if len(heap) < limit:
             heapq.heappush(heap, item)
         elif item > heap[0]:
@@ -1041,8 +1298,12 @@ def select_partition_candidates(
             rejections[reason or "unknown"] += 1
             continue
         eligible += 1
-        retain(category_heaps[candidate["fresh_category"]], quotas[candidate["fresh_category"]], candidate)
-        retain(fallback_heap, capacity, candidate)
+        # One ranking key per candidate: it parses a 256-bit sample hash, and
+        # both heaps rank by exactly the same key.
+        key = heap_key(candidate)
+        category = candidate["fresh_category"]
+        retain(category_heaps[category], quotas[category], candidate, key)
+        retain(fallback_heap, capacity, candidate, key)
 
     selected_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for heap in category_heaps.values():
@@ -1055,6 +1316,10 @@ def select_partition_candidates(
         candidate = item.candidate
         selected_by_key.setdefault((candidate["canonical_url"], candidate["content_digest"]), candidate)
     selected = sorted(selected_by_key.values(), key=lambda item: (item["sample_hash"], item["canonical_url"]))
+    if tally is not None:
+        # The pre-gate counted every row it read, including the ones it resolved.
+        scanned = tally.scanned
+        rejections.update(tally.rejections)
     return selected, {
         "scanned": scanned,
         "eligible": eligible,
@@ -2384,7 +2649,20 @@ def _download_resumable(http: _HttpClient, url: str, destination: Path) -> Path:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
-def _iter_parquet(path: Path, batch_rows: int) -> Iterator[dict[str, Any]]:
+def _iter_parquet(
+    path: Path,
+    batch_rows: int,
+    *,
+    options: FreshWebOptions | None = None,
+    tally: PrefilterTally | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Stream URL-index rows, optionally pre-gated while still columnar.
+
+    Passing ``options`` and ``tally`` together narrows the projection to the
+    columns the gates read and drops the rows the vectorized pre-gate can
+    resolve, so only selectable rows are ever materialized as Python dicts.
+    """
+
     try:
         import pyarrow.parquet as pq
     except ImportError as exc:  # pragma: no cover - production dependency guard
@@ -2394,17 +2672,31 @@ def _iter_parquet(path: Path, batch_rows: int) -> Iterator[dict[str, Any]]:
     missing = REQUIRED_INDEX_COLUMNS - available
     if missing:
         raise FreshWebError(f"URL-index partition is missing required columns: {sorted(missing)}")
-    columns = [name for name in INDEX_COLUMNS if name in available]
+    if options is None or tally is None:
+        columns = [name for name in INDEX_COLUMNS if name in available]
+        for batch in parquet.iter_batches(batch_size=batch_rows, columns=columns):
+            yield from batch.to_pylist()
+        return
+    columns = [name for name in SCAN_INDEX_COLUMNS if name in available]
     for batch in parquet.iter_batches(batch_size=batch_rows, columns=columns):
-        yield from batch.to_pylist()
+        tally.scanned += batch.num_rows
+        yield from _prefilter_index_batch(batch, options=options, tally=tally).to_pylist()
 
 
-def _connect_state(path: Path) -> sqlite3.Connection:
+def _connect_state(path: Path, *, local: bool = False) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=120)
     connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=DELETE")
-    connection.execute("PRAGMA synchronous=FULL")
+    if local:
+        # A node-local working copy is republished to the durable root at
+        # checkpoints, so it can use the write-ahead log SQLite recommends for
+        # local disks.  WAL needs a shared-memory file and is deliberately not
+        # used for a Lustre-resident ledger, where it is unsupported.
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA synchronous=NORMAL")
+    else:
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.execute("PRAGMA synchronous=FULL")
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -2477,6 +2769,104 @@ def _connect_state(path: Path) -> sqlite3.Connection:
         )
     connection.commit()
     return connection
+
+
+STATE_SEQUENCE_KEY = "state_sequence"
+
+
+class _StateDatabase:
+    """The acquisition ledger, optionally worked on node-local scratch.
+
+    SQLite's own guidance is not to run a database over a network filesystem:
+    POSIX advisory locking is unreliable there, and every small write pays a
+    lock round trip.  The URL-index phase commits once per partition and barely
+    notices, but the WARC phase commits once per fetched group, which is where
+    a Lustre-resident ledger costs real wall-clock.
+
+    When ``state_scratch_root`` is configured the working copy lives on local
+    disk and is republished to the durable root at checkpoints.  Losing the node
+    between checkpoints rewinds the ledger but never the published shards, and
+    ``_recover_shards`` truncates each shard back to the ledger's committed
+    offset, so the run resumes from the last checkpoint rather than the start.
+    """
+
+    def __init__(
+        self,
+        durable_path: Path,
+        *,
+        scratch_root: str | None = None,
+        checkpoint_seconds: float = 300.0,
+        identity: str = "",
+    ) -> None:
+        self.durable_path = durable_path
+        self.checkpoint_seconds = checkpoint_seconds
+        self.working_path = durable_path
+        if scratch_root:
+            token = _sha256_bytes(f"{identity}\0{durable_path}".encode("utf-8"))[:32]
+            self.working_path = Path(scratch_root).expanduser() / f"metis-freshweb-{token}" / durable_path.name
+            self._seed_working_copy()
+        self.connection = _connect_state(self.working_path, local=self.working_path != durable_path)
+        self._last_checkpoint = time.monotonic()
+
+    def _seed_working_copy(self) -> None:
+        self.working_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.durable_path.is_file():
+            return
+        if self.working_path.is_file() and self._sequence(self.working_path) >= self._sequence(
+            self.durable_path
+        ):
+            # A resumed run on the same node already holds the newer ledger.
+            return
+        temporary = self.working_path.with_name(f".{self.working_path.name}.seed")
+        temporary.unlink(missing_ok=True)
+        shutil.copyfile(self.durable_path, temporary)
+        os.replace(temporary, self.working_path)
+
+    @staticmethod
+    def _sequence(path: Path) -> int:
+        try:
+            connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=60)
+        except sqlite3.Error:
+            return -1
+        try:
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key = ?", (STATE_SEQUENCE_KEY,)
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except (sqlite3.Error, TypeError, ValueError):
+            return -1
+        finally:
+            connection.close()
+
+    def checkpoint(self, *, force: bool = False) -> None:
+        """Publish the working ledger to the durable root."""
+
+        if self.working_path == self.durable_path:
+            return
+        if not force and time.monotonic() - self._last_checkpoint < self.checkpoint_seconds:
+            return
+        with self.connection:
+            current = _metadata_value(self.connection, STATE_SEQUENCE_KEY)
+            _set_metadata(
+                self.connection, STATE_SEQUENCE_KEY, str(int(current or 0) + 1)
+            )
+        self.durable_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.durable_path.with_name(f".{self.durable_path.name}.{os.getpid()}.publish")
+        temporary.unlink(missing_ok=True)
+        published = sqlite3.connect(temporary, timeout=120)
+        try:
+            self.connection.backup(published)
+            published.commit()
+        finally:
+            published.close()
+        os.replace(temporary, self.durable_path)
+        self._last_checkpoint = time.monotonic()
+
+    def close(self) -> None:
+        try:
+            self.checkpoint(force=True)
+        finally:
+            self.connection.close()
 
 
 def _metadata_value(connection: sqlite3.Connection, key: str) -> str | None:
@@ -2691,19 +3081,251 @@ def _commit_group(
         )
 
 
+@dataclass(frozen=True)
+class _IndexScanJob:
+    order: int
+    relative_path: str
+    crawl: str
+    url: str
+    local_path: str
+    selected_path: str
+    capacity: int
+    source_id: str
+    policy: OptOutPolicy
+    options: FreshWebOptions
+
+
+@dataclass(frozen=True)
+class _IndexScanResult:
+    order: int
+    relative_path: str
+    crawl: str
+    capacity: int
+    local_path: str
+    selected_path: str
+    stats: dict[str, Any]
+
+
+def _write_selected_candidates(path: Path, candidates: Iterable[Mapping[str, Any]]) -> None:
+    """Hand a scanned partition's winners to the parent through the filesystem.
+
+    A wide selection round retains on the order of a hundred thousand
+    candidates per partition.  Returning those through the process pool would
+    put every partition waiting on the commit point into the parent's heap at
+    once, so they travel as a compressed file the parent streams straight into
+    the upsert instead.
+    """
+
+    try:
+        import zstandard
+    except ImportError as exc:  # pragma: no cover - production dependency guard
+        raise RuntimeError("FreshWeb URL-index selection requires zstandard") from exc
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with temporary.open("wb") as raw:
+        compressor = zstandard.ZstdCompressor(level=3, write_checksum=True)
+        with compressor.stream_writer(raw, closefd=False) as stream:
+            for candidate in candidates:
+                stream.write(
+                    json.dumps(candidate, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    + b"\n"
+                )
+        raw.flush()
+        os.fsync(raw.fileno())
+    os.replace(temporary, path)
+
+
+def _read_selected_candidates(path: Path) -> Iterator[dict[str, Any]]:
+    try:
+        import zstandard
+    except ImportError as exc:  # pragma: no cover - production dependency guard
+        raise RuntimeError("FreshWeb URL-index selection requires zstandard") from exc
+    with path.open("rb") as raw:
+        with zstandard.ZstdDecompressor().stream_reader(raw) as stream:
+            for line in io.TextIOWrapper(stream, encoding="utf-8"):
+                if line.strip():
+                    yield json.loads(line)
+
+
+def _scan_index_partition(job: _IndexScanJob) -> _IndexScanResult:
+    """Download one URL-index partition and reduce it to its bounded winners.
+
+    This is the unit of work handed to a scan worker.  It owns its own HTTP
+    session and spills its winners to disk, so every SQLite write and the
+    memory that would hold a buffered partition stay out of the parent.
+    """
+
+    options = job.options
+    local_path = Path(job.local_path)
+    _download_resumable(_HttpClient(options), job.url, local_path)
+    tally = PrefilterTally()
+    selected, stats = select_partition_candidates(
+        _iter_parquet(local_path, options.parquet_batch_rows, options=options, tally=tally),
+        crawl=job.crawl,
+        source_id=job.source_id,
+        policy=job.policy,
+        options=options,
+        capacity=job.capacity,
+        tally=tally,
+    )
+    _write_selected_candidates(Path(job.selected_path), selected)
+    return _IndexScanResult(
+        order=job.order,
+        relative_path=job.relative_path,
+        crawl=job.crawl,
+        capacity=job.capacity,
+        local_path=job.local_path,
+        selected_path=job.selected_path,
+        stats=stats,
+    )
+
+
+def _commit_index_partition(
+    connection: sqlite3.Connection,
+    result: _IndexScanResult,
+    *,
+    keep_index_files: bool,
+) -> None:
+    stats = result.stats
+    selected_path = Path(result.selected_path)
+    with connection:
+        connection.executemany(
+            URL_UPSERT,
+            (
+                _candidate_values(candidate)
+                for candidate in _read_selected_candidates(selected_path)
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO partitions(
+                relative_path, crawl, selection_capacity, scanned, eligible, selected,
+                rejections_json, categories_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(relative_path) DO UPDATE SET
+                crawl=excluded.crawl,
+                selection_capacity=excluded.selection_capacity,
+                scanned=excluded.scanned,
+                eligible=excluded.eligible,
+                selected=excluded.selected,
+                rejections_json=excluded.rejections_json,
+                categories_json=excluded.categories_json
+            """,
+            (
+                result.relative_path,
+                result.crawl,
+                result.capacity,
+                stats["scanned"],
+                stats["eligible"],
+                stats["selected"],
+                json.dumps(stats["rejections"], sort_keys=True),
+                json.dumps(stats["selected_categories"], sort_keys=True),
+            ),
+        )
+    selected_path.unlink(missing_ok=True)
+    if not keep_index_files:
+        local_path = Path(result.local_path)
+        local_path.unlink(missing_ok=True)
+        _url_index_integrity_path(local_path).unlink(missing_ok=True)
+
+
+def _scan_index_partitions(
+    connection: sqlite3.Connection,
+    jobs: Sequence[_IndexScanJob],
+    *,
+    options: FreshWebOptions,
+    state: "_StateDatabase | None" = None,
+) -> None:
+    """Scan the outstanding URL-index partitions and commit them in order.
+
+    The scan is CPU-bound pure Python, so it is spread across worker processes.
+    Results are always committed in partition order rather than completion
+    order: ``URL_UPSERT`` keeps the incumbent when two captures tie on every
+    ranking key, so a stable commit order is what makes a parallel scan select
+    exactly the same winners a serial scan would have.  Each partition is
+    committed as soon as its turn arrives, so an interrupted run resumes at the
+    first partition it had not finished.
+    """
+
+    def commit(result: _IndexScanResult) -> None:
+        _commit_index_partition(
+            connection, result, keep_index_files=options.keep_index_files
+        )
+        if state is not None:
+            state.checkpoint()
+
+    if not jobs:
+        return
+    # A previous attempt can leave winners it never got to commit.  Their
+    # partitions are not in the ledger, so they are being rescanned now.
+    spill_root = Path(jobs[0].selected_path).parent
+    if spill_root.is_dir():
+        for stale in spill_root.glob("*.jsonl.zst*"):
+            if stale.is_file():
+                stale.unlink(missing_ok=True)
+
+    workers = min(options.index_scan_workers, len(jobs))
+    if workers <= 1:
+        for job in jobs:
+            commit(_scan_index_partition(job))
+        return
+
+    import concurrent.futures
+    import multiprocessing
+
+    pending = iter(jobs)
+    inflight: dict[concurrent.futures.Future[_IndexScanResult], int] = {}
+    ready: dict[int, _IndexScanResult] = {}
+    next_order = jobs[0].order
+    # Bound how far ahead of the commit point the pool may run.  Without a cap,
+    # one slow partition would let every other worker pile finished partitions
+    # (and, when the index cache is not retained, their multi-hundred-megabyte
+    # Parquet files) up in front of it.
+    depth = workers + 2
+    exhausted = False
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=workers, mp_context=multiprocessing.get_context("spawn")
+    ) as pool:
+        while True:
+            while not exhausted and len(inflight) + len(ready) < depth:
+                try:
+                    job = next(pending)
+                except StopIteration:
+                    exhausted = True
+                    break
+                inflight[pool.submit(_scan_index_partition, job)] = job.order
+            while next_order in ready:
+                commit(ready.pop(next_order))
+                next_order += 1
+            if not inflight:
+                break
+            done, _ = concurrent.futures.wait(
+                inflight, return_when=concurrent.futures.FIRST_COMPLETED
+            )
+            for future in done:
+                order = inflight.pop(future)
+                ready[order] = future.result()
+
+
 def _bounded_fetch(
     connection: sqlite3.Connection,
     shard_root: Path,
     *,
     http: _HttpClient,
     options: FreshWebOptions,
+    state: "_StateDatabase | None" = None,
 ) -> None:
+    def checkpoint() -> None:
+        if state is not None:
+            state.checkpoint()
+
     _recover_shards(connection, shard_root, options.shard_count)
     groups = _iter_fetch_groups(connection)
     if options.max_workers == 1:
         for filename, coordinates, group_id in groups:
             result = _fetch_warc_group(filename, coordinates, http=http, options=options)
             _commit_group(connection, shard_root, options.shard_count, group_id, result)
+            checkpoint()
         return
 
     import concurrent.futures
@@ -2729,6 +3351,7 @@ def _bounded_fetch(
             if pending:
                 group_id, future = pending.popleft()
                 _commit_group(connection, shard_root, options.shard_count, group_id, future.result())
+                checkpoint()
 
 
 def _receipt(
@@ -3037,6 +3660,7 @@ def materialize_freshweb(
         data_root=options.data_root,
         collinfo_url=options.collinfo_url,
     )
+    option_values = asdict(options)
     fingerprint_payload = {
         "schema": FRESHWEB_SCHEMA,
         "extractor_version": EXTRACTOR_VERSION,
@@ -3044,7 +3668,7 @@ def materialize_freshweb(
         "candidate_tokens": candidate_tokens,
         "crawls": crawls,
         "license": dict(license_contract),
-        "options": asdict(options),
+        "options": {name: option_values[name] for name in FINGERPRINT_OPTION_FIELDS},
         # The live registry is deliberately not part of run identity. It is
         # rebound below and forces an in-place winner/output rebuild when it
         # changes, so a multi-day widening resume does not strand a new run.
@@ -3094,7 +3718,13 @@ def materialize_freshweb(
     for crawl, payload in listings.items():
         _atomic_bytes(listings_root / f"{crawl}.paths.gz", payload)
 
-    connection = _connect_state(run_root / "state.sqlite3")
+    state = _StateDatabase(
+        run_root / "state.sqlite3",
+        scratch_root=options.state_scratch_root,
+        checkpoint_seconds=options.state_checkpoint_seconds,
+        identity=fingerprint,
+    )
+    connection = state.connection
     try:
         existing_fingerprint = _metadata_value(connection, "fingerprint")
         if existing_fingerprint and existing_fingerprint != fingerprint:
@@ -3121,59 +3751,47 @@ def materialize_freshweb(
             policy_sha256=policy.snapshot_sha256,
         )
         index_cache = shared_cache_root / "url-index"
-        for partition in partitions:
-            previous = connection.execute(
-                "SELECT selection_capacity FROM partitions WHERE relative_path = ?",
-                (partition.relative_path,),
-            ).fetchone()
-            if previous is not None and int(previous["selection_capacity"]) >= partition_capacity:
-                continue
-            local_path = (
-                index_cache
-                / partition.crawl
-                / partition.listing_sha256
-                / Path(partition.relative_path).name
+        already_scanned = {
+            str(row["relative_path"])
+            for row in connection.execute(
+                "SELECT relative_path FROM partitions WHERE selection_capacity >= ?",
+                (partition_capacity,),
             )
-            _download_resumable(http, partition.url, local_path)
-            selected, stats = select_partition_candidates(
-                _iter_parquet(local_path, options.parquet_batch_rows),
-                crawl=partition.crawl,
-                source_id=source_id,
-                policy=policy,
-                options=options,
-                capacity=partition_capacity,
-            )
-            with connection:
-                connection.executemany(URL_UPSERT, (_candidate_values(candidate) for candidate in selected))
-                connection.execute(
-                    """
-                    INSERT INTO partitions(
-                        relative_path, crawl, selection_capacity, scanned, eligible, selected,
-                        rejections_json, categories_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(relative_path) DO UPDATE SET
-                        crawl=excluded.crawl,
-                        selection_capacity=excluded.selection_capacity,
-                        scanned=excluded.scanned,
-                        eligible=excluded.eligible,
-                        selected=excluded.selected,
-                        rejections_json=excluded.rejections_json,
-                        categories_json=excluded.categories_json
-                    """,
-                    (
-                        partition.relative_path,
-                        partition.crawl,
-                        partition_capacity,
-                        stats["scanned"],
-                        stats["eligible"],
-                        stats["selected"],
-                        json.dumps(stats["rejections"], sort_keys=True),
-                        json.dumps(stats["selected_categories"], sort_keys=True),
+        }
+        outstanding = [
+            partition
+            for partition in partitions
+            if partition.relative_path not in already_scanned
+        ]
+        _scan_index_partitions(
+            connection,
+            [
+                _IndexScanJob(
+                    order=order,
+                    relative_path=partition.relative_path,
+                    crawl=partition.crawl,
+                    url=partition.url,
+                    local_path=str(
+                        index_cache
+                        / partition.crawl
+                        / partition.listing_sha256
+                        / Path(partition.relative_path).name
                     ),
+                    # Per-run, so concurrent routes sharing the URL-index cache
+                    # never collide on a partition's spilled winners.
+                    selected_path=str(
+                        run_root / "url-index" / "selected" / f"{order:06d}.jsonl.zst"
+                    ),
+                    capacity=partition_capacity,
+                    source_id=source_id,
+                    policy=policy,
+                    options=options,
                 )
-            if not options.keep_index_files:
-                local_path.unlink(missing_ok=True)
-                _url_index_integrity_path(local_path).unlink(missing_ok=True)
+                for order, partition in enumerate(outstanding)
+            ],
+            options=options,
+            state=state,
+        )
         completed_partitions = int(
             connection.execute(
                 "SELECT COUNT(*) FROM partitions WHERE selection_capacity >= ?",
@@ -3193,7 +3811,12 @@ def materialize_freshweb(
             selection_round=selection_round,
             policy_sha256=policy.snapshot_sha256,
         )
-        _bounded_fetch(connection, run_root / "documents", http=http, options=options)
+        # The whole URL-index scan is now durable; the WARC phase can only ever
+        # rewind to here.
+        state.checkpoint(force=True)
+        _bounded_fetch(
+            connection, run_root / "documents", http=http, options=options, state=state
+        )
         receipt = _receipt(
             connection,
             run_root=run_root,
@@ -3254,7 +3877,7 @@ def materialize_freshweb(
         )
         return progress
     finally:
-        connection.close()
+        state.close()
 
 
 __all__ = [
