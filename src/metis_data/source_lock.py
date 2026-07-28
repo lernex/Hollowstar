@@ -158,7 +158,17 @@ def _iter_repo_files(
                 repo_type="dataset",
                 revision=revision,
                 recursive=True,
-                expand=True,
+                # expand=True is deliberately not requested. It adds only
+                # lastCommit and securityFileStatus, neither of which this
+                # resolver reads, and the Hub caps an expanded tree page at 50
+                # entries instead of 1000 -- twenty times the HTTP round trips
+                # for the same listing. On a login node whose egress is
+                # inspected by an endpoint-security agent, per-request latency
+                # dominates, and that multiplier turned this preflight into a
+                # multi-hour metadata transfer. Every field the lock records
+                # (path, size, oid, and the LFS sha256) is returned either way,
+                # so the resolved lock is byte-identical.
+                expand=False,
             )
             for item in tree:
                 path = getattr(item, "path", "")

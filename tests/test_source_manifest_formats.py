@@ -90,6 +90,55 @@ class SourceManifestFormatTests(unittest.TestCase):
         self.assertEqual(api.roots, ["v1.1/TxT360_BestOfWeb/cc_1-1"])
         self.assertEqual(len(files), 1)
 
+    def test_hugging_face_tree_walk_does_not_request_expanded_entries(self) -> None:
+        """The Hub caps an expanded tree page at 50 entries instead of 1000.
+
+        Nothing the source lock records comes from the expanded fields, so
+        asking for them costs twenty times the HTTP round trips for a listing
+        that is byte-identical once parsed. Guard the cheap call shape, and
+        guard that the fields the lock hashes still survive it.
+        """
+
+        captured: list[dict] = []
+
+        class Lfs:
+            sha256 = "a" * 64
+
+        class FakeApi:
+            def list_repo_tree(self, *args, **kwargs):
+                captured.append(kwargs)
+                return (
+                    type(
+                        "RepoFile",
+                        (),
+                        {
+                            "path": "data/train-00000.parquet",
+                            "size": 2048,
+                            "blob_id": "blob",
+                            "lfs": Lfs(),
+                        },
+                    )(),
+                )
+
+        files = _iter_repo_files(
+            FakeApi(), "acme/dataset", "4" * 40, ("**/*.parquet",)
+        )
+
+        self.assertEqual(len(captured), 1)
+        self.assertFalse(captured[0].get("expand", False))
+        self.assertTrue(captured[0].get("recursive"))
+        self.assertEqual(
+            files,
+            [
+                {
+                    "path": "data/train-00000.parquet",
+                    "size": 2048,
+                    "blob_id": "blob",
+                    "lfs_sha256": "a" * 64,
+                }
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
