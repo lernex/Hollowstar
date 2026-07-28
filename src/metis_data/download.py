@@ -308,6 +308,7 @@ def freshweb_options_for_item(item: dict[str, Any], profile: dict[str, Any]) -> 
         state_checkpoint_seconds=float(
             common_crawl.get("state_checkpoint_seconds", 300.0)
         ),
+        state_cache_mib=max(2, int(common_crawl.get("state_cache_mib", 1_024))),
     )
     options.validate()
     return options

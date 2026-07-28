@@ -1439,7 +1439,12 @@ class FreshWebScanTests(unittest.TestCase):
         }
         self.assertEqual(
             operational,
-            {"index_scan_workers", "state_scratch_root", "state_checkpoint_seconds"},
+            {
+                "index_scan_workers",
+                "state_cache_mib",
+                "state_checkpoint_seconds",
+                "state_scratch_root",
+            },
         )
         selective = {
             field.name for field in dataclasses.fields(FreshWebOptions)

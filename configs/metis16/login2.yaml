@@ -62,6 +62,11 @@ acquisition:
     # checkpoint, never past it. Leave empty to keep the ledger on Lustre.
     state_scratch_root: ${METIS_CC_STATE_SCRATCH:-}
     state_checkpoint_seconds: 300
+    # url_winners is keyed on the canonical URL and accumulates every
+    # partition's winners -- nine figures of rows by the end of a full run,
+    # inserted at random positions in one index. SQLite's 2MiB default cache
+    # turns each insert into a Lustre page read. login2 has memory; use it.
+    state_cache_mib: ${METIS_CC_STATE_CACHE_MIB:-1024}
     # Retryable shortfalls double the deterministic per-partition sample in
     # the same Screen run. Round 8 is the fail-closed upper bound.
     maximum_selection_round: 8

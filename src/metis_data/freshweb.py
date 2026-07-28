@@ -184,6 +184,11 @@ FINGERPRINT_OPTION_FIELDS = (
 # concurrent requests against the bulk data host.
 MAXIMUM_INDEX_SCAN_WORKERS = 16
 
+# Page cache for the acquisition ledger, in MiB.  Sized for the winner index
+# rather than for a small bookkeeping database; raise it toward the size of
+# ``state.sqlite3`` when the host has memory to spare.
+STATE_CACHE_MIB = 1_024
+
 TRACKING_QUERY_KEYS = {
     "_ga",
     "_gl",
@@ -289,6 +294,7 @@ class FreshWebOptions:
     index_scan_workers: int = 1
     state_scratch_root: str | None = None
     state_checkpoint_seconds: float = 300.0
+    state_cache_mib: int = STATE_CACHE_MIB
 
     def validate(self) -> None:
         if self.max_records_per_partition is not None and self.max_records_per_partition <= 0:
@@ -321,6 +327,8 @@ class FreshWebOptions:
             raise ValueError("state_scratch_root must be a non-empty path when configured")
         if not math.isfinite(self.state_checkpoint_seconds) or self.state_checkpoint_seconds <= 0:
             raise ValueError("state_checkpoint_seconds must be positive")
+        if self.state_cache_mib < 2:
+            raise ValueError("state_cache_mib must be at least 2")
         if self.max_retries < 1:
             raise ValueError("max_retries must be positive")
         if self.request_timeout_seconds <= 0 or self.retry_base_seconds < 0:
@@ -2682,10 +2690,18 @@ def _iter_parquet(
         yield from _prefilter_index_batch(batch, options=options, tally=tally).to_pylist()
 
 
-def _connect_state(path: Path, *, local: bool = False) -> sqlite3.Connection:
+def _connect_state(
+    path: Path, *, local: bool = False, cache_mib: int = STATE_CACHE_MIB
+) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=120)
     connection.row_factory = sqlite3.Row
+    # ``url_winners`` is keyed on the canonical URL and accumulates every
+    # partition's winners, so a full run inserts nine figures of rows at
+    # random positions in one index.  SQLite's 2MiB default cache turns each
+    # of those into a page read, and on Lustre a page read is a network round
+    # trip.  Hold as much of the index in memory as the operator allows.
+    connection.execute(f"PRAGMA cache_size=-{max(2, int(cache_mib)) * 1024}")
     if local:
         # A node-local working copy is republished to the durable root at
         # checkpoints, so it can use the write-ahead log SQLite recommends for
@@ -2792,10 +2808,13 @@ class _StateDatabase(ScratchBackedDatabase):
         scratch_root: str | None = None,
         checkpoint_seconds: float = 300.0,
         identity: str = "",
+        cache_mib: int = STATE_CACHE_MIB,
     ) -> None:
         super().__init__(
             durable_path,
-            connect=lambda path, local: _connect_state(path, local=local),
+            connect=lambda path, local: _connect_state(
+                path, local=local, cache_mib=cache_mib
+            ),
             scratch_root=scratch_root,
             checkpoint_seconds=checkpoint_seconds,
             identity=identity,
@@ -3123,14 +3142,21 @@ def _commit_index_partition(
 ) -> None:
     stats = result.stats
     selected_path = Path(result.selected_path)
+    # Winners arrive ordered by sample hash, which is random with respect to
+    # the URL index they are about to be inserted into.  Presenting them in
+    # canonical-URL order keeps a run of upserts on the same index pages.  The
+    # upsert only replaces an incumbent it strictly outranks, and a partition
+    # cannot contain two rows with the same canonical URL and the same rank, so
+    # the winner set does not depend on this order.
+    values = sorted(
+        (
+            _candidate_values(candidate)
+            for candidate in _read_selected_candidates(selected_path)
+        ),
+        key=lambda row: row[0],
+    )
     with connection:
-        connection.executemany(
-            URL_UPSERT,
-            (
-                _candidate_values(candidate)
-                for candidate in _read_selected_candidates(selected_path)
-            ),
-        )
+        connection.executemany(URL_UPSERT, values)
         connection.execute(
             """
             INSERT INTO partitions(
@@ -3658,6 +3684,7 @@ def materialize_freshweb(
         scratch_root=options.state_scratch_root,
         checkpoint_seconds=options.state_checkpoint_seconds,
         identity=fingerprint,
+        cache_mib=options.state_cache_mib,
     )
     connection = state.connection
     try:
