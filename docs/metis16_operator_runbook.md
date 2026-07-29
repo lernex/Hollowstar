@@ -175,20 +175,45 @@ Lustre a page read is a network round trip. That is what a report like
 > 20,468,796 repository commits indexed. 45,840,280 requested paths indexed.
 > 0 repositories processed. 0 output batches produced.
 
-means: the builder is healthy and grouping, just at storage speed rather than CPU
-speed. Watch it with:
+meant: the builder was healthy and grouping, just at storage speed rather than
+CPU speed. Measured against the real metadata, that was 191 of 2,748 row groups
+in sixty hours — 7%, on a curve that gets *slower* as the tree grows, because a
+bigger tree means a lower cache hit rate. No page cache fixes that; the finished
+tree is far larger than any cache worth giving it.
+
+The grouping phase is therefore an external sort. Every row is appended to one
+of `repository_index_sort_buckets` spool files chosen by the leading byte of its
+repo key — a sequential write, which is what a parallel filesystem is good at —
+and the buckets are then loaded in ascending order, each sorted before insert.
+Because bucket order is key order, every row sorts after everything already in
+the tree, so the load appends to the rightmost leaf instead of seeking to a
+random one. Watch it with:
 
 ```bash
-"$HOME/.cache/metis/runtime-login2/bin/python" -c "import sqlite3,sys;c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True);print({k:c.execute('SELECT COUNT(*) FROM '+k).fetchone()[0] for k in ('repo_commits','requested_paths','metadata_units','repository_state','output_batches')})" /lus/lustre1/vollmerc/metis-1.6/raw/nemotron_repository_code_v123/repository-index-cache/requests.sqlite3
+"$HOME/.cache/metis/runtime-login2/bin/python" -c "import sqlite3,sys;c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True,timeout=120);print({k:c.execute('SELECT COUNT(*) FROM '+k).fetchone()[0] for k in ('metadata_units','sort_buckets','repo_commits','requested_paths','repository_state','output_batches')})" /lus/lustre1/vollmerc/metis-1.6/raw/nemotron_repository_code_v123/repository-index-cache/requests.sqlite3
 ```
 
-`metadata_units` is the resume unit — one Parquet row group. A restart re-reads
-only the units that table does not already name, so an interrupted build never
-starts over.
+Read it in two phases. `metadata_units` climbing toward the total row-group count
+is the spool phase; `sort_buckets` climbing toward `repository_index_sort_buckets`
+is the load phase; `repository_state` and `output_batches` moving off zero means
+archives are finally being fetched. `database is locked` here is not a fault —
+the index uses a rollback journal on Lustre, so readers wait for the writer. Pass
+a `timeout` as above rather than treating it as a hang.
 
-If login2 exposes node-local disk, point the index at it. This is by far the
-largest lever, because it converts every one of those page reads from a network
-round trip into a local one:
+`metadata_units` is the resume unit — one Parquet row group. Units are recorded
+complete only once their rows sit in a closed spool part, so a restart replays at
+most one roll (`repository_index_spool_rows`) and never starts over. A crash
+during the load resumes at the first bucket `sort_buckets` does not name.
+
+Two consequences worth knowing. The spool costs transient disk roughly the size
+of the index itself, under `repository-index-cache/index-sort`, and is deleted
+once the load completes. And the load cannot absorb rows that arrive after it has
+started: if new metadata is downloaded mid-build the next run fails closed and
+asks you to rebuild, rather than silently dropping those rows into buckets that
+were already drained.
+
+If login2 exposes node-local disk, point the index at it — the sort makes this
+much less important than it was, but it still helps:
 
 ```bash
 METIS_REPO_INDEX_SCRATCH=/local/scratch/$USER ./ops/start-acquisition.sh --lustre-root /lus/lustre1/vollmerc/metis-1.6
@@ -196,10 +221,7 @@ METIS_REPO_INDEX_SCRATCH=/local/scratch/$USER ./ops/start-acquisition.sh --lustr
 
 The working copy is republished to Lustre between metadata units and after every
 committed output batch, so a lost node rewinds to the last checkpoint and never
-past published output. Without scratch the build still runs on Lustre with a much
-larger page cache (`repository_index_cache_mib`, default 2048; raise it with
-`METIS_REPO_INDEX_CACHE_MIB` if login2 has memory to spare) and sorted bulk
-inserts, both of which cut the number of pages touched.
+past published output.
 
 `repository_index` now has its own scheduling lane. Its grouping phase does no
 network work at all, and while it held the single GitHub slot the repository and
