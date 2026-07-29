@@ -75,14 +75,27 @@ acquisition:
     # an underfill. The handoff still checks the original locked target.
     final_opt_out_reserve_multiplier: 1.05
   repository_index_workers: 4
-  # The Nemotron metadata resolves to tens of millions of rows keyed on
+  # The Nemotron metadata resolves to hundreds of millions of rows keyed on
   # sha256(repo, commit), so both index tables are WITHOUT ROWID B-trees that
-  # are written at uniformly random positions. Once the tree outgrows the page
-  # cache every insert becomes a page read, and on Lustre a page read is a
-  # network round trip -- which is what left the builder still grouping rows
-  # after 60 hours without fetching a single repository.
+  # would be written at uniformly random positions. Once such a tree outgrows
+  # the page cache every insert becomes a page read, and on Lustre a page read
+  # is a network round trip -- which is what left the builder still grouping
+  # rows after 60 hours without fetching a single repository.
+  #
+  # The grouping phase is therefore an external sort: rows are spooled to
+  # bucket files keyed on the leading byte of the repo key (sequential writes),
+  # then loaded bucket by bucket in ascending order, so every insert sorts
+  # after the tree's current maximum and lands on the rightmost leaf. The page
+  # cache below now only has to cover one bucket's working set, not the tree.
   repository_index_cache_mib: ${METIS_REPO_INDEX_CACHE_MIB:-2048}
-  repository_index_flush_rows: 250000
+  # Must be a power of two dividing 256: bucket order has to be key order.
+  # More buckets means less memory per bucket load and more spool files.
+  repository_index_sort_buckets: ${METIS_REPO_INDEX_SORT_BUCKETS:-128}
+  # Rows held across all buckets before a spool part is written and closed. A
+  # part is the unit of durability -- metadata units are recorded complete only
+  # once their rows are inside a closed part -- so this also bounds how much
+  # metadata a crash replays. Roughly 200 bytes of resident memory per row.
+  repository_index_spool_rows: ${METIS_REPO_INDEX_SPOOL_ROWS:-8000000}
   # Strongly preferred if login2 exposes node-local disk: this workload is
   # nearly pure small random I/O, which is the case SQLite's own documentation
   # says not to put on a network filesystem. The working copy is published back

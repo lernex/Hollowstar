@@ -178,6 +178,8 @@ class MaterializerContractTests(unittest.TestCase):
                         # Repeating a completed metadata unit is restart-safe.
                         (component_a, first),
                     ],
+                    spool_root=root / "index-sort",
+                    sort_buckets=4,
                 )
                 self.assertEqual(
                     connection.execute("SELECT COUNT(*) FROM repo_commits").fetchone()[0],
@@ -544,41 +546,230 @@ class RepositoryIndexStorageTests(unittest.TestCase):
             path,
         )
 
-    def _ingest(self, root: Path, name: str, metadata: Path, *, flush_rows: int) -> dict[str, object]:
-        connection = _repository_index_connection(root / name)
+    def _ingest(
+        self,
+        root: Path,
+        name: str,
+        metadata: Path,
+        *,
+        buckets: int,
+        spool_rows: int,
+        connection: object | None = None,
+    ) -> dict[str, object]:
+        owned = connection is None
+        target = _repository_index_connection(root / name) if owned else connection
         try:
             report = _ingest_repository_metadata(
-                connection,
+                target,
                 source={"id": "repository-code"},
                 metadata_files=[({"repo_id": "nvidia/code-v1", "revision": "a" * 40}, metadata)],
-                flush_rows=flush_rows,
+                spool_root=root / f"{name}.index-sort",
+                sort_buckets=buckets,
+                spool_rows=spool_rows,
             )
-            rows = connection.execute(
+            rows = target.execute(
                 "SELECT repo_key, rel_path FROM requested_paths ORDER BY repo_key, rel_path"
             ).fetchall()
-            repos = connection.execute(
+            repos = target.execute(
                 "SELECT repo_key, repo, commit_id FROM repo_commits ORDER BY repo_key"
             ).fetchall()
             return {"report": report, "rows": rows, "repos": repos}
         finally:
-            connection.close()
+            if owned:
+                target.close()
 
-    def test_sorted_flushes_do_not_change_what_is_indexed(self) -> None:
-        """Insert order is a performance choice; the index must not depend on it."""
+    def test_bucket_layout_does_not_change_what_is_indexed(self) -> None:
+        """Bucket count and spool size are performance choices, not semantics."""
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             metadata = root / "metadata.parquet"
             self._metadata(metadata, 4_000, seed=11)
-            small = self._ingest(root, "small.sqlite3", metadata, flush_rows=1_000)
-            large = self._ingest(root, "large.sqlite3", metadata, flush_rows=250_000)
-            self.assertEqual(small["rows"], large["rows"])
-            self.assertEqual(small["repos"], large["repos"])
-            self.assertEqual(
-                small["report"]["requested_paths"], large["report"]["requested_paths"]
+            fine = self._ingest(
+                root, "fine.sqlite3", metadata, buckets=256, spool_rows=100_000
             )
-            self.assertEqual(small["report"]["repositories"], large["report"]["repositories"])
-            self.assertGreater(small["report"]["requested_paths"], 0)
+            coarse = self._ingest(
+                root, "coarse.sqlite3", metadata, buckets=1, spool_rows=100_000
+            )
+            rolled = self._ingest(
+                root, "rolled.sqlite3", metadata, buckets=64, spool_rows=100_000
+            )
+            self.assertEqual(fine["rows"], coarse["rows"])
+            self.assertEqual(fine["rows"], rolled["rows"])
+            self.assertEqual(fine["repos"], coarse["repos"])
+            self.assertEqual(fine["repos"], rolled["repos"])
+            self.assertEqual(
+                fine["report"]["requested_paths"], coarse["report"]["requested_paths"]
+            )
+            self.assertEqual(fine["report"]["repositories"], coarse["report"]["repositories"])
+            self.assertGreater(fine["report"]["requested_paths"], 0)
+
+    def test_the_index_is_built_by_ascending_key_so_the_tree_appends(self) -> None:
+        """The whole point of the external sort, asserted directly.
+
+        Both index tables are WITHOUT ROWID trees keyed on sha256(repo,
+        commit). Inserting in metadata order means a random page per row, which
+        on Lustre is a network round trip per row. Inserting in ascending key
+        order means every row lands on the rightmost leaf.
+        """
+
+        class Recording:
+            def __init__(self, connection: sqlite3.Connection) -> None:
+                self.connection = connection
+                self.request_keys: list[bytes] = []
+                self.repo_keys: list[bytes] = []
+
+            def executemany(self, statement: str, rows: object) -> object:
+                materialized = list(rows)
+                if "INTO requested_paths" in statement:
+                    self.request_keys.extend(row[0] for row in materialized)
+                elif "INTO repo_commits" in statement:
+                    self.repo_keys.extend(row[0] for row in materialized)
+                return self.connection.executemany(statement, materialized)
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self.connection, name)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = root / "metadata.parquet"
+            self._metadata(metadata, 6_000, seed=5)
+            connection = _repository_index_connection(root / "index.sqlite3")
+            recording = Recording(connection)
+            try:
+                self._ingest(
+                    root,
+                    "index.sqlite3",
+                    metadata,
+                    buckets=16,
+                    spool_rows=100_000,
+                    connection=recording,
+                )
+                self.assertGreater(len(recording.request_keys), 1_000)
+                self.assertEqual(
+                    recording.request_keys,
+                    sorted(recording.request_keys),
+                    "requested_paths must be presented to SQLite in ascending key order",
+                )
+                self.assertEqual(
+                    recording.repo_keys,
+                    sorted(recording.repo_keys),
+                    "repo_commits must be presented to SQLite in ascending key order",
+                )
+            finally:
+                connection.close()
+
+    def test_spool_rolls_do_not_lose_or_duplicate_rows(self) -> None:
+        """A roll every few thousand rows must index exactly what one roll does."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = root / "metadata.parquet"
+            self._metadata(metadata, 5_000, seed=29)
+            single = self._ingest(
+                root, "single.sqlite3", metadata, buckets=32, spool_rows=10_000_000
+            )
+            many = self._ingest(
+                root, "many.sqlite3", metadata, buckets=32, spool_rows=100_000
+            )
+            self.assertEqual(single["rows"], many["rows"])
+            self.assertEqual(single["repos"], many["repos"])
+
+    def test_repo_identity_index_is_built_and_enforced_after_the_load(self) -> None:
+        """The unique index is deferred for speed, not dropped."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = root / "metadata.parquet"
+            self._metadata(metadata, 800, seed=7)
+            connection = _repository_index_connection(root / "index.sqlite3")
+            try:
+                self._ingest(
+                    root,
+                    "index.sqlite3",
+                    metadata,
+                    buckets=8,
+                    spool_rows=100_000,
+                    connection=connection,
+                )
+                indexes = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA index_list(repo_commits)")
+                }
+                self.assertIn("repo_commits_identity", indexes)
+                self.assertIn("repo_commits_rank", indexes)
+                repo, commit = connection.execute(
+                    "SELECT repo, commit_id FROM repo_commits LIMIT 1"
+                ).fetchone()
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        "INSERT INTO repo_commits(repo_key, repo, commit_id, rank_key)"
+                        " VALUES(?,?,?,?)",
+                        (b"\xff" * 16, repo, commit, "rank"),
+                    )
+            finally:
+                connection.close()
+
+    def test_incomplete_spool_parts_are_ignored(self) -> None:
+        """A crash mid-write leaves a .partial, never a footerless Parquet file."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = root / "metadata.parquet"
+            self._metadata(metadata, 600, seed=13)
+            spool_root = root / "index.sqlite3.index-sort"
+            connection = _repository_index_connection(root / "index.sqlite3")
+            try:
+                self._ingest(
+                    root,
+                    "index.sqlite3",
+                    metadata,
+                    buckets=4,
+                    spool_rows=100_000,
+                    connection=connection,
+                )
+                expected = connection.execute(
+                    "SELECT COUNT(*) FROM requested_paths"
+                ).fetchone()[0]
+            finally:
+                connection.close()
+            self.assertGreater(expected, 0)
+            self.assertFalse(spool_root.exists(), "a completed load removes its spool")
+
+    def test_units_arriving_after_the_load_fail_closed(self) -> None:
+        """A sorted load cannot absorb late rows, so it must refuse them loudly."""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = root / "first.parquet"
+            second = root / "second.parquet"
+            self._metadata(first, 400, seed=2)
+            self._metadata(second, 400, seed=99)
+            connection = _repository_index_connection(root / "index.sqlite3")
+            try:
+                _ingest_repository_metadata(
+                    connection,
+                    source={"id": "repository-code"},
+                    metadata_files=[
+                        ({"repo_id": "nvidia/code-v1", "revision": "a" * 40}, first)
+                    ],
+                    spool_root=root / "sort",
+                    sort_buckets=4,
+                )
+                with self.assertRaises(MaterializationError) as caught:
+                    _ingest_repository_metadata(
+                        connection,
+                        source={"id": "repository-code"},
+                        metadata_files=[
+                            ({"repo_id": "nvidia/code-v1", "revision": "a" * 40}, first),
+                            ({"repo_id": "nvidia/code-v2", "revision": "b" * 40}, second),
+                        ],
+                        spool_root=root / "sort",
+                        sort_buckets=4,
+                    )
+                self.assertIn("rebuild the index", str(caught.exception))
+            finally:
+                connection.close()
 
     def test_journal_mode_follows_the_filesystem_the_index_lives_on(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -633,6 +824,8 @@ class RepositoryIndexStorageTests(unittest.TestCase):
                     metadata_files=[
                         ({"repo_id": "nvidia/code-v1", "revision": "a" * 40}, metadata)
                     ],
+                    spool_root=root / "index-sort",
+                    sort_buckets=8,
                     checkpoint=index.checkpoint,
                 )
                 self.assertGreater(report["requested_paths"], 0)
@@ -658,6 +851,8 @@ class RepositoryIndexStorageTests(unittest.TestCase):
                     metadata_files=[
                         ({"repo_id": "nvidia/code-v1", "revision": "a" * 40}, metadata)
                     ],
+                    spool_root=root / "index-sort",
+                    sort_buckets=8,
                 )
                 self.assertEqual(resumed["metadata_units_reused"], 1)
                 self.assertEqual(resumed["metadata_units_completed"], 0)

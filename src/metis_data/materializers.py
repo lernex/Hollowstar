@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import quote, urlparse
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 import yaml
@@ -52,17 +53,30 @@ TEXT_SUFFIXES = {
     ".scala", ".scss", ".sh", ".sol", ".sql", ".swift", ".tex", ".tf", ".toml",
     ".ts", ".tsx", ".txt", ".v", ".vb", ".vue", ".xml", ".yaml", ".yml", ".zig",
 }
-REPOSITORY_INDEX_SCHEMA = "repository_index_codeload/v2"
+REPOSITORY_INDEX_SCHEMA = "repository_index_codeload/v3"
 
 # Page cache for the repository request index, in MiB.  The Nemotron metadata
 # resolves to tens of millions of randomly keyed rows, so the shipped 128MiB
 # left the builder reading a page from Lustre for nearly every insert.
 REPOSITORY_INDEX_CACHE_MIB = 2_048
 
-# Rows buffered before an insert flush.  Each flush is sorted into primary-key
-# order first, so a larger buffer turns scattered single-page writes into runs
-# that share pages.
-REPOSITORY_INDEX_FLUSH_ROWS = 250_000
+# Bucket count for the external sort that builds the request index.  A row is
+# spooled to the bucket named by the leading byte of its 128-bit repo key, and
+# the buckets are loaded in ascending order, so every insert sorts after every
+# insert already in the tree.  Must divide 256 so the mapping stays a plain
+# shift and bucket order stays key order.
+REPOSITORY_INDEX_SORT_BUCKETS = 128
+
+# Rows held across all buckets before a spool part is written and closed.  A
+# part is the unit of durability: metadata units are recorded as complete only
+# once their rows are inside a closed part, so a crash replays at most one
+# roll's worth of metadata rather than the whole build.
+REPOSITORY_INDEX_SPOOL_ROWS = 8_000_000
+
+# A Lustre page read is a network round trip, so the index is built with large
+# pages: fewer, larger reads for the same tree, and a shallower tree with fewer
+# interior nodes to keep resident.  Only applies to a database created fresh.
+REPOSITORY_INDEX_PAGE_SIZE = 65_536
 REPOSITORY_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
 GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REPOSITORY_NOISY_PARTS = {
@@ -1023,6 +1037,9 @@ def _repository_index_connection(
 ) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=600, isolation_level=None)
+    # Page size is only settable while the file is empty, and it cannot be
+    # changed once a write-ahead log exists, so it goes first.
+    connection.execute(f"PRAGMA page_size={REPOSITORY_INDEX_PAGE_SIZE}")
     if local:
         # A node-local working copy is republished to the durable root at
         # checkpoints, so it can use the write-ahead log SQLite recommends for
@@ -1059,15 +1076,25 @@ def _repository_index_connection(
     connection.execute(
         "CREATE TABLE IF NOT EXISTS metadata_units ("
         "unit_key BLOB PRIMARY KEY, unit_id TEXT NOT NULL UNIQUE, signature TEXT NOT NULL, component TEXT NOT NULL, "
-        "rows_seen INTEGER NOT NULL, requests_inserted INTEGER NOT NULL, completed_at TEXT NOT NULL)"
+        "rows_seen INTEGER NOT NULL, requests_written INTEGER NOT NULL, completed_at TEXT NOT NULL)"
     )
+    # Buckets of the external sort that were already drained into the tables
+    # below.  A bucket is recorded in the same transaction that inserts it, so
+    # a resumed build never replays one and never skips one.
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS sort_buckets ("
+        "bucket INTEGER PRIMARY KEY, requests_inserted INTEGER NOT NULL, "
+        "repositories_inserted INTEGER NOT NULL, completed_at TEXT NOT NULL)"
+    )
+    # The secondary structures on repo_commits are deliberately absent here:
+    # both are keyed on values uncorrelated with repo_key, so creating them up
+    # front would reintroduce exactly the random insert the bucketed load
+    # exists to avoid.  _finalize_repository_index builds them once the load is
+    # done, when SQLite can sort the whole table instead of seeking per row.
     connection.execute(
         "CREATE TABLE IF NOT EXISTS repo_commits ("
-        "repo_key BLOB PRIMARY KEY, repo TEXT NOT NULL, commit_id TEXT NOT NULL, rank_key TEXT NOT NULL, "
-        "UNIQUE(repo, commit_id)) WITHOUT ROWID"
-    )
-    connection.execute(
-        "CREATE INDEX IF NOT EXISTS repo_commits_rank ON repo_commits(rank_key, repo, commit_id)"
+        "repo_key BLOB PRIMARY KEY, repo TEXT NOT NULL, commit_id TEXT NOT NULL, rank_key TEXT NOT NULL"
+        ") WITHOUT ROWID"
     )
     connection.execute(
         "CREATE TABLE IF NOT EXISTS requested_paths ("
@@ -1134,26 +1161,299 @@ def _metadata_request(
     ), None
 
 
+_REQUEST_SPOOL_SCHEMA = pa.schema(
+    [
+        ("repo_key", pa.binary()),
+        ("rel_path", pa.string()),
+        ("language", pa.string()),
+        ("index_license", pa.string()),
+        ("metadata_unit_key", pa.binary()),
+    ]
+)
+_REPO_SPOOL_SCHEMA = pa.schema(
+    [
+        ("repo_key", pa.binary()),
+        ("repo", pa.string()),
+        ("commit_id", pa.string()),
+        ("rank_key", pa.string()),
+    ]
+)
+
+
+class _RepositoryIndexSpool:
+    """Bucketed external sort for the repository request index.
+
+    Both index tables are WITHOUT ROWID trees keyed on sha256(repo, commit),
+    so metadata order is random order.  Once a tree outgrows the page cache
+    every insert costs a page read, and on Lustre a page read is a network
+    round trip -- which is what left the builder still grouping rows after
+    sixty hours without fetching a single repository.  No page cache fixes
+    that, because the tree ends up far larger than any cache worth giving it.
+
+    Rows are appended instead to one of ``buckets`` spool files chosen by the
+    leading byte of the key.  Appends are sequential, which is the access
+    pattern a parallel filesystem serves well.  The buckets are then drained
+    in ascending order and each is sorted before insert, so every row sorts
+    after every row already in the tree and the load appends to the rightmost
+    leaf rather than seeking to a random one.
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        buckets: int = REPOSITORY_INDEX_SORT_BUCKETS,
+        roll_rows: int = REPOSITORY_INDEX_SPOOL_ROWS,
+    ) -> None:
+        if buckets <= 0 or buckets > 256 or 256 % buckets or buckets & (buckets - 1):
+            raise MaterializationError(
+                "repository index sort buckets must be a power of two dividing 256, "
+                f"not {buckets}; bucket order has to be key order"
+            )
+        self.root = root
+        self.buckets = buckets
+        self.roll_rows = max(100_000, int(roll_rows))
+        self._shift = (256 // buckets).bit_length() - 1
+        self._requests: list[list[tuple[Any, ...]]] = [[] for _ in range(buckets)]
+        self._repos: list[dict[bytes, tuple[Any, ...]]] = [{} for _ in range(buckets)]
+        self._buffered = 0
+        self._part = self._next_part()
+
+    def _next_part(self) -> int:
+        highest = -1
+        for existing in self.root.glob("*/b*/part-*.parquet"):
+            try:
+                highest = max(highest, int(existing.stem.split("-")[-1]))
+            except ValueError:
+                continue
+        return highest + 1
+
+    def add_request(
+        self,
+        repo_key: bytes,
+        rel_path: str,
+        language: str | None,
+        index_license: str | None,
+        unit_key: bytes,
+    ) -> None:
+        self._requests[repo_key[0] >> self._shift].append(
+            (repo_key, rel_path, language, index_license, unit_key)
+        )
+        self._buffered += 1
+
+    def add_repo(self, repo_key: bytes, repo: str, commit_id: str, rank_key: str) -> None:
+        # Repositories recur across metadata rows, so collapsing them in memory
+        # keeps the spool proportional to distinct repositories, not to rows.
+        self._repos[repo_key[0] >> self._shift][repo_key] = (
+            repo_key,
+            repo,
+            commit_id,
+            rank_key,
+        )
+
+    def pending(self) -> bool:
+        return self._buffered >= self.roll_rows
+
+    def roll(self) -> None:
+        """Write and close one spool part per non-empty bucket."""
+
+        if not self._buffered and not any(self._repos):
+            return
+        for index in range(self.buckets):
+            requests = self._requests[index]
+            if requests:
+                self._write("requests", index, _REQUEST_SPOOL_SCHEMA, requests)
+                requests.clear()
+            repos = self._repos[index]
+            if repos:
+                self._write("repos", index, _REPO_SPOOL_SCHEMA, list(repos.values()))
+                repos.clear()
+        self._buffered = 0
+        self._part += 1
+
+    def _write(
+        self, kind: str, index: int, schema: pa.Schema, rows: list[tuple[Any, ...]]
+    ) -> None:
+        directory = self.root / kind / f"b{index:04d}"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"part-{self._part:06d}.parquet"
+        columns = list(zip(*rows))
+        table = pa.table(
+            {
+                name: pa.array(column, type=schema.field(name).type)
+                for name, column in zip(schema.names, columns)
+            },
+            schema=schema,
+        )
+        # A part becomes visible only once it is complete, so a crash mid-write
+        # leaves a .partial the reader ignores rather than a truncated Parquet
+        # file with no footer.
+        temporary = path.with_name(path.name + ".partial")
+        pq.write_table(table, temporary, compression="zstd")
+        temporary.replace(path)
+
+    def _parts(self, kind: str, index: int) -> list[Path]:
+        directory = self.root / kind / f"b{index:04d}"
+        if not directory.is_dir():
+            return []
+        return sorted(directory.glob("part-*.parquet"))
+
+    def read_requests(self, index: int) -> list[tuple[Any, ...]]:
+        parts = self._parts("requests", index)
+        if not parts:
+            return []
+        table = pa.concat_tables([pq.read_table(part) for part in parts]).sort_by(
+            [("repo_key", "ascending"), ("rel_path", "ascending")]
+        )
+        data = table.to_pydict()
+        return list(
+            zip(
+                data["repo_key"],
+                data["rel_path"],
+                data["language"],
+                data["index_license"],
+                data["metadata_unit_key"],
+            )
+        )
+
+    def read_repos(self, index: int) -> list[tuple[Any, ...]]:
+        parts = self._parts("repos", index)
+        if not parts:
+            return []
+        table = pa.concat_tables([pq.read_table(part) for part in parts]).sort_by(
+            [("repo_key", "ascending")]
+        )
+        data = table.to_pydict()
+        return list(
+            zip(data["repo_key"], data["repo"], data["commit_id"], data["rank_key"])
+        )
+
+    def discard(self) -> None:
+        shutil.rmtree(self.root, ignore_errors=True)
+
+
+def _load_repository_index_buckets(
+    connection: sqlite3.Connection,
+    spool: _RepositoryIndexSpool,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> None:
+    """Drain the spool into the index, one bucket per transaction, in key order.
+
+    Recording the bucket in the same transaction that inserts it is what makes
+    a resumed build neither replay a bucket nor skip one.
+    """
+
+    loaded = {int(row[0]) for row in connection.execute("SELECT bucket FROM sort_buckets")}
+    for index in range(spool.buckets):
+        if index in loaded:
+            continue
+        repos = spool.read_repos(index)
+        requests = spool.read_requests(index)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            before = connection.total_changes
+            if repos:
+                connection.executemany(
+                    "INSERT OR IGNORE INTO repo_commits(repo_key, repo, commit_id, rank_key)"
+                    " VALUES(?,?,?,?)",
+                    repos,
+                )
+            repositories_inserted = connection.total_changes - before
+            before = connection.total_changes
+            if requests:
+                connection.executemany(
+                    "INSERT OR IGNORE INTO requested_paths("
+                    "repo_key, rel_path, language, index_license, metadata_unit_key"
+                    ") VALUES(?,?,?,?,?)",
+                    requests,
+                )
+            requests_inserted = connection.total_changes - before
+            connection.execute(
+                "INSERT INTO sort_buckets("
+                "bucket, requests_inserted, repositories_inserted, completed_at"
+                ") VALUES(?,?,?,?)",
+                (index, requests_inserted, repositories_inserted, utc_now()),
+            )
+            connection.execute("COMMIT")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+        if checkpoint is not None:
+            checkpoint()
+
+
+def _finalize_repository_index(connection: sqlite3.Connection) -> None:
+    """Build repo_commits' secondary structures once, on a fully loaded table.
+
+    Creating them during the load would put a random insert per row straight
+    back into the build, since neither key correlates with repo_key.  Building
+    them here lets SQLite sort the finished table instead.  The unique index
+    also re-proves what the load assumed -- that the 128-bit repo key is
+    one-to-one with (repo, commit_id) -- and fails closed if it ever is not.
+    """
+
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS repo_commits_identity"
+        " ON repo_commits(repo, commit_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS repo_commits_rank"
+        " ON repo_commits(rank_key, repo, commit_id)"
+    )
+
+
 def _ingest_repository_metadata(
     connection: sqlite3.Connection,
     *,
     source: dict[str, Any],
     metadata_files: Iterable[tuple[dict[str, Any], Path]],
-    flush_rows: int = REPOSITORY_INDEX_FLUSH_ROWS,
+    spool_root: Path,
+    sort_buckets: int = REPOSITORY_INDEX_SORT_BUCKETS,
+    spool_rows: int = REPOSITORY_INDEX_SPOOL_ROWS,
     checkpoint: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Group all index rows on disk before fetching a single source archive.
 
     This is the phase that dominates a cold build: the Nemotron metadata
-    resolves to tens of millions of randomly keyed rows and nothing can be
-    fetched until all of them are grouped.  ``checkpoint`` is invoked between
-    units, never inside one, so a node-local working copy is published only at
-    a transaction boundary.
+    resolves to hundreds of millions of randomly keyed rows and nothing can be
+    fetched until all of them are grouped.  The grouping runs as an external
+    sort -- spool sequentially, then load in key order -- so the cost scales
+    with bytes moved rather than with tree depth.  ``checkpoint`` is invoked
+    between units, never inside one, so a node-local working copy is published
+    only at a transaction boundary.
     """
 
     counters: dict[str, int] = {}
     units_completed = 0
     units_reused = 0
+    spool = _RepositoryIndexSpool(spool_root, buckets=sort_buckets, roll_rows=spool_rows)
+    pending_units: list[tuple[Any, ...]] = []
+    # Units are recorded at roll boundaries rather than one per transaction, so
+    # a unit repeated inside a single call is not yet in metadata_units when it
+    # comes round again.  Track this call's units too, or the same row group is
+    # read and spooled twice.
+    handled: dict[str, str] = {}
+
+    def record_units() -> None:
+        if not pending_units:
+            return
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            connection.executemany(
+                "INSERT OR IGNORE INTO metadata_units("
+                "unit_key, unit_id, signature, component, rows_seen, requests_written, completed_at"
+                ") VALUES(?,?,?,?,?,?,?)",
+                pending_units,
+            )
+            connection.execute("COMMIT")
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+        pending_units.clear()
+        if checkpoint is not None:
+            checkpoint()
+
     for component, path in metadata_files:
         component_name = f"{component['repo_id']}@{component['revision']}:{path.name}"
         for unit_id, signature, rows in _metadata_units(component, path):
@@ -1161,8 +1461,9 @@ def _ingest_repository_metadata(
             existing = connection.execute(
                 "SELECT signature FROM metadata_units WHERE unit_id=?", (unit_id,)
             ).fetchone()
-            if existing:
-                if str(existing[0]) != signature:
+            recorded = str(existing[0]) if existing else handled.get(unit_id)
+            if recorded is not None:
+                if recorded != signature:
                     raise MaterializationError(
                         f"{source['id']}: metadata unit signature drift for {unit_id}; "
                         "the pinned metadata or local file changed"
@@ -1170,80 +1471,64 @@ def _ingest_repository_metadata(
                 units_reused += 1
                 continue
             rows_seen = 0
-            requests_inserted = 0
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                connection.execute(
-                    "INSERT INTO metadata_units("
-                    "unit_key, unit_id, signature, component, rows_seen, requests_inserted, completed_at"
-                    ") VALUES(?,?,?,?,?,?,?)",
-                    (unit_key, unit_id, signature, component_name, 0, 0, ""),
+            requests_written = 0
+            for row in rows:
+                rows_seen += 1
+                request, reason = _metadata_request(row, unit_key=unit_key)
+                if request is None:
+                    assert reason is not None
+                    counters[reason] = counters.get(reason, 0) + 1
+                    continue
+                repo_key, repo, commit, rel_path, language, index_license, request_unit_key = request
+                spool.add_request(
+                    repo_key, rel_path, language, index_license, request_unit_key
                 )
-                request_batch: list[tuple[bytes, str, str | None, str | None, bytes]] = []
-                repo_batch: dict[bytes, tuple[bytes, str, str, str]] = {}
-
-                def flush() -> None:
-                    nonlocal requests_inserted
-                    if not request_batch:
-                        return
-                    # Both targets are WITHOUT ROWID trees keyed on a hash, so
-                    # metadata order is random order.  Presenting each flush in
-                    # primary-key order keeps a run of inserts on the same
-                    # pages instead of revisiting the whole tree per row; the
-                    # rows inserted, and therefore the count, are unchanged.
-                    connection.executemany(
-                        "INSERT OR IGNORE INTO repo_commits(repo_key, repo, commit_id, rank_key) VALUES(?,?,?,?)",
-                        sorted(repo_batch.values(), key=lambda row: row[0]),
-                    )
-                    before_requests = connection.total_changes
-                    request_batch.sort(key=lambda row: (row[0], row[1]))
-                    connection.executemany(
-                        "INSERT OR IGNORE INTO requested_paths("
-                        "repo_key, rel_path, language, index_license, metadata_unit_key"
-                        ") VALUES(?,?,?,?,?)",
-                        request_batch,
-                    )
-                    requests_inserted += connection.total_changes - before_requests
-                    request_batch.clear()
-                    repo_batch.clear()
-
-                for row in rows:
-                    rows_seen += 1
-                    request, reason = _metadata_request(
-                        row,
-                        unit_key=unit_key,
-                    )
-                    if request is None:
-                        assert reason is not None
-                        counters[reason] = counters.get(reason, 0) + 1
-                        continue
-                    repo_key, repo, commit, rel_path, language, index_license, request_unit_key = request
-                    request_batch.append(
-                        (repo_key, rel_path, language, index_license, request_unit_key)
-                    )
-                    repo_batch[repo_key] = (
-                        repo_key,
-                        repo,
-                        commit,
-                        _stable_id(source["id"], repo, commit),
-                    )
-                    if len(request_batch) >= flush_rows:
-                        flush()
-                flush()
-                connection.execute(
-                    "UPDATE metadata_units SET rows_seen=?, requests_inserted=?, completed_at=? "
-                    "WHERE unit_key=?",
-                    (rows_seen, requests_inserted, utc_now(), unit_key),
+                spool.add_repo(
+                    repo_key, repo, commit, _stable_id(source["id"], repo, commit)
                 )
-                connection.execute("COMMIT")
-            except BaseException:
-                connection.execute("ROLLBACK")
-                raise
+                requests_written += 1
+            pending_units.append(
+                (
+                    unit_key,
+                    unit_id,
+                    signature,
+                    component_name,
+                    rows_seen,
+                    requests_written,
+                    utc_now(),
+                )
+            )
+            handled[unit_id] = signature
             units_completed += 1
-            if checkpoint is not None:
-                checkpoint()
-    request_count = int(connection.execute("SELECT COUNT(*) FROM requested_paths").fetchone()[0])
-    repository_count = int(connection.execute("SELECT COUNT(*) FROM repo_commits").fetchone()[0])
+            # A unit counts as done only once its rows sit in a closed spool
+            # part, so the roll happens first and the units it covers are
+            # recorded second.  Crashing between the two replays whole units,
+            # and the primary keys make that replay idempotent.
+            if spool.pending():
+                spool.roll()
+                record_units()
+    spool.roll()
+    record_units()
+
+    if units_completed and int(
+        connection.execute("SELECT COUNT(*) FROM sort_buckets").fetchone()[0]
+    ):
+        raise MaterializationError(
+            f"{source['id']}: {units_completed} metadata unit(s) appeared after the request "
+            "index had already begun its sorted load, which cannot absorb late rows without "
+            "silently dropping them. Preserve the repository-index-cache directory for audit, "
+            "then rebuild the index."
+        )
+    _load_repository_index_buckets(connection, spool, checkpoint=checkpoint)
+    _finalize_repository_index(connection)
+    spool.discard()
+
+    request_count = int(
+        connection.execute("SELECT COUNT(*) FROM requested_paths").fetchone()[0]
+    )
+    repository_count = int(
+        connection.execute("SELECT COUNT(*) FROM repo_commits").fetchone()[0]
+    )
     if request_count == 0:
         raise MaterializationError(
             f"{source['id']}: repository-index metadata yielded no valid GitHub repo/commit/path requests"
@@ -1717,8 +2002,12 @@ def _materialize_repository_index(
     index_cache_mib = max(
         16, int(acquisition.get("repository_index_cache_mib", REPOSITORY_INDEX_CACHE_MIB))
     )
-    index_flush_rows = max(
-        1_000, int(acquisition.get("repository_index_flush_rows", REPOSITORY_INDEX_FLUSH_ROWS))
+    index_sort_buckets = int(
+        acquisition.get("repository_index_sort_buckets", REPOSITORY_INDEX_SORT_BUCKETS)
+    )
+    index_spool_rows = max(
+        100_000,
+        int(acquisition.get("repository_index_spool_rows", REPOSITORY_INDEX_SPOOL_ROWS)),
     )
     scratch_root = acquisition.get("repository_index_scratch_root") or runtime.get(
         "state_scratch_root"
@@ -1745,7 +2034,9 @@ def _materialize_repository_index(
             connection,
             source=source,
             metadata_files=_metadata_files(root, source),
-            flush_rows=index_flush_rows,
+            spool_root=cache_root / "index-sort",
+            sort_buckets=index_sort_buckets,
+            spool_rows=index_spool_rows,
             checkpoint=index.checkpoint,
         )
         # Nothing has been fetched yet, so the whole grouping phase is durable
