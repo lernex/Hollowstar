@@ -51,20 +51,20 @@ groups:
 
   - id: code_organic
     rationale: >-
-      Prefer pinned, license-reviewed repository code, then NVIDIA's
-      code-bearing web and Stack-Edu. Broad Stack v2 and the small formal
-      registry remain later coverage reserves.
+      Prefer license-filtered repository source, then NVIDIA's code-bearing web
+      and the broader cleaned GitHub crawl. The small formal registry remains a
+      later coverage reserve. Every member ships its own text: index-only
+      corpora were removed because they normalize to zero documents and their
+      reconstruction cost is unbounded.
     members:
-      - nemotron_repository_code_v123
+      - starcoder_permissive_code
       - nemotron_cc_code_v1
-      - stack_edu
-      - stack_v2_unique
+      - github_code_clean
       - metis_systems_formal
     donor_order:
-      - nemotron_repository_code_v123
+      - starcoder_permissive_code
       - nemotron_cc_code_v1
-      - stack_edu
-      - stack_v2_unique
+      - github_code_clean
       - metis_systems_formal
 
   - id: code_fresh_software
@@ -90,8 +90,8 @@ groups:
     donor_order:
       - verified_synthetic_code
       - nemotron_cc_code_v1
-      - stack_edu
-      - nemotron_repository_code_v123
+      - starcoder_permissive_code
+      - github_code_clean
 
   - id: math_organic
     rationale: >-

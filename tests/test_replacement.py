@@ -85,7 +85,13 @@ class ReplacementPolicyTests(unittest.TestCase):
         self.assertEqual(validate_manifest().errors, ())
         resilience = candidate_plan(manifest)["replacement_resilience"]
         self.assertTrue(resilience["all_sources_have_automatic_shortfall_path"])
-        self.assertEqual(resilience["complete_loss_covered_by_other_donors"], 53)
+        # Every source but the three cold-reserve-only ones asserted below.
+        # Tie it to the source count rather than restating it, so replacing a
+        # source cannot quietly look like a coverage regression.
+        self.assertEqual(
+            resilience["complete_loss_covered_by_other_donors"],
+            len(source_ids) - len(resilience["cold_reserve_only_sources"]),
+        )
         self.assertEqual(
             resilience["cold_reserve_only_sources"],
             [

@@ -1,18 +1,82 @@
 sources:
-  - id: nemotron_repository_code_v123
-    label: NVIDIA Nemotron repository code v1, v2, and v3
+  # Repository code is taken from corpora that ship the code itself.
+  #
+  # The three sources this replaces -- nvidia/Nemotron-Pretraining-Code v1-v3,
+  # HuggingFaceTB/stack-edu, and bigcode/the-stack-v2 -- all publish indexes
+  # rather than content: (repo, commit, path) triples, or Software Heritage
+  # blob ids. Their Parquet carries no text column at all, so they normalize to
+  # zero documents, and reconstructing them means fetching one archive per
+  # repository. Measured on this corpus that is ~145M repositories at 56/min
+  # through an inspected egress path, with a per-record license gate that
+  # rejected 12,630 of the first 12,630 because ordinary GitHub repositories
+  # carry no root license file. The arithmetic is months, and the builder only
+  # terminates when its candidate target is met, so it blocked acquisition from
+  # ever completing. See docs/metis16_operator_runbook.md.
+  #
+  # StarCoderData is The Stack v1 (which does ship content) after BigCode's
+  # near-dedup, PII redaction, and permissive-license filtering -- so the
+  # per-record license question is already settled upstream rather than being
+  # rediscovered one archive at a time.
+  - id: starcoder_permissive_code
+    label: StarCoderData permissive repository code across 88 languages
     category: code
-    phase_tokens: {phase_a: 37910000000, phase_b: 22928000000, phase_c: 5982000000}
+    phase_tokens: {phase_a: 35910000000, phase_b: 20928000000, phase_c: 5982000000}
     provenance: {generated: false, transformed: false, fresh: false}
     access:
-      type: repository_index
-      components:
-        - {repo_id: nvidia/Nemotron-Pretraining-Code-v1, revision: 01393d3bd890ddc5c15da8a2c9afb57391277659, gated: manual, allow_patterns: [Nemotron-Code-Metadata/**]}
-        - {repo_id: nvidia/Nemotron-Pretraining-Code-v2, revision: 7b1a453d43e3c0df9749834b04f1a9510c0f5e5b, gated: manual, allow_patterns: [Nemotron-Code-Metadata/**]}
-        - {repo_id: nvidia/Nemotron-Pretraining-Code-v3, revision: 9b42feaec991c69006452e6654d91a58a04d935a, gated: false, allow_patterns: [Nemotron-Code-Metadata/**]}
+      type: huggingface
+      repo_id: bigcode/starcoderdata
+      revision: 9fc30b578cedaec69e47302df72cf00feed7c8c4
+      gated: auto
+      # Language subtrees only. The repository also publishes
+      # github-issues-filtered-structured, git-commits-cleaned, and two jupyter
+      # subsets; issues would double-count metis_freshengineering_discussions
+      # and commit diffs are not source files, so all four are excluded by
+      # naming what is wanted rather than by a wildcard.
+      allow_patterns: [
+        ada/*.parquet, agda/*.parquet, alloy/*.parquet, antlr/*.parquet,
+        applescript/*.parquet, assembly/*.parquet, augeas/*.parquet, awk/*.parquet,
+        batchfile/*.parquet, bluespec/*.parquet, c/*.parquet, c-sharp/*.parquet,
+        clojure/*.parquet, cmake/*.parquet, coffeescript/*.parquet,
+        common-lisp/*.parquet, cpp/*.parquet, css/*.parquet, cuda/*.parquet,
+        dart/*.parquet, dockerfile/*.parquet, elixir/*.parquet, elm/*.parquet,
+        emacs-lisp/*.parquet, erlang/*.parquet, f-sharp/*.parquet,
+        fortran/*.parquet, glsl/*.parquet, go/*.parquet, groovy/*.parquet,
+        haskell/*.parquet, html/*.parquet, idris/*.parquet, isabelle/*.parquet,
+        java/*.parquet, java-server-pages/*.parquet, javascript/*.parquet,
+        json/*.parquet, julia/*.parquet, kotlin/*.parquet, lean/*.parquet,
+        literate-agda/*.parquet, literate-coffeescript/*.parquet,
+        literate-haskell/*.parquet, lua/*.parquet, makefile/*.parquet,
+        maple/*.parquet, markdown/*.parquet, mathematica/*.parquet,
+        matlab/*.parquet, ocaml/*.parquet, pascal/*.parquet, perl/*.parquet,
+        php/*.parquet, powershell/*.parquet, prolog/*.parquet,
+        protocol-buffer/*.parquet, python/*.parquet, r/*.parquet,
+        racket/*.parquet, restructuredtext/*.parquet, rmarkdown/*.parquet,
+        ruby/*.parquet, rust/*.parquet, sas/*.parquet, scala/*.parquet,
+        scheme/*.parquet, shell/*.parquet, smalltalk/*.parquet,
+        solidity/*.parquet, sparql/*.parquet, sql/*.parquet, stan/*.parquet,
+        standard-ml/*.parquet, stata/*.parquet, systemverilog/*.parquet,
+        tcl/*.parquet, tcsh/*.parquet, tex/*.parquet, thrift/*.parquet,
+        typescript/*.parquet, verilog/*.parquet, vhdl/*.parquet,
+        visual-basic/*.parquet, xslt/*.parquet, yacc/*.parquet, yaml/*.parquet,
+        zig/*.parquet]
     license: {status: per_record_required, expression: repository-license}
-    acquisition: {driver: repository_index, candidate_multiplier: 1.80, compressed_bytes_per_token: 0.65}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 2.00, compressed_bytes_per_token: 0.65}
     processing: {quality_profile: repository_code_v1, dedup_namespace: global_code, priority: 90}
+
+  - id: github_code_clean
+    label: CodeParrot cleaned GitHub source files
+    category: code
+    phase_tokens: {phase_a: 15000000000, phase_b: 9000000000, phase_c: 2000000000}
+    provenance: {generated: false, transformed: false, fresh: false}
+    access:
+      type: huggingface
+      repo_id: codeparrot/github-code-clean
+      revision: c48d40f9e70f0196f8236901ee35807f7d6c44c0
+      gated: false
+      allow_patterns: [data/*.parquet]
+    license: {status: per_record_required, expression: repository-license}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 2.00, compressed_bytes_per_token: 0.62}
+    processing: {quality_profile: repository_code_v1, dedup_namespace: global_code, priority: 78}
 
   - id: nemotron_cc_code_v1
     label: Nemotron-CC-Code tutorials, docs, snippets, and code-text interleaving
@@ -28,36 +92,6 @@ sources:
     license: {status: requires_acceptance, expression: NVIDIA-Data-Agreement-for-Model-Training}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 2.30, compressed_bytes_per_token: 0.75}
     processing: {quality_profile: code_interleaved_v1, dedup_namespace: global_code_web, priority: 95}
-
-  - id: stack_edu
-    label: Stack-Edu educational repository code
-    category: code
-    phase_tokens: {phase_a: 9000000000, phase_b: 6000000000, phase_c: 2000000000}
-    provenance: {generated: false, transformed: false, fresh: false}
-    access:
-      type: huggingface
-      repo_id: HuggingFaceTB/stack-edu
-      revision: eeec5caac5cc3758a18f1d3ba4416837a9ba814c
-      gated: false
-      allow_patterns: ['**/*.parquet']
-    license: {status: per_record_required, expression: repository-license}
-    acquisition: {driver: hf_snapshot, candidate_multiplier: 2.00, compressed_bytes_per_token: 0.65}
-    processing: {quality_profile: repository_code_v1, dedup_namespace: global_code, priority: 82}
-
-  - id: stack_v2_unique
-    label: The Stack v2 unique license-accepted repository material
-    category: code
-    phase_tokens: {phase_a: 4000000000, phase_b: 1000000000, phase_c: 0}
-    provenance: {generated: false, transformed: false, fresh: false}
-    access:
-      type: huggingface
-      repo_id: bigcode/the-stack-v2
-      revision: 7408bfbcfd48e5833d62fd3dba48afd20d109473
-      gated: auto
-      allow_patterns: ['**/*.parquet']
-    license: {status: per_record_required, expression: repository-license}
-    acquisition: {driver: hf_snapshot, candidate_multiplier: 2.20, compressed_bytes_per_token: 0.62}
-    processing: {quality_profile: repository_code_v1, dedup_namespace: global_code, priority: 70}
 
   - id: metis_freshgithub_2025_26
     label: Recent actively maintained repositories

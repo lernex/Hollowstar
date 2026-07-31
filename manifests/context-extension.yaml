@@ -51,8 +51,8 @@ selection:
 # the declared reserve to the existing 1T source request so the same download
 # supervisor fetches enough long candidates without duplicating raw corpora.
 sources:
-  - {id: nemotron_repository_code_v123, domain: repository_code, tokens: 1800000000, retrieval_multiplier: 2.20}
-  - {id: stack_edu, domain: repository_code, tokens: 900000000, retrieval_multiplier: 2.50}
+  - {id: starcoder_permissive_code, domain: repository_code, tokens: 1800000000, retrieval_multiplier: 2.20}
+  - {id: github_code_clean, domain: repository_code, tokens: 900000000, retrieval_multiplier: 2.50}
   - {id: nemotron_cc_code_v1, domain: repository_code, tokens: 900000000, retrieval_multiplier: 2.25}
 
   - {id: finepdfs_edu_english, domain: science, tokens: 1200000000, retrieval_multiplier: 2.50}
@@ -95,8 +95,8 @@ fallbacks:
   generated_donor_forbidden: true
   groups:
     - id: repository_code
-      members: [nemotron_repository_code_v123, stack_edu, nemotron_cc_code_v1]
-      donor_order: [nemotron_repository_code_v123, nemotron_cc_code_v1, stack_edu]
+      members: [starcoder_permissive_code, github_code_clean, nemotron_cc_code_v1]
+      donor_order: [starcoder_permissive_code, nemotron_cc_code_v1, github_code_clean]
     - id: science
       members: [finepdfs_edu_english, pes2o, pmc_open_access, proof_pile2_science, openstax, patents_engineering_reports]
       donor_order: [finepdfs_edu_english, pes2o, pmc_open_access, proof_pile2_science, openstax, patents_engineering_reports]
