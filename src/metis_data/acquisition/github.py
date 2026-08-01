@@ -707,6 +707,20 @@ def materialize_github(
     )
     counters: Counter[str] = Counter()
     target_tokens = int(item.get("candidate_tokens", 0))
+    # Per-run ceiling on repository archive fetches. The candidate list is
+    # every repository with activity in the window -- millions per month -- and
+    # the loop below only stops early when the candidate target is met. On a
+    # host where a codeload archive costs about a gigabyte and roughly one in
+    # twelve survives the root-license gate, that target is unreachable and the
+    # walk does not terminate, which blocks acquisition from ever completing.
+    # Bounding the fetch converts an open-ended walk into a fixed contribution
+    # and lets the ordinary shortfall path route the remainder to donors.
+    # -1 leaves the walk unbounded.
+    maximum_archive_fetches = int(
+        profile.get("acquisition", {}).get(
+            "github_repository_maximum_archive_fetches", -1
+        )
+    )
     writer = JsonlShardWriter(output)
 
     if driver == "github_discussions":
@@ -947,6 +961,13 @@ def materialize_github(
                 if rejection_reason:
                     counters[rejection_reason] += 1
                     continue
+                if (
+                    maximum_archive_fetches >= 0
+                    and counters["archive_fetches"] >= maximum_archive_fetches
+                ):
+                    counters["stopped_at_archive_fetch_budget"] += 1
+                    break
+                counters["archive_fetches"] += 1
                 try:
                     archive = _repository_archive(
                         archive_client, str(repo_name), str(head_sha), repo_archives

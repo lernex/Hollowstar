@@ -31,14 +31,27 @@ acquisition:
   driver_lanes:
     common_crawl_ranges: common_crawl
     github_repositories: github
-    github_discussions: github
-    repository_index: repository_index
+    # Discussions read the GitHub REST API; repositories pull ~1GiB codeload
+    # archives. Sharing one lane meant the archive walk held the only slot for
+    # days and the discussion builder never ran once -- while being one of the
+    # donors meant to cover the archive walk's shortfall. Separate lanes still
+    # put at most two consumers on public GitHub endpoints.
+    github_discussions: github_discussions
     canonical_web: canonical
     canonical_git: canonical
     canonical_http: canonical
     derived_after_download: derived
   lane_max_workers:
-    {github: 1, common_crawl: 1, repository_index: 1, canonical: 1, derived: 1}
+    {github: 1, github_discussions: 1, common_crawl: 1, canonical: 1, derived: 1}
+  # The fresh-GitHub archive walk sustains ~3.7 archive fetches and ~0.3
+  # accepted repositories per hour here: about a gigabyte per repository, and
+  # roughly one in twelve carries an allowlisted root license. Its 16B-token
+  # target is unreachable at that rate, and the walk only ends when the target
+  # is met, so leaving it unbounded blocks acquisition from completing. Cap the
+  # per-run contribution and let code_fresh_software donors -- which the
+  # resilience simulation shows cover this source's complete loss -- carry the
+  # remainder. Raise it if a future host has cheaper egress; -1 is unbounded.
+  github_repository_maximum_archive_fetches: ${METIS_GITHUB_MAX_ARCHIVES:-25}
   common_crawl:
     range_workers: 4
     shard_count: 128

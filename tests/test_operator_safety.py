@@ -534,11 +534,16 @@ class AcquisitionLaneTests(unittest.TestCase):
                     _, profile = load_profile("login2")
 
         driver_lanes, semaphores = _lane_configuration(profile)
-        self.assertEqual(driver_lanes["repository_index"], "repository_index")
         ungated = sorted(set(driver_lanes.values()) - set(semaphores))
         self.assertEqual(ungated, [], f"lanes without a configured limit: {ungated}")
-        for lane in ("github", "common_crawl", "repository_index"):
+        for lane in ("github", "github_discussions", "common_crawl"):
             self.assertIn(lane, semaphores)
+        # Discussions read the REST API while repositories pull ~1GiB codeload
+        # archives. Sharing a lane starved the discussion builder completely,
+        # so keep them provably separate rather than merely both configured.
+        self.assertNotEqual(
+            driver_lanes["github_discussions"], driver_lanes["github_repositories"]
+        )
 
 
 if __name__ == "__main__":
