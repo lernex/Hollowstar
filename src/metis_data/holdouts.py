@@ -223,8 +223,21 @@ def _benchmark_source_rows(
         cache_dir=str(cache_dir),
     )
     dataset = _without_media_decoding(dataset)
-    for index, row in enumerate(dataset):
-        yield index, dict(row)
+    try:
+        for index, row in enumerate(dataset):
+            yield index, dict(row)
+    except ImportError as exc:
+        # Raised from inside datasets iteration when a column still needs a
+        # decoder -- only reachable for a builder that did not expose features
+        # to cast. Name the dataset and the fix; the bare version of this cost
+        # an acquisition run five hours before anyone saw it.
+        raise RuntimeError(
+            f"Holdout benchmark {entry['repo_id']} (config {config!r}, split "
+            f"{split!r}) needs a media decoder that this runtime does not have: "
+            f"{exc}. Its features could not be cast to decode=False. Install the "
+            "decoder into the acquisition runtime, or drop the benchmark from "
+            "manifests/contamination/eval-holdouts.yaml."
+        ) from exc
 
 
 def _without_media_decoding(dataset: Any) -> Any:
@@ -238,9 +251,12 @@ def _without_media_decoding(dataset: Any) -> Any:
     hours in. ``decode=False`` yields the undecoded ``{path, bytes}`` mapping,
     which the text extractor ignores exactly as it ignored the decoded object.
 
-    Features are unknown for some streamed builders. That is left alone rather
-    than guessed at: Pillow is a declared dependency so an undecodable column
-    still cannot crash the run.
+    Features are unknown for some streamed builders, and those are left alone
+    rather than guessed at. Pillow is deliberately *not* added to
+    requirements-metis16-data.txt to cover that case: the file is hash-locked
+    and bound into the source lock, so adding a line to it forces an
+    environment rebuild and a re-resolve. The caller converts a decoder
+    ImportError into an actionable error instead.
     """
     features = getattr(dataset, "features", None)
     if not features:

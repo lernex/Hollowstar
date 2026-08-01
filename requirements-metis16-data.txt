@@ -11,11 +11,6 @@ s3fs==2025.3.0
 huggingface-hub==0.36.0
 hf-xet==1.5.2
 datasets==3.6.0
-# Multimodal holdout benchmarks (MMMU, MathVista) carry image columns.
-# Decoding is disabled in holdouts.py, but declare Pillow anyway: a
-# builder that does not expose features cannot be cast, and a missing
-# decoder there fails inside iteration and kills the whole run.
-Pillow>=10.0
 PyYAML==6.0.3
 pyarrow==23.0.1
 tokenizers==0.22.2
