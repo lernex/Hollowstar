@@ -82,8 +82,9 @@ sources:
 
   - {id: roots_stackexchange, domain: technical_discussion, tokens: 700000000, retrieval_multiplier: 3.00}
   - {id: metis_freshdocs_2025_26, domain: technical_discussion, tokens: 400000000, retrieval_multiplier: 2.80}
-  - {id: metis_freshsoftwaredocs_2025_26, domain: technical_discussion, tokens: 400000000, retrieval_multiplier: 2.80}
-  - {id: metis_freshengineering_discussions_2025_26, domain: technical_discussion, tokens: 300000000, retrieval_multiplier: 3.00}
+  # Absorbs the 300M that metis_freshengineering_discussions_2025_26 held before
+  # that source was withdrawn; see manifests/sources/code.yaml.
+  - {id: metis_freshsoftwaredocs_2025_26, domain: technical_discussion, tokens: 700000000, retrieval_multiplier: 2.80}
 
   - {id: finewiki, domain: general_reference, tokens: 350000000, retrieval_multiplier: 2.00}
   - {id: wikimedia_reference, domain: general_reference, tokens: 250000000, retrieval_multiplier: 2.00}
@@ -110,8 +111,8 @@ fallbacks:
       members: [nemotron_cc_math_4plus, proof_pile2_math, finemath_unique, formal_theorem_corpora]
       donor_order: [nemotron_cc_math_4plus, proof_pile2_math, finemath_unique, formal_theorem_corpora]
     - id: technical_discussion
-      members: [roots_stackexchange, metis_freshdocs_2025_26, metis_freshsoftwaredocs_2025_26, metis_freshengineering_discussions_2025_26]
-      donor_order: [metis_freshdocs_2025_26, metis_freshsoftwaredocs_2025_26, roots_stackexchange, metis_freshengineering_discussions_2025_26]
+      members: [roots_stackexchange, metis_freshdocs_2025_26, metis_freshsoftwaredocs_2025_26]
+      donor_order: [metis_freshdocs_2025_26, metis_freshsoftwaredocs_2025_26, roots_stackexchange]
     - id: general_reference
       members: [finewiki, wikimedia_reference, metis_freshweb_2026]
       donor_order: [finewiki, wikimedia_reference, metis_freshweb_2026]

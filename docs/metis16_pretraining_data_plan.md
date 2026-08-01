@@ -65,13 +65,10 @@ text remains in the multilingual category and verified synthetic code remains in
 | web | `zyda2_unique` | 14B | 1B | 0 | 15B | no | no |
 | web | `metis_freshweb_2026` | 25B | 7B | 3B | 35B | yes | no |
 | web | `fineweb_diversity_tail` | 23B | 10B | 2B | 35B | no | no |
-| code | `nemotron_repository_code_v123` | 37.91B | 22.928B | 5.982B | 66.82B | no | no |
+| code | `starcoder_permissive_code` | 35.91B | 20.928B | 5.982B | 62.82B | no | no |
+| code | `github_code_clean` | 15B | 9B | 2B | 26B | no | no |
 | code | `nemotron_cc_code_v1` | 18B | 10B | 3B | 31B | no | no |
-| code | `stack_edu` | 9B | 6B | 2B | 17B | no | no |
-| code | `stack_v2_unique` | 4B | 1B | 0 | 5B | no | no |
-| code | `metis_freshgithub_2025_26` | 10B | 6B | 2B | 18B | yes | no |
-| code | `metis_freshsoftwaredocs_2025_26` | 6B | 3B | 1B | 10B | yes | no |
-| code | `metis_freshengineering_discussions_2025_26` | 3B | 3B | 1B | 7B | yes | no |
+| code | `metis_freshsoftwaredocs_2025_26` | 19B | 12B | 4B | 35B | yes | no |
 | code | `metis_systems_formal` | 0.09B | 0.072B | 0.018B | 0.18B | no | no |
 | code | `verified_synthetic_code` | 2B | 3B | 0 | 5B | no | yes |
 | math | `nemotron_cc_math_4plus` | 20B | 15B | 5B | 40B | no | no |

@@ -97,6 +97,10 @@ class ReplacementPolicyTests(unittest.TestCase):
             [
                 "metis_freshdocs_2025_26",
                 "metis_freshscience_2025_26",
+                # Sole member of the software bucket since fresh repository code
+                # and engineering discussions were withdrawn, so like the other
+                # three fresh routes it widens into its own reserve crawl.
+                "metis_freshsoftwaredocs_2025_26",
                 "metis_freshweb_2026",
             ],
         )

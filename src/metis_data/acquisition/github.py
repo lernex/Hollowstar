@@ -721,6 +721,19 @@ def materialize_github(
             "github_repository_maximum_archive_fetches", -1
         )
     )
+    # Per-run ceiling on GH Archive hourly files, which is the other half of the
+    # same problem.  The cap above bounds codeload archives but not the event
+    # walk that feeds it, and both drivers read every hour in the partition --
+    # roughly 720 files and 70-140GiB per month -- before the month can commit.
+    # The discussion driver additionally only accepts events from repositories
+    # the repository walk has already licensed, so where fresh repository code
+    # is not being acquired that slice does not grow and an uncapped walk moves
+    # terabytes to accept almost nothing.  Bounding the ingest makes each
+    # partition a fixed, terminating contribution and lets the ordinary
+    # shortfall path route the remainder to donors.  -1 leaves it unbounded.
+    maximum_hourly_archives = int(
+        profile.get("acquisition", {}).get("github_maximum_hourly_archives", -1)
+    )
     writer = JsonlShardWriter(output)
 
     if driver == "github_discussions":
@@ -730,6 +743,12 @@ def materialize_github(
         license_cache: dict[str, tuple[Any, ...] | None] = {}
         try:
             for hour in _archive_hours(_parse_date(partition["start"]), _parse_date(partition["end"])):
+                if (
+                    maximum_hourly_archives >= 0
+                    and counters["archives"] >= maximum_hourly_archives
+                ):
+                    counters["stopped_at_hourly_archive_budget"] += 1
+                    break
                 path = _archive_file(archive_client, gharchive, hour)
                 counters["archives"] += 1
                 for event in _iter_events(path):
@@ -843,6 +862,12 @@ def materialize_github(
         connection = _activity_database(database)
         try:
             for hour in _archive_hours(_parse_date(partition["start"]), _parse_date(partition["end"])):
+                if (
+                    maximum_hourly_archives >= 0
+                    and counters["archives"] >= maximum_hourly_archives
+                ):
+                    counters["stopped_at_hourly_archive_budget"] += 1
+                    break
                 path = _archive_file(archive_client, gharchive, hour)
                 counters["archives"] += 1
                 pending: dict[str, tuple[int, str, str | None]] = {}

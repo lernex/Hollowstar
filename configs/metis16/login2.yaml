@@ -43,15 +43,24 @@ acquisition:
     derived_after_download: derived
   lane_max_workers:
     {github: 1, github_discussions: 1, common_crawl: 1, canonical: 1, derived: 1}
-  # The fresh-GitHub archive walk sustains ~3.7 archive fetches and ~0.3
+  # The fresh-GitHub archive walk sustained ~3.7 archive fetches and ~0.3
   # accepted repositories per hour here: about a gigabyte per repository, and
-  # roughly one in twelve carries an allowlisted root license. Its 16B-token
-  # target is unreachable at that rate, and the walk only ends when the target
-  # is met, so leaving it unbounded blocks acquisition from completing. Cap the
-  # per-run contribution and let code_fresh_software donors -- which the
-  # resilience simulation shows cover this source's complete loss -- carry the
-  # remainder. Raise it if a future host has cheaper egress; -1 is unbounded.
+  # roughly one in twelve carries an allowlisted root license. At that rate its
+  # token target was unreachable, and the walk only ends when the target is met,
+  # so leaving it unbounded blocked acquisition from completing. The source was
+  # withdrawn from the 1.6 manifest for that reason, but keep the cap set: the
+  # driver and its lane remain, and nothing here should be able to start an
+  # unbounded walk again. -1 is unbounded.
   github_repository_maximum_archive_fetches: ${METIS_GITHUB_MAX_ARCHIVES:-25}
+  # The cap above bounds codeload archives; this one bounds the GH Archive event
+  # walk that feeds them, which is the half that was still unbounded. A monthly
+  # partition otherwise reads ~720 hourly files, 70-140GiB, before it can
+  # commit -- and no budget makes an empty partition legal, because a
+  # materializer that accepts nothing fails closed. Both GitHub sources are
+  # withdrawn from the 1.6 manifest, so like the cap above this is now a
+  # dormant guardrail: it exists so no profile on this host can start an
+  # open-ended transfer. One day per monthly partition. -1 is unbounded.
+  github_maximum_hourly_archives: ${METIS_GITHUB_MAX_HOURLY_ARCHIVES:-24}
   common_crawl:
     range_workers: 4
     shard_count: 128

@@ -93,20 +93,43 @@ sources:
     acquisition: {driver: hf_snapshot, candidate_multiplier: 2.30, compressed_bytes_per_token: 0.75}
     processing: {quality_profile: code_interleaved_v1, dedup_namespace: global_code_web, priority: 95}
 
-  - id: metis_freshgithub_2025_26
-    label: Recent actively maintained repositories
-    category: code
-    phase_tokens: {phase_a: 10000000000, phase_b: 6000000000, phase_c: 2000000000}
-    provenance: {generated: false, transformed: false, fresh: true, freshness_bucket: software}
-    access: {type: github_public, cutoff_start: '2025-01-01', cutoff_end: '2026-06-30'}
-    license: {status: per_record_required, expression: allowlisted-repository-license}
-    acquisition: {driver: github_repositories, candidate_multiplier: 2.20, compressed_bytes_per_token: 0.75}
-    processing: {quality_profile: fresh_repository_code_v1, dedup_namespace: global_code, priority: 100}
+  # metis_freshgithub_2025_26 (18B: 10/6/2) held the largest share of the 35B
+  # software freshness bucket and was withdrawn for the 1.6 generation. Its
+  # driver walks GH Archive for active repositories and then pulls a ~1GiB
+  # codeload archive per candidate, of which roughly one in twelve carries an
+  # allowlisted root license. On the acquisition host that sustained about 3.7
+  # archive fetches and 0.3 accepted repositories per hour -- a 10B-token
+  # phase_a target measured in years, and the walk only ends when the target is
+  # met. Its tokens moved to metis_freshsoftwaredocs_2025_26 below, which is
+  # Common Crawl-shaped, already producing, and a better match for the actual
+  # goal: current framework documentation demonstrates present-day idiom more
+  # reliably than a random sample of repositories that happen to have a recent
+  # commit. Restoring fresh repository code needs a host with cheaper egress or
+  # a pointer-free source of recent permissively licensed repositories.
+  #
+  # metis_freshengineering_discussions_2025_26 (7B: 3/3/1) was withdrawn with
+  # it, and not by choice: its driver accepts a GH Archive event only if the
+  # event's repository already carries a reviewed license and canonical-identity
+  # proof in the repository slice, and the repository walk above is the only
+  # writer of that slice. Without it the slice does not grow, the driver accepts
+  # nothing, and a materializer that produces no records fails closed rather
+  # than reporting a shortfall -- so keeping the source would not have yielded a
+  # covered shortfall, it would have failed every partition and blocked the
+  # handoff. Decoupling it means giving discussions its own per-repository
+  # license and identity evidence over the GitHub REST API, which is a
+  # generation-1.7 change, not a fix to make here.
+  #
+  # Both withdrawals move to metis_freshsoftwaredocs_2025_26 below, so the
+  # software bucket stays at 35B, the code category stays at 160B, and every
+  # per-phase total is unchanged. The software bucket now has the same shape as
+  # the other three freshness buckets: one Common Crawl route, covered by cold
+  # reserve rather than by an in-bucket donor. Both drivers and their lanes
+  # remain wired; only the two sources are withdrawn.
 
   - id: metis_freshsoftwaredocs_2025_26
     label: Current official software docs, examples, migrations, and package APIs
     category: code
-    phase_tokens: {phase_a: 6000000000, phase_b: 3000000000, phase_c: 1000000000}
+    phase_tokens: {phase_a: 19000000000, phase_b: 12000000000, phase_c: 4000000000}
     provenance: {generated: false, transformed: false, fresh: true, freshness_bucket: software}
     access:
       type: common_crawl
@@ -120,16 +143,6 @@ sources:
     license: {status: per_record_required, expression: canonical-source-license}
     acquisition: {driver: common_crawl_ranges, candidate_multiplier: 1.80, compressed_bytes_per_token: 0.90}
     processing: {quality_profile: official_docs_v1, dedup_namespace: global_docs, priority: 100}
-
-  - id: metis_freshengineering_discussions_2025_26
-    label: Issues, pull requests, changelogs, and engineering discussions
-    category: code
-    phase_tokens: {phase_a: 3000000000, phase_b: 3000000000, phase_c: 1000000000}
-    provenance: {generated: false, transformed: false, fresh: true, freshness_bucket: software}
-    access: {type: github_public, cutoff_start: '2025-01-01', cutoff_end: '2026-06-30'}
-    license: {status: per_record_required, expression: allowlisted-repository-license}
-    acquisition: {driver: github_discussions, candidate_multiplier: 2.20, compressed_bytes_per_token: 0.80}
-    processing: {quality_profile: engineering_discussion_v1, dedup_namespace: global_code_discussion, priority: 98}
 
   - id: metis_systems_formal
     label: CUDA, Triton, SQL, shell, build systems, Lean, and Coq

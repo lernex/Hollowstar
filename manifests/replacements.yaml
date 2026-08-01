@@ -69,17 +69,19 @@ groups:
 
   - id: code_fresh_software
     rationale: >-
-      Preserve the 35B software freshness bucket while allowing current source,
-      official documentation, and engineering-discussion material to cover one
-      another after each original route is widened.
+      Hold the 35B software freshness bucket on the one route that can supply it
+      on this generation's acquisition host. Fresh repository code and
+      engineering discussions were both withdrawn -- see
+      manifests/sources/code.yaml for why -- so current official documentation
+      now carries the bucket alone. Like the other three freshness buckets it
+      has no in-bucket donor and must widen into its own cold reserve --
+      CC-MAIN-2026-04 -- before reporting a shortage. That is the deliberate
+      cost of removing the two GitHub-driven routes.
     members:
-      - metis_freshgithub_2025_26
       - metis_freshsoftwaredocs_2025_26
-      - metis_freshengineering_discussions_2025_26
     donor_order:
-      - metis_freshgithub_2025_26
       - metis_freshsoftwaredocs_2025_26
-      - metis_freshengineering_discussions_2025_26
+    self_reserve_required: true
 
   - id: code_generated
     rationale: >-

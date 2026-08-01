@@ -721,5 +721,96 @@ class GitHubCrashRecoveryTests(unittest.TestCase):
             )
 
 
+class GitHubHourlyArchiveBudgetTests(unittest.TestCase):
+    """The GH Archive event walk must be boundable for both GitHub drivers.
+
+    A monthly partition is about 720 hourly files and 70-140GiB, and neither
+    driver can commit its month until the walk reaches the end of the window.
+    The codeload cap bounds repository archives but not this, so an uncapped
+    walk is still an open-ended transfer -- and for the discussion driver, whose
+    gate is a repository slice that only the repository walk fills, an
+    unbounded walk can move terabytes to accept nothing at all.
+    """
+
+    def _walk(self, driver: str, *, cap: int | None, days: int) -> dict:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sha = "a" * 40
+            gharchive = root / "fixtures" / "hours.json.gz"
+            repository = root / "fixtures" / "hours.tar.gz"
+            _write_gharchive(
+                gharchive,
+                [
+                    {
+                        "id": "push-1",
+                        "type": "PushEvent",
+                        "created_at": "2025-01-01T00:00:00Z",
+                        "repo": {"id": 1, "name": "example/repository"},
+                        "payload": {"head": sha},
+                    }
+                ],
+            )
+            _write_repository_archive(repository, sha)
+            client = _FixtureDownloadClient(gharchive, repository)
+            item = _github_item(driver, source_id=f"budget-{driver}")
+            start = "2025-01-01"
+            end = f"2025-01-{days:02d}"
+            item["access"] = {**item["access"], "cutoff_start": start, "cutoff_end": end}
+            item["partition"] = {**item["partition"], "start": start, "end": end}
+            profile = _github_profile(root)
+            if cap is not None:
+                profile["acquisition"] = {"github_maximum_hourly_archives": cap}
+            with (
+                mock.patch.dict(
+                    os.environ, {"GITHUB_TOKEN": "github-test-token"}, clear=True
+                ),
+                mock.patch(
+                    "metis_data.acquisition.github._public_client", return_value=client
+                ),
+            ):
+                result = materialize_github(item, profile=profile, root=root)
+            receipt = json.loads(Path(result["receipt"]).read_text(encoding="utf-8"))
+            return {
+                "counters": receipt["counters"],
+                "archive_urls": [
+                    url for url in client.calls if "data.gharchive.org" in url
+                ],
+            }
+
+    def test_an_uncapped_walk_reads_every_hour_in_the_partition(self) -> None:
+        # Establishes what the budget is preventing: unbudgeted, the walk is
+        # bounded only by the width of the window.
+        walk = self._walk("github_repositories", cap=None, days=2)
+        self.assertEqual(walk["counters"]["archives"], 48)
+        self.assertEqual(len(walk["archive_urls"]), 48)
+        self.assertNotIn("stopped_at_hourly_archive_budget", walk["counters"])
+
+    def test_the_budget_stops_the_walk_and_is_recorded_in_the_receipt(self) -> None:
+        walk = self._walk("github_repositories", cap=5, days=2)
+        self.assertEqual(walk["counters"]["archives"], 5)
+        # Bounded in transfers, not merely in accounting.
+        self.assertEqual(len(walk["archive_urls"]), 5)
+        # The receipt has to say the partition is short by policy, so a
+        # truncated window is never read as an exhausted one.
+        self.assertEqual(walk["counters"]["stopped_at_hourly_archive_budget"], 1)
+
+    def test_a_budgeted_partition_that_accepts_nothing_still_fails_closed(
+        self,
+    ) -> None:
+        """A budget bounds transfer; it does not license an empty partition.
+
+        This is why withdrawing fresh repository code also had to withdraw
+        engineering discussions.  The discussion driver accepts only events
+        whose repository the repository walk has already licensed, so with that
+        walk gone every discussion partition accepts nothing -- and an empty
+        partition raises here rather than reporting a covered shortfall.  A
+        budget cannot rescue that, and this test pins the reason so the source
+        is not quietly restored on the assumption that it would degrade
+        gracefully.
+        """
+        with self.assertRaisesRegex(RuntimeError, "produced no records"):
+            self._walk("github_discussions", cap=5, days=2)
+
+
 if __name__ == "__main__":
     unittest.main()
