@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 import pyarrow.parquet as pq
-from datasets import load_dataset
+from datasets import Audio, Image, load_dataset
 from huggingface_hub import hf_hub_download
 
 from .config import load_yaml, repository_root
@@ -222,8 +222,33 @@ def _benchmark_source_rows(
         streaming=True,
         cache_dir=str(cache_dir),
     )
+    dataset = _without_media_decoding(dataset)
     for index, row in enumerate(dataset):
         yield index, dict(row)
+
+
+def _without_media_decoding(dataset: Any) -> Any:
+    """Stop ``datasets`` decoding image and audio columns while streaming.
+
+    The registry pins genuinely multimodal benchmarks -- MMMU across thirty
+    configs, MathVista, OlympiadBench -- and decontamination reads only their
+    text. Decoding the media is therefore pure waste, and it is not free: it
+    pulls the payload bytes and it imports Pillow, whose absence raised
+    ``ImportError`` deep inside iteration and killed an acquisition run five
+    hours in. ``decode=False`` yields the undecoded ``{path, bytes}`` mapping,
+    which the text extractor ignores exactly as it ignored the decoded object.
+
+    Features are unknown for some streamed builders. That is left alone rather
+    than guessed at: Pillow is a declared dependency so an undecodable column
+    still cannot crash the run.
+    """
+    features = getattr(dataset, "features", None)
+    if not features:
+        return dataset
+    for name, feature in list(features.items()):
+        if isinstance(feature, (Image, Audio)):
+            dataset = dataset.cast_column(name, type(feature)(decode=False))
+    return dataset
 
 
 def _benchmark_rows(entry: dict[str, Any], cache_dir: Path) -> Iterator[dict[str, Any]]:
