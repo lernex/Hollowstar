@@ -180,6 +180,13 @@ scheduler:
   download:
     target_bytes_per_task: 20000000000
     max_concurrent: 4
+  minhash_priority:
+    # Default is 256MiB. The duplicate-component union-find touches its node
+    # table at random and is the one filter-chain structure large enough to
+    # outgrow a small cache, which is precisely how the acquisition ledger
+    # failed. Four filter tasks may run at once, so this is up to 64GiB of a
+    # host that had 706GiB free and was using one.
+    sqlite_cache_mb: ${METIS_MINHASH_CACHE_MIB:-16384}
 
 runtime:
   python: /usr/bin/python3.11
@@ -187,6 +194,19 @@ runtime:
   require_apptainer_for_compute: false
   hf_home: cache/huggingface
   temp_dir: cache/tmp
+  # Filter-chain scratch, which is where the MinHash union-find and span-dedup
+  # SQLite databases live. They are WITHOUT ROWID B-trees written at random
+  # positions -- the same access pattern that, left on Lustre with a small
+  # cache, turned the Common Crawl ledger into a 663GB database that produced
+  # 184KiB of documents in eleven days. temp_dir above resolves under the
+  # Lustre root, so leaving this unset would repeat that exactly.
+  #
+  # login2 exposes no node-local disk: sda is unmounted, /home is NFS, and / is
+  # an overlay. /tmp is a 378GiB tmpfs, so this scratch is RAM-backed and fast,
+  # but it is also charged against the host's 755GiB. Watch `free -g` during
+  # dedup; if a stage approaches the tmpfs limit, point this at a Lustre path
+  # to trade speed for capacity rather than letting a stage die on ENOSPC.
+  node_local_temp_dir: ${METIS_NODE_LOCAL_TMP:-/tmp}
   download_retries: 8
   request_timeout_seconds: 900
   # Every production driver in the manifest has a materialized, receipt-backed
