@@ -94,15 +94,12 @@ class ReplacementPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             resilience["cold_reserve_only_sources"],
-            [
-                "metis_freshdocs_2025_26",
-                "metis_freshscience_2025_26",
-                # Sole member of the software bucket since fresh repository code
-                # and engineering discussions were withdrawn, so like the other
-                # three fresh routes it widens into its own reserve crawl.
-                "metis_freshsoftwaredocs_2025_26",
-                "metis_freshweb_2026",
-            ],
+            # The whole freshness layer, which is now one source. Its three
+            # siblings were withdrawn with the common_crawl_ranges driver. It
+            # widens into FineWeb's four older 2025 dumps rather than into a
+            # reserve crawl -- historical web may never donate here, because
+            # matching the token count while losing recency defeats the bucket.
+            ["metis_freshweb_2025"],
         )
 
     def test_allocator_uses_ordered_donor_surplus_and_preserves_quotas(self) -> None:

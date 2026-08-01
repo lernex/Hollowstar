@@ -446,8 +446,13 @@ class NormalizationEvidenceTests(unittest.TestCase):
                     "input_count": 1,
                     "inputs": [
                         {
-                            "source_id": "metis_freshweb_2026",
-                            "driver": "common_crawl_ranges",
+                            # hf_snapshot on purpose: this source is a packaged
+                            # Common Crawl extraction, not a live crawl, and the
+                            # final opt-out re-check has to reach it anyway. It
+                            # used to be gated on the driver, which would exempt
+                            # exactly this shape.
+                            "source_id": "metis_freshweb_2025",
+                            "driver": "hf_snapshot",
                             "local_path": str(input_path),
                             "repo_path": "fresh-00000.jsonl",
                             "revision": "fixture",

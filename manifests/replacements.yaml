@@ -42,12 +42,24 @@ groups:
 
   - id: web_fresh_general
     rationale: >-
-      Keep the 35B general-web freshness bucket exact. The source widens across
-      the preferred 2026 crawls and then activates CC-MAIN-2026-04 as a cold
-      reserve; unrelated historical web may not replace it.
-    members: [metis_freshweb_2026]
-    donor_order: [metis_freshweb_2026]
+      Keep the 35B general-web freshness bucket exact. The source is the only
+      surviving member of the freshness layer, and unrelated historical web may
+      not replace it -- substituting 2019 crawl text for 2025 text would satisfy
+      the token count while destroying the property the bucket exists for. Its
+      cold reserve is the four older FineWeb 2025 dumps not in allow_patterns
+      (CC-MAIN-2025-05, -08, -13, -18), which widen the window backwards inside
+      2025 rather than abandoning freshness.
+    members: [metis_freshweb_2025]
+    donor_order: [metis_freshweb_2025]
     self_reserve_required: true
+
+  # code_fresh_software, science_fresh_publications, and
+  # science_fresh_official_docs were removed with their sole members. Every
+  # common_crawl_ranges source was withdrawn -- see manifests/sources/web.yaml --
+  # so the software, science, and official_documentation freshness buckets no
+  # longer exist and there is nothing left for those groups to protect. Their
+  # tokens went to already-acquired corpora inside the same categories, which
+  # the code_organic and science_* groups below already cover.
 
   - id: code_organic
     rationale: >-
@@ -66,22 +78,6 @@ groups:
       - nemotron_cc_code_v1
       - github_code_clean
       - metis_systems_formal
-
-  - id: code_fresh_software
-    rationale: >-
-      Hold the 35B software freshness bucket on the one route that can supply it
-      on this generation's acquisition host. Fresh repository code and
-      engineering discussions were both withdrawn -- see
-      manifests/sources/code.yaml for why -- so current official documentation
-      now carries the bucket alone. Like the other three freshness buckets it
-      has no in-bucket donor and must widen into its own cold reserve --
-      CC-MAIN-2026-04 -- before reporting a shortage. That is the deliberate
-      cost of removing the two GitHub-driven routes.
-    members:
-      - metis_freshsoftwaredocs_2025_26
-    donor_order:
-      - metis_freshsoftwaredocs_2025_26
-    self_reserve_required: true
 
   - id: code_generated
     rationale: >-
@@ -149,23 +145,6 @@ groups:
       - proof_pile2_science
       - openstax
       - patents_engineering_reports
-
-  - id: science_fresh_publications
-    rationale: >-
-      Keep recent-publication evidence exact. Widen the 2026 WARC selection and
-      activate the January 2026 crawl before reporting a shortage.
-    members: [metis_freshscience_2025_26]
-    donor_order: [metis_freshscience_2025_26]
-    self_reserve_required: true
-
-  - id: science_fresh_official_docs
-    rationale: >-
-      Keep the official-documentation freshness bucket exact. Widen the
-      version-evidenced route and activate the January 2026 crawl before
-      reporting a shortage.
-    members: [metis_freshdocs_2025_26]
-    donor_order: [metis_freshdocs_2025_26]
-    self_reserve_required: true
 
   - id: synthetic_grounded
     rationale: >-

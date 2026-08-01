@@ -71,14 +71,19 @@ categories:
     label: Translated and native multilingual
     phase_tokens: {phase_a: 10000000000, phase_b: 0, phase_c: 0}
 
+# Three of the four buckets were withdrawn with their sources. Every fresh
+# source was a common_crawl_ranges build, and that driver cannot run on this
+# generation's acquisition host -- see manifests/sources/web.yaml. General web
+# survives because FineWeb ships an already-built Common Crawl extraction, and
+# no equivalent packaged corpus exists for recent software docs, science, or
+# specifications. Metis-1.6 is therefore current in general web only, and its
+# freshness window ends 2025-06 rather than 2026-06. Restoring the other three
+# buckets is a 1.7 task and needs a host with egress from compute nodes.
 freshness_layer:
   embedded_in_target: true
-  target_tokens: 90000000000
+  target_tokens: 35000000000
   buckets:
     general_web: 35000000000
-    software: 35000000000
-    science: 10000000000
-    official_documentation: 10000000000
 
 selection:
   seed: 16062026

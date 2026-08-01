@@ -12,6 +12,20 @@ from .config import load_yaml, repository_root
 
 
 PHASES = ("phase_a", "phase_b", "phase_c")
+
+# The freshness layer is checked against a constant, not merely against its own
+# declared target, so it cannot shrink by arithmetic -- dropping a fresh source
+# and rebalancing the remainder would otherwise still reconcile. Changing this
+# number is the deliberate act of reducing how current the corpus is.
+#
+# 1.6 was planned at 90B across four buckets. Three were withdrawn: every fresh
+# source used the common_crawl_ranges driver, which cannot run on this
+# generation's acquisition host -- a login node whose ledger sits on Lustre with
+# no node-local scratch, where eleven days yielded 184KiB of documents against
+# the 90B target. General web survives only because FineWeb ships an already
+# built Common Crawl extraction; no equivalent packaged corpus exists for recent
+# software docs, science, or specifications. See manifests/sources/web.yaml.
+FRESHNESS_LAYER_TOKENS = 35_000_000_000
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -190,8 +204,14 @@ def validate_manifest(path: str | Path | None = None) -> ValidationResult:
     freshness = manifest.get("freshness_layer", {})
     fresh_sources = [source for source in sources if source.get("provenance", {}).get("fresh")]
     fresh_total = sum(total_phase_tokens(source) for source in fresh_sources)
-    if fresh_total != int(freshness.get("target_tokens", 0)) or fresh_total != 90_000_000_000:
-        errors.append(f"freshness layer must be exactly 90B embedded tokens, got {fresh_total:,}")
+    if (
+        fresh_total != int(freshness.get("target_tokens", 0))
+        or fresh_total != FRESHNESS_LAYER_TOKENS
+    ):
+        errors.append(
+            "freshness layer must be exactly "
+            f"{FRESHNESS_LAYER_TOKENS:,} embedded tokens, got {fresh_total:,}"
+        )
     expected_fresh_buckets = {key: int(value) for key, value in freshness.get("buckets", {}).items()}
     actual_fresh_buckets: dict[str, int] = {}
     for source in fresh_sources:

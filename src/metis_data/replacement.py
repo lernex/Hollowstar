@@ -145,8 +145,18 @@ def validate_replacement_policy(manifest: Mapping[str, Any]) -> list[str]:
         if group.get("self_reserve_required"):
             for source_id in members:
                 source = sources.get(source_id, {})
-                reserve_crawls = source.get("access", {}).get("reserve_crawls", [])
-                if not reserve_crawls:
+                access = source.get("access", {})
+                # A cold reserve is held-back material the source can widen into
+                # without leaving its own freshness bucket. For a Common Crawl
+                # build that is an unused crawl; for a packaged snapshot it is a
+                # file pattern deliberately excluded from allow_patterns. Both
+                # are declarations that a shortfall has somewhere to go, so
+                # either satisfies this -- requiring reserve_crawls specifically
+                # would have forced a self-reserved source to be crawl-driven.
+                reserve = access.get("reserve_crawls") or access.get(
+                    "reserve_allow_patterns"
+                )
+                if not reserve:
                     errors.append(
                         f"replacement source {source_id} requires a declared cold reserve"
                     )

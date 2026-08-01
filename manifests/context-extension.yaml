@@ -80,15 +80,14 @@ sources:
   - {id: finemath_unique, domain: math_formal, tokens: 300000000, retrieval_multiplier: 2.80}
   - {id: formal_theorem_corpora, domain: math_formal, tokens: 300000000, retrieval_multiplier: 2.40}
 
-  - {id: roots_stackexchange, domain: technical_discussion, tokens: 700000000, retrieval_multiplier: 3.00}
-  - {id: metis_freshdocs_2025_26, domain: technical_discussion, tokens: 400000000, retrieval_multiplier: 2.80}
-  # Absorbs the 300M that metis_freshengineering_discussions_2025_26 held before
-  # that source was withdrawn; see manifests/sources/code.yaml.
-  - {id: metis_freshsoftwaredocs_2025_26, domain: technical_discussion, tokens: 700000000, retrieval_multiplier: 2.80}
+  # Sole remaining technical_discussion member: metis_freshdocs_2025_26 (400M)
+  # and metis_freshsoftwaredocs_2025_26 (700M) were withdrawn with every other
+  # common_crawl_ranges source; see manifests/sources/web.yaml.
+  - {id: roots_stackexchange, domain: technical_discussion, tokens: 1800000000, retrieval_multiplier: 3.00}
 
   - {id: finewiki, domain: general_reference, tokens: 350000000, retrieval_multiplier: 2.00}
   - {id: wikimedia_reference, domain: general_reference, tokens: 250000000, retrieval_multiplier: 2.00}
-  - {id: metis_freshweb_2026, domain: general_reference, tokens: 300000000, retrieval_multiplier: 3.00}
+  - {id: metis_freshweb_2025, domain: general_reference, tokens: 300000000, retrieval_multiplier: 3.00}
 
 fallbacks:
   exhaustion_policy: fail_closed
@@ -111,11 +110,11 @@ fallbacks:
       members: [nemotron_cc_math_4plus, proof_pile2_math, finemath_unique, formal_theorem_corpora]
       donor_order: [nemotron_cc_math_4plus, proof_pile2_math, finemath_unique, formal_theorem_corpora]
     - id: technical_discussion
-      members: [roots_stackexchange, metis_freshdocs_2025_26, metis_freshsoftwaredocs_2025_26]
-      donor_order: [metis_freshdocs_2025_26, metis_freshsoftwaredocs_2025_26, roots_stackexchange]
+      members: [roots_stackexchange]
+      donor_order: [roots_stackexchange]
     - id: general_reference
-      members: [finewiki, wikimedia_reference, metis_freshweb_2026]
-      donor_order: [finewiki, wikimedia_reference, metis_freshweb_2026]
+      members: [finewiki, wikimedia_reference, metis_freshweb_2025]
+      donor_order: [finewiki, wikimedia_reference, metis_freshweb_2025]
 
 gate_policy:
   schema: metis.context-gate-policy/v1

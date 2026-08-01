@@ -1238,12 +1238,24 @@ def _normalize_task(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
         else ""
     )
     input_driver = str(file_record.get("driver") or "")
+    # The final opt-out re-check exists to honour publishers who withdrew after
+    # the corpus was acquired, so what matters is whether the text came out of
+    # Common Crawl -- not which driver fetched it. A packaged extraction such as
+    # FineWeb is Common Crawl text that a third party filtered at build time,
+    # which makes it *more* exposed to later withdrawals than a fresh crawl, not
+    # less. Gating on the driver alone silently exempted it.
+    common_crawl_derived = bool(
+        source is not None
+        and source.get("provenance", {}).get("common_crawl_derived")
+    )
     final_opt_out_policy = None
     if source_driver == "common_crawl_ranges":
         if input_driver != "common_crawl_ranges":
             raise RuntimeError(
                 f"Common Crawl build input {task_index} lost its acquisition driver identity"
             )
+        final_opt_out_policy = load_frozen_common_crawl_opt_out(root, state)
+    elif common_crawl_derived:
         final_opt_out_policy = load_frozen_common_crawl_opt_out(root, state)
     output_dir = root / profile["storage"]["directories"]["normalized"]
     output_dir.mkdir(parents=True, exist_ok=True)

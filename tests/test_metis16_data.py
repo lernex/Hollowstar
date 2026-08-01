@@ -46,7 +46,12 @@ from metis_data.local_download import (
     _run_task_in_lanes,
     _supervisor_lock,
 )
-from metis_data.manifest import load_manifest, matches_any, validate_manifest
+from metis_data.manifest import (
+    FRESHNESS_LAYER_TOKENS,
+    load_manifest,
+    matches_any,
+    validate_manifest,
+)
 from metis_data.packing import pack_release
 from metis_data.quality import evaluate_quality
 from metis_data.runtime_lock import runtime_contract
@@ -82,7 +87,14 @@ class ManifestTests(unittest.TestCase):
             manifest["schedule"]["phases"]["phase_b"]["replay_tokens"],
             0,
         )
-        self.assertEqual(manifest["freshness_layer"]["target_tokens"], 90_000_000_000)
+        # Was 90B across four buckets. Three were withdrawn because every fresh
+        # source used the common_crawl_ranges driver, which this generation's
+        # acquisition host cannot run; general web survives on FineWeb's
+        # packaged extraction. Pinned to the validator constant so the number
+        # can only move by editing manifest.py deliberately.
+        self.assertEqual(
+            manifest["freshness_layer"]["target_tokens"], FRESHNESS_LAYER_TOKENS
+        )
         self.assertEqual(manifest["tokenizer"]["vocabulary_size_including_special_tokens"], 65_536)
         source_ids = [source["id"] for source in manifest["sources"]]
         self.assertGreaterEqual(len(source_ids), 50)

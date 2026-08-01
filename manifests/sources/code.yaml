@@ -20,7 +20,7 @@ sources:
   - id: starcoder_permissive_code
     label: StarCoderData permissive repository code across 88 languages
     category: code
-    phase_tokens: {phase_a: 35910000000, phase_b: 20928000000, phase_c: 5982000000}
+    phase_tokens: {phase_a: 47910000000, phase_b: 28928000000, phase_c: 8982000000}
     provenance: {generated: false, transformed: false, fresh: false}
     access:
       type: huggingface
@@ -66,7 +66,7 @@ sources:
   - id: github_code_clean
     label: CodeParrot cleaned GitHub source files
     category: code
-    phase_tokens: {phase_a: 15000000000, phase_b: 9000000000, phase_c: 2000000000}
+    phase_tokens: {phase_a: 22000000000, phase_b: 13000000000, phase_c: 3000000000}
     provenance: {generated: false, transformed: false, fresh: false}
     access:
       type: huggingface
@@ -126,23 +126,16 @@ sources:
   # reserve rather than by an in-bucket donor. Both drivers and their lanes
   # remain wired; only the two sources are withdrawn.
 
-  - id: metis_freshsoftwaredocs_2025_26
-    label: Current official software docs, examples, migrations, and package APIs
-    category: code
-    phase_tokens: {phase_a: 19000000000, phase_b: 12000000000, phase_c: 4000000000}
-    provenance: {generated: false, transformed: false, fresh: true, freshness_bucket: software}
-    access:
-      type: common_crawl
-      crawls: [CC-MAIN-2026-08, CC-MAIN-2026-12, CC-MAIN-2026-17, CC-MAIN-2026-21, CC-MAIN-2026-25]
-      reserve_crawls: [CC-MAIN-2026-04]
-      url_index: s3://commoncrawl/cc-index/table/cc-main/warc/
-      warc_root: https://data.commoncrawl.org/
-      route: software_docs
-      cutoff_start: '2025-01-01'
-      cutoff_end: '2026-06-30'
-    license: {status: per_record_required, expression: canonical-source-license}
-    acquisition: {driver: common_crawl_ranges, candidate_multiplier: 1.80, compressed_bytes_per_token: 0.90}
-    processing: {quality_profile: official_docs_v1, dedup_namespace: global_docs, priority: 100}
+  # metis_freshsoftwaredocs_2025_26 (35B: 19/12/4) carried the whole software
+  # freshness bucket after the two GitHub sources were withdrawn. It is now
+  # withdrawn too, with the other three common_crawl_ranges sources: eleven days
+  # on the acquisition host produced 184KiB of documents across all four against
+  # a 90B token target while their SQLite ledgers grew to 1.5TiB. The route was
+  # never the problem -- the host is a login node whose ledger lives on Lustre
+  # with no node-local scratch, which turns the ledger's random-order inserts
+  # into network round trips. Its 35B moves to the two permissive code corpora
+  # below, both already on disk. The code category total is unchanged at 160B
+  # and every per-phase total is exact. See manifests/sources/web.yaml.
 
   - id: metis_systems_formal
     label: CUDA, Triton, SQL, shell, build systems, Lean, and Coq
