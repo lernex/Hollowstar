@@ -39,6 +39,12 @@ research_basis:
     source: https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash
     used_for: [external_teacher_bootstrap, independent_specialists, unified_opd]
 
+# Continued pretraining is contracted by the pretraining side because its
+# output is the base model, not an aligned one.  This pipeline executes it and
+# the loader refuses to start if the two declarations diverge.
+continued_pretraining_contract: configs/metis16/pretraining.yaml
+base_model_boundary: context_extension
+
 context_extension:
   base_context: 4096
   deploy_context: 131072
@@ -50,6 +56,43 @@ context_extension:
   positional_encoding: nope
   token_budget: 18000000000
   checkpoint_gates: [6000000000, 12000000000, 18000000000]
+  # Memory strategy. This is the one stage where Metis-1.6 does not fit: a
+  # physical pass at 163,840 tokens keeps four mHC streams alive per layer, and
+  # replaying the whole pass means every block's activations are live at once.
+  # The figure is per rank, so data parallelism replicates the problem instead
+  # of dividing it -- adding APUs does not help, and these two knobs do.
+  #
+  # Layer-level recompute replays one block at a time instead of one pass at a
+  # time. Identical arithmetic (the same 8/6 replay factor the throughput model
+  # already prices), roughly an L/3 reduction in live activations, and it alone
+  # brings Praxis comfortably inside 128 GB of unified HBM3.
+  #
+  # Context parallelism shards the sequence four ways so each rank owns 40,960
+  # contiguous tokens. Four is chosen to match the four APUs on a Cray EX255a
+  # node: the group exchanges SSM state and gathered keys at every layer of
+  # every pass, and that traffic must stay on Infinity Fabric rather than
+  # crossing Slingshot. Logos needs it; Praxis inherits it for free because the
+  # two families share a launcher.
+  #
+  # Attention pays a causal-imbalance tax under contiguous shards -- rank r
+  # attends over roughly (r+1)/CP of the sequence, so the last rank sets the
+  # pace at 2*CP/(CP+1) = 1.6x the mean. With 3 of 20 Logos layers attentional
+  # that is a step-time penalty in the high teens, and it buys a Mamba state
+  # exchange that is exact rather than truncated. Striping the attention layers
+  # alone would recover it and is deliberately left for 1.7.
+  memory_strategy:
+    activation_recompute_policy: layer
+    context_parallel_size: 4
+    micro_batch: 1
+    # Packing flattens [batch, sequence] into one row, which interleaves batch
+    # rows across shards; the model refuses micro_batch > 1 under CP rather than
+    # carry mixer state between rows. At 163,840 tokens one sequence already is
+    # the micro-batch, so this costs nothing.
+    require_micro_batch_one: true
+    # Peak HBM must be measured on Portage before the run is trusted; the
+    # analytic estimate is activation-only and omits optimizer state and kernel
+    # workspace.
+    verify_peak_hbm_on_first_gate: true
   sequence_mix:
     long: 0.90
     base: 0.10

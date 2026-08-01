@@ -46,6 +46,7 @@ from .distributed import (
     global_any,
     initialize_runtime,
     normalize_summed_gradients,
+    OverlappedGradientReducer,
     synchronize_gradients,
 )
 from .metrics import (
@@ -351,6 +352,7 @@ def _construct_model(
                 if config.ngram_memory.table_mode == "replicated"
                 else topology.expert_data_group
             ),
+            context=topology.context_group,
         ),
         precision_policy=policy,
     )
@@ -618,6 +620,11 @@ def _run_steps(
     collective_errors = 0
     overflow_drop_tokens = 0
     update_before = sample_parameters(model) if probe and args.lr_candidate is not None else {}
+    # Reducing dense gradients during backward, rather than in a serial phase
+    # after it, hides the whole replicated all-reduce behind compute.
+    gradient_reducer = (
+        OverlappedGradientReducer(model, topology) if topology.distributed else None
+    )
     last_checkpoint: Path | None = None
     last_checkpoint_cursor: int | None = None
     next_checkpoint = (
@@ -627,13 +634,21 @@ def _run_steps(
     if runtime.device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(runtime.device)
 
+    # Ranks that jointly own one sequence must read the same batch and then
+    # keep different windows of it, so the loader is sharded by
+    # context-parallel *group* and the split happens after the fetch.  With
+    # context parallelism off these are the runtime's own rank and world size.
+    context_parallel_size = topology.context_parallel_size
+    data_rank = runtime.rank // context_parallel_size
+    data_world_size = runtime.world_size // context_parallel_size
+
     prefetch_context: Any
     if stream is not None:
         prefetch_context = ReleaseBatchPrefetcher(
             stream,
             start_cursor=cursor,
-            rank=runtime.rank,
-            world_size=runtime.world_size,
+            rank=data_rank,
+            world_size=data_world_size,
             micro_batch_size=selection.micro_batch,
             depth=int(data_config["prefetch_micro_batches"]),
         )
@@ -736,11 +751,20 @@ def _run_steps(
             accumulation_count = 0
             step_started = time.perf_counter()
             for _accumulation_index in range(selection.grad_accum):
+                if (
+                    gradient_reducer is not None
+                    and _accumulation_index == selection.grad_accum - 1
+                ):
+                    # Only the last micro-step holds the final gradient, so only
+                    # its backward may reduce.  An accumulation loop that exits
+                    # early never arms the reducer and falls back to the
+                    # synchronous path inside synchronize_gradients.
+                    gradient_reducer.arm()
                 if stream is None:
                     cpu_batch = _synthetic_batch(
                         cursor=cursor,
-                        rank=runtime.rank,
-                        world_size=runtime.world_size,
+                        rank=data_rank,
+                        world_size=data_world_size,
                         micro_batch=selection.micro_batch,
                         sequence_length=config.sequence_length,
                         vocab_size=config.vocab_size,
@@ -749,6 +773,9 @@ def _run_steps(
                     cpu_batch = prefetcher.next(expected_cursor=cursor)
                 if cpu_batch.phase != step_phase:
                     raise RuntimeError("An optimizer batch attempted to cross a phase boundary")
+                cpu_batch = cpu_batch.shard_for_context_parallel(
+                    topology.context_rank, context_parallel_size
+                )
                 batch = cpu_batch.to(runtime.device)
 
                 if (
@@ -848,7 +875,7 @@ def _run_steps(
                     break
                 raise RuntimeError("Optimizer batch contained no supervised tokens")
             try:
-                synchronize_gradients(model, topology)
+                synchronize_gradients(model, topology, reducer=gradient_reducer)
             except RuntimeError:
                 collective_errors += 1
                 raise
@@ -1189,6 +1216,7 @@ def _run(args: argparse.Namespace) -> int:
         family=args.family,
         routed_experts=config.n_routed_experts,
         production=production_shape,
+        context_parallel_size=config.context_parallel_size,
     )
     _set_seed(16_062_026, rank=runtime.rank)
 

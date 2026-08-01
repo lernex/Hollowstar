@@ -210,6 +210,47 @@ class TrainingBatch:
     non_padding_tokens: int
     supervised_tokens: int
 
+    def shard_for_context_parallel(self, rank: int, size: int) -> "TrainingBatch":
+        """Take this rank's contiguous slice of a context-parallel sequence.
+
+        Every rank in a context-parallel group reads the *same* global batch and
+        keeps a different window of it, so the loader must be sharded by group
+        rather than by global rank before this is called.
+
+        ``supervised_tokens`` is recounted from the labels instead of reused.
+        The usual ``micro_batch * (sequence_length - 1)`` shortcut assumes the
+        final position of the shard has no successor to predict, which is true
+        only of the last shard; every earlier one supervises all of its tokens.
+        Carrying the shortcut through would misweight the gradient of every
+        shard but one.
+        """
+
+        if size <= 1:
+            return self
+        length = int(self.input_ids.shape[1])
+        if length % size:
+            raise ValueError(
+                f"Sequence length {length} is not divisible by the "
+                f"context-parallel size {size}."
+            )
+        width = length // size
+        window = slice(rank * width, (rank + 1) * width)
+        labels = self.labels[:, window]
+        attention_mask = self.attention_mask[:, window]
+        return TrainingBatch(
+            input_ids=self.input_ids[:, window],
+            canonical_ids=self.canonical_ids[:, window],
+            labels=labels,
+            attention_mask=attention_mask,
+            document_ids=self.document_ids[:, window],
+            reset_mask=self.reset_mask[:, window],
+            phase=self.phase,
+            global_token_cursor=self.global_token_cursor,
+            next_global_token_cursor=self.next_global_token_cursor,
+            non_padding_tokens=int(attention_mask.sum().item()),
+            supervised_tokens=int((labels != -100).sum().item()),
+        )
+
     def to(self, device: torch.device, *, non_blocking: bool = True) -> "TrainingBatch":
         return TrainingBatch(
             input_ids=self.input_ids.to(device, non_blocking=non_blocking),

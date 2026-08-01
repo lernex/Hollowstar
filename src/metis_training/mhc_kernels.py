@@ -90,10 +90,15 @@ def require_mhc_backend(
     device: torch.device | str | None,
 ) -> None:
     if backend == "torch_reference":
-        if family != "tiny":
+        # ``ablation`` joins ``tiny`` here so the MoRE ladder can be smoke-tested
+        # and dry-run on CPU.  Its production launches declare
+        # ``fused_required`` in the manifest, exactly like Praxis and Logos, so
+        # a real campaign run still cannot silently fall back to the reference.
+        if family not in {"tiny", "ablation"}:
             raise RuntimeError(
-                "The torch mHC reference backend is restricted to tiny tests; "
-                f"{family} requires the fused Triton/ROCm backend."
+                "The torch mHC reference backend is restricted to tiny and "
+                f"ablation research runs; {family} requires the fused "
+                "Triton/ROCm backend."
             )
         return
     if backend != "fused_required":

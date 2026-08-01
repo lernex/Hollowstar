@@ -28,8 +28,11 @@ STAGE_OUTPUT_SCHEMA = "metis.stage-output/v1"
 STATE_SCHEMA = "metis.posttraining-state/v1"
 RUNTIME_SCHEMA = "metis.posttraining-runtime/v1"
 
-EXPECTED_STAGE_IDS = (
-    "context_extension",
+# Continued pretraining produces the base model; everything after it aligns
+# that base model.  The executed order is the concatenation, unchanged, but the
+# boundary is now explicit rather than an operator convention.
+BASE_MODEL_STAGE_IDS = ("context_extension",)
+ALIGNMENT_STAGE_IDS = (
     "cold_start_sft",
     "overall_sft",
     "deepseek_dpd_pilot",
@@ -45,6 +48,7 @@ EXPECTED_STAGE_IDS = (
     "evaluation",
     "publish_gate",
 )
+EXPECTED_STAGE_IDS = BASE_MODEL_STAGE_IDS + ALIGNMENT_STAGE_IDS
 DPD_STAGE_IDS = ("deepseek_dpd_pilot", "deepseek_dpd")
 SPECIALIST_STAGE_IDS = (
     "specialist_reasoning",
@@ -256,6 +260,20 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
         or tokenizer.get("manifest_env") != "METIS_TOKENIZER_MANIFEST"
     ):
         raise PipelineContractError("tokenizer must require the sealed 65,536-vocabulary manifest")
+
+    boundary = pipeline.get("base_model_boundary")
+    if boundary != BASE_MODEL_STAGE_IDS[-1]:
+        raise PipelineContractError(
+            "base_model_boundary must name the last base-model stage "
+            f"({BASE_MODEL_STAGE_IDS[-1]}); the base model is not the 1T checkpoint"
+        )
+    if not str(pipeline.get("continued_pretraining_contract", "")).endswith(
+        "pretraining.yaml"
+    ):
+        raise PipelineContractError(
+            "continued_pretraining_contract must point at the pretraining "
+            "contract that owns the continued-pretraining declaration"
+        )
 
     context = _require_mapping(pipeline.get("context_extension"), "context_extension")
     if (
@@ -690,10 +708,92 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
     return pipeline
 
 
+# Fields the pipeline's context_extension block mirrors from the authoritative
+# continued_pretraining declaration in the pretraining contract.
+_CONTINUED_PRETRAINING_MIRRORED = (
+    "base_context",
+    "train_context",
+    "deploy_context",
+    "schedule",
+    "positional_encoding",
+    "token_budget",
+    "checkpoint_gates",
+    "sequence_mix",
+    "data_mix",
+)
+
+
+def cross_check_continued_pretraining(
+    pipeline: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> None:
+    """Fail closed when the two declarations of the base model disagree.
+
+    The pretraining contract owns continued pretraining because its output is
+    the base model.  The pipeline still carries a copy so the post-training
+    validator can run standalone, so the copy has to be provably identical.
+    """
+
+    declared = _require_mapping(
+        contract.get("continued_pretraining"), "continued_pretraining"
+    )
+    mirrored = _require_mapping(pipeline.get("context_extension"), "context_extension")
+    if declared.get("stage_id") != BASE_MODEL_STAGE_IDS[-1]:
+        raise PipelineContractError(
+            "continued_pretraining.stage_id must name the base-model stage"
+        )
+    for field in _CONTINUED_PRETRAINING_MIRRORED:
+        if field not in declared:
+            raise PipelineContractError(
+                f"pretraining contract is missing continued_pretraining.{field}"
+            )
+        if declared[field] != mirrored.get(field):
+            raise PipelineContractError(
+                f"continued_pretraining.{field} differs between the pretraining "
+                f"contract ({declared[field]!r}) and the pipeline "
+                f"({mirrored.get(field)!r})"
+            )
+    if declared.get("in_pretraining_release") is not False:
+        raise PipelineContractError(
+            "continued_pretraining must declare its corpus separate from the "
+            "1T pretraining release"
+        )
+    boundary = int(declared.get("maximum_gate_overshoot_tokens", 0)) or int(
+        _require_mapping(declared.get("gate_policy"), "continued_pretraining.gate_policy")
+        .get("maximum_gate_overshoot_tokens", 0)
+    )
+    train_context = int(declared["train_context"])
+    maximum_world = int(declared.get("maximum_world_size", 0))
+    # One sequence per rank is the floor, so world_size x train_context is the
+    # smallest possible global batch and the overshoot allowance caps the world.
+    if maximum_world <= 0 or maximum_world * train_context > boundary:
+        raise PipelineContractError(
+            "continued_pretraining.maximum_world_size must keep one optimizer "
+            f"step ({maximum_world} x {train_context} tokens) inside the "
+            f"{boundary}-token gate overshoot allowance"
+        )
+
+
 def load_pipeline(path: str | Path) -> dict[str, Any]:
     pipeline_path = Path(path).expanduser().resolve()
     payload = yaml.safe_load(pipeline_path.read_text(encoding="utf-8"))
-    validate_pipeline(_require_mapping(payload, "pipeline"))
+    pipeline = _require_mapping(payload, "pipeline")
+    validate_pipeline(pipeline)
+    reference = pipeline.get("continued_pretraining_contract")
+    contract_path = (pipeline_path.parent.parent.parent / str(reference)).resolve()
+    if not contract_path.is_file():
+        contract_path = (pipeline_path.parent / Path(str(reference)).name).resolve()
+    if not contract_path.is_file():
+        raise PipelineContractError(
+            f"continued_pretraining_contract does not resolve to a file: {reference}"
+        )
+    cross_check_continued_pretraining(
+        pipeline,
+        _require_mapping(
+            yaml.safe_load(contract_path.read_text(encoding="utf-8")),
+            "pretraining contract",
+        ),
+    )
     return dict(payload)
 
 

@@ -1,0 +1,183 @@
+% MoRE paper references.
+% Status flags:
+%   [VERIFIED] - arXiv id confirmed by web search on 2026-07-25.
+%   [CHECK]    - cited from memory or secondary source; confirm id/authors/venue before submission.
+
+% ---------------------------------------------------------------- depth axis
+
+@article{mor2025,
+  title  = {Mixture-of-Recursions: Learning Dynamic Recursive Depths for Adaptive Token-Level Computation},
+  journal = {arXiv preprint arXiv:2507.10524},
+  year   = {2025},
+  note   = {[VERIFIED] Closest prior art on the depth axis: per-token adaptive recursion with a shared block and dense FFN.}
+}
+
+@article{ouro2025,
+  title  = {Ouro: looped language models},
+  journal = {arXiv preprint arXiv:2510.25741},
+  year   = {2025},
+  note   = {[CHECK title/authors] Cited in METIS_1.6_PLAN.md. Source of the depth-vs-knowledge finding: recursion buys manipulation, tokens buy knowledge.}
+}
+
+@article{mod2024,
+  title  = {Mixture-of-Depths: Dynamically Allocating Compute in Transformer-Based Language Models},
+  author = {Raposo, David and Ritter, Sam and others},
+  journal = {arXiv preprint arXiv:2404.02258},
+  year   = {2024},
+  note   = {[VERIFIED]}
+}
+
+@article{act2016,
+  title  = {Adaptive Computation Time for Recurrent Neural Networks},
+  author = {Graves, Alex},
+  journal = {arXiv preprint arXiv:1603.08983},
+  year   = {2016},
+  note   = {[CHECK]}
+}
+
+@article{pondernet2021,
+  title  = {PonderNet: Learning to Ponder},
+  author = {Banino, Andrea and Balaguer, Jan and Blundell, Charles},
+  journal = {arXiv preprint arXiv:2107.05407},
+  year   = {2021},
+  note   = {[CHECK]}
+}
+
+% ---------------------------------------------------------------- width axis
+% NOTE: adaptive per-token expert count is NOT novel. Cite this line generously.
+
+@article{adamoe2024,
+  title  = {AdaMoE: Token-Adaptive Routing with Null Experts for Mixture-of-Experts Language Models},
+  journal = {arXiv preprint arXiv:2406.13233},
+  year   = {2024},
+  note   = {[VERIFIED]}
+}
+
+@article{harder2024,
+  title  = {Harder Tasks Need More Experts: Dynamic Routing in MoE Models},
+  journal = {arXiv preprint arXiv:2403.07652},
+  year   = {2024},
+  note   = {[VERIFIED] States the width-axis thesis directly in its title. Must be cited and distinguished.}
+}
+
+@article{dynamoe2026,
+  title  = {DynaMoE: Dynamic Token-Level Expert Activation with Layer-Wise Adaptive Capacity for Mixture-of-Experts Neural Networks},
+  journal = {arXiv preprint arXiv:2603.01697},
+  year   = {2026},
+  note   = {[VERIFIED]}
+}
+
+@article{probmoe2026,
+  title  = {ProbMoE: Differentiable Probabilistic Routing for Mixture-of-Experts},
+  journal = {arXiv preprint arXiv:2606.01509},
+  year   = {2026},
+  note   = {[VERIFIED] Cardinality-constrained distribution over expert subsets; generalizes to dynamic-k.}
+}
+
+@article{anyexperts2025,
+  title  = {AnyExperts: On-Demand Expert Allocation for Multimodal Language Models with Mixture of Experts},
+  journal = {arXiv preprint arXiv:2511.18314},
+  year   = {2025},
+  note   = {[VERIFIED]}
+}
+
+@article{expertchoice2022,
+  title  = {Mixture-of-Experts with Expert Choice Routing},
+  journal = {arXiv preprint arXiv:2202.09368},
+  year   = {2022},
+  note   = {[VERIFIED]}
+}
+
+% ------------------------------------------------- recursion x MoE (COMPETITION)
+% These appeared in the two months before this draft. The paper must position
+% against them explicitly, not merely cite them.
+
+@article{loopmoe2026,
+  title  = {LoopMoE: Unifying Iterative Computation with Mixture-of-Experts for Language Modeling},
+  journal = {arXiv preprint arXiv:2606.04438},
+  year   = {2026},
+  note   = {[VERIFIED] Block-recurrent MoE at 3B/9B. IterAdaLN modulation conditioned on iteration index and token state. Compares to vanilla MoE at identical total params, per-token FLOPs, and active sublayer ratios. Nearest neighbour to Metis-1.6 row 5 (Fixed LoopMoE).}
+}
+
+@article{loopies2026,
+  title  = {Loop the Loopies!},
+  journal = {arXiv preprint arXiv:2607.16051},
+  year   = {2026},
+  note   = {[VERIFIED] Loopie series, 20B/A2B and 6B/A0.6B looped MoE, plus reasoning post-training. Direct competitor at Logos scale.}
+}
+
+@article{mesh2025,
+  title  = {MeSH: Memory-as-State-Highways for Recursive Transformers},
+  journal = {arXiv preprint arXiv:2510.07739},
+  year   = {2025},
+  note   = {[VERIFIED] B state slots m_b in R^{L x D}, slot 0 initialized to embeddings, B = N_loop + 3. Per-iteration Write/Read routers with UNIQUE parameters per iteration t, softmax over slots conditioned on h^(t) only. Additive write, weighted-sum read. Fixed recursion count, no halting, no MoE in the main method, no route information stored, memory feeds only the representation path. Evaluated on Pythia 160M-6.9B: +1.06 pt average downstream with 33 percent fewer non-embedding parameters. Structurally closest to a multi-stream residual with pass-dependent mixing -- i.e. convergent with recursion-aware mHC, NOT prior art for MoRE-RM.}
+}
+
+@article{relaxedrecursive2024,
+  title  = {Relaxed Recursive Transformers: Effective Parameter Sharing with Layer-wise LoRA},
+  journal = {arXiv preprint arXiv:2410.20672},
+  year   = {2024},
+  note   = {[VERIFIED]}
+}
+
+@article{tyingtheloop2026,
+  title  = {Tying the Loop: Tied Expert Layers in Mixture-of-Experts Language Models},
+  journal = {arXiv preprint arXiv:2606.16825},
+  year   = {2026},
+  note   = {[VERIFIED] Survey/comparison of per-iteration adaptation: Relaxed Recursive Transformers (depth-wise LoRA), RingFormer (depth-specific low-rank modulation), MeSH (explicit memory buffer with step-wise routers). MeSH is the nearest neighbour to MoRE-RM -- read it before claiming the memory.}
+}
+
+% ---------------------------------------------------------------- integrations
+
+@article{hyperconnections2024,
+  title  = {Hyper-Connections},
+  journal = {arXiv preprint arXiv:2409.19606},
+  year   = {2024},
+  note   = {[VERIFIED] ICLR 2025. Base technique for the four-stream residual path. mHC = manifold-constrained variant.}
+}
+
+@article{mamba2_2024,
+  title  = {Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality},
+  author = {Dao, Tri and Gu, Albert},
+  journal = {arXiv preprint arXiv:2405.21060},
+  year   = {2024},
+  note   = {[CHECK]}
+}
+
+@article{engram,
+  title  = {Engram (N-gram conditional memory)},
+  year   = {2025},
+  note   = {[CHECK - fill in] Source for the sparsity-allocation result cited in METIS_1.6_PLAN.md. Exact reference must be resolved before submission.}
+}
+
+@article{deepseekv3,
+  title  = {DeepSeek-V3 Technical Report},
+  journal = {arXiv preprint arXiv:2412.19437},
+  year   = {2024},
+  note   = {[CHECK] Aux-loss-free load balancing via expert selection bias.}
+}
+
+% ---------------------------------------------------------- naming collisions
+% Do not cite as related work. Recorded so the naming discussion in README.md
+% has sources.
+
+@inproceedings{morereasoning2023,
+  title  = {Getting MoRE out of Mixture of Language Model Reasoning Experts},
+  journal = {arXiv preprint arXiv:2305.14628},
+  year   = {2023},
+  note   = {[VERIFIED] NAME COLLISION: MoRE = Mixture of Reasoning Experts. Prompt-ensembling for QA, not an architecture.}
+}
+
+@article{morelowrank2025,
+  title  = {MoRE: A Mixture of Low-Rank Experts for Adaptive Multi-Task Learning},
+  journal = {arXiv preprint arXiv:2505.22694},
+  year   = {2025},
+  note   = {[VERIFIED] NAME COLLISION: MoRE = Mixture of Low-Rank Experts. PEFT/multi-task, not pretraining.}
+}
+
+@article{smore2025,
+  title  = {S'MoRE: Structural Mixture of Residual Experts for Parameter-Efficient LLM Fine-tuning},
+  journal = {arXiv preprint arXiv:2504.06426},
+  year   = {2025},
+  note   = {[VERIFIED] NEAR COLLISION.}
+}

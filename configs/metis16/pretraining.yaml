@@ -35,6 +35,51 @@ ordering:
   preserve_document_boundaries_in_index: true
   pack_across_documents: true
   insert_eos_between_documents: true
+# The base model is NOT the 1T checkpoint.  It is complete only once continued
+# pretraining has extended the context window to the deployed 131,072, so the
+# released base weights contain both.  The two remain entirely separate inputs:
+# `phases` above consume the 1T pretraining release, `continued_pretraining`
+# below consumes its own sealed long-context corpus, and neither token counter,
+# data directory, nor learning-rate segment is shared.  Nothing declared here is
+# mixed into phase-a/b/c.
+base_model_complete_after: [phase_c, continued_pretraining]
+
+continued_pretraining:
+  stage_id: context_extension
+  # Contracted here because its output is the base model; executed by the
+  # pipeline in configs/metis16/posttraining.yaml, which cross-checks against
+  # this block and refuses to run if the two disagree.
+  executed_by: metis.posttraining-pipeline/v1
+  base_context: 4096
+  train_context: 163840
+  deploy_context: 131072
+  schedule: single_jump
+  positional_encoding: nope
+  token_budget: 18000000000
+  token_counter: globally_emitted_non_padding_tokens
+  optimizer_state: preserve
+  # Separate corpus, separate schema, separate acquisition. It is deliberately
+  # not part of data_release: metis-1.6-data-r1.
+  data_env: METIS_CONTEXT_EXTENSION_DATA
+  data_schema: metis.context-extension-data/v1
+  in_pretraining_release: false
+  checkpoint_gates: [6000000000, 12000000000, 18000000000]
+  gate_policy:
+    checkpoint_at_first_optimizer_boundary_after_target: true
+    maximum_gate_overshoot_tokens: 65000000
+    retain_all_gate_checkpoints: true
+    promote_best_passing_gate: true
+  sequence_mix: {long: 0.90, base: 0.10}
+  data_mix: {pretrain_style: 0.80, synthetic_long_context: 0.20}
+  # There is no context or sequence parallelism, so one sequence per rank is the
+  # floor and the global batch is world_size x 163,840 -- it cannot be reduced.
+  # The 65,000,000-token overshoot allowance therefore caps the allocation at
+  # 396 ranks; 384 is the largest expert-parallel-divisible world under it.
+  # Wider allocations also collapse the step count: 352 ranks leaves Logos only
+  # 312 optimizer steps for the whole phase against ~173,000 for the 1T phases.
+  maximum_world_size: 384
+  recommended_world_size: 64
+
 optimizer_values:
   status: must_be_locked_after_portage_throughput_and_stability_probe
   note: This contract fixes data order and phase boundaries, not an unmeasured base learning rate or global batch.

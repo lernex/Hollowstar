@@ -1344,5 +1344,322 @@ class SelectionAndTokenizerTests(unittest.TestCase):
                 self.assertEqual(Path(shard["binary"]).stat().st_size, shard["tokens"] * 2)
 
 
+class ParallelCpuBuildTests(unittest.TestCase):
+    """The whole-node fan-out and the sharded sample/verify stages."""
+
+    CATEGORIES = ("web", "code", "math", "science")
+
+    def _manifest(self) -> dict:
+        sources = [
+            (f"src_{category}_{index}", category)
+            for category in self.CATEGORIES
+            for index in range(3)
+        ]
+        return {
+            "tokenizer": {
+                "sample_target_bytes": 200_000,
+                "min_sample_bytes_per_category": 10_000,
+            },
+            "categories": [
+                {"id": category, "phase_tokens": {"phase_a": 100 + 10 * index}}
+                for index, category in enumerate(self.CATEGORIES)
+            ],
+            "sources": [
+                {"id": source, "category": category, "phase_tokens": {"phase_a": 50 + 7 * index}}
+                for index, (source, category) in enumerate(sources)
+            ],
+        }
+
+    def _write_corpus(self, root: Path, files: int, seed: int, skew: bool) -> dict[Path, list[dict]]:
+        import io
+        import random
+
+        import zstandard as zstd
+
+        manifest = self._manifest()
+        sources = [(source["id"], source["category"]) for source in manifest["sources"]]
+        rng = random.Random(seed)
+        eligible = root / "eligible" / "final"
+        eligible.mkdir(parents=True, exist_ok=True)
+        rows_by_file: dict[Path, list[dict]] = {}
+        for index in range(files):
+            # Concentrating some sources into a few files stresses the
+            # apportionment far harder than a uniform corpus does.
+            pool = sources[:2] if skew and index % 5 == 0 else sources
+            rows = []
+            for _ in range(rng.randint(120, 300)):
+                source_id, category = rng.choice(pool)
+                text = "".join(rng.choice("abcdefghij ") for _ in range(rng.randint(50, 400)))
+                rows.append({"text": text, "metadata": {"source_id": source_id, "category": category}})
+            path = eligible / f"task-{index:06d}.jsonl.zst"
+            with path.open("wb") as raw:
+                with zstd.ZstdCompressor(level=1).stream_writer(raw) as compressed:
+                    with io.TextIOWrapper(compressed, encoding="utf-8") as handle:
+                        for row in rows:
+                            handle.write(json.dumps(row) + "\n")
+            rows_by_file[path] = rows
+        return rows_by_file
+
+    def _serial_reference(self, manifest: dict, rows_by_file: dict[Path, list[dict]]) -> dict[str, int]:
+        """The original single-process sampler, for behavioural comparison."""
+
+        _categories, source_targets, _target = stage_runner._tokenizer_sample_targets(manifest)
+        written = {source: 0 for source in source_targets}
+        for path in sorted(rows_by_file):
+            for row in rows_by_file[path]:
+                source_id = row["metadata"]["source_id"]
+                if source_id not in source_targets or written[source_id] >= source_targets[source_id]:
+                    continue
+                written[source_id] += len(row["text"].encode("utf-8"))
+        return written
+
+    def _profile(self, root: Path) -> dict:
+        return {
+            "manifest": "unused",
+            "storage": {
+                "lustre_root": str(root),
+                "directories": {
+                    "state": "state",
+                    "eligible": "eligible",
+                    "tokenizer": "tokenizer",
+                },
+            },
+        }
+
+    def test_sharded_tokenizer_sample_matches_the_serial_stratification(self) -> None:
+        manifest = self._manifest()
+        for files, seed, skew in ((12, 1, False), (40, 2, False), (25, 3, True), (60, 4, True)):
+            with self.subTest(files=files, skew=skew), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                rows_by_file = self._write_corpus(root, files, seed, skew)
+                profile = self._profile(root)
+                state = StateStore(root / "state")
+                state.write("build.inputs.json", payload={"input_count": files, "inputs": []})
+                _categories, targets, _target = stage_runner._tokenizer_sample_targets(manifest)
+                serial = self._serial_reference(manifest, rows_by_file)
+
+                with mock.patch.object(stage_runner, "_manifest", return_value=manifest):
+                    for task_index in range(files):
+                        stage_runner._tokenizer_sample_scan(profile, task_index)
+                    stage_runner._tokenizer_sample_plan(profile)
+                    for task_index in range(files):
+                        stage_runner._tokenizer_sample(profile, task_index)
+                    parts = stage_runner._tokenizer_sample_parts(profile, state)
+
+                sharded = {source: 0 for source in targets}
+                for part in parts:
+                    for row in stage_runner._iter_rows(part):
+                        sharded[row["source_id"]] += len(row["text"].encode("utf-8"))
+
+                self.assertEqual(len(parts), files, "every shard must publish a part")
+                largest_document = max(
+                    len(row["text"].encode("utf-8"))
+                    for rows in rows_by_file.values()
+                    for row in rows
+                )
+                for source, target in targets.items():
+                    # Whole documents are emitted, so the contract is "reach the
+                    # target, overshoot by less than one document" - exactly what
+                    # the serial sampler guarantees, and independent of how many
+                    # shards hold the source.
+                    self.assertGreaterEqual(sharded[source], target, source)
+                    self.assertLess(sharded[source] - target, largest_document, source)
+                    self.assertLess(serial[source] - target, largest_document, source)
+
+    def test_tokenizer_sample_plan_fails_closed_when_a_source_is_exhausted(self) -> None:
+        manifest = self._manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            self._write_corpus(root, 3, 9, False)
+            profile = self._profile(root)
+            StateStore(root / "state").write(
+                "build.inputs.json", payload={"input_count": 3, "inputs": []}
+            )
+            with mock.patch.object(stage_runner, "_manifest", return_value=manifest):
+                for task_index in range(3):
+                    stage_runner._tokenizer_sample_scan(profile, task_index)
+                with self.assertRaises(RuntimeError) as caught:
+                    stage_runner._tokenizer_sample_plan(profile)
+        self.assertIn("exhausted before its stratified source targets", str(caught.exception))
+
+    def test_verify_only_trusts_shard_receipts_bound_to_the_current_policy(self) -> None:
+        binding = stage_runner._verify_shard_binding(
+            selection={"token_count_contract_sha256": "tcc"},
+            selection_sha="sel",
+            tokenizer_contract={"tokenizer_sha256": "tok"},
+            maximum_exposures=4,
+        )
+        for field, changed in (
+            ("selection", {"token_count_contract_sha256": "other"}),
+            ("selection_sha", "different"),
+            ("tokenizer_contract", {"tokenizer_sha256": "retrained"}),
+            ("maximum_exposures", 5),
+        ):
+            arguments = {
+                "selection": {"token_count_contract_sha256": "tcc"},
+                "selection_sha": "sel",
+                "tokenizer_contract": {"tokenizer_sha256": "tok"},
+                "maximum_exposures": 4,
+            }
+            arguments[field] = changed
+            self.assertNotEqual(
+                binding,
+                stage_runner._verify_shard_binding(**arguments),
+                f"{field} must invalidate a per-shard verification receipt",
+            )
+
+    def test_verify_reverifies_shards_whose_receipt_is_stale_or_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            state = StateStore(root / "state")
+            shards = [
+                {"global_index": index, "phase": "phase_a", "phase_index": index,
+                 "target_tokens": 10, "sha256": f"schedule-{index}"}
+                for index in range(4)
+            ]
+            selection = {"shards": shards, "token_count_contract_sha256": "tcc"}
+            context = {
+                "manifest": {}, "selection": selection,
+                "selection_path": root / "SELECTION.json", "selection_sha": "sel",
+                "selection_artifacts": {"tokenizer_contract": {"t": 1}},
+                "selection_contract": {"maximum_document_exposures": 4},
+                "tokenizer_contract": {"t": 1}, "maximum_exposures": 4,
+                "binding": stage_runner._verify_shard_binding(
+                    selection=selection, selection_sha="sel",
+                    tokenizer_contract={"t": 1}, maximum_exposures=4,
+                ),
+            }
+            # Shard 0 fresh, shard 1 stale binding, shard 2 absent, shard 3 marked
+            # not-present. Only shard 0 may be taken on trust.
+            for index, payload in (
+                (0, {"schema": "metis.verify-shard/v1", "task_index": 0, "shard_present": True,
+                     "binding_sha256": context["binding"], "pack_report": {"receipt": 0}}),
+                (1, {"schema": "metis.verify-shard/v1", "task_index": 1, "shard_present": True,
+                     "binding_sha256": "stale", "pack_report": {"receipt": 1}}),
+                (3, {"schema": "metis.verify-shard/v1", "task_index": 3, "shard_present": False,
+                     "binding_sha256": context["binding"]}),
+            ):
+                state.complete("verify_shard", f"task-{index:06d}", payload)
+
+            reverified: list[int] = []
+
+            def fake_payload(_profile, _state, *, shard, **_kwargs):
+                reverified.append(int(shard["global_index"]))
+                return {"recomputed": int(shard["global_index"])}
+
+            profile = {
+                "storage": {"lustre_root": str(root),
+                            "directories": {"state": "state", "selected": "selected",
+                                            "release": "release"}},
+                "gates": {},
+            }
+            with mock.patch.object(stage_runner, "_verify_selection_context", return_value=context), \
+                 mock.patch.object(stage_runner, "_manifest", return_value={}), \
+                 mock.patch.object(stage_runner, "_verify_shard_payload", side_effect=fake_payload), \
+                 self.assertRaises(Exception):
+                # Aggregation past the shard loop needs the full selection
+                # contract; the loop's trust decisions are what is under test.
+                stage_runner._verify(profile)
+
+        self.assertEqual(reverified, [1, 2, 3], "stale, missing and absent receipts must be redone")
+
+    def test_grouped_arrays_run_every_task_exactly_once(self) -> None:
+        from metis_data.slurm import _contiguous_chunks
+
+        for indices, maximum, group in (
+            (range(20000), 1000, 48),
+            (range(20000), 1000, 1),
+            ([3, 4, 5, 900, 901, 5000], 1000, 48),
+            (range(49), 1000, 48),
+            (range(200000), 1000, 48),
+            (range(1000), 1000, 7),
+        ):
+            with self.subTest(count=len(list(indices)), group=group):
+                executed: list[int] = []
+                for chunk in _contiguous_chunks(indices, maximum, group):
+                    entries = -(-len(chunk) // group)
+                    self.assertLessEqual(entries, maximum)
+                    for array_id in range(entries):
+                        first = chunk.start + array_id * group
+                        # This mirrors stage.sbatch plus the runner's clamp.
+                        executed.extend(i for i in range(first, first + group) if i < chunk.stop)
+                self.assertEqual(len(executed), len(set(executed)), "a task ran twice")
+                self.assertEqual(set(executed), set(indices), "a task never ran")
+
+    def test_stage_wrapper_maps_array_id_through_the_group_stride(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake_python = root / "python"
+            fake_python.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8")
+            fake_python.chmod(0o755)
+            environment = {
+                **os.environ,
+                "METIS_PYTHON": str(fake_python),
+                "METIS_PROFILE": str(root / "portage-cpu.yaml"),
+                "METIS_STAGE": "normalize",
+                "METIS_TASK_OFFSET": "3000",
+                "METIS_TASKS_PER_JOB": "48",
+                "METIS_TASK_LIMIT": "20000",
+                "SLURM_ARRAY_TASK_ID": "17",
+            }
+            result = subprocess.run(
+                ["bash", str(Path(__file__).resolve().parents[1] / "slurm" / "metis16" / "stage.sbatch")],
+                check=True, capture_output=True, text=True, env=environment,
+            )
+            arguments = result.stdout.splitlines()
+            self.assertEqual(arguments[arguments.index("--task-index") + 1], str(3000 + 17 * 48))
+            self.assertEqual(arguments[arguments.index("--task-count") + 1], "48")
+            self.assertEqual(arguments[arguments.index("--task-limit") + 1], "20000")
+
+    def test_in_node_fanout_is_parallel_idempotent_and_isolates_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            profile = {"storage": {"lustre_root": str(root), "directories": {"state": "state"}}}
+            state = StateStore(root / "state")
+            failing = {"index": -1}
+
+            def fake_run_stage(active_profile, stage, task_index):
+                if task_index == failing["index"]:
+                    raise RuntimeError(f"synthetic failure on {task_index}")
+                time.sleep(0.3)
+                payload = {"stage": stage, "task_index": task_index}
+                StateStore(Path(active_profile["storage"]["lustre_root"]) / "state").complete(
+                    stage, f"task-{task_index:06d}", payload
+                )
+                return payload
+
+            def group(first: int, count: int, limit: int) -> tuple[int, float]:
+                started = time.monotonic()
+                code = stage_runner._run_task_group(
+                    profile, "normalize", first_index=first, task_count=count,
+                    task_limit=limit, workers=0,
+                )
+                return code, time.monotonic() - started
+
+            with mock.patch.object(stage_runner, "run_stage", side_effect=fake_run_stage):
+                code, elapsed = group(0, 12, 12)
+                self.assertEqual(code, 0)
+                self.assertLess(elapsed, 12 * 0.3, "tasks did not run concurrently")
+                self.assertTrue(all(state.is_complete("normalize", f"task-{i:06d}") for i in range(12)))
+
+                code, elapsed = group(0, 12, 12)
+                self.assertEqual(code, 0)
+                self.assertLess(elapsed, 0.3, "completed tasks were re-run")
+
+                # A trailing group must never reach past its submission's chunk.
+                self.assertEqual(group(12, 12, 16)[0], 0)
+                self.assertFalse(state.is_complete("normalize", "task-000016"))
+
+                failing["index"] = 42
+                self.assertEqual(group(40, 8, 48)[0], 1, "a failed task must fail the job")
+                self.assertFalse(state.is_complete("normalize", "task-000042"))
+                for index in (40, 41, 43, 44, 45, 46, 47):
+                    self.assertTrue(state.is_complete("normalize", f"task-{index:06d}"))
+
+                failing["index"] = -1
+                self.assertEqual(group(40, 8, 48)[0], 0)
+                self.assertTrue(state.is_complete("normalize", "task-000042"))
+
+
 if __name__ == "__main__":
     unittest.main()

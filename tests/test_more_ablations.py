@@ -1,0 +1,989 @@
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+import torch
+
+from metis_ablation.analysis import RoutingAnalyzer
+from metis_ablation.sampler import AblationSampleStream
+from metis_ablation.specs import (
+    ABLATION_LADDER,
+    GLOBAL_BATCH_SEQUENCES,
+    GLOBAL_BATCH_TOKENS,
+    AblationSpec,
+    dense_control_report,
+    spec_by_name,
+    validate_allocation,
+)
+from metis_ablation.train import AblationSchedule
+from metis_training.data import PHASE_STARTS, PHASE_TOKENS
+from metis_training.metrics import estimate_hardware_flops
+from metis_training.model import (
+    CurriculumState,
+    Metis16ForCausalLM,
+    geometric_continue_probability,
+    max_entropy_categorical,
+)
+from metis_training.model_config import Metis16Config, load_family_config
+
+
+# --------------------------------------------------------------------------
+# production must not move
+
+
+@pytest.mark.parametrize(
+    ("family", "stored", "active"),
+    [
+        ("praxis", 3_545_482_071, 470_844_375),
+        ("logos", 12_000_001_676, 1_189_454_220),
+    ],
+)
+def test_production_audits_survive_the_ablation_family(family, stored, active):
+    audit = load_family_config(family).logical_parameter_audit()
+    assert audit.stored_total == stored
+    assert audit.active_per_pass_mean == active
+
+
+def test_production_families_still_reject_relaxed_settings():
+    config = load_family_config("praxis")
+    with pytest.raises(ValueError, match="dense feed-forward"):
+        replace(config, ffn_mode="dense").validate()
+    with pytest.raises(ValueError, match="five passes"):
+        replace(config, max_passes=3).validate()
+    with pytest.raises(ValueError, match="four persistent mHC streams"):
+        replace(config, n_streams=1).validate()
+
+
+def test_expert_execution_defaults_to_the_production_loop():
+    assert load_family_config("praxis").expert_execution == "loop"
+    assert load_family_config("logos").expert_execution == "loop"
+
+
+# --------------------------------------------------------------------------
+# ladder invariants
+
+
+def test_every_row_consumes_an_identical_global_batch():
+    for spec in ABLATION_LADDER:
+        assert spec.apus * spec.micro_batch * spec.grad_accum == GLOBAL_BATCH_SEQUENCES
+
+
+def test_rank_counts_are_whole_nodes_and_fit_the_allocation():
+    report = validate_allocation()
+    assert report["rows"] == 13
+    assert report["spare_apus"] >= 4
+    for spec in ABLATION_LADDER:
+        assert spec.apus % 4 == 0, f"{spec.name} is not a whole number of nodes"
+
+
+def test_iso_flop_rows_really_are_iso_flop():
+    """Rows 1 and 5-13 must land within a percent of each other, or the paper's
+    matched-compute claim is decoration."""
+
+    costs = {}
+    for spec in ABLATION_LADDER:
+        if not spec.iso_flop:
+            continue
+        config = spec.model_config(
+            mhc_backend="torch_reference",
+            mamba_backend="torch_reference",
+            attention_backend="torch_reference",
+        )
+        depth = 1.0 if spec.continuation_mode == "depth_one" else 2.0
+        width = (
+            float(spec.fixed_routed_k) if spec.routed_k_mode == "fixed" else 4.0
+        )
+        costs[spec.name] = estimate_hardware_flops(
+            config, tokens=1, observed_mean_passes=depth, observed_mean_routed_k=width
+        )
+    assert len(costs) >= 10
+    low, high = min(costs.values()), max(costs.values())
+    assert (high - low) / high < 0.01, costs
+
+
+def test_pathway_rows_are_exactly_matched():
+    """Rows 5 and 6 differ only in pathway, so their cost must be identical."""
+
+    def cost(name: str) -> float:
+        spec = spec_by_name(name)
+        config = spec.model_config(
+            mhc_backend="torch_reference",
+            mamba_backend="torch_reference",
+            attention_backend="torch_reference",
+        )
+        return estimate_hardware_flops(
+            config, tokens=1, observed_mean_passes=2.0, observed_mean_routed_k=4.0
+        )
+
+    assert cost("loop-fixed") == cost("loop-pathway-frozen")
+
+
+def test_dense_controls_are_matched_to_their_stated_objective():
+    report = dense_control_report()
+    reference = report["more_core"]
+    stored_error = abs(
+        report["dense_param_matched"]["stored_total"] - reference["stored_total"]
+    ) / reference["stored_total"]
+    flop_error = abs(
+        report["dense_flop_matched"]["flops_per_token"] - reference["flops_per_token"]
+    ) / reference["flops_per_token"]
+    assert stored_error < 0.01, report["dense_param_matched"]
+    assert flop_error < 0.01, report["dense_flop_matched"]
+
+
+def test_dense_rows_report_all_parameters_active():
+    spec = spec_by_name("dense-flop-matched")
+    audit = spec.model_config(
+        mhc_backend="torch_reference",
+        mamba_backend="torch_reference",
+        attention_backend="torch_reference",
+    ).logical_parameter_audit()
+    assert audit.routed_experts == 0
+    assert audit.active_per_pass_min == audit.active_per_pass_max
+
+
+def test_global_batch_mismatch_is_rejected_at_construction():
+    with pytest.raises(ValueError, match="identical token sets"):
+        AblationSpec(
+            index=99,
+            name="broken",
+            title="broken",
+            isolates="nothing",
+            apus=28,
+            micro_batch=4,
+            grad_accum=3,
+        )
+
+
+# --------------------------------------------------------------------------
+# random-policy controls
+
+
+def test_max_entropy_categorical_hits_its_mean():
+    weights = max_entropy_categorical(range(1, 9), 4.0)
+    assert pytest.approx(sum(weights), abs=1e-9) == 1.0
+    mean = sum(w * v for w, v in zip(weights, range(1, 9)))
+    assert pytest.approx(mean, abs=1e-6) == 4.0
+    # Maximum entropy subject to a mean below the midpoint tilts down, but must
+    # never collapse onto a single value: that would be a fixed-k row wearing a
+    # random-k label.
+    assert min(weights) > 0.0
+
+
+def test_geometric_continue_probability_hits_its_mean_depth():
+    for target in (1.5, 2.0, 3.0, 4.5):
+        p = geometric_continue_probability(5, target)
+        realized = (1.0 - p**5) / (1.0 - p) if p < 1.0 else 5.0
+        assert pytest.approx(realized, abs=1e-6) == target
+
+
+# --------------------------------------------------------------------------
+# sampler
+
+
+class _FakeStream:
+    sequence_length = 4_096
+
+    def __init__(self):
+        self.requests: list[tuple[int, int, int, int]] = []
+
+    def batch(self, *, global_token_cursor, rank, world_size, micro_batch_size):
+        self.requests.append((global_token_cursor, rank, world_size, micro_batch_size))
+        return None
+
+
+def _sampler(budget=50_000_000_000):
+    return AblationSampleStream(
+        _FakeStream(),
+        budget_tokens=budget,
+        block_tokens=GLOBAL_BATCH_TOKENS,
+        phase_starts=dict(PHASE_STARTS),
+        phase_tokens=dict(PHASE_TOKENS),
+    )
+
+
+def test_sampler_preserves_release_phase_proportions():
+    sampler = _sampler()
+    fractions = [plan.sampled_fraction for plan in sampler.plans]
+    for fraction in fractions:
+        assert pytest.approx(fraction, abs=1e-4) == 0.05
+    assert sampler.dropped_tokens() >= 0
+    assert sampler.sampled_tokens <= sampler.budget_tokens
+
+
+def test_sampler_never_crosses_a_phase_boundary():
+    sampler = _sampler()
+    boundaries = sorted(PHASE_STARTS.values())[1:]
+    for step in range(0, sampler.total_blocks, 97):
+        cursor = sampler.release_cursor(step)
+        end = cursor + sampler.block_tokens
+        for boundary in boundaries:
+            assert not (cursor < boundary < end), (step, cursor, boundary)
+
+
+def test_identical_token_windows_across_different_world_sizes():
+    """The heart of the comparability claim: a 16-APU row and a 56-APU row must
+    read the same tokens for the same optimizer step."""
+
+    windows = {}
+    for apus, micro, accum in ((16, 4, 7), (28, 4, 4), (56, 2, 4)):
+        sampler = _sampler()
+        covered: set[int] = set()
+        for rank in range(apus):
+            list(
+                sampler.micro_batches(
+                    step=11,
+                    rank=rank,
+                    world_size=apus,
+                    micro_batch_size=micro,
+                    grad_accum=accum,
+                )
+            )
+        for cursor, rank, world, micro_size in sampler.stream.requests:
+            span = micro_size * sampler.stream.sequence_length
+            base = cursor + rank * span
+            covered.update(range(base, base + span, sampler.stream.sequence_length))
+        windows[apus] = covered
+    reference = windows[16]
+    assert len(reference) == GLOBAL_BATCH_SEQUENCES
+    for apus, covered in windows.items():
+        assert covered == reference, f"world size {apus} read a different window"
+
+
+def test_sampler_rejects_a_batch_that_does_not_tile_the_block():
+    sampler = _sampler()
+    with pytest.raises(ValueError, match="identical global batch"):
+        list(
+            sampler.micro_batches(
+                step=0, rank=0, world_size=28, micro_batch_size=4, grad_accum=3
+            )
+        )
+
+
+# --------------------------------------------------------------------------
+# model paths, exercised end to end on the tiny config
+
+
+def _tiny(**overrides):
+    config = Metis16Config.tiny_for_tests()
+    if overrides:
+        config = replace(config, **overrides)
+        config._validate_tiny() if config.family == "tiny" else config.validate()
+    return config
+
+
+def _curriculum(**overrides):
+    """Tiny's routed-k ceiling is 3, so every curriculum here must stay inside it."""
+
+    overrides.setdefault("fixed_routed_k", 2)
+    overrides.setdefault("stochastic_routing", False)
+    return CurriculumState(**overrides)
+
+
+def _tiny_batch(config, *, batch=2, length=8):
+    generator = torch.Generator().manual_seed(20_260_725)
+    input_ids = torch.randint(0, config.vocab_size, (batch, length), generator=generator)
+    labels = torch.roll(input_ids, shifts=-1, dims=1)
+    labels[:, -1] = -100
+    return input_ids, labels
+
+
+def test_grouped_expert_execution_matches_the_loop_exactly():
+    """The grouped path is a scheduling change, not a numerical one."""
+
+    torch.manual_seed(7)
+    loop_config = _tiny()
+    grouped_config = replace(loop_config, expert_execution="grouped")
+    grouped_config._validate_tiny()
+
+    loop_model = Metis16ForCausalLM(loop_config)
+    grouped_model = Metis16ForCausalLM(grouped_config)
+    grouped_model.load_state_dict(loop_model.state_dict())
+    loop_model.eval()
+    grouped_model.eval()
+
+    input_ids, labels = _tiny_batch(loop_config)
+    curriculum = _curriculum()
+    with torch.no_grad():
+        left = loop_model(input_ids, labels, curriculum=curriculum)
+        right = grouped_model(input_ids, labels, curriculum=curriculum)
+    torch.testing.assert_close(left.loss, right.loss, rtol=1e-5, atol=1e-6)
+
+
+def test_dense_ffn_row_trains():
+    config = replace(
+        _tiny(),
+        ffn_mode="dense",
+        dense_ffn_intermediate_dim=24,
+        n_routed_experts=0,
+        n_shared_experts=0,
+        expert_parallel_size=1,
+        world_size=1,
+        expert_replicas=1,
+    )
+    config._validate_tiny()
+    model = Metis16ForCausalLM(config)
+    input_ids, labels = _tiny_batch(config)
+    output = model(input_ids, labels, curriculum=_curriculum())
+    (output.loss + output.auxiliary_loss).backward()
+    assert torch.isfinite(output.loss)
+    # N-gram table gradients are sparse tensors, which have no ``isfinite``;
+    # check their values instead of skipping them.
+    gradients = [
+        g.coalesce().values() if g.is_sparse else g
+        for g in (p.grad for p in model.parameters())
+        if g is not None
+    ]
+    assert gradients and all(torch.isfinite(g).all() for g in gradients)
+
+
+def test_pathway_freeze_reuses_pass_one_experts():
+    torch.manual_seed(11)
+    config = _tiny()
+    model = Metis16ForCausalLM(config)
+    model.eval()
+    input_ids, labels = _tiny_batch(config)
+
+    seen: list[torch.Tensor] = []
+    layer = model.layers[0].moe
+    original = layer.forward
+
+    def spy(hidden_states, **kwargs):
+        result = original(hidden_states, **kwargs)
+        seen.append(kwargs.get("pass_index", 1))
+        return result
+
+    layer.forward = spy  # type: ignore[method-assign]
+    curriculum = _curriculum(pathway_mode="frozen", continuation_mode="fixed_max")
+    with torch.no_grad():
+        output = model(input_ids, labels, curriculum=curriculum)
+    layer.forward = original  # type: ignore[method-assign]
+    assert torch.isfinite(output.loss)
+    assert max(seen) > 1, "the frozen-pathway test never reached a second pass"
+
+
+def test_pathway_freeze_changes_the_result_but_not_the_shape():
+    torch.manual_seed(13)
+    config = _tiny()
+    model = Metis16ForCausalLM(config)
+    model.eval()
+    input_ids, labels = _tiny_batch(config)
+    with torch.no_grad():
+        per_pass = model(
+            input_ids,
+            labels,
+            curriculum=_curriculum(
+                continuation_mode="fixed_max", pathway_mode="per_pass"
+            ),
+        )
+        frozen = model(
+            input_ids,
+            labels,
+            curriculum=_curriculum(
+                continuation_mode="fixed_max", pathway_mode="frozen"
+            ),
+        )
+    assert per_pass.loss.shape == frozen.loss.shape
+    assert not torch.allclose(per_pass.loss, frozen.loss), (
+        "freezing the pathway changed nothing, so the pathway axis is inert on "
+        "this fixture and row 6 would measure noise"
+    )
+
+
+def test_random_width_control_spends_the_target_budget():
+    torch.manual_seed(17)
+    config = _tiny()
+    model = Metis16ForCausalLM(config)
+    model.eval()
+    input_ids, labels = _tiny_batch(config, batch=8, length=16)
+    curriculum = _curriculum(
+        routed_k_mode="random", target_mean_routed_k=2.0, random_policy_seed=99
+    )
+    with torch.no_grad():
+        output = model(input_ids, labels, curriculum=curriculum)
+    observed = float(output.telemetry["mean_routed_k"])
+    assert 1.4 < observed < 2.6, observed
+
+
+def test_random_depth_control_spends_the_target_budget():
+    torch.manual_seed(19)
+    config = _tiny()
+    model = Metis16ForCausalLM(config)
+    model.eval()
+    input_ids, labels = _tiny_batch(config, batch=16, length=16)
+    curriculum = _curriculum(
+        continuation_mode="random", target_mean_depth=2.0, random_policy_seed=101
+    )
+    with torch.no_grad():
+        output = model(input_ids, labels, curriculum=curriculum)
+    observed = float(output.telemetry["mean_depth"])
+    assert 1.5 < observed < 2.6, observed
+
+
+def test_random_policies_are_reproducible_from_the_seed():
+    config = _tiny()
+    curriculum = _curriculum(routed_k_mode="random", random_policy_seed=5)
+    losses = []
+    for _ in range(2):
+        torch.manual_seed(23)
+        model = Metis16ForCausalLM(config)
+        model.eval()
+        input_ids, labels = _tiny_batch(config)
+        with torch.no_grad():
+            losses.append(model(input_ids, labels, curriculum=curriculum).loss)
+    torch.testing.assert_close(losses[0], losses[1])
+
+
+def test_dense_config_rejects_width_and_pathway_curricula():
+    config = replace(
+        _tiny(),
+        ffn_mode="dense",
+        dense_ffn_intermediate_dim=24,
+        n_routed_experts=0,
+        n_shared_experts=0,
+    )
+    with pytest.raises(ValueError, match="no width or pathway decision"):
+        CurriculumState(routed_k_mode="fixed", fixed_routed_k=2).validate(config)
+
+
+# --------------------------------------------------------------------------
+# analysis
+
+
+def test_routing_analyzer_collects_transitions_and_correlation(tmp_path: Path):
+    torch.manual_seed(29)
+    config = _tiny()
+    model = Metis16ForCausalLM(config)
+    model.eval()
+    input_ids, labels = _tiny_batch(config, batch=4, length=16)
+    attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
+    analyzer = RoutingAnalyzer(config, max_passes=config.max_passes)
+    with analyzer.capture(model):
+        with torch.no_grad():
+            output = model(
+                input_ids,
+                labels,
+                curriculum=_curriculum(continuation_mode="fixed_max"),
+            )
+        analyzer.observe(output, attention_mask)
+
+    report = analyzer.report()
+    assert report["observations"] == 1
+    assert len(report["depth_distribution"]) == config.max_passes + 1
+    assert len(report["transition_off_diagonal_mass"]) == config.max_passes - 1
+    path = analyzer.flush(tmp_path / "routing.json", step=3)
+    payload = json.loads(path.read_text())
+    assert payload["step"] == 3
+    # flush resets, so a second report must be empty rather than double-counting
+    assert analyzer.report()["observations"] == 0
+
+
+def test_analyzer_capture_leaves_no_residue():
+    config = _tiny()
+    model = Metis16ForCausalLM(config)
+    analyzer = RoutingAnalyzer(config, max_passes=config.max_passes)
+    with analyzer.capture(model):
+        pass
+    for layer in model.layers:
+        assert layer.moe.capture_selection is False
+        assert layer.moe._analysis_last_selection is None
+
+
+def test_halt_calibration_bins_are_well_formed():
+    config = _tiny()
+    analyzer = RoutingAnalyzer(config, max_passes=config.max_passes)
+    predicted = torch.tensor([0.1, 0.4, 0.9, 0.95])
+    continued = torch.tensor([0.0, 0.0, 1.0, 1.0])
+    valid = torch.ones(4, dtype=torch.bool)
+    analyzer.observe_calibration(predicted=predicted, continued=continued, valid=valid)
+    curve = analyzer.calibration_curve()
+    assert curve
+    assert sum(row["count"] for row in curve) == 4
+    for row in curve:
+        assert 0.0 <= row["mean_predicted"] <= 1.0
+        assert 0.0 <= row["mean_realized"] <= 1.0
+
+
+# --------------------------------------------------------------------------
+# schedule
+
+
+def test_schedule_warms_up_then_decays_to_the_floor():
+    schedule = AblationSchedule(total_steps=1_000, base_learning_rate=1.0e-4)
+    assert schedule.learning_rate(0) < schedule.learning_rate(10)
+    peak = max(schedule.learning_rate(step) for step in range(1_000))
+    assert pytest.approx(peak, rel=1e-6) == 1.0e-4
+    assert schedule.learning_rate(999) < 0.2 * 1.0e-4
+
+
+def test_schedule_is_identical_across_rows():
+    """Nothing about the schedule may differ between rows, or it becomes a
+    candidate explanation for a difference between them."""
+
+    schedules = {
+        spec.name: AblationSchedule(total_steps=27_246, base_learning_rate=1.8e-4)
+        for spec in ABLATION_LADDER
+    }
+    values = {name: s.learning_rate(5_000) for name, s in schedules.items()}
+    assert len(set(values.values())) == 1
+
+
+# --------------------------------------------------------------------------
+# waves 2 and 3
+
+
+def test_every_wave_allocation_fits_and_uses_whole_nodes():
+    from metis_ablation.specs import WAVES
+
+    for wave, specs in WAVES.items():
+        report = validate_allocation(specs)
+        assert report["spare_apus"] >= 0, wave
+        for spec in specs:
+            assert spec.apus % 4 == 0, (wave, spec.name)
+            assert (
+                spec.apus * spec.micro_batch * spec.grad_accum
+                == GLOBAL_BATCH_SEQUENCES
+            ), (wave, spec.name)
+
+
+def test_row_names_are_globally_unique():
+    from metis_ablation.specs import ALL_SPECS
+
+    names = [spec.name for spec in ALL_SPECS]
+    assert len(set(names)) == len(names)
+
+
+def test_scaling_ladder_is_monotone_in_size():
+    """Three distinct scale points, or it is not a scaling curve."""
+
+    from metis_ablation.specs import WAVES, spec_by_name
+
+    sizes = []
+    for name in ("more-core-xxs", "more-core-xs", "more-core"):
+        audit = spec_by_name(name).model_config(
+            mhc_backend="torch_reference",
+            mamba_backend="torch_reference",
+            attention_backend="torch_reference",
+        ).logical_parameter_audit()
+        sizes.append(audit.stored_total)
+    assert sizes == sorted(sizes)
+    # Each step should be a real jump, not a rounding difference.
+    assert sizes[1] > 1.5 * sizes[0]
+    assert sizes[2] > 1.5 * sizes[1]
+    assert len(WAVES["2"]) == 8
+
+
+def test_scaling_ladder_keeps_the_ngram_table_proportional():
+    """A fixed 0.30B table would be most of the smallest model, and the scaling
+    curve would mostly be measuring a constant lookup table."""
+
+    from metis_ablation.specs import spec_by_name
+
+    fractions = []
+    for name in ("more-core-xxs", "more-core-xs", "more-core"):
+        audit = spec_by_name(name).model_config(
+            mhc_backend="torch_reference",
+            mamba_backend="torch_reference",
+            attention_backend="torch_reference",
+        ).logical_parameter_audit()
+        fractions.append(audit.ngram_tables / audit.stored_total)
+    assert max(fractions) - min(fractions) < 0.10, fractions
+    assert max(fractions) < 0.30, fractions
+
+
+def test_scaling_dense_controls_stay_parameter_matched():
+    from metis_ablation.specs import spec_by_name
+
+    for scale in ("-xs", "-xxs"):
+        def stored(name: str) -> int:
+            return spec_by_name(name).model_config(
+                mhc_backend="torch_reference",
+                mamba_backend="torch_reference",
+                attention_backend="torch_reference",
+            ).logical_parameter_audit().stored_total
+
+        dense = stored(f"dense-param-matched{scale}")
+        sparse = stored(f"more-core{scale}")
+        assert abs(dense - sparse) / sparse < 0.02, (scale, dense, sparse)
+
+
+def test_seed_wave_mirrors_its_parents_and_changes_only_the_seed(tmp_path: Path):
+    from metis_ablation.campaign import emit_slurm
+    from metis_ablation.specs import SECOND_SEED, WAVES, spec_by_name
+
+    for spec in WAVES["3"]:
+        parent = spec_by_name(spec.name.removesuffix("-seed2"))
+        assert spec.ffn_mode == parent.ffn_mode
+        assert spec.continuation_mode == parent.continuation_mode
+        assert spec.routed_k_mode == parent.routed_k_mode
+        assert spec.depth_memory == parent.depth_memory
+
+    emit_slurm(
+        tmp_path,
+        wave="3",
+        repo_root="/repo",
+        output_root="/out",
+        release_root="/release",
+        seed=1234,
+    )
+    for path in (tmp_path / "wave3").glob("*.sbatch"):
+        body = path.read_text()
+        assert f"--seed {SECOND_SEED}" in body, path.name
+        assert "--seed 1234" not in body, path.name
+
+
+def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
+    from metis_ablation.campaign import emit_slurm
+
+    emit_slurm(
+        tmp_path,
+        wave="1",
+        repo_root="/repo",
+        output_root="/out",
+        release_root="/release",
+        seed=1234,
+    )
+    body = (tmp_path / "wave1" / "10-more-core.sbatch").read_text()
+    assert "--seed 1234" in body
+    assert "export WORLD_SIZE=28" in body
+
+
+def test_sweep_covers_every_archetype_at_every_rate(tmp_path: Path):
+    from metis_ablation.campaign import (
+        SWEEP_ARCHETYPES,
+        SWEEP_LEARNING_RATES,
+        emit_sweep,
+    )
+
+    written = emit_sweep(
+        tmp_path, repo_root="/repo", output_root="/out", release_root="/release"
+    )
+    scripts = [path for path in written if path.suffix == ".sbatch"]
+    assert len(scripts) == len(SWEEP_ARCHETYPES) * len(SWEEP_LEARNING_RATES)
+    bodies = "\n".join(path.read_text() for path in scripts)
+    for rate in SWEEP_LEARNING_RATES:
+        assert f"--learning-rate {rate:g}" in bodies
+    # A sweep must not resume a previous sweep's checkpoint.
+    assert bodies.count("--no-resume") == len(scripts)
+
+
+def test_campaign_plan_runs_for_every_wave():
+    from metis_ablation.campaign import plan
+
+    for wave in ("1", "2", "3", "all"):
+        payload = plan(wave=wave)
+        assert payload["rows"], wave
+        assert payload["campaign_exaflops"] > 0, wave
+
+
+# --------------------------------------------------------------------------
+# the memory-gate fix: MoRE-Core must not route on retrieved memory
+
+
+def test_disabling_depth_memory_also_silences_the_routing_path():
+    """``memory_gate_scale=0`` must zero the summary that feeds the continuation,
+    width, and pathway heads -- not merely the representation path.
+
+    If only the representation path were gated, MoRE-Core would still route on
+    retrieved memory and the MoRE-Core / MoRE-RM comparison would measure
+    something narrower than it claims."""
+
+    torch.manual_seed(31)
+    config = _tiny()
+    model = Metis16ForCausalLM(config)
+    model.eval()
+    input_ids, labels = _tiny_batch(config, batch=2, length=16)
+
+    summaries: list[torch.Tensor] = []
+    original = model.depth_memory.retrieve
+
+    def spy(bank, streams, *, active_mask, gate_scale):
+        fused, summary, weights = original(
+            bank, streams, active_mask=active_mask, gate_scale=gate_scale
+        )
+        summaries.append(summary.detach().clone())
+        return fused, summary, weights
+
+    model.depth_memory.retrieve = spy  # type: ignore[method-assign]
+    with torch.no_grad():
+        model(
+            input_ids,
+            labels,
+            curriculum=_curriculum(
+                continuation_mode="fixed_max", memory_gate_scale=0.0
+            ),
+        )
+    model.depth_memory.retrieve = original  # type: ignore[method-assign]
+
+    assert summaries, "the depth memory was never consulted"
+    for summary in summaries:
+        assert torch.all(summary == 0), (
+            "retrieved memory still reaches the routing heads with the gate closed"
+        )
+
+
+def test_depth_memory_summary_is_untouched_at_full_gate():
+    """The gate fix must be exactly a no-op at the production scale of 1.0."""
+
+    torch.manual_seed(37)
+    config = _tiny()
+    model = Metis16ForCausalLM(config)
+    model.eval()
+    input_ids, labels = _tiny_batch(config, batch=2, length=16)
+
+    captured: list[torch.Tensor] = []
+    original = model.depth_memory.retrieve
+
+    def spy(bank, streams, *, active_mask, gate_scale):
+        result = original(bank, streams, active_mask=active_mask, gate_scale=gate_scale)
+        captured.append(result[1].detach().clone())
+        return result
+
+    model.depth_memory.retrieve = spy  # type: ignore[method-assign]
+    with torch.no_grad():
+        model(input_ids, labels, curriculum=_curriculum(continuation_mode="fixed_max"))
+    model.depth_memory.retrieve = original  # type: ignore[method-assign]
+    assert captured
+    assert any(bool((summary != 0).any()) for summary in captured), (
+        "the memory summary is zero even at full gate; the ablation pair would "
+        "be comparing two identical models"
+    )
+
+
+def test_more_core_and_more_rm_specs_actually_differ():
+    from metis_ablation.specs import spec_by_name
+
+    core = spec_by_name("more-core").curriculum()
+    memory = spec_by_name("more-rm").curriculum()
+    assert core.memory_gate_scale == 0.0
+    assert memory.memory_gate_scale == 1.0
+    assert core.continuation_mode == memory.continuation_mode
+    assert core.routed_k_mode == memory.routed_k_mode
+
+
+# --------------------------------------------------------------------------
+# transition alignment under packing
+
+
+def test_transitions_are_aligned_when_later_passes_are_packed():
+    """A packed pass is a subsequence of its predecessor, not a prefix.
+
+    Comparing them positionally would pair unrelated tokens and manufacture
+    off-diagonal mass out of nothing, so a model whose coalition never changes
+    must still report exactly zero."""
+
+    torch.manual_seed(41)
+    config = _tiny()
+    model = Metis16ForCausalLM(config)
+    model.eval()
+    input_ids, labels = _tiny_batch(config, batch=4, length=16)
+    attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
+
+    analyzer = RoutingAnalyzer(config, max_passes=config.max_passes)
+    with analyzer.capture(model):
+        with torch.no_grad():
+            output = model(
+                input_ids,
+                labels,
+                curriculum=_curriculum(pathway_mode="frozen"),
+            )
+        analyzer.observe(output, attention_mask)
+
+    # Adaptive depth means later passes are packed. With the pathway frozen the
+    # top expert cannot change, so every transition must sit on the diagonal.
+    packed = output.active_masks.sum(dim=(1, 2))
+    assert int(packed[0]) > int(packed[-1]), "no pass was actually packed"
+    for mass in analyzer.transition_off_diagonal_mass():
+        assert mass == pytest.approx(0.0, abs=1e-12), (
+            "frozen pathways produced off-diagonal transitions, so packed passes "
+            "are being compared positionally"
+        )
+
+
+# --------------------------------------------------------------------------
+# trainer plumbing
+
+
+def _smoke_spec(name: str):
+    """A one-rank version of a row, for CPU end-to-end tests."""
+
+    base = spec_by_name(name)
+    spec = AblationSpec(
+        **{**base.__dict__, "apus": 1, "micro_batch": GLOBAL_BATCH_SEQUENCES,
+           "grad_accum": 1}
+    )
+    object.__setattr__(spec, "micro_batch", 1)
+    object.__setattr__(spec, "grad_accum", 2)
+    return spec
+
+
+@pytest.fixture
+def tiny_proxy(monkeypatch):
+    """Shrink the proxy geometry so a real trainer run finishes in seconds."""
+
+    import metis_ablation.specs as specs_module
+
+    original = specs_module.proxy_config
+
+    def small(*, world_size, ffn_mode="moe", ngram_slots_per_head=None,
+              overrides=None, **kwargs):
+        base = dict(overrides or {})
+        base.update(
+            d_model=128, n_heads=2, head_dim=64, n_kv_heads=1, n_layers=2,
+            attention_indices=(1,), latent_dim=64, expert_intermediate_dim=32,
+            n_routed_experts=8, mamba_ngroups=1, mamba_head_dim=64,
+            mamba_chunk_size=16, sequence_length=64, final_context_length=64,
+            context_extension_train_length=64, vocab_size=256,
+            mhc_pass_embedding_dim=8, route_feature_dim=16, memory_dim=16,
+            memory_heads=2, max_routed_k=8, target_mean_routed_k=4.0,
+            activation_recompute_policy="none",
+        )
+        if ffn_mode == "dense":
+            base.update(n_routed_experts=0, n_shared_experts=0)
+        kwargs.update(
+            mhc_backend="torch_reference",
+            mamba_backend="torch_reference",
+            attention_backend="torch_reference",
+        )
+        return original(
+            world_size=world_size, ffn_mode=ffn_mode, ngram_slots_per_head=257,
+            overrides=base, **kwargs
+        )
+
+    monkeypatch.setattr(specs_module, "proxy_config", small)
+    return small
+
+
+def _train(spec, root: Path, **kwargs):
+    from metis_ablation.train import train_row
+
+    defaults = dict(
+        release_root=None, budget_tokens=20_000_000, learning_rate=1.0e-4,
+        seed=1, telemetry_every=100, analysis_every=0, checkpoint_every=0,
+        device_override="cpu", synthetic=True,
+    )
+    defaults.update(kwargs)
+    return train_row(spec, output_root=root, **defaults)
+
+
+def test_trainer_runs_every_row_of_every_wave(tiny_proxy, tmp_path: Path):
+    from metis_ablation.specs import WAVES
+
+    for wave, specs in WAVES.items():
+        for spec in specs:
+            summary = _train(_smoke_spec(spec.name), tmp_path, max_steps=1)
+            assert summary["final_loss"] == summary["final_loss"], (wave, spec.name)
+            assert (tmp_path / spec.name / "run.json").exists()
+
+
+def test_resume_picks_up_where_it_stopped(tiny_proxy, tmp_path: Path):
+    spec = _smoke_spec("more-rm")
+    first = _train(spec, tmp_path, checkpoint_every=2, max_steps=4)
+    assert first["start_step"] == 0
+
+    second = _train(spec, tmp_path, checkpoint_every=2, max_steps=4)
+    assert second["start_step"] == 4
+    assert second["resumed_from"] is not None
+
+    fresh = _train(spec, tmp_path, checkpoint_every=2, max_steps=4, resume=False)
+    assert fresh["start_step"] == 0
+
+
+def test_resume_refuses_a_changed_schedule(tiny_proxy, tmp_path: Path):
+    """Resuming a cosine decay against a different horizon would silently train
+    a different model, so it is an error rather than a warning."""
+
+    spec = _smoke_spec("more-core")
+    _train(spec, tmp_path, checkpoint_every=2, max_steps=4)
+    with pytest.raises(RuntimeError, match="Refusing to resume"):
+        _train(spec, tmp_path, checkpoint_every=2, max_steps=3)
+    with pytest.raises(RuntimeError, match="Refusing to resume"):
+        _train(spec, tmp_path, checkpoint_every=2, max_steps=4, learning_rate=9.0e-4)
+
+
+def test_checkpoints_are_pruned_and_atomic(tiny_proxy, tmp_path: Path):
+    spec = _smoke_spec("more-core")
+    _train(spec, tmp_path, checkpoint_every=1, max_steps=6)
+    kept = sorted((tmp_path / spec.name / "checkpoints").glob("step-*"))
+    assert 0 < len(kept) <= 2, [path.name for path in kept]
+    for path in kept:
+        assert (path / "state.pt").exists()
+        assert not (path / "state.pt.partial").exists()
+
+
+def test_storage_policy_is_applied_to_routers(tiny_proxy, tmp_path: Path):
+    """Routers must reach FP32 storage; a silent BF16 router would only show up
+    as slightly noisier routing, which no loss curve would reveal."""
+
+    from metis_ablation.specs import spec_by_name as lookup
+
+    spec = _smoke_spec("more-core")
+    config = spec.model_config(
+        mhc_backend="torch_reference",
+        mamba_backend="torch_reference",
+        attention_backend="torch_reference",
+    )
+    model = Metis16ForCausalLM(config)
+    model.apply_parameter_storage_policy(device=torch.device("cpu"))
+    routers = [
+        (name, parameter.dtype)
+        for name, parameter in model.named_parameters()
+        if ".expert_router." in name or ".k_router." in name
+        or name.startswith("continuation.")
+    ]
+    assert routers
+    for name, dtype in routers:
+        assert dtype == torch.float32, (name, dtype)
+
+    from metis_ablation.train import _assert_storage_policy
+
+    _assert_storage_policy(model)
+
+
+def test_storage_policy_assertion_catches_a_bf16_router(tiny_proxy):
+    from metis_ablation.train import _assert_storage_policy
+
+    spec = _smoke_spec("more-core")
+    config = spec.model_config(
+        mhc_backend="torch_reference",
+        mamba_backend="torch_reference",
+        attention_backend="torch_reference",
+    )
+    model = Metis16ForCausalLM(config)
+    # Straight ``.to(bfloat16)`` is exactly the mistake the assertion exists to
+    # catch: it looks like it worked and quietly demotes every router.
+    model.to(dtype=torch.bfloat16)
+    with pytest.raises(RuntimeError, match="storage policy"):
+        _assert_storage_policy(model)
+
+
+def test_run_manifest_records_everything_needed_to_reproduce(tiny_proxy, tmp_path: Path):
+    spec = _smoke_spec("more-rm")
+    _train(spec, tmp_path, max_steps=1)
+    manifest = json.loads((tmp_path / spec.name / "run.json").read_text())
+    for key in (
+        "spec", "model", "optimizer", "parameters", "schedule", "curriculum",
+        "global_batch_tokens", "total_steps", "world_size", "precision_profile",
+        "sampler",
+    ):
+        assert key in manifest, key
+    assert manifest["global_batch_tokens"] == GLOBAL_BATCH_TOKENS
+    assert manifest["curriculum"]["memory_gate_scale"] == 1.0
+
+
+def test_telemetry_carries_the_paper_axes(tiny_proxy, tmp_path: Path):
+    spec = _smoke_spec("more-core")
+    _train(spec, tmp_path, telemetry_every=1, max_steps=2)
+    lines = (tmp_path / spec.name / "telemetry" / "rank-00000.jsonl").read_text()
+    record = json.loads(lines.splitlines()[-1])
+    for key in (
+        "loss", "learning_rate", "grad_norm", "cumulative_tokens",
+        "estimated_hardware_flops", "estimated_mfu", "depth_histogram",
+        "tokens_per_second", "fp8_parity_relative_error",
+    ):
+        assert key in record, key
+    for key in ("mean_depth", "mean_routed_k", "expert_entropy_ratio"):
+        assert key in record["telemetry"], key

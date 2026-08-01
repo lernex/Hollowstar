@@ -153,19 +153,41 @@ class PortageConfig:
         families = {family.name: family for family in self.families}
         praxis = families["praxis"]
         logos = families["logos"]
+        # The split is sized so both families exhaust the 1T-token contract
+        # within hours of each other, which keeps the fabric under a constant
+        # load for the whole campaign.  Expert parallelism is 32-wide in both:
+        # an eight-node dispatch radius, with the remaining ranks holding
+        # replicas that reconcile once per optimizer step.
         if (
             (praxis.nodes, praxis.world_size, praxis.relative_node)
-            != (32, 128, 0)
-            or (praxis.expert_parallel_size, praxis.expert_replicas) != (128, 1)
+            != (40, 160, 0)
+            or (praxis.expert_parallel_size, praxis.expert_replicas) != (32, 5)
             or (logos.nodes, logos.world_size, logos.relative_node)
-            != (96, 384, 32)
-            or (logos.expert_parallel_size, logos.expert_replicas) != (192, 2)
+            != (88, 352, 40)
+            or (logos.expert_parallel_size, logos.expert_replicas) != (32, 11)
         ):
-            raise RuntimeError("Praxis-128 / Logos-384 topology differs from the locked plan")
+            raise RuntimeError("Praxis-160 / Logos-352 topology differs from the locked plan")
         if sum(item.nodes for item in self.families) != 128:
             raise RuntimeError("Family topology does not consume exactly 128 Portage nodes")
         if sum(item.world_size for item in self.families) != 512:
             raise RuntimeError("Family topology does not consume exactly 512 MI300A APUs")
+        # Structural invariants, so a future retune of the split cannot land in
+        # an internally inconsistent state even if the tuples above are edited.
+        offset = 0
+        for family in sorted(self.families, key=lambda item: item.relative_node):
+            if family.world_size != family.nodes * self.accelerators_per_node:
+                raise RuntimeError(
+                    f"{family.name} world_size must equal nodes x accelerators_per_node"
+                )
+            if family.world_size != family.expert_parallel_size * family.expert_replicas:
+                raise RuntimeError(
+                    f"{family.name} world_size must equal expert_parallel_size x replicas"
+                )
+            if family.relative_node != offset:
+                raise RuntimeError(
+                    f"{family.name} allocation is not contiguous from node {offset}"
+                )
+            offset += family.nodes
         if not self.training_contract.is_file():
             raise RuntimeError(f"Missing pretraining contract: {self.training_contract}")
         if not self.runtime_policy.is_file():

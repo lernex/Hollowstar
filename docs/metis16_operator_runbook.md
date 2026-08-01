@@ -232,14 +232,6 @@ The command remains fail-closed if the root is unsafe, capacity is insufficient,
 gated source is unavailable, a materializer has not passed its fixture, a source remains a remote
 plan, the repository is dirty, holdouts are incomplete, or an artifact hash/size no longer matches.
 
-The command remains fail-closed if the root is unsafe, capacity is insufficient, a credential or
-gated source is unavailable, a materializer has not passed its fixture, a source remains a remote
-plan, the repository is dirty, holdouts are incomplete, or an artifact hash/size no longer matches.
-
-The command remains fail-closed if the root is unsafe, capacity is insufficient, a credential or
-gated source is unavailable, a materializer has not passed its fixture, a source remains a remote
-plan, the repository is dirty, holdouts are incomplete, or an artifact hash/size no longer matches.
-
 ## Immutable login2-to-Rhea handoff
 
 Successful acquisition emits `state/metis-1.6-data-r1/ACQUISITION_READY.json`. It binds:
@@ -284,6 +276,59 @@ required before `submit build`:
 METIS_LUSTRE_ROOT=/path-visible-on-rhea ./metisctl verify-handoff --profile rhea --deep
 ```
 
+## The CPU build moved from Rhea to Portage
+
+Rhea does not share a filesystem with `login2`, so the CPU build runs on Portage instead, under the
+separate `portage-cpu` profile. Portage still never authors data with its training profile, and
+`portage-cpu` never submits GPU work.
+
+Portage has no CPU-only partition, so every allocation is a whole `parry` node with its four MI300A
+accelerators idle. Because each stage task is a single-threaded process, `portage-cpu` sets
+`scheduler.exclusive_nodes: true` and each array entry runs `tasks_per_job` task indices
+concurrently inside its node. `max_concurrent` therefore throttles *nodes*, not work units, and
+`METIS_TASK_LIMIT` stops a trailing partial group from entering the range owned by another
+submission.
+
+32 nodes is the standing recommendation. The wide stages finish in hours there; beyond it Lustre
+metadata becomes the limit and the single-node reducers do not move at all.
+
+```bash
+export METIS_LUSTRE_ROOT=/lus/lustre1/vollmerc/metis-1.6
+export METIS_SLURM_ACCOUNT=CONFIRMED
+export METIS_SLURM_PARTITION=parry
+./ops/collect-site-info.sh --lustre-root "$METIS_LUSTRE_ROOT" --role compute --partition parry
+./ops/bootstrap.sh --profile portage-cpu --role compute --lustre-root "$METIS_LUSTRE_ROOT"
+./metisctl doctor --profile portage-cpu --role compute
+./metisctl verify-handoff --profile portage-cpu
+./metisctl submit build --profile portage-cpu
+```
+
+`scheduler.site_values_confirmed` stays `false` until `collect-site-info.sh --role compute` has
+confirmed cores per node, `RealMemory`, `SelectTypeParameters`, and `MaxArraySize`. If a `parry`
+node reports 24 CPUs rather than the 96 expected from four 24-core MI300A packages, every
+`tasks_per_job` in the profile must be divided by four.
+
+### The tokenizer sample is built in parallel
+
+`tokenizer_sample` is three stages rather than one pass over the whole eligible corpus:
+
+1. `tokenizer_sample_scan` counts available bytes per source in each shard;
+2. `tokenizer_sample_plan` fills the largest holders of each source first until its stratified byte
+   target is met, and fails closed if the corpus cannot supply it;
+3. `tokenizer_sample` writes only its planned slice to `tokenizer/sample-parts/`.
+
+`tokenizer_train` reads those parts directly, so the sample is never concatenated back into one
+file. Filling largest-holders-first rather than spreading each source proportionally is what keeps
+the per-source overshoot to less than one document in total, matching the serial sampler, instead of
+one document per shard.
+
+### Verification is sharded
+
+`verify_shard` re-hashes and re-audits one packed shard per task. `verify` then aggregates the
+receipts, but only accepts a receipt whose `binding_sha256` matches the current selection hash,
+token-count contract, tokenizer contract, and maximum document exposures. Anything stale or missing
+is re-verified inline, so sharding cannot weaken the gate.
+
 ## Rhea remains intentionally sealed
 
 Once Rhea exists, fill its confirmed Slurm values and verify that it sees the same Lustre directory.
@@ -311,3 +356,100 @@ release.
 Do not set `scheduler.site_values_confirmed: true` until those values are measured on Rhea. If Rhea
 cannot mount the same acquisition content at any path, stop: a separately verified transfer/staging
 backend is required before CPU preparation. Do not substitute Portage scheduler values.
+
+## Context extension does not fit without both memory knobs
+
+Context extension is the one Metis-1.6 stage where a step does not fit on an
+MI300A. A physical pass at 163,840 tokens keeps four mHC streams alive per
+layer, and pass-level activation recompute means every block's activations are
+live simultaneously. **The figure is per rank**, which is the part that catches
+people out: adding APUs replicates the problem instead of dividing it, so no
+amount of data parallelism fixes it.
+
+Two mechanisms do fix it, and the `context_extension.memory_strategy` block in
+`configs/metis16/posttraining.yaml` is the source of truth for both.
+
+**`activation_recompute_policy: layer`** replays one `Metis16Block` at a time
+instead of one whole pass. The arithmetic is unchanged — every block is still
+replayed exactly once, so the 8/6 replay factor in `estimate_hardware_flops`
+covers it as-is and the throughput model needs no new term. What changes is
+that one block's activations are live rather than all of them. Praxis fits on
+this alone.
+
+**`context_parallel_size: 4`** shards the sequence so each rank owns 40,960
+contiguous tokens. Four matches the four APUs on a Cray EX255a node, and that
+is not cosmetic: the group exchanges SSM state and gathered keys at every layer
+of every pass, and the traffic has to stay on Infinity Fabric rather than
+crossing Slingshot. Logos needs this; Praxis inherits it because the two
+families share a launcher.
+
+### What context parallelism actually costs
+
+- **Attention is imbalanced.** Shards are contiguous because Mamba-2's SSD
+  recurrence carries state strictly left to right and a rank needs an interval
+  to have a well-defined incoming state. The consequence is that rank `r`
+  attends over roughly `(r+1)/CP` of the sequence, so the last rank does
+  `2·CP/(CP+1)` = 1.6x the mean work at `CP=4`. With 3 of 20 Logos layers
+  attentional that is a step-time penalty in the high teens. Striping the
+  attention layers alone, with a permutation all-to-all on either side, would
+  recover it; that is a 1.7 item, not a 1.6 one.
+- **Micro-batch is pinned to 1.** Continuation packing flattens
+  `[batch, sequence]` into one row ordered by batch and then position, which
+  interleaves batch rows across shards. The model raises rather than let rank
+  `r+1`'s row-0 tokens inherit rank `r`'s row-1 SSM state. At 163,840 tokens
+  one sequence already is the micro-batch, so nothing is lost.
+- **Gradients are exact, not truncated.** The cheap implementation detaches the
+  incoming SSM state and truncates backpropagation at every shard edge. For a
+  run whose entire purpose is long-range dependency that is the wrong corner to
+  cut, so every cross-rank tensor moves through a differentiable all-gather
+  whose backward is a reduce-scatter.
+
+### Launching
+
+The launcher must place context-parallel ranks **inside** a node. The rank
+layout is `replica -> expert -> context` with context varying fastest, so a CP
+group is always a contiguous block of `context_parallel_size` ranks:
+
+```bash
+srun --ntasks-per-node=4 --gpus-per-task=1 ...
+```
+
+`build_parallel_topology` takes `context_parallel_size` and, for context
+extension, an explicit `expert_parallel_size` — the stage runs on a different
+rank budget than pretraining, so its EP/CP split comes from the manifest rather
+than from the locked pretraining shape. World size must equal
+`expert_parallel_size * replicas * context_parallel_size`.
+
+Note that expert-shard gradients are averaged over **both** the replica and the
+context axis. A CP rank holds a different slice of the sequence but the same
+expert weights, so its gradient is as real as a replica's; `expert_data_size`
+is the divisor, not `expert_replica_count`.
+
+### Before trusting the run
+
+1. **Measure peak HBM at the first gate.** The analytic estimate is
+   activation-only and omits optimizer state and kernel workspace. Layer
+   recompute plus `CP=4` should leave large headroom; confirm it rather than
+   assume it.
+2. **Run the fused Mamba parity check.** Context parallelism cannot use
+   `Mamba2.forward` (it owns its zero initial state and offers no way to seed
+   it), so `FusedMamba2._context_parallel_forward` drives
+   `mamba_chunk_scan_combined` directly and replays the projection split,
+   causal convolution and gated norm itself. That is exactly the code that rots
+   across a `mamba_ssm` version bump, so
+   `FusedMamba2.assert_context_parallel_parity()` runs both paths at `CP=1` and
+   refuses the job if they disagree. **This has only been validated against the
+   reference implementation on CPU — the fused path needs a Portage canary
+   before the real run.**
+3. **Confirm FlashAttention aligns causal masking bottom-right.** The CP key
+   layout truncates each document's keys at this rank's last local query
+   precisely so that bottom-right alignment coincides with the true causal
+   mask. A build that top-left-aligns when `seqlen_q != seqlen_k` would let the
+   first shard's queries read the future, silently.
+
+Attention stays in BF16 throughout. FP8 attention is worth roughly 22% of CPT
+wall clock, but its accuracy collapses at long contraction dimensions — and the
+CPT promotion gate is itself a needle test over sealed 131,072-token records,
+so the failure mode and the acceptance criterion are the same measurement. FP8
+remains on for the QKV and output projections and every other role already in
+`fp8_roles`.

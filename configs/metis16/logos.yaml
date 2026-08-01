@@ -38,10 +38,14 @@ expert_intermediate_dim: 768
 min_routed_k: 1
 max_routed_k: 8
 target_mean_routed_k: 4.0
+# Matched to Praxis: 6 routed experts per rank, an 8-node dispatch radius, and
+# 11 expert-data replicas.  Sized so both families exhaust the 1T-token
+# contract within hours of each other and the fabric therefore carries a
+# constant load for the whole campaign.
 topology:
-  world_size: 384
-  expert_parallel_size: 192
-  expert_replica_count: 2
+  world_size: 352
+  expert_parallel_size: 32
+  expert_replica_count: 11
 
 max_passes: 5
 target_mean_passes: 2.0
@@ -57,6 +61,10 @@ k_budget_coefficient: 0.01
 depth_budget_coefficient: 0.01
 continuation_entropy_coefficient: 0.001
 tie_embeddings: true
+# Software-pipeline depth for the expert dispatch/expert/combine chain.  The
+# bytes, peers, and fan-out are unchanged; the expert GEMMs for chunk c simply
+# run while chunk c+1 is still on the wire.  One reproduces the serial path.
+moe_dispatch_chunks: 3
 activation_recompute_policy: pass
 
 ngram_memory:
@@ -68,7 +76,7 @@ ngram_memory:
     '2': [1723303, 1724299, 1725301, 1726303, 1727317, 1728317, 1729307, 1730101]
     '3': [1730507, 1731311, 1732301, 1733297, 1734311, 1735301, 1736303, 1737161]
   hash_seeds: [2654435761, 2246822519, 3266489917, 668265263, 374761393, 3550635117, 4251991749, 3043081225]
-  table_mode: replicated
+  table_mode: row_sharded
   sparse_gradients: true
   optimizer: sparse_adam
   learning_rate_scale: 2.0
@@ -79,6 +87,7 @@ ngram_memory:
 precision:
   backend: auto
   fp8_format: hybrid_e4m3_e5m2
+  expert_collective_wire: fp8
   parameter_dtype: bfloat16
   activation_dtype: bfloat16
   master_weight_dtype: float32
@@ -112,7 +121,7 @@ autotune:
     compile_modes: [default, reduce-overhead, none]
     precision_profiles: [fp8, bf16]
     dispatch_overlap: ['on', 'off']
-    ngram_table_modes: [replicated, row_sharded]
+    ngram_table_modes: [row_sharded, replicated]
   gates:
     max_hbm_fraction: 0.90
     max_fp8_loss_relative_error: 0.02

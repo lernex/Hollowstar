@@ -82,12 +82,19 @@ def test_production_backend_fails_closed_without_rocm_triton() -> None:
             family="praxis",
             device=torch.device("cpu"),
         )
-    with pytest.raises(RuntimeError, match="restricted to tiny tests"):
+    with pytest.raises(RuntimeError, match="restricted to tiny"):
         require_mhc_backend(
             backend="torch_reference",
             family="logos",
             device=torch.device("cpu"),
         )
+    # The MoRE ablation family may run the reference backend so the ladder can
+    # be dry-run on CPU; its production launches still declare fused_required.
+    require_mhc_backend(
+        backend="torch_reference",
+        family="ablation",
+        device=torch.device("cpu"),
+    )
 
 
 def _sealed_synthetic_report(configs):

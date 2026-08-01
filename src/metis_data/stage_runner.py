@@ -6,9 +6,12 @@ import hashlib
 import io
 import json
 import lzma
+import multiprocessing
 import os
 import shutil
 import sys
+import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -396,9 +399,37 @@ def _completion_inventory(
     }
 
 
+def _hash_files(files: list[Path], workers: int) -> dict[Path, str]:
+    """SHA-256 many independent files, using the whole node.
+
+    ``hashlib`` releases the GIL around each buffer, so this read-and-digest
+    work threads well and is bounded by Lustre rather than by Python. The
+    caller still folds the results in sorted order, so the receipt and its tree
+    hash stay byte-identical to the sequential implementation.
+    """
+
+    if workers <= 1 or len(files) <= 1:
+        return {path: sha256_file(path) for path in files}
+    digests: dict[Path, str] = {}
+    with ThreadPoolExecutor(max_workers=min(workers, len(files))) as pool:
+        futures = {pool.submit(sha256_file, path): path for path in files}
+        for future in as_completed(futures):
+            digests[futures[future]] = future.result()
+    return digests
+
+
+def _receipt_hash_workers(profile: dict[str, Any] | None) -> int:
+    if not profile:
+        return 1
+    runtime = profile.get("runtime", {})
+    return max(1, int(runtime.get("receipt_hash_workers", 1) or 1))
+
+
 def _write_directory_content_receipt(
     source_root: Path,
     destination: Path,
+    *,
+    workers: int = 1,
 ) -> dict[str, Any]:
     """Hash every immutable stage output once and publish an auditable manifest."""
 
@@ -415,13 +446,14 @@ def _write_directory_content_receipt(
         raise RuntimeError(f"Filtering stage output is empty: {source_root}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".incomplete")
+    digests = _hash_files(files, workers)
     tree = hashlib.sha256()
     total_bytes = 0
     with temporary.open("w", encoding="utf-8") as handle:
         for path in files:
             relative = str(path.relative_to(source_root))
             size = path.stat().st_size
-            digest = sha256_file(path)
+            digest = digests[path]
             row = {"path": relative, "size": size, "sha256": digest}
             handle.write(json.dumps(row, sort_keys=True) + "\n")
             tree.update(relative.encode("utf-8"))
@@ -503,10 +535,11 @@ def _validate_content_receipt(
     ]:
         raise RuntimeError(f"Verified stage file inventory changed for {source_root}")
     for row, path in zip(rows, current_files):
-        if (
-            path.stat().st_size != int(row["size"])
-            or sha256_file(path) != row["sha256"]
-        ):
+        if path.stat().st_size != int(row["size"]):
+            raise RuntimeError(f"Verified stage artifact changed: {path}")
+    digests = _hash_files(current_files, _receipt_hash_workers(profile))
+    for row, path in zip(rows, current_files):
+        if digests[path] != row["sha256"]:
             raise RuntimeError(f"Verified stage artifact changed: {path}")
 
 
@@ -519,7 +552,9 @@ def _verified_content_for_filter_chain(
 ) -> dict[str, Any]:
     cleanup = state.read("cleanup", f"{name}.json")
     if not cleanup:
-        content = _write_directory_content_receipt(output, destination)
+        content = _write_directory_content_receipt(
+            output, destination, workers=_receipt_hash_workers(profile)
+        )
         content["retained"] = True
         return content
     unsigned = {key: value for key, value in cleanup.items() if key != "cleanup_sha256"}
@@ -882,6 +917,7 @@ def _cleanup_filter_intermediate(
         content = _write_directory_content_receipt(
             Path(spec["output"]),
             state.path("verified-content", f"{name}.jsonl"),
+            workers=_receipt_hash_workers(profile),
         )
         pending = {
             "schema": "metis.verified-cleanup-pending/v1",
@@ -945,13 +981,16 @@ def _cleanup_tokenizer_sample(profile: dict[str, Any]) -> dict[str, Any]:
         state.write(
             "cleanup", "pending", "tokenizer_sample.json", payload=pending
         )
-    sample = root / profile["storage"]["directories"]["tokenizer"] / "sample.jsonl"
-    deletion = _safe_retire_path(root, sample)
+    tokenizer_dir = root / profile["storage"]["directories"]["tokenizer"]
+    deletions = [
+        _safe_retire_path(root, tokenizer_dir / name)
+        for name in ("sample.jsonl", "sample-parts", "scan", "SAMPLE_PLAN.json")
+    ]
     payload: dict[str, Any] = {
         "schema": "metis.verified-cleanup/v1",
         "name": "tokenizer_sample",
         "tokenizer_contract": contract,
-        "deletions": [deletion],
+        "deletions": deletions,
         "completed_at": utc_now(),
     }
     payload["cleanup_sha256"] = _json_sha256(payload)
@@ -1005,6 +1044,7 @@ def _cleanup_selection_inputs(profile: dict[str, Any]) -> dict[str, Any]:
         content = _write_directory_content_receipt(
             selected,
             state.path("verified-content", "selection.jsonl"),
+            workers=_receipt_hash_workers(profile),
         )
         _validate_content_receipt(profile, content, require_live_content=True)
         pending = {
@@ -1884,13 +1924,13 @@ def _iter_jsonl_folder(folder: Path) -> Iterator[dict[str, Any]]:
         yield from _iter_rows(path)
 
 
-def _tokenizer_sample(profile: dict[str, Any]) -> dict[str, Any]:
-    root, state = _paths(profile)
-    manifest = _manifest(profile)
-    eligible = root / profile["storage"]["directories"]["eligible"] / "final"
-    output_dir = root / profile["storage"]["directories"]["tokenizer"]
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output = output_dir / "sample.jsonl"
+def _tokenizer_sample_targets(manifest: dict[str, Any]) -> tuple[dict[str, int], dict[str, int], int]:
+    """Stratified per-category and per-source byte targets for the sample.
+
+    This is the immutable sampling contract: identical whether the sample is
+    produced by one process or by thousands of parallel shards.
+    """
+
     target = int(manifest["tokenizer"]["sample_target_bytes"])
     minimum_category = int(manifest["tokenizer"]["min_sample_bytes_per_category"])
     category_weights = {
@@ -1901,55 +1941,284 @@ def _tokenizer_sample(profile: dict[str, Any]) -> dict[str, Any]:
     if base > target:
         raise RuntimeError("Tokenizer category floors exceed the total sample target")
     category_extra = hamilton_apportion(target - base, category_weights)
-    category_targets = {category: minimum_category + category_extra[category] for category in category_weights}
+    category_targets = {
+        category: minimum_category + category_extra[category] for category in category_weights
+    }
     source_targets: dict[str, int] = {}
     for category, category_target in category_targets.items():
         sources = [source for source in manifest["sources"] if source["category"] == category]
-        weights = {source["id"]: sum(int(value) for value in source["phase_tokens"].values()) for source in sources}
+        weights = {
+            source["id"]: sum(int(value) for value in source["phase_tokens"].values())
+            for source in sources
+        }
         source_targets.update(hamilton_apportion(category_target, weights))
-    written: dict[str, int] = {source_id: 0 for source_id in source_targets}
-    total = 0
-    with output.open("w", encoding="utf-8") as handle:
-        for row in _iter_jsonl_folder(eligible):
+    return category_targets, source_targets, target
+
+
+def _tokenizer_sample_paths(profile: dict[str, Any], task_index: int, total_tasks: int) -> tuple[Path, list[Path]]:
+    eligible = (
+        Path(profile["storage"]["lustre_root"])
+        / profile["storage"]["directories"]["eligible"]
+        / "final"
+    )
+    paths = sorted(
+        path
+        for path in eligible.glob("**/*.jsonl*")
+        if path.is_file()
+        and not path.name.endswith(".incomplete")
+        and ".incomplete" not in path.parts
+    )
+    return eligible, paths[task_index::total_tasks]
+
+
+def _tokenizer_sample_scan(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
+    """Count available sample bytes per source over this shard's files.
+
+    A counting pass with no output lets the planner apportion exact per-shard
+    quotas, so the parallel sample reproduces the serial per-source totals
+    instead of relying on an oversampling heuristic.
+    """
+
+    root, state = _paths(profile)
+    manifest = _manifest(profile)
+    _category_targets, source_targets, _target = _tokenizer_sample_targets(manifest)
+    total_tasks = build_input_count(state)
+    eligible, assigned = _tokenizer_sample_paths(profile, task_index, total_tasks)
+    output_dir = root / profile["storage"]["directories"]["tokenizer"] / "scan"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    assigned_inputs = [_file_inventory(path, relative_to=eligible) for path in assigned]
+    assigned_inventory_sha = _json_sha256(assigned_inputs)
+    available: dict[str, int] = {}
+    documents: dict[str, int] = {}
+    for path in assigned:
+        for row in _iter_rows(path):
             metadata = row.get("metadata", {})
             source_id = metadata.get("source_id") or row.get("source_id")
-            if source_id not in source_targets or written[source_id] >= source_targets[source_id]:
+            if source_id not in source_targets:
                 continue
             text = str(row.get("text", ""))
-            encoded = text.encode("utf-8")
-            handle.write(json.dumps({"source_id": source_id, "category": metadata.get("category"), "text": text}, ensure_ascii=False) + "\n")
-            written[source_id] += len(encoded)
-            total += len(encoded)
-    short = {source_id: source_targets[source_id] - actual for source_id, actual in written.items() if actual < source_targets[source_id]}
-    if short:
-        raise RuntimeError(f"Tokenizer sample exhausted before its stratified source targets: {short}")
-    category_written = {
-        category: sum(written[source["id"]] for source in manifest["sources"] if source["category"] == category)
-        for category in category_targets
-    }
+            if not text:
+                continue
+            source_id = str(source_id)
+            available[source_id] = available.get(source_id, 0) + len(text.encode("utf-8"))
+            documents[source_id] = documents.get(source_id, 0) + 1
     payload = {
-        "stage": "tokenizer_sample",
-        "bytes": total,
+        "schema": "metis.tokenizer-sample-scan/v1",
+        "stage": "tokenizer_sample_scan",
+        "task_index": task_index,
+        "world_size": total_tasks,
+        "assigned_input_inventory_sha256": assigned_inventory_sha,
+        "available_bytes": available,
+        "available_documents": documents,
+    }
+    atomic_json(output_dir / f"task-{task_index:06d}.json", payload)
+    state.complete("tokenizer_sample_scan", f"task-{task_index:06d}", payload)
+    return payload
+
+
+def _tokenizer_sample_plan(profile: dict[str, Any]) -> dict[str, Any]:
+    """Apportion each source's byte target across the shards that hold it."""
+
+    root, state = _paths(profile)
+    manifest = _manifest(profile)
+    category_targets, source_targets, target = _tokenizer_sample_targets(manifest)
+    total_tasks = build_input_count(state)
+    scan_dir = root / profile["storage"]["directories"]["tokenizer"] / "scan"
+    availability: dict[str, dict[str, int]] = {}
+    for task_index in range(total_tasks):
+        report = state.read("completed", "tokenizer_sample_scan", f"task-{task_index:06d}.json")
+        if not report:
+            raise RuntimeError(f"Tokenizer sample scan is incomplete: task-{task_index:06d}")
+        if int(report.get("world_size", -1)) != total_tasks:
+            raise RuntimeError(
+                f"Tokenizer sample scan task-{task_index:06d} was produced against a different partitioning"
+            )
+        for source_id, byte_count in report.get("available_bytes", {}).items():
+            availability.setdefault(str(source_id), {})[str(task_index)] = int(byte_count)
+
+    quotas: dict[str, dict[str, int]] = {}
+    short: dict[str, int] = {}
+    for source_id in sorted(source_targets):
+        wanted = int(source_targets[source_id])
+        holders = availability.get(source_id, {})
+        total_available = sum(holders.values())
+        if total_available < wanted:
+            short[source_id] = wanted - total_available
+            continue
+        # Fill the largest holders first rather than spreading the target
+        # proportionally. A shard emits whole documents, so any shard given a
+        # partial quota overshoots it by up to one document. Consuming holders
+        # completely means only the final shard of each source is partial, which
+        # reproduces the serial sampler's single bounded overshoot per source
+        # instead of one per shard. Ties break on task index, so the plan is
+        # deterministic for a given scan.
+        remaining = wanted
+        ordered = sorted(
+            (task for task in holders if holders[task] > 0),
+            key=lambda task: (-holders[task], int(task)),
+        )
+        for task in ordered:
+            if remaining <= 0:
+                break
+            take = min(holders[task], remaining)
+            quotas.setdefault(str(task), {})[source_id] = int(take)
+            remaining -= take
+        if remaining:
+            raise RuntimeError(
+                f"Tokenizer sample apportionment could not place {remaining:,} bytes for {source_id}"
+            )
+    if short:
+        raise RuntimeError(
+            f"Tokenizer sample exhausted before its stratified source targets: {short}"
+        )
+
+    plan = {
+        "schema": "metis.tokenizer-sample-plan/v1",
+        "created_at": utc_now(),
+        "world_size": total_tasks,
         "target_bytes": target,
         "category_targets": category_targets,
-        "category_bytes": category_written,
         "source_targets": source_targets,
+        "task_quotas": quotas,
+    }
+    plan["plan_sha256"] = _json_sha256({k: v for k, v in plan.items() if k != "created_at"})
+    atomic_json(scan_dir.parent / "SAMPLE_PLAN.json", plan)
+    payload = {
+        "stage": "tokenizer_sample_plan",
+        "world_size": total_tasks,
+        "target_bytes": target,
+        "shards_with_quota": len(quotas),
+        "plan_sha256": plan["plan_sha256"],
+    }
+    state.complete("tokenizer_sample_plan", "task-000000", payload)
+    return payload
+
+
+def _tokenizer_sample(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
+    """Write this shard's exact planned slice of the tokenizer sample."""
+
+    import zstandard as zstd
+
+    root, state = _paths(profile)
+    directories = profile["storage"]["directories"]
+    tokenizer_dir = root / directories["tokenizer"]
+    plan_path = tokenizer_dir / "SAMPLE_PLAN.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    unsigned = {key: value for key, value in plan.items() if key not in {"created_at", "plan_sha256"}}
+    if plan.get("plan_sha256") != _json_sha256(unsigned):
+        raise RuntimeError("SAMPLE_PLAN.json failed its self-hash check")
+    total_tasks = build_input_count(state)
+    if int(plan.get("world_size", -1)) != total_tasks:
+        raise RuntimeError("SAMPLE_PLAN.json was produced against a different partitioning")
+    quota = {str(k): int(v) for k, v in plan.get("task_quotas", {}).get(str(task_index), {}).items()}
+
+    parts_dir = tokenizer_dir / "sample-parts"
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    output = parts_dir / f"task-{task_index:06d}.jsonl.zst"
+    temporary_output = output.with_suffix(output.suffix + ".incomplete")
+    if not quota:
+        # A shard with no planned bytes still publishes an empty part so the
+        # trainer's input set is a complete, gap-free sequence.
+        temporary_output.unlink(missing_ok=True)
+        with temporary_output.open("wb") as raw:
+            with zstd.ZstdCompressor(level=6).stream_writer(raw):
+                pass
+        os.replace(temporary_output, output)
+        payload = {
+            "stage": "tokenizer_sample",
+            "task_index": task_index,
+            "bytes": 0,
+            "source_bytes": {},
+            "output": str(output),
+        }
+        state.complete("tokenizer_sample", f"task-{task_index:06d}", payload)
+        return payload
+
+    _eligible, assigned = _tokenizer_sample_paths(profile, task_index, total_tasks)
+    written: dict[str, int] = {source_id: 0 for source_id in quota}
+    total = 0
+    temporary_output.unlink(missing_ok=True)
+    with temporary_output.open("wb") as raw:
+        with zstd.ZstdCompressor(level=6).stream_writer(raw) as compressed:
+            with io.TextIOWrapper(compressed, encoding="utf-8") as handle:
+                for path in assigned:
+                    if all(written[source] >= quota[source] for source in quota):
+                        break
+                    for row in _iter_rows(path):
+                        metadata = row.get("metadata", {})
+                        source_id = metadata.get("source_id") or row.get("source_id")
+                        source_id = str(source_id) if source_id is not None else ""
+                        if source_id not in quota or written[source_id] >= quota[source_id]:
+                            continue
+                        text = str(row.get("text", ""))
+                        if not text:
+                            continue
+                        handle.write(
+                            json.dumps(
+                                {
+                                    "source_id": source_id,
+                                    "category": metadata.get("category"),
+                                    "text": text,
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+                        size = len(text.encode("utf-8"))
+                        written[source_id] += size
+                        total += size
+    short = {
+        source_id: quota[source_id] - written[source_id]
+        for source_id in quota
+        if written[source_id] < quota[source_id]
+    }
+    if short:
+        temporary_output.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Tokenizer sample shard {task_index} fell short of its planned quota: {short}"
+        )
+    os.replace(temporary_output, output)
+    payload = {
+        "stage": "tokenizer_sample",
+        "task_index": task_index,
+        "bytes": total,
         "source_bytes": written,
+        "plan_sha256": plan["plan_sha256"],
         "output": str(output),
     }
-    state.complete("tokenizer_sample", "task-000000", payload)
+    state.complete("tokenizer_sample", f"task-{task_index:06d}", payload)
     return payload
+
+
+def _tokenizer_sample_parts(profile: dict[str, Any], state: StateStore) -> list[Path]:
+    """Every planned sample shard, in deterministic order, with no gaps.
+
+    The trainer consumes the shards directly, so the parallel sample never has
+    to be concatenated back into one multi-hundred-GB file.
+    """
+
+    root = Path(profile["storage"]["lustre_root"])
+    parts_dir = root / profile["storage"]["directories"]["tokenizer"] / "sample-parts"
+    total_tasks = build_input_count(state)
+    parts: list[Path] = []
+    for task_index in range(total_tasks):
+        part = parts_dir / f"task-{task_index:06d}.jsonl.zst"
+        if not part.is_file():
+            raise RuntimeError(f"Tokenizer sample shard is missing: {part}")
+        parts.append(part)
+    return parts
 
 
 def _tokenizer_train(profile: dict[str, Any]) -> dict[str, Any]:
     root, state = _paths(profile)
     manifest = _manifest(profile)
     output_dir = root / profile["storage"]["directories"]["tokenizer"]
-    sample = output_dir / "sample.jsonl"
+    parts = _tokenizer_sample_parts(profile, state)
 
     def texts() -> Iterator[str]:
-        for row in _iter_rows(sample):
-            yield str(row["text"])
+        for part in parts:
+            for row in _iter_rows(part):
+                yield str(row["text"])
 
     payload = train_tokenizer(
         texts(),
@@ -1960,12 +2229,13 @@ def _tokenizer_train(profile: dict[str, Any]) -> dict[str, Any]:
     audit_limits: dict[str, int] = {}
 
     def audit_samples() -> Iterator[dict[str, Any]]:
-        for row in _iter_rows(sample):
-            category = str(row.get("category", "unknown"))
-            if audit_limits.get(category, 0) >= 500:
-                continue
-            audit_limits[category] = audit_limits.get(category, 0) + 1
-            yield row
+        for part in parts:
+            for row in _iter_rows(part):
+                category = str(row.get("category", "unknown"))
+                if audit_limits.get(category, 0) >= 500:
+                    continue
+                audit_limits[category] = audit_limits.get(category, 0) + 1
+                yield row
 
     validation = validate_tokenizer(output_dir / "tokenizer.json", audit_samples())
     validation["sampled_documents_by_category"] = audit_limits
@@ -3070,95 +3340,232 @@ def _audit_packed_index(
     }
 
 
-def _verify(profile: dict[str, Any]) -> dict[str, Any]:
-    root, state = _paths(profile)
-    manifest = _manifest(profile)
-    if profile.get("gates", {}).get("require_license_ledger") and not profile.get("gates", {}).get("license_review_complete", False):
-        raise RuntimeError("Fail-closed: the source/license review has not been marked complete in the Rhea build profile")
+VERIFY_AUDIT_FIELDS = (
+    "documents",
+    "source_tokens",
+    "quota_source_tokens",
+    "replacement_tokens",
+    "license_tokens",
+    "missing_license_tokens",
+    "unique_tokens",
+    "replay_tokens",
+    "generated_tokens",
+    "transformed_tokens",
+    "generated_or_transformed_tokens",
+)
+
+
+def _verify_shard_binding(
+    *,
+    selection: dict[str, Any],
+    selection_sha: str,
+    tokenizer_contract: dict[str, Any],
+    maximum_exposures: int,
+) -> str:
+    """Hash the policy a per-shard verification receipt is valid under."""
+
+    return _json_sha256(
+        {
+            "schema": "metis.verify-shard-binding/v1",
+            "selection_sha256": selection_sha,
+            "token_count_contract_sha256": selection.get("token_count_contract_sha256"),
+            "tokenizer_contract": tokenizer_contract,
+            "maximum_document_exposures": int(maximum_exposures),
+        }
+    )
+
+
+def _verify_shard_payload(
+    profile: dict[str, Any],
+    state: StateStore,
+    *,
+    shard: dict[str, Any],
+    selection: dict[str, Any],
+    selection_sha: str,
+    tokenizer_contract: dict[str, Any],
+    maximum_exposures: int,
+) -> dict[str, Any]:
+    """Re-hash and re-audit one packed shard against its pack completion.
+
+    This is the whole per-shard integrity gate: the same checks the serial
+    verifier ran, moved into an independently schedulable task so 1.82TiB is
+    not read through a single process.
+    """
+
+    root = Path(profile["storage"]["lustre_root"])
     directories = profile["storage"]["directories"]
-    selection_path = root / directories["selected"] / "SELECTION.json"
+    global_index = int(shard["global_index"])
+    task_id = f"task-{global_index:06d}"
+    report = state.read("completed", "pack", f"{task_id}.json")
+    if not report:
+        raise RuntimeError(f"Pack completion is missing: {task_id}")
+    if (
+        report.get("schema") != "metis.pack-task/v2"
+        or int(report.get("task_index", -1)) != global_index
+        or report.get("phase") != shard["phase"]
+        or int(report.get("phase_index", -1)) != int(shard["phase_index"])
+        or int(report.get("tokens", -1)) != int(shard["target_tokens"])
+        or report.get("selection_sha256") != selection_sha
+        or report.get("token_count_contract_sha256")
+        != selection.get("token_count_contract_sha256")
+        or report.get("tokenizer_contract") != tokenizer_contract
+        or report.get("schedule_sha256") != shard.get("sha256")
+    ):
+        raise RuntimeError(f"Pack completion is stale or mismatched: {task_id}")
+    binary = Path(report["binary"])
+    expected_phase_root = (
+        root / directories["release"] / str(shard["phase"]).replace("_", "-")
+    ).resolve()
+    try:
+        binary.resolve().relative_to(expected_phase_root)
+    except ValueError as exc:
+        raise RuntimeError(f"Packed binary escapes its phase directory: {binary}") from exc
+    if binary.stat().st_size != int(report["tokens"]) * 2:
+        raise RuntimeError(f"uint16 byte size mismatch: {binary}")
+    if sha256_file(binary) != report["binary_sha256"]:
+        raise RuntimeError(f"Binary checksum mismatch: {binary}")
+    index_path = Path(report["index"])
+    try:
+        index_path.resolve().relative_to(expected_phase_root)
+    except ValueError as exc:
+        raise RuntimeError(f"Packed index escapes its phase directory: {index_path}") from exc
+    if sha256_file(index_path) != report["index_sha256"]:
+        raise RuntimeError(f"Index checksum mismatch: {index_path}")
+    audited = _audit_packed_index(
+        index_path,
+        expected_tokens=int(report["tokens"]),
+        maximum_exposures=maximum_exposures,
+    )
+    for field in VERIFY_AUDIT_FIELDS:
+        if _integer_tree(report.get(field)) != _integer_tree(audited[field]):
+            raise RuntimeError(
+                f"Pack report {task_id} {field} does not match its hashed index"
+            )
+    if report["phase"] == "phase_c" and int(report["generated_or_transformed_tokens"]):
+        raise RuntimeError(f"Generated/transformed data found in phase C: {binary}")
+    if int(audited["missing_license_tokens"]):
+        raise RuntimeError(f"Shard contains records without license evidence: {binary}")
+    return report
+
+
+def _verify_selection_context(
+    profile: dict[str, Any], state: StateStore
+) -> dict[str, Any]:
+    root = Path(profile["storage"]["lustre_root"])
+    manifest = _manifest(profile)
+    selection_path = root / profile["storage"]["directories"]["selected"] / "SELECTION.json"
     selection = json.loads(selection_path.read_text(encoding="utf-8"))
     selection_artifacts = _validate_selection_artifacts(
         profile,
         state,
         selection,
-        deep_token_count_validation=not bool(
-            state.read("cleanup", "selection_inputs.json")
-        ),
+        deep_token_count_validation=not bool(state.read("cleanup", "selection_inputs.json")),
     )
     selection_contract = _validate_selection_contract(profile, manifest, selection)
-    selection_sha = sha256_file(selection_path)
     tokenizer_contract = selection_artifacts["tokenizer_contract"]
     maximum_exposures = int(selection_contract["maximum_document_exposures"])
+    selection_sha = sha256_file(selection_path)
+    return {
+        "manifest": manifest,
+        "selection": selection,
+        "selection_path": selection_path,
+        "selection_sha": selection_sha,
+        "selection_artifacts": selection_artifacts,
+        "selection_contract": selection_contract,
+        "tokenizer_contract": tokenizer_contract,
+        "maximum_exposures": maximum_exposures,
+        "binding": _verify_shard_binding(
+            selection=selection,
+            selection_sha=selection_sha,
+            tokenizer_contract=tokenizer_contract,
+            maximum_exposures=maximum_exposures,
+        ),
+    }
+
+
+def _verify_shard(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
+    _root, state = _paths(profile)
+    context = _verify_selection_context(profile, state)
+    shards = context["selection"]["shards"]
+    if task_index >= len(shards):
+        # pack_tasks is derived from the manifest schedule and may round above
+        # the actual shard count; the surplus tasks are complete by definition.
+        payload = {
+            "schema": "metis.verify-shard/v1",
+            "task_index": task_index,
+            "shard_present": False,
+            "binding_sha256": context["binding"],
+        }
+        state.complete("verify_shard", f"task-{task_index:06d}", payload)
+        return payload
+    shard = shards[task_index]
+    if int(shard["global_index"]) != task_index:
+        raise RuntimeError(
+            f"SELECTION.json shard {task_index} declares global_index {shard['global_index']}"
+        )
+    report = _verify_shard_payload(
+        profile,
+        state,
+        shard=shard,
+        selection=context["selection"],
+        selection_sha=context["selection_sha"],
+        tokenizer_contract=context["tokenizer_contract"],
+        maximum_exposures=context["maximum_exposures"],
+    )
+    payload = {
+        "schema": "metis.verify-shard/v1",
+        "task_index": task_index,
+        "shard_present": True,
+        "binding_sha256": context["binding"],
+        "pack_report": report,
+    }
+    state.complete("verify_shard", f"task-{task_index:06d}", payload)
+    return payload
+
+
+def _verify(profile: dict[str, Any]) -> dict[str, Any]:
+    root, state = _paths(profile)
+    manifest = _manifest(profile)
+    if profile.get("gates", {}).get("require_license_ledger") and not profile.get("gates", {}).get("license_review_complete", False):
+        raise RuntimeError("Fail-closed: the source/license review has not been marked complete in the CPU build profile")
+    directories = profile["storage"]["directories"]
+    context = _verify_selection_context(profile, state)
+    selection = context["selection"]
+    selection_path = context["selection_path"]
+    selection_artifacts = context["selection_artifacts"]
+    selection_contract = context["selection_contract"]
+    selection_sha = context["selection_sha"]
+    tokenizer_contract = context["tokenizer_contract"]
+    maximum_exposures = context["maximum_exposures"]
+    binding = context["binding"]
     pack_reports = []
     for shard in selection["shards"]:
-        task_id = f"task-{int(shard['global_index']):06d}"
-        report = state.read("completed", "pack", f"{task_id}.json")
-        if not report:
-            raise RuntimeError(f"Pack completion is missing: {task_id}")
+        global_index = int(shard["global_index"])
+        task_id = f"task-{global_index:06d}"
+        # Prefer the parallel per-shard receipt, but only when it was produced
+        # under this exact selection/tokenizer/exposure policy. Anything stale
+        # or missing is re-verified here rather than trusted.
+        receipt = state.read("completed", "verify_shard", f"{task_id}.json")
         if (
-            report.get("schema") != "metis.pack-task/v2"
-            or int(report.get("task_index", -1)) != int(shard["global_index"])
-            or report.get("phase") != shard["phase"]
-            or int(report.get("phase_index", -1)) != int(shard["phase_index"])
-            or int(report.get("tokens", -1)) != int(shard["target_tokens"])
-            or report.get("selection_sha256") != selection_sha
-            or report.get("token_count_contract_sha256")
-            != selection.get("token_count_contract_sha256")
-            or report.get("tokenizer_contract") != tokenizer_contract
-            or report.get("schedule_sha256") != shard.get("sha256")
+            receipt
+            and receipt.get("schema") == "metis.verify-shard/v1"
+            and receipt.get("binding_sha256") == binding
+            and receipt.get("shard_present") is True
+            and int(receipt.get("task_index", -1)) == global_index
         ):
-            raise RuntimeError(f"Pack completion is stale or mismatched: {task_id}")
-        binary = Path(report["binary"])
-        expected_phase_root = (
-            root
-            / directories["release"]
-            / str(shard["phase"]).replace("_", "-")
-        ).resolve()
-        try:
-            binary.resolve().relative_to(expected_phase_root)
-        except ValueError as exc:
-            raise RuntimeError(f"Packed binary escapes its phase directory: {binary}") from exc
-        if binary.stat().st_size != int(report["tokens"]) * 2:
-            raise RuntimeError(f"uint16 byte size mismatch: {binary}")
-        if sha256_file(binary) != report["binary_sha256"]:
-            raise RuntimeError(f"Binary checksum mismatch: {binary}")
-        index_path = Path(report["index"])
-        try:
-            index_path.resolve().relative_to(expected_phase_root)
-        except ValueError as exc:
-            raise RuntimeError(f"Packed index escapes its phase directory: {index_path}") from exc
-        if sha256_file(index_path) != report["index_sha256"]:
-            raise RuntimeError(f"Index checksum mismatch: {index_path}")
-        audited = _audit_packed_index(
-            index_path,
-            expected_tokens=int(report["tokens"]),
-            maximum_exposures=maximum_exposures,
+            pack_reports.append(receipt["pack_report"])
+            continue
+        pack_reports.append(
+            _verify_shard_payload(
+                profile,
+                state,
+                shard=shard,
+                selection=selection,
+                selection_sha=selection_sha,
+                tokenizer_contract=tokenizer_contract,
+                maximum_exposures=maximum_exposures,
+            )
         )
-        for field in (
-            "documents",
-            "source_tokens",
-            "quota_source_tokens",
-            "replacement_tokens",
-            "license_tokens",
-            "missing_license_tokens",
-            "unique_tokens",
-            "replay_tokens",
-            "generated_tokens",
-            "transformed_tokens",
-            "generated_or_transformed_tokens",
-        ):
-            if _integer_tree(report.get(field)) != _integer_tree(audited[field]):
-                raise RuntimeError(
-                    f"Pack report {task_id} {field} does not match its hashed index"
-                )
-        if report["phase"] == "phase_c" and int(
-            report["generated_or_transformed_tokens"]
-        ):
-            raise RuntimeError(f"Generated/transformed data found in phase C: {binary}")
-        if int(audited["missing_license_tokens"]):
-            raise RuntimeError(f"Shard contains records without license evidence: {binary}")
-        pack_reports.append(report)
     packed_unique_tokens = sum(int(report.get("unique_tokens", 0)) for report in pack_reports)
     packed_replay_tokens = sum(int(report.get("replay_tokens", 0)) for report in pack_reports)
     if (
@@ -3668,8 +4075,12 @@ def run_stage(profile: dict[str, Any], stage: str, task_index: int) -> dict[str,
         "final_hash_filter",
     }:
         return _datatrove_stage(profile, stage, task_index)
+    if stage == "tokenizer_sample_scan":
+        return _tokenizer_sample_scan(profile, task_index)
+    if stage == "tokenizer_sample_plan":
+        return _tokenizer_sample_plan(profile)
     if stage == "tokenizer_sample":
-        return _tokenizer_sample(profile)
+        return _tokenizer_sample(profile, task_index)
     if stage == "tokenizer_train":
         return _tokenizer_train(profile)
     if stage == "cleanup_tokenizer_sample":
@@ -3690,6 +4101,8 @@ def run_stage(profile: dict[str, Any], stage: str, task_index: int) -> dict[str,
         return _cleanup_selection_inputs(profile)
     if stage == "pack":
         return _pack(profile, task_index)
+    if stage == "verify_shard":
+        return _verify_shard(profile, task_index)
     if stage == "verify":
         return _verify(profile)
     if stage == "cleanup_pack_inputs":
@@ -3701,17 +4114,157 @@ def run_stage(profile: dict[str, Any], stage: str, task_index: int) -> dict[str,
     raise RuntimeError(f"Unknown stage {stage!r}")
 
 
+def _run_task_worker(payload: tuple[dict[str, Any], str, int]) -> dict[str, Any]:
+    """Run one global task index in a dedicated process.
+
+    Each stage task already owns a disjoint output path and completion marker,
+    so several of them may run concurrently inside one node allocation without
+    any additional coordination.
+    """
+
+    profile, stage, task_index = payload
+    started = time.monotonic()
+    try:
+        result = run_stage(profile, stage, task_index)
+    except Exception as exc:  # noqa: BLE001 - reported per task, not raised
+        return {
+            "task_index": task_index,
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    return {
+        "task_index": task_index,
+        "ok": True,
+        "payload": result,
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+    }
+
+
+def _run_task_group(
+    profile: dict[str, Any],
+    stage: str,
+    *,
+    first_index: int,
+    task_count: int,
+    task_limit: int,
+    workers: int,
+) -> int:
+    indices = list(range(first_index, first_index + task_count))
+    if task_limit > 0:
+        # The final group of a chunk is normally partial, and must never reach
+        # into the index range owned by another submission.
+        indices = [index for index in indices if index < task_limit]
+    _, state = _paths(profile)
+    pending = [
+        index for index in indices if not state.is_complete(stage, f"task-{index:06d}")
+    ]
+    skipped = len(indices) - len(pending)
+    if not pending:
+        print(
+            json.dumps(
+                {"stage": stage, "requested": len(indices), "skipped_complete": skipped, "ran": 0},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    parallelism = max(1, min(workers or len(pending), len(pending)))
+    results: list[dict[str, Any]] = []
+    if parallelism == 1:
+        for index in pending:
+            results.append(_run_task_worker((profile, stage, index)))
+    else:
+        # Fork keeps the per-task import cost off the critical path. The parent
+        # has only parsed arguments and stat'ed completion markers by now, so
+        # no native thread pool is live at the fork point; the batch wrapper
+        # additionally pins every worker to a single thread. Arrow's pools are
+        # created at import rather than by environment variable, so they are
+        # quiesced here before the fork instead.
+        try:
+            import pyarrow
+
+            pyarrow.set_io_thread_count(1)
+            pyarrow.set_cpu_count(1)
+        except Exception:  # noqa: BLE001 - thread pinning is best effort
+            pass
+        try:
+            context = multiprocessing.get_context("fork")
+        except ValueError:  # pragma: no cover - non-POSIX fallback
+            context = multiprocessing.get_context()
+        with ProcessPoolExecutor(max_workers=parallelism, mp_context=context) as pool:
+            futures = {
+                pool.submit(_run_task_worker, (profile, stage, index)): index
+                for index in pending
+            }
+            for future in as_completed(futures):
+                results.append(future.result())
+
+    results.sort(key=lambda row: int(row["task_index"]))
+    failures = [row for row in results if not row["ok"]]
+    summary = {
+        "stage": stage,
+        "first_index": first_index,
+        "requested": len(indices),
+        "skipped_complete": skipped,
+        "ran": len(results),
+        "parallelism": parallelism,
+        "failed": len(failures),
+        "slowest_seconds": max((row["elapsed_seconds"] for row in results), default=0.0),
+        "tasks": [
+            {key: row[key] for key in ("task_index", "ok", "elapsed_seconds") if key in row}
+            for row in results
+        ],
+    }
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    for row in failures:
+        print(f"FAIL task-{row['task_index']:06d} {row['error']}", file=sys.stderr)
+    return 1 if failures else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile", required=True)
     parser.add_argument("--stage", required=True)
     parser.add_argument("--task-index", type=int, default=0)
+    parser.add_argument(
+        "--task-count",
+        type=int,
+        default=1,
+        help="Consecutive global task indices to run inside this allocation",
+    )
+    parser.add_argument(
+        "--task-limit",
+        type=int,
+        default=0,
+        help="Exclusive upper bound on global task index for this submission",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Concurrent worker processes; defaults to the pending task count",
+    )
     args = parser.parse_args(argv)
     _, profile = load_profile(args.profile)
+    if args.task_count <= 1:
+        try:
+            payload = run_stage(profile, args.stage, args.task_index)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+        except Exception as exc:
+            print(f"FAIL {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
     try:
-        payload = run_stage(profile, args.stage, args.task_index)
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
+        return _run_task_group(
+            profile,
+            args.stage,
+            first_index=args.task_index,
+            task_count=args.task_count,
+            task_limit=args.task_limit,
+            workers=args.workers,
+        )
     except Exception as exc:
         print(f"FAIL {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

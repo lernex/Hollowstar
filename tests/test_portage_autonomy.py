@@ -511,8 +511,8 @@ class PortageAutonomyTests(unittest.TestCase):
                 )
                 for family in config.families
             }
-            self.assertEqual(topologies["praxis"], (32, 128, 128, 1))
-            self.assertEqual(topologies["logos"], (96, 384, 192, 2))
+            self.assertEqual(topologies["praxis"], (40, 160, 32, 5))
+            self.assertEqual(topologies["logos"], (88, 352, 32, 11))
 
     def test_login_bootstrap_accepts_only_self_hashed_pinned_pyyaml_wheel(
         self,

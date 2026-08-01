@@ -1,0 +1,219 @@
+schema: metis.portage-profile/v1
+name: portage-cpu
+manifest: manifests/metis-1.6.yaml
+
+# Portage CPU data preparation.
+#
+# Rhea was the original plan for this stage, but Rhea does not share a
+# filesystem with the login2 acquisition host, so the CPU build runs on Portage
+# instead. This profile is the CPU-build role only: it never submits GPU work,
+# and `portage-training.yaml` never submits data work.
+#
+# Sizing assumes the standard Portage node: 4x MI300A, each package carrying 24
+# Zen4 cores and 128GB HBM3, so 96 cores and ~512GB per node, allocated whole.
+# Confirm with `sinfo -p parry -o '%c %z %m'` before setting
+# `site_values_confirmed: true`; if a node reports 24 cores rather than 96,
+# every `tasks_per_job` below must be divided by four.
+
+operator:
+  roles: [compute]
+  expected_host_patterns: ['portage*', 'login*']
+
+acquisition:
+  mode: external_complete
+  host_role: compute_cluster
+
+storage:
+  # Portage and login2 both mount Lustre. This must be the same directory the
+  # acquisition supervisor wrote, verified by the handoff before any CPU work.
+  lustre_root: ${METIS_LUSTRE_ROOT:-auto}
+  require_explicit_root: true
+  allowed_root_prefixes: [/lus/lustre1/vollmerc]
+  forbidden_roots: ['/', /lus, /lus/lustre1, /lus/lustre1/vollmerc]
+  must_exist: true
+  expected_filesystem: lustre
+  # Acquisition needed 3TB. The build needs far more, because normalized,
+  # exact, span, MinHash, code, and decontaminated corpora each coexist with
+  # their successor until the paired cleanup stage retires the predecessor.
+  minimum_free_tb: 8
+  recommended_free_tb: 12
+  safety_free_tb: 1
+  raw_retention: until_normalized_successor_hash_verified
+  intermediate_retention: delete_after_successor_hash_verified
+  normalized_format: jsonl.zst
+  final_token_dtype: uint16
+  final_shard_tokens: 1000000000
+  directories:
+    cache: cache
+    raw: raw
+    normalized: normalized
+    eligible: eligible
+    dedup: dedup
+    contamination: contamination
+    tokenizer: tokenizer
+    token_counts: token-counts
+    selected: selected
+    context_release: releases/metis-1.6-context-extension-r1
+    release: releases/metis-1.6-data-r1
+    state: state/metis-1.6-data-r1
+    logs: logs/metis-1.6-data-r1
+
+scheduler:
+  mode: slurm
+
+  # Flip to true only after `./ops/collect-site-info.sh --role compute` has
+  # confirmed cores/node, RealMemory, SelectTypeParameters, and MaxArraySize.
+  site_values_confirmed: false
+  required_fields: [account, partition, max_array_size]
+
+  account: ${METIS_SLURM_ACCOUNT:-auto}
+  partition: ${METIS_SLURM_PARTITION:-parry}
+  qos: ${METIS_SLURM_QOS:-auto}
+  reservation: ${METIS_SLURM_RESERVATION:-auto}
+  max_array_size: ${METIS_SLURM_MAX_ARRAY_SIZE:-1000}
+
+  # Portage has no CPU-only partition, so every allocation is a whole GPU node
+  # with its accelerators idle. `exclusive_nodes` makes each array entry request
+  # one entire node and hands core-level fan-out to the stage runner, which
+  # matters because each stage task is a single-threaded process: without it a
+  # 96-core node would run one task and waste 95 cores.
+  exclusive_nodes: true
+  extra_sbatch_options: []
+
+  # `tasks_per_job` is concurrent single-threaded tasks per node, chosen from
+  # measured per-task memory rather than core count alone. `max_concurrent` now
+  # throttles *nodes*, not work units. 32 nodes is the standing recommendation:
+  # the wide stages already finish in hours there, and beyond it Lustre metadata
+  # becomes the limit while the serial reducers below do not move at all.
+  default_tasks_per_job: 1
+
+  download: {target_bytes_per_task: 20000000000, max_concurrent: 1}
+
+  handoff_signature: {tasks_per_job: 32, time: '24:00:00', max_concurrent: 8}
+  handoff_verify: {time: '02:00:00'}
+
+  # Language identification and quality models are loaded per worker, so this
+  # stage is the most memory-hungry of the wide passes.
+  normalize: {tasks_per_job: 48, time: '24:00:00', max_concurrent: 32}
+
+  exact_signature: {tasks_per_job: 80, time: '12:00:00', max_concurrent: 32}
+  exact_find: {tasks_per_job: 32, time: '12:00:00', max_concurrent: 16}
+  exact_filter: {tasks_per_job: 80, time: '12:00:00', max_concurrent: 32}
+
+  span_prefilter_signature: {tasks_per_job: 64, time: '24:00:00', max_concurrent: 32}
+  span_prefilter_find: {tasks_per_job: 24, time: '24:00:00', max_concurrent: 16}
+  span_signature: {tasks_per_job: 56, time: '24:00:00', max_concurrent: 32}
+  # External sort merges hold many open runs and large buffers per task.
+  span_find: {tasks_per_job: 12, time: '48:00:00', max_concurrent: 16}
+  span_filter: {tasks_per_job: 56, time: '24:00:00', max_concurrent: 32}
+
+  minhash_signature: {tasks_per_job: 56, time: '36:00:00', max_concurrent: 32}
+  minhash_buckets: {tasks_per_job: 10, time: '36:00:00', max_concurrent: 20}
+  # Single-node union-find over the whole corpus. This is the longest pole in
+  # the graph and gains nothing from more nodes.
+  minhash_components: {tasks_per_job: 1, time: '72:00:00'}
+  minhash_priority_candidates: {tasks_per_job: 72, time: '12:00:00', max_concurrent: 32}
+  minhash_priority_resolve: {tasks_per_job: 24, time: '24:00:00', max_concurrent: 16}
+  minhash_priority_finalize: {tasks_per_job: 72, time: '12:00:00', max_concurrent: 32}
+  minhash_priority_verify: {tasks_per_job: 1, time: '04:00:00'}
+  minhash_filter: {tasks_per_job: 56, time: '24:00:00', max_concurrent: 32}
+
+  code_signature: {tasks_per_job: 56, time: '24:00:00', max_concurrent: 32}
+  code_find: {tasks_per_job: 20, time: '24:00:00', max_concurrent: 16}
+  code_filter: {tasks_per_job: 56, time: '24:00:00', max_concurrent: 32}
+
+  # Whole-node single job; the benchmark index is held in memory.
+  decontam_index: {tasks_per_job: 1, time: '24:00:00'}
+  decontam_filter: {tasks_per_job: 40, time: '18:00:00', max_concurrent: 32}
+
+  final_hash_signature: {tasks_per_job: 80, time: '12:00:00', max_concurrent: 32}
+  final_hash_find: {tasks_per_job: 32, time: '12:00:00', max_concurrent: 16}
+  final_hash_filter: {tasks_per_job: 80, time: '12:00:00', max_concurrent: 32}
+
+  # The stratified tokenizer sample is now three stages instead of one serial
+  # pass over the whole eligible corpus: a counting scan, a cheap apportionment
+  # reducer, then a write pass where each shard emits only its planned slice.
+  # Per-source byte targets are identical to the serial version.
+  tokenizer_sample_scan: {tasks_per_job: 64, time: '12:00:00', max_concurrent: 32}
+  tokenizer_sample_plan: {tasks_per_job: 1, time: '02:00:00'}
+  tokenizer_sample: {tasks_per_job: 48, time: '12:00:00', max_concurrent: 32}
+  # Serial and the single largest memory risk in the build. The HF BPE trainer
+  # holds its word-count table in RAM; measure peak RSS on a subsample before
+  # committing the long job. This is the one stage that wants many threads in
+  # one process, which is why tasks_per_job stays 1.
+  tokenizer_train: {tasks_per_job: 1, time: '48:00:00'}
+
+  # BPE encode of the full eligible corpus. One tokenizer instance per worker.
+  token_count: {tasks_per_job: 48, time: '36:00:00', max_concurrent: 32}
+
+  context_select: {tasks_per_job: 1, time: '72:00:00'}
+  context_prepare: {tasks_per_job: 1, time: '12:00:00'}
+  context_pack: {tasks_per_job: 16, time: '24:00:00', max_concurrent: 12}
+  context_verify: {tasks_per_job: 1, time: '72:00:00'}
+
+  # Serial two-pass reducer; exact source and lane quotas depend on the order.
+  select: {tasks_per_job: 1, time: '72:00:00'}
+  # Write-bound: 1000 shards of 1B uint16 tokens, ~1.82TiB total.
+  pack: {tasks_per_job: 24, time: '18:00:00', max_concurrent: 32}
+  # Re-hashing 1.82TiB and auditing every packed index, parallel by shard.
+  # Write-bandwidth-free but read-heavy, so it stays at 32 nodes.
+  verify_shard: {tasks_per_job: 24, time: '12:00:00', max_concurrent: 32}
+  # Aggregation only once the receipts exist; re-verifies anything missing.
+  verify: {tasks_per_job: 1, time: '48:00:00'}
+  release: {tasks_per_job: 1, time: '24:00:00'}
+
+  # Each cleanup hashes the successor corpus and only then retires its verified
+  # predecessor, so it is a full read pass, not a delete. Budgeted explicitly
+  # rather than inheriting the `normalize` entry through submit_stage's fallback.
+  cleanup_raw: {tasks_per_job: 1, time: '24:00:00'}
+  cleanup_exact: {tasks_per_job: 1, time: '24:00:00'}
+  cleanup_span: {tasks_per_job: 1, time: '24:00:00'}
+  cleanup_minhash: {tasks_per_job: 1, time: '24:00:00'}
+  cleanup_code: {tasks_per_job: 1, time: '24:00:00'}
+  cleanup_decontam: {tasks_per_job: 1, time: '24:00:00'}
+  cleanup_final_hash: {tasks_per_job: 1, time: '24:00:00'}
+  cleanup_tokenizer_sample: {tasks_per_job: 1, time: '04:00:00'}
+  cleanup_selection_inputs: {tasks_per_job: 1, time: '12:00:00'}
+  cleanup_pack_inputs: {tasks_per_job: 1, time: '12:00:00'}
+  cleanup_release_workspace: {tasks_per_job: 1, time: '12:00:00'}
+
+  exact_dedup: {tasks: 2000, find_tasks: 256}
+  repeated_span: {finder_tasks: 64, sentence_count: 3, minimum_span_words: 24, minimum_remaining_words: 50, minimum_remaining_sentences: 3, maximum_open_files: 32, external_sort_chunk_records: 250000, external_sort_max_open_runs: 64, semantic_dedup: false}
+  minhash: {tasks: 2000, workers: 400, num_buckets: 20, hashes_per_bucket: 10, n_grams: 5, target_similarity_operating_region: 0.82}
+  minhash_priority: {bucket_count: 256, maximum_open_files: 32, sqlite_cache_mb: 256, transaction_rows: 100000}
+  code_structural: {finder_tasks: 64, block_tokens: 96, duplicate_fraction: 0.80, semantic_dedup: false}
+  final_hash: {finder_tasks: 64, algorithm: sha256}
+  tokenize: {tasks: 2000, workers: 400}
+
+runtime:
+  python: python3
+  environment_dir: ${METIS_RUNTIME_DIR:-.metis-runtime-portage-cpu}
+  require_apptainer_for_compute: false
+  hf_home: cache/huggingface
+  temp_dir: cache/tmp
+  # MinHash bucketing and repeated-span external sort spill heavily. Node-local
+  # storage keeps that traffic off the shared filesystem; SLURM_TMPDIR is used
+  # automatically when this stays `auto`. If Portage nodes have no local disk,
+  # set this to a Lustre path and expect the sort stages to run slower.
+  node_local_temp_dir: ${METIS_NODE_LOCAL_TMP:-auto}
+  # Each cleanup stage SHA-256s the whole successor corpus before retiring its
+  # predecessor. hashlib releases the GIL, so this threads to the Lustre limit
+  # instead of running one file at a time on a 96-core node.
+  receipt_hash_workers: 48
+  dynamic_materializers_enabled: true
+
+gates:
+  fail_closed: true
+  require_acquisition_handoff: true
+  require_deep_handoff_verification: true
+  # login2 and Portage may expose the same Lustre content at different absolute
+  # prefixes; handoff artifacts are addressed relative to the acquisition root.
+  allow_relocated_lustre_root: true
+  require_repository_commit_match: true
+  require_clean_repository: true
+  require_contamination_index: true
+  require_license_ledger: true
+  license_review_complete: false
+  require_final_tokenizer_counts: true
+  maximum_generated_share: 0.15
+  minimum_unique_tokens: 950000000000

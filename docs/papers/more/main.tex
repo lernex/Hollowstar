@@ -1,0 +1,600 @@
+% MoRE architecture paper -- WORKING DRAFT
+%
+% Status: skeleton with committed framing. Prose is real where the claim is
+% already decided; every number is a placeholder until the ablation campaign
+% reports (see ablation_campaign.md).
+%
+% TONE POLICY (deliberate -- keep it consistent as the draft grows):
+%   Humour is allowed in the abstract (one dry line, max), the introduction,
+%   figure captions, and the limitations section. Methods, results, and related
+%   work stay sober -- a joke in a results table reads as a hedge.
+%   One hard rule: never joke at another paper's expense. Joke at the problem,
+%   at uniform compute, and at ourselves. The authors of the work we position
+%   against are plausibly our reviewers.
+%
+% Conventions:
+%   depth = passes = recursions + 1   (depth 1 is the non-looped base case)
+%   k     = routed experts per pass; one shared expert is always active
+%   \TODO{...} marks something that must be written or measured before submission
+%   \CITE{...} marks a citation that must be resolved
+%
+% Title candidates (swap freely, decided before first public artifact):
+%   [chosen] Three Dials, One Budget: Per-Token Compute Allocation with MoRE
+%   MoRE Is More: Joint Per-Token Routing of Depth, Width, and Pathway
+%   How Much Compute Does a Token Deserve?
+%   Goldilocks Routing: Never Too Much, Never Too Little, Per Token
+%
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{xcolor}
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\TODO}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\CITE}[1]{\textcolor{blue}{[cite: \detokenize{#1}]}}
+\newcommand{\kmax}{k_{\max}}
+\newcommand{\Rmax}{R_{\max}}
+\setlength{\parskip}{0.55em}
+\setlength{\parindent}{0pt}
+\sloppy
+
+\title{Three Dials, One Budget:\\Per-Token Compute Allocation with MoRE}
+\author{Giulianno Vollmer\\Lernex\\\texttt{giulianno@lernex.net}}
+\date{\TODO{date}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Language models spend the same computation on the word \emph{the} as on the step
+of a proof where everything goes wrong. Conditional-compute architectures fix
+this, but each of them fixes it along exactly one axis: Mixture-of-Depths and
+Mixture-of-Recursions vary \emph{how many} steps a token gets, adaptive-$k$
+Mixture-of-Experts designs vary \emph{how wide} a single step is, and recent
+looped MoE models fix both and vary neither.
+We present \textbf{MoRE}, in which a single per-token compute budget is allocated
+jointly across three axes: recursion \textbf{depth} (how many passes through a
+weight-shared stack), expert \textbf{width} (how many experts at each pass), and
+expert \textbf{pathway} (which experts, re-decided every pass from the token's
+evolving state). All three decisions are learned end to end from task loss under
+shared budget objectives. There is no halting threshold to tune, because there is
+no halting threshold.
+We add \textbf{MoRE-RM}, a recurrent depth memory whose entries are typed by
+pass, anchor, expert coalition, routed $k$, and router confidence, and which is
+read by the representation path and the routers at the same time --- the model
+remembers not just what it computed, but who computed it and how sure they were.
+On a ladder of 13 models trained on byte-identical data at \TODO{tokens} we
+isolate each axis at matched executed FLOPs, including the control this
+literature keeps forgetting: a \emph{learned} policy against a \emph{random} one
+at the same mean budget. \TODO{headline result}
+We close with Metis-1.6 Praxis and Logos, two MoRE models pretrained on 1T
+tokens, as evidence that the architecture survives contact with a real training run.
+\end{abstract}
+
+% =====================================================================
+\section{Introduction}
+
+\TODO{Write last. The four beats, in this order:}
+
+\begin{enumerate}
+\item Tokens are not equally hard, and every model in production knows this and
+does nothing about it. Predicting the second half of \emph{``San''}$\to$\emph{``Francisco''}
+gets the same forward pass as resolving a pronoun three paragraphs back.
+\item Conditional compute answers this, but every deployed variant turns exactly
+one dial --- and ``harder'' is not one-dimensional. A token can need \emph{more
+steps} (a multi-step calculation), \emph{more capacity per step} (a rare entity),
+or \emph{different capacity} (a switch from parsing to verifying). Depth, width,
+and pathway are not substitutes for one another, and a model that can only buy
+one of them will buy the wrong one.
+\item MoRE learns all three jointly, per token, out of one budget. The claim is
+composition and joint training, not any single axis. Adaptive depth has prior
+art. Adaptive $k$ has prior art. We say so in Section~\ref{sec:related} rather
+than making a reviewer say it for us.
+\item We back it with an axis-isolating ladder at matched executed FLOPs. The
+uncomfortable control --- learned policy versus random policy at the same mean
+budget --- is included, and reported whichever way it comes out.
+\end{enumerate}
+
+\paragraph{Contributions.}
+\begin{itemize}
+\item \textbf{MoRE-Core}: joint per-token allocation over recursion depth,
+expert width, and expert pathway, with the routing and budget objectives that
+make three discrete decisions trainable from task loss (Section~\ref{sec:core}).
+\item \textbf{MoRE-RM}: a route-typed recurrent depth memory, native to MoRE in
+the strict sense that its key space is the token's own pass and route history,
+read by the representation path and the routers simultaneously
+(Section~\ref{sec:rm}).
+\item A 13-model ablation ladder that isolates each axis at matched executed
+FLOPs, plus random-policy controls that ask whether the \emph{learned} allocation
+does anything or whether any allocation with the same budget would do
+(Section~\ref{sec:ablations}).
+\item A systems account of dropless packed dynamic compute --- monotonic active
+sets, packed layouts, variable-count collectives --- showing the architecture runs
+at \TODO{}\% MFU rather than only in principle (Section~\ref{sec:systems}).
+\item Two production models, Metis-1.6 Praxis and Logos, pretrained on 1T tokens
+(Section~\ref{sec:scale}).
+\end{itemize}
+
+% =====================================================================
+\section{Related work}
+\label{sec:related}
+
+\TODO{This section is adversarial review done in advance. Be maximally generous
+to prior art on each individual axis; the novelty claim is the composition, and
+it is stronger, not weaker, when the pieces are properly credited. Sober tone
+throughout --- no jokes at anyone else's expense.}
+
+\paragraph{Adaptive depth.}
+Adaptive Computation Time \CITE{act2016} and PonderNet \CITE{pondernet2021}
+established learned halting for recurrent computation. Mixture-of-Depths
+\CITE{mod2024} makes per-token layer skipping learnable in transformers.
+Mixture-of-Recursions \CITE{mor2025} is the closest prior work on this axis:
+per-token adaptive recursion depth over a weight-shared block, trained from
+scratch with a recursion router. Ouro \CITE{ouro2025} studies looped models at
+scale and reports that recursion improves the \emph{manipulation} of knowledge
+rather than the amount stored --- a finding we adopt as a design constraint rather
+than dispute (Section~\ref{sec:limitations}).
+\textbf{Difference}: these pair adaptive depth with a dense feed-forward block.
+Depth is the only dial.
+
+\paragraph{Adaptive width.}
+Adaptive per-token expert count is established prior art and we claim no part of
+it. ``Harder Tasks Need More Experts'' \CITE{harder2024} states the thesis in its
+title; AdaMoE \CITE{adamoe2024} realizes variable $k$ through null experts;
+DynaMoE \CITE{dynamoe2026} adds layer-wise adaptive capacity; ProbMoE
+\CITE{probmoe2026} formulates routing as a distribution over cardinality-constrained
+expert subsets; AnyExperts \CITE{anyexperts2025} allocates on demand in the
+multimodal setting. Expert-choice routing \CITE{expertchoice2022} attacks the
+same imbalance from the expert side.
+\textbf{Difference}: all operate in a single-pass stack. Width is the only dial,
+and it is decided once.
+
+\paragraph{Recursion combined with sparse experts.}
+This combination became active immediately before this work, and we position
+against it directly rather than by omission. LoopMoE \CITE{loopmoe2026} is a
+block-recurrent MoE at 3B/9B that resolves weight-sharing symmetry with
+IterAdaLN, a modulation signal conditioned jointly on the iteration index and the
+token state, evaluated against vanilla MoE at identical total parameters and
+per-token FLOPs. The Loopie series \CITE{loopies2026} trains 20B/A2B and 6B/A0.6B
+looped MoE models with reasoning post-training. ``Tying the Loop''
+\CITE{tyingtheloop2026} compares per-iteration adaptation strategies including
+depth-wise LoRA \CITE{relaxedrecursive2024}, low-rank iteration modulation, and
+MeSH \CITE{mesh2025}.
+\textbf{Difference, stated precisely}: in all of these the loop count is a fixed
+hyperparameter and the expert count per iteration is fixed. Neither the depth nor
+the width of the computation is a function of the token. Our claim is that making
+both adaptive \emph{and jointly budgeted}, with the pathway re-decided from the
+evolving state at every pass, is what produces the gain --- and our ladder
+includes a fixed-loop fixed-$k$ MoE row (Section~\ref{sec:ablations}, row~5) that
+reimplements exactly this design point in our backbone, so the comparison is
+internal and matched rather than cross-paper and hopeful.
+
+\paragraph{Residual topology and local memory.}
+We use, and do not claim, Hyper-Connections \CITE{hyperconnections2024} in a
+manifold-constrained form (mHC), the Mamba-2 hybrid backbone \CITE{mamba2_2024},
+$n$-gram conditional memory in the Engram line \CITE{engram}, and aux-loss-free
+expert balancing \CITE{deepseekv3}. Section~\ref{sec:integrations} states the one
+thing we did modify --- each is conditioned on the pass index --- and claims that
+delta and nothing more.
+
+% =====================================================================
+\section{MoRE-Core}
+\label{sec:core}
+
+\subsection{Setup}
+
+A MoRE model is a weight-shared stack $F$ of $L$ physical layers. Every token
+receives pass~1. After pass~$r$, a continuation router decides per token whether
+that token halts or enters pass~$r+1$. The active set is monotonic,
+$A_{r+1} \subseteq A_r$, and is physically packed at every pass. Depth is capped
+at $\Rmax$ passes.
+
+We fix the convention \emph{depth $=$ passes $=$ recursions $+ 1$}, so depth~1 is
+the non-looped base case, matching \CITE{ouro2025}.
+
+Each layer's feed-forward sublayer is a mixture of $E$ routed experts plus one
+always-active shared expert, computed in a latent space of width $d_\ell < d$.
+At every pass, and independently at every layer, a router chooses both how many
+routed experts the token gets and which ones.
+
+\subsection{The three decisions}
+
+For token $t$ at pass $r$ with state $h_t^{(r)}$:
+
+\paragraph{Depth.} A continuation router produces
+\[
+  p_t^{(r)} = \sigma\!\left(g_\theta\!\left(h_t^{(r)},\, m_t^{(r)},\, \Delta_t^{(r)},\, \rho_t^{(r)}\right) + \tau_t^{(r)} - \tfrac{1}{2}\right),
+\]
+where $m_t^{(r)}$ is retrieved depth memory (Section~\ref{sec:rm}),
+$\Delta_t^{(r)} = h_t^{(r)} - h_t^{(r-1)}$ is the state difference,
+$\rho_t^{(r)}$ is route history, and $\tau_t^{(r)}$ is a bounded, \emph{detached}
+innovation prior $\tanh(\lVert\Delta\rVert / \lVert h \rVert)$. The prior gives
+the router a sensible monotonic initialization --- tokens whose state is still
+moving get another pass --- while leaving the learned logits free to override it
+from task loss.
+\TODO{Ablate the prior. A reviewer will reasonably ask whether the depth policy
+is learned or whether the prior is quietly doing the work, and they should ask.
+This is a cheap eval-time ablation on a trained checkpoint: zero $\tau$ and
+re-measure the depth distribution.}
+
+\paragraph{Width.} A $k$-router emits logits over $\{k_{\min},\dots,\kmax\}$. Let
+$q_t^{(r)}$ be the softmax at temperature $\gamma$,
+$\hat{k}_t^{(r)} = \sum_j q_{t,j}^{(r)} k_j$ the expected count, and $k_t^{(r)}$
+the hard count (Gumbel straight-through during training, $\arg\max$ at
+inference). The hard count drives the packed dispatch exactly. The routed
+contribution is scaled by a straight-through envelope
+\[
+  \frac{k_t^{(r)} + \hat{k}_t^{(r)} - \operatorname{sg}[\hat{k}_t^{(r)}]}{\operatorname{sg}[k_t^{(r)}]},
+\]
+identically one in the forward pass, but carrying gradient from the task loss
+into the $k$-router. This is what makes width a \emph{learned} decision rather
+than a scheduled one.
+
+\paragraph{Pathway.} The expert router is re-evaluated at every pass from the
+updated state and current route features, so the selected coalition can change
+even when $k$ does not. Shared physical weights therefore do not imply repeated
+identical computation: successive passes can specialize into stages.
+\TODO{This axis has the weakest support in the prior literature and the strongest
+story in ours. The expert-transition-matrix figure
+(Section~\ref{sec:analysis}) carries it; row~6 of the ladder proves it.}
+
+\subsection{Training three discrete decisions at once}
+
+\[
+  \mathcal{L} = \mathcal{L}_{\mathrm{LM}}
+  + \lambda_k \big(\bar{\hat{k}} - k^\star\big)^2
+  + \lambda_d \big(\bar{d} - d^\star\big)^2
+  + \lambda_z \mathcal{L}_z
+  - \lambda_H \mathcal{H}\!\left[p^{(r)}\right],
+\]
+with $k^\star$, $d^\star$ the target mean width and depth. Expert load balancing
+uses the aux-loss-free selection-bias update \CITE{deepseekv3} rather than a
+balance loss, so the balancing objective is not fighting the width objective for
+control of the same router.
+\TODO{Report the coefficients and a sensitivity sweep. Two quadratic budget
+penalties pulling on a shared compute budget is the most fragile part of this
+design; the paper is stronger for saying so than for hoping nobody checks.}
+
+\paragraph{Why one budget and not two.} \TODO{Argue explicitly. If depth and
+width are separately budgeted, the model can satisfy both without ever trading
+between them, and ``joint allocation'' becomes decoration. The depth--width
+correlation analysis in Section~\ref{sec:analysis} is the empirical test of
+whether real trading happens, and it is a test we can fail.}
+
+% =====================================================================
+\section{MoRE-RM: route-typed recurrent depth memory}
+\label{sec:rm}
+
+\subsection{Definition}
+
+At each attention anchor and at the end of every completed pass, each active
+token writes a typed memory entry: a learned state representation together with
+its \emph{route type} --- pass and anchor identity, the weight-averaged
+expert-coalition embedding, routed $k$, expert-router entropy and confidence, and
+continuation confidence. At later passes each current residual stream attends
+over that token's own valid entries, masked per token and bounded by $\Rmax$.
+
+Retrieval has two simultaneous consumers. The \textbf{representation path} gates
+memory back into the residual streams before the mixer, so computation can
+recover, compare, verify, or revise earlier reasoning states. The \textbf{routing
+path} feeds the depth, width, and pathway heads alongside the current state and
+state-difference features. No fixed cosine threshold or hand-written halt rule
+decides depth, because none is needed once the routers can see what the earlier
+passes actually did.
+
+\subsection{Relation to MeSH and to multi-stream residuals}
+\label{sec:mesh}
+
+The nearest published mechanism is MeSH \CITE{mesh2025}, which replaces the
+overloaded hidden state of a recursive transformer with an explicit buffer of $B$
+slots governed by step-wise read/write routers. Given the surface similarity ---
+both add memory to a recursive stack --- the distinction is worth making
+precisely rather than gesturing at.
+
+MeSH maintains $B$ slots $\mathbf{m}_b \in \mathbb{R}^{L \times D}$ initialized
+with the embeddings in slot~0, and per-iteration routers
+$\mathbf{w}^{(t)}_{\mathrm{write}} = \mathrm{softmax}(\mathrm{Linear}^{(t)}_{\mathrm{write}}(\mathbf{h}^{(t)}))$
+and likewise for reading, with unique parameters per iteration $t$. Writing is
+additive into the slots and reading is a weighted sum over them. Three structural
+consequences follow:
+
+\begin{enumerate}
+\item \textbf{MeSH is closer to our mHC path than to MoRE-RM.} A set of parallel
+per-position state slots, mixed by iteration-conditioned learned weights, is
+functionally a multi-stream residual with pass-dependent mixing --- which is what
+recursion-aware mHC \CITE{hyperconnections2024} is (Section~\ref{sec:integrations}).
+We therefore cite MeSH as convergent with our residual path, and credit it as an
+independent derivation of that idea, rather than treating it as prior art for the
+memory.
+\item \textbf{MeSH slots are untyped and carry no route information.} The buffer
+records no expert coalition, no routed $k$, no router entropy, no halting
+confidence --- because in a fixed-loop dense-or-MoE-agnostic model none of those
+quantities exists. MoRE-RM entries are keyed by exactly those quantities, and the
+read is attention over a growing set of typed entries rather than a softmax
+mixture over a fixed slot count.
+\item \textbf{MeSH memory has no routing consumer.} Its read reconstructs
+$\mathbf{h}^{(t+1)}$ and nothing else; recursion depth in MeSH is a fixed
+hyperparameter with no halting mechanism, and there is no width or pathway
+decision for a memory to inform. MoRE-RM's second consumer --- the routers --- is
+not an extra feature bolted on, it is the reason the memory is typed at all.
+\end{enumerate}
+
+The honest summary: MeSH solves \emph{undifferentiated computation across
+iterations}, and we solve that too, with mHC. MoRE-RM solves a different problem
+that only exists once depth and width are decisions --- giving those decisions
+evidence about what the earlier passes did and how confident they were. A
+single-pass or fixed-loop model cannot adopt MoRE-RM unchanged, which is the
+criterion in Section~\ref{sec:integrations} and the reason it is claimed here.
+
+\TODO{Consider one empirical version of this argument: strip the route typing
+from MoRE-RM entries (state representation only, no coalition/entropy/confidence)
+and re-run. If typed and untyped entries perform identically, the honest
+conclusion is that we built a more expensive MeSH, and we should say so. Cheap
+enough to be worth knowing.}
+
+% =====================================================================
+\section{Integrations we use but do not claim}
+\label{sec:integrations}
+
+We apply a single criterion consistently: \emph{a mechanism belongs to the MoRE
+contribution if its inputs or key space are defined over passes and routes; if a
+single-pass, fixed-budget model could adopt it unchanged, it is an integration.}
+
+\begin{center}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{0.42\textwidth}p{0.2\textwidth}p{0.28\textwidth}}
+\toprule
+Mechanism & Status & Basis \\
+\midrule
+Depth / width / pathway routing + budget objectives & contribution & definitional \\
+Route-typed recurrent depth memory & contribution (MoRE-RM) & keyed by pass and coalition \\
+Manifold-constrained Hyper-Connections (mHC) & integration & \CITE{hyperconnections2024} \\
+Mamba-2 / attention hybrid backbone & integration & \CITE{mamba2_2024} \\
+$n$-gram conditional memory & integration & \CITE{engram} \\
+Aux-loss-free expert balancing & integration & \CITE{deepseekv3} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two integrations are modified rather than adopted, and we claim the modification
+only. The mHC controller receives a learned pass embedding and pass-specific
+biases, so pass~1 through pass~$\Rmax$ use different residual topologies without
+duplicating weights. The $n$-gram injection gates are pass-aware, so a retrieved
+static vector is not added unconditionally on every pass; the current recurrent
+state decides whether to use it. Both deltas exist because the base technique had
+no notion of a pass, which is also why they are small.
+
+We note the convergence: LoopMoE's IterAdaLN \CITE{loopmoe2026} and MeSH's
+step-wise routers \CITE{mesh2025} are independent solutions to the same
+weight-sharing symmetry problem that pass-conditioned mHC addresses. Three
+groups reaching for the same fix in the same year is reasonable evidence that the
+problem is real.
+
+% =====================================================================
+\section{Experiments}
+\label{sec:ablations}
+
+\subsection{Design}
+
+All ablation models share one backbone --- the same hybrid mixer stack, mHC
+residual path, and $n$-gram memory --- and differ only in the routing axes under
+test. Holding the backbone constant means our \emph{baselines are stronger than
+their standard counterparts}, which makes the comparison conservative for MoRE
+and removes backbone quality as an explanation for any gap we find. We state this
+rather than let a reader assume ``Dense'' means a vanilla transformer, because it
+does not.
+
+Every model sees the \emph{identical token stream in identical order}, sampled
+proportionally from the Metis-1.6 1T mixture including its phase structure, so
+data order is not a confound for anyone. Fixed-depth rows use the measured mean
+depth of MoRE-Core; fixed-$k$ rows use $k=4$.
+
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{clccccccr}
+\toprule
+\# & Model & Recur. & Depth & Width $k$ & Pathway & Mem. & Stored/Active & GF/tok \\
+\midrule
+1 & Dense, FLOP-matched & -- & 1 & -- & dense & -- & 1.12B / 0.70B & 7.29 \\
+2 & Dense, parameter-matched & -- & 1 & -- & dense & -- & 1.82B / 1.41B & 12.96 \\
+3 & MoE, $k{=}4$ & -- & 1 & fixed & routed & -- & 1.83B / 0.30B & 4.10 \\
+4 & MoE, $k{=}8$ & -- & 1 & fixed & routed & -- & 1.83B / 0.30B & 4.49 \\
+5 & Fixed LoopMoE & yes & fixed 2 & fixed & re-routed & -- & 1.83B / 0.30B & 7.30 \\
+6 & Loop, pathway frozen & yes & fixed 2 & fixed & frozen & -- & 1.83B / 0.30B & 7.30 \\
+7 & MoR + dense FFN & yes & adaptive & -- & dense & -- & 0.72B / 0.30B & 7.28 \\
+8 & MoR + fixed-$k$ MoE & yes & adaptive & fixed & re-routed & -- & 1.83B / 0.30B & 7.30 \\
+9 & Fixed-depth, adaptive $k$ & yes & fixed 2 & adaptive & re-routed & -- & 1.83B / 0.30B & 7.30 \\
+10 & \textbf{MoRE-Core} & yes & adaptive & adaptive & re-routed & -- & 1.83B / 0.30B & 7.30 \\
+11 & \textbf{MoRE-RM} & yes & adaptive & adaptive & re-routed & yes & 1.83B / 0.30B & 7.30 \\
+\midrule
+12 & Random-$k$ control & yes & adaptive & random & re-routed & -- & 1.83B / 0.30B & 7.30 \\
+13 & Random-depth control & yes & random & adaptive & re-routed & -- & 1.83B / 0.30B & 7.30 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Active parameters are per pass; rows with mean depth 2 execute them roughly
+twice. GFLOP/token is \emph{executed} work at the planned policy, including the
+pass-level recompute replay, from the same accounting the trainer reports
+against. Each row differs from a neighbour in exactly one factor.
+
+\begin{itemize}
+\item \textbf{Rows 5 vs 6} isolate pathway: identical FLOPs, identical depth and
+width, differing only in whether the expert coalition is re-decided after pass~1
+or frozen. Row~5 reimplements the fixed-loop MoE design point
+\CITE{loopmoe2026} in our backbone.
+\item \textbf{Rows 8, 9, 10} isolate depth and width against each other, all at
+matched executed FLOPs.
+\item \textbf{Rows 12, 13} hold the compute budget fixed and randomize the
+policy. To our knowledge this control is absent from the adaptive-compute
+literature, and it is the experiment most capable of embarrassing us, which is
+why it is in the required set rather than the appendix.
+\item \textbf{Row 7} is necessarily smaller in stored parameters: a dense-FFN
+recursive model cannot hold 1.5B stored at 0.29B active. That asymmetry is not a
+flaw in the control, it is precisely what the sparse-expert axis buys, and we
+report both numbers rather than picking the flattering one.
+\end{itemize}
+
+Rows 1 and 5--13 are iso-FLOP by construction. Rows 2, 3, 4 are deliberate
+off-frontier reference points. Note that a wider single-pass MoE \emph{cannot} be
+made iso-FLOP with a recursive model by raising $k$ alone: going $k{=}4 \to 8$
+adds about 0.4 GFLOP/token because expert GEMMs are a minority of the block,
+while a second pass adds roughly 3.2. Row~4 is a reference, not a match, and we say so before
+someone assumes we tried and failed.
+
+\subsection{Configuration}
+
+\TODO{Proxy manifest table: 10 physical layers (8 Mamba-2 + 2 attention),
+$d_{\mathrm{model}}=1792$, latent $896$, expert intermediate $448$, 96 routed + 1
+shared, $k \in [1,8]$ with $k^\star=4$, $\Rmax=5$, $d^\star=2$, sequence 4096,
+tokenizer 65{,}536. Fill in exact audited counts from the ablation manifest.}
+
+\TODO{Learning rate: report the short per-archetype sweep and which value each
+row used. One LR across architectures of different active widths is not fair;
+tuning all thirteen is not affordable. State the compromise --- a reviewer who
+sees it stated is satisfied; one who suspects it is not.}
+
+\subsection{Scaling}
+
+\TODO{Three sizes $\times$ four archetypes (Dense, MoE, MoRE-Core, MoRE-RM), plus
+Praxis and Logos as points four and five on the same curve. The question is
+whether the MoRE advantage holds, grows, or shrinks with scale. One size is a
+data point; three is a trend; five is a claim.}
+
+\subsection{Results}
+
+\TODO{Everything. Primary figure: quality vs executed FLOPs, all rows, one
+frontier plot. Secondary: quality vs tokens. Tertiary: quality vs wall-clock ---
+the axis that matters in practice and the one MoRE is most at risk on.}
+
+% =====================================================================
+\section{Analysis: does it actually adapt?}
+\label{sec:analysis}
+
+Loss curves show MoRE is not worse. This section is the evidence that it does the
+thing it says it does.
+
+\begin{itemize}
+\item \textbf{Allocation vs difficulty.} Depth and $k$ distributions conditioned
+on token surprisal, frequency, and syntactic class.
+\item \textbf{Depth--width correlation.} If depth and $k$ move together
+perfectly, one axis is redundant and the three-dial framing is oversold. We
+report the correlation whatever it says. \TODO{Run this first --- it can change
+the paper's central claim, and it is better to find that out in July than in
+review.}
+\item \textbf{Expert transitions across passes.} Transition matrices between
+pass~$r$ and pass~$r{+}1$ coalitions, testing the stage-specialization
+hypothesis (parse $\to$ manipulate $\to$ verify).
+\item \textbf{Halt calibration.} Reliability diagram for continuation confidence.
+\item \textbf{Test-time budget dial.} The same checkpoint under continuation caps
+$1..\Rmax$ and forced uniform depths $1..\Rmax$, trained with stochastic depth
+budgets so every cap is a supported operating point rather than an
+out-of-distribution override.
+\item \textbf{Oracle gap.} On a small evaluation subset, exhaustively search the
+best per-token depth and report what fraction of the oracle improvement the
+learned policy captures.
+\end{itemize}
+
+% =====================================================================
+\section{Systems: dropless packed dynamic compute}
+\label{sec:systems}
+
+Adaptive-compute papers are usually rejected on ``does this actually run fast?''
+rather than on quality, and rightly so; a FLOP you cannot schedule is a FLOP you
+did not save. This section is a differentiator, not an appendix.
+
+\TODO{Cover: monotonic active sets and per-pass packing; dropless routing with
+variable-count collectives; the three quantities that must never be conflated
+(training-data token dropout: none; MoE overflow drop rate: zero; learned
+continuation halting: intended and load-bearing); FP8 role assignment and the
+BF16 parity lane; measured MFU and tokens/second; the cost of dynamic control
+flow against a static-shape baseline.}
+
+% =====================================================================
+\section{Scale demonstration: Metis-1.6}
+\label{sec:scale}
+
+This section is a demonstration, not a controlled comparison, and we would rather
+say that in the first sentence than have it inferred from a footnote.
+
+Metis-1.6 Praxis and Metis-1.6 Logos are MoRE models pretrained on the same
+immutable 1T-token release with identical phase boundaries, tokenizer, and
+curriculum, differing only in scale. \TODO{parameter and active-parameter audits}
+
+\paragraph{Comparison to published models.} Any comparison across laboratories
+differs in data, token budget, and post-training, so we report total parameters,
+active parameters per token, and training tokens beside every score, and we plot
+quality against active FLOPs per token rather than presenting a ranked table.
+
+We state one prediction in advance: at a 1T-token budget, MoRE models should be
+\emph{competitive on reasoning and manipulation benchmarks and behind on
+closed-book knowledge benchmarks} relative to models trained on an order of
+magnitude more tokens. This follows directly from the depth-versus-knowledge
+finding in \CITE{ouro2025} --- recursion buys manipulation, tokens buy knowledge
+--- and we would rather register it as a prediction of the architecture now than
+offer it as an explanation later.
+
+% =====================================================================
+\section{Claims, evidence, and falsifiers}
+
+\begin{center}
+\begin{tabular}{p{0.29\textwidth}p{0.3\textwidth}p{0.33\textwidth}}
+\toprule
+Claim & Evidence & Falsified if \\
+\midrule
+Depth adaptivity beats a matched fixed depth & rows 5, 8, 10 at iso-FLOP & row 5 $\geq$ row 8 \\
+Width adaptivity beats a matched fixed $k$ & rows 8, 9, 10 at iso-FLOP & row 8 $\geq$ row 10 \\
+Per-pass re-routing matters & rows 5 vs 6 & no gap at iso-FLOP \\
+The learned policy beats a random one at the same budget & rows 12, 13 vs 10 & no gap \\
+Depth and width are distinct axes & correlation analysis & near-perfect correlation \\
+Later passes do useful work & per-pass quality gain & gain vanishes after pass 2 \\
+Route memory helps & row 11 vs 10 & no gap, or later experts starve \\
+Route \emph{typing} is what helps & typed vs untyped entries & no gap (we built a costly MeSH) \\
+Stage specialization is real & transition matrices & coalitions are pass-invariant \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+These were written before the runs, and we report against them either way.
+
+% =====================================================================
+\section{Limitations}
+\label{sec:limitations}
+
+\begin{itemize}
+\item \textbf{Ablation scale.} \TODO{state tokens/parameter per row}. Conclusions
+about relative architecture quality at 1.5B do not automatically transfer to
+frontier scale. The Praxis and Logos points partially address this and do not
+close it, and anyone claiming otherwise about their own ablations is guessing too.
+\item \textbf{Recursion does not buy knowledge} \CITE{ouro2025}. MoRE targets
+manipulation. Closed-book factual benchmarks are not where this architecture is
+expected to win, and we do not report them as though they were.
+\item \textbf{Wall-clock is not FLOPs.} Dynamic routing costs launch overhead,
+compaction, and variable collectives. We report wall-clock next to FLOPs even
+where the comparison is less flattering.
+\item \textbf{Budget coefficients are choices.} Two quadratic penalties on a
+shared budget is the most tunable part of the design. \TODO{sensitivity sweep}
+\item \textbf{The ladder shares a non-standard backbone.} Conclusions are about
+the routing axes on that backbone, and we have not shown they transfer to a
+vanilla transformer stack.
+\item \textbf{Three dials mean three ways to be wrong.} Every axis we added is
+another policy that can fail to learn, and the analysis section exists because we
+did not want to find that out from a reader.
+\end{itemize}
+
+% =====================================================================
+\section{Conclusion}
+\TODO{}
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}

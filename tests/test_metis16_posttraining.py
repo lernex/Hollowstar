@@ -595,3 +595,99 @@ class OrchestratorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BaseModelBoundaryTests(unittest.TestCase):
+    """The base model is the 1T checkpoint plus continued pretraining.
+
+    Continued pretraining is contracted by the pretraining side and executed by
+    this pipeline.  These tests pin the split so the two declarations cannot
+    drift, and so nobody folds the long-context corpus into the 1T release.
+    """
+
+    def contract(self) -> dict:
+        import yaml
+
+        return yaml.safe_load(
+            (ROOT / "configs" / "metis16" / "pretraining.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    def test_base_model_is_not_the_one_trillion_checkpoint(self) -> None:
+        contract = self.contract()
+        self.assertEqual(
+            contract["base_model_complete_after"], ["phase_c", "continued_pretraining"]
+        )
+        self.assertEqual(
+            load_pipeline(PIPELINE)["base_model_boundary"], "context_extension"
+        )
+
+    def test_base_model_and_alignment_stages_partition_the_executed_order(self) -> None:
+        from metis_training.posttraining import (
+            ALIGNMENT_STAGE_IDS,
+            BASE_MODEL_STAGE_IDS,
+            EXPECTED_STAGE_IDS,
+        )
+
+        self.assertEqual(BASE_MODEL_STAGE_IDS + ALIGNMENT_STAGE_IDS, EXPECTED_STAGE_IDS)
+        self.assertEqual(BASE_MODEL_STAGE_IDS, ("context_extension",))
+        self.assertEqual(ALIGNMENT_STAGE_IDS[0], "cold_start_sft")
+
+    def test_continued_pretraining_corpus_stays_out_of_the_pretraining_release(
+        self,
+    ) -> None:
+        continued = self.contract()["continued_pretraining"]
+        self.assertIs(continued["in_pretraining_release"], False)
+        self.assertEqual(continued["data_env"], "METIS_CONTEXT_EXTENSION_DATA")
+        # The 1T budget and phase boundaries must not absorb the 18B exposure.
+        contract = self.contract()
+        self.assertEqual(contract["total_train_tokens"], 1_000_000_000_000)
+        self.assertEqual(
+            max(int(phase["end_token_exclusive"]) for phase in contract["phases"]),
+            1_000_000_000_000,
+        )
+        self.assertEqual(continued["token_budget"], 18_000_000_000)
+
+    def test_divergent_declarations_of_the_base_model_fail_closed(self) -> None:
+        from metis_training.posttraining import cross_check_continued_pretraining
+
+        pipeline = load_pipeline(PIPELINE)
+        for side, field, value in (
+            ("contract", "token_budget", 12_000_000_000),
+            ("pipeline", "train_context", 131_072),
+            ("contract", "in_pretraining_release", True),
+        ):
+            with self.subTest(side=side, field=field):
+                mutated_pipeline = copy.deepcopy(pipeline)
+                mutated_contract = copy.deepcopy(self.contract())
+                target = (
+                    mutated_contract["continued_pretraining"]
+                    if side == "contract"
+                    else mutated_pipeline["context_extension"]
+                )
+                target[field] = value
+                with self.assertRaises(PipelineContractError):
+                    cross_check_continued_pretraining(
+                        mutated_pipeline, mutated_contract
+                    )
+
+    def test_allocation_cap_follows_from_the_gate_overshoot_allowance(self) -> None:
+        """One sequence per rank is the floor, so the world size is capped."""
+
+        from metis_training.posttraining import cross_check_continued_pretraining
+
+        continued = self.contract()["continued_pretraining"]
+        allowance = continued["gate_policy"]["maximum_gate_overshoot_tokens"]
+        train_context = continued["train_context"]
+        self.assertLessEqual(
+            continued["maximum_world_size"] * train_context, allowance
+        )
+        # The full 512-APU allocation would overshoot its first gate.
+        self.assertGreater(512 * train_context, allowance)
+
+        pipeline = load_pipeline(PIPELINE)
+        contract = self.contract()
+        contract["continued_pretraining"]["maximum_world_size"] = 512
+        with self.assertRaises(PipelineContractError):
+            cross_check_continued_pretraining(pipeline, contract)

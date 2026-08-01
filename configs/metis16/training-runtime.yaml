@@ -69,7 +69,15 @@ schedule:
 precision:
   target: fp8_first
   fp8_format: hybrid_e4m3_e5m2
+  # The expert dispatch/combine all-to-all dominates injected bytes per token,
+  # and both payloads are quantised to E4M3 by the very next GEMM
+  # (expert gate_up, latent_up).  Carrying them on the wire in FP8 with per-row
+  # scales therefore halves EP traffic for close to no extra numerical loss.
+  # It is only live under the FP8 profile, so the BF16 candidate stays a clean
+  # parity reference.  Gradients on the return leg use E5M2.
   fp8_surfaces:
+    - expert_dispatch_collective
+    - expert_combine_collective
     - routed_expert_gemms
     - shared_expert_gemms
     - latent_projections
@@ -88,7 +96,8 @@ precision:
     - gates
     - activation_boundaries
     - gradients
-    - collectives
+    - ngram_row_lookup_collective
+    - gradient_reduction_collectives
   fp32_surfaces:
     - master_weights
     - optimizer_states

@@ -13,8 +13,8 @@ Hard tokens get more depth and width, while every continuing token can re-route 
 hidden state evolves — nothing over- or under-shot. Goal: 1.5's efficiency instincts, but with real
 reasoning depth, **1T final-tokenizer-measured pretraining exposures, locked** (the fused additions
 below and the Portage topology still require a fresh throughput probe),
-and a deliberate strategic bet — **a tool-using reasoner, not an
-encyclopedia** (§1.5). Backbone shifts to **hybrid Mamba-2 + attention** for cheap O(n) long-context/RAG.
+and a model that **knows what it knows** (§1.5). Backbone shifts to **hybrid Mamba-2 + attention**
+for cheap O(n) long-context.
 
 ## 1. Architecture (what MoRE is)
 
@@ -233,21 +233,34 @@ stability, non-saturated quality gains, healthy gradients, and continued expert 
 Matches the spec: `2x`→depth4, k=[2,2,1,1] (6 calls); `+`→depth2 (2); `3`→depth3 (4); `so`→depth1
 (1); `4`→depth4, k=[3,2,1,1] (7). Cheap tokens cost ~1 expert call; hard tokens cost ~7.
 
-## 1.5 Product thesis — a tool-using reasoner, not an encyclopedia
+## 1.5 Product thesis — a reasoner that knows what it knows
 
-We can't out-knowledge the frontier (they brute-force trillions of tokens for the long tail), so we
-don't try. Metis-1.6 is built to **reason, then research**: minimal parametric facts, maximal
-reasoning + **faithful retrieval-grounding** + **abstention**. It distrusts its own memory — for
-anything factual it calls **web search / RAG**, reasons over the results, and grounds its answer in
-sources. This directly kills 1.5's #1 failure (confident fabrication), plays to MoRE's reasoning
-strength. The 1T schedule is intentionally knowledge-dense rather than a raw crawl mirror.
+**Superseded 2026-07-25.** An earlier draft of this section made a retrieval-substitution bet: that
+Metis-1.6 would carry minimal parametric facts and call web search / RAG for anything factual,
+with closed-book MMLU near random treated as expected and fine. **That bet is retired.** It was
+written against a much smaller token budget; the 1T schedule was raised specifically so the model
+would not need it. Metis-1.6 is expected to hold real parametric knowledge and is evaluated
+closed-book as well as tool-augmented.
 
-- **Not "zero knowledge"** — enough to *formulate queries, comprehend results, and know when to
-  search*. Drop only long-tail-fact *memorization*; keep reasoning + reading-comprehension + grounding.
-- **Trained skills:** when/how to call tools, query formulation, reasoning over retrieved context,
-  **grounding faithfulness**, and **abstention** ("the sources don't cover this") instead of guessing.
-- **Eval shifts:** measure *tool-augmented* QA + grounding faithfulness, not closed-book recall.
-  Closed-book MMLU staying ~random is *expected and fine* under this thesis.
+What survives the change is the *anti-fabrication* half, which was always the point. 1.5's #1
+failure was confident fabrication (invented bios, "gold named after the Greek god"), and the fix
+is calibration, not ignorance:
+
+- **Knowledge is a goal, not a liability.** The 1T schedule is knowledge-dense rather than a raw
+  crawl mirror — 525B web, 160B code, 85B math, 125B science/technical, 70B synthetic pedagogical.
+  It is meant to be learned and retained.
+- **Calibration and abstention.** The model should know the boundary of what it knows and say "I
+  don't know" past it. This is a *trained behaviour on top of real knowledge*, not a substitute for
+  having any. Abstention data is a locked post-training component (§5).
+- **Grounding faithfulness when sources are present.** When the model is given context — retrieved,
+  pasted, or tool-returned — its answer must be faithful to that context and must not silently
+  blend in unsupported parametric claims. This is a correctness property of reading, and it holds
+  regardless of how much the model knows unaided.
+- **Tool use as a capability, not a crutch.** When/how to call tools, query formulation, and
+  reasoning over returned context remain trained skills and keep their dedicated agentic RL stage
+  (§5). They extend the model past its knowledge; they no longer excuse the absence of it.
+- **Eval:** report closed-book *and* tool-augmented, plus grounding faithfulness and abstention
+  calibration. A weak closed-book score is now a finding to investigate, not an expected outcome.
 - **Existence proof:** two related Nanbeige papers, both verified directly (full-text fetch + grep,
   not summary): **Nanbeige4-3B Technical Report** (arXiv 2512.06266, the base recipe — cold-start
   SFT, DPD, multi-domain RLVR, pairwise-RM-last; source of most of §5's pipeline) and
@@ -259,16 +272,18 @@ strength. The 1T schedule is intentionally knowledge-dense rather than a raw cra
   increase knowledge capacity nor improve capacity scaling"** — looped and non-looped models hold
   the same ~2 bits/parameter of memorized facts. The gain from recursion shows up specifically in
   **"knowledge manipulation"** (their term — reasoning over/applying what's already stored), not in
-  storing more of it. This is independent confirmation that the MoRE depth axis is pointed at
-  exactly the right target for this thesis: we were never trying to buy knowledge with recursion,
-  and the one paper that measured this says that's the correct read of what recursion actually does.
+  storing more of it. This is independent confirmation that the MoRE depth axis is pointed at the
+  right target — we were never trying to buy knowledge with recursion — and it is *also* the reason
+  the retrieval-substitution bet above had to go: **recursion buys manipulation, tokens buy
+  knowledge.** Depth cannot compensate for an undertrained model's factual gaps, so the token
+  budget has to carry that load itself. Raising the schedule to 1T is the direct consequence.
 
 ## 2. Specs (Praxis target and family scaling)
 
 | Field | 1.5 | **Metis-1.6 Praxis** |
 |---|---|---|
 | Architecture | single-latent MoE, dense | **MoRE** (per-pass continuation × adaptive-k × expert re-routing) + recursion-aware mHC + recurrent depth memory + N-gram conditional memory |
-| Backbone | transformer (attention) | **hybrid Mamba-2 + attention** (O(n) long-context for RAG) |
+| Backbone | transformer (attention) | **hybrid Mamba-2 + attention** (O(n) long-context) |
 | Vocab | 32,768 | **65,536** (new BPE; canonicalized ID sidecar for N-gram hashing) |
 | Pretrain context | 1024 | **4096** (packed stream; add EOS separators + doc masking / SSD state reset) |
 | Final context | 1024 | **131k** (NoPE attention; single-jump post-training extension, not staged — §5) |
@@ -666,7 +681,8 @@ where and which parts are our own addition):**
    than using a general LM-as-judge: a general judge needs a lengthy CoT before verdicting (slow) and
    is prone to reward hacking; a small dedicated pairwise model expresses preference in a few tokens
    and resists hacking better.
-6. **Eval** — tool-augmented QA + grounding faithfulness (not closed-book).
+6. **Eval** — closed-book **and** tool-augmented QA, plus grounding faithfulness and abstention
+   calibration (§1.5). Closed-book is a reported headline metric, not a metric we excuse.
 
 > RL is the budget swing factor — agentic rollouts (search-in-the-loop, many samples/prompt) are
 > compute-hungry. Keep the agentic stage "lightweight" (4.1-3B's word); prioritize if budget tightens.

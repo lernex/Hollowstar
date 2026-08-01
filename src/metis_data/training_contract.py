@@ -78,6 +78,44 @@ def _artifact(
     return path
 
 
+def _validate_continued_pretraining(contract: dict) -> None:
+    """The base model is the 1T checkpoint plus continued pretraining.
+
+    Continued pretraining owns a separate corpus, a separate token counter, and
+    a separate learning-rate segment.  Its exposure is deliberately excluded
+    from ``total_train_tokens`` and from the verified 1T release, so this only
+    checks that the split is declared and that nobody has folded the
+    long-context corpus into the pretraining phases.
+    """
+
+    boundary = list(contract.get("base_model_complete_after") or ())
+    if boundary != ["phase_c", "continued_pretraining"]:
+        raise RuntimeError(
+            "Pretraining contract must declare the base model complete only "
+            "after phase_c and continued_pretraining"
+        )
+    continued = contract.get("continued_pretraining")
+    if not isinstance(continued, dict):
+        raise RuntimeError("Pretraining contract is missing continued_pretraining")
+    if continued.get("in_pretraining_release") is not False:
+        raise RuntimeError(
+            "Continued-pretraining data must stay outside the 1T pretraining release"
+        )
+    if continued.get("data_env") != "METIS_CONTEXT_EXTENSION_DATA":
+        raise RuntimeError(
+            "Continued pretraining must consume its own sealed long-context corpus"
+        )
+    if int(continued.get("token_budget", -1)) != 18_000_000_000:
+        raise RuntimeError("Continued-pretraining exposure must be exactly 18B tokens")
+    if any(
+        int(phase.get("end_token_exclusive", 0)) > int(contract["total_train_tokens"])
+        for phase in contract.get("phases", ())
+    ):
+        raise RuntimeError(
+            "Pretraining phases must not absorb continued-pretraining exposure"
+        )
+
+
 def _unsigned_hash(payload: dict[str, Any], field: str) -> str:
     return _json_sha256({key: value for key, value in payload.items() if key != field})
 
@@ -140,6 +178,7 @@ def validate_training_release(
         raise RuntimeError("Training contract and release token targets differ from exact 1T")
     if release.get("phase_tokens") != PHASE_TOKENS:
         raise RuntimeError("Release phase schedule is not exactly 700B/250B/50B")
+    _validate_continued_pretraining(contract)
     if not release.get("verification", {}).get("ok"):
         raise RuntimeError("Training refuses an unverified data release")
 

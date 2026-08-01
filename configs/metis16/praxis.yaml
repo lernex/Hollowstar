@@ -38,10 +38,17 @@ expert_intermediate_dim: 512
 min_routed_k: 1
 max_routed_k: 8
 target_mean_routed_k: 4.0
+# Expert parallelism is sized for fabric radius, not for memory: 4 routed
+# experts per rank costs 19 MB more state and lets the dispatch all-to-all span
+# 8 nodes instead of 32.  Replica reconciliation is charged once per optimizer
+# step, so it is three orders of magnitude cheaper per token than dispatch.
+# The 5 replicas free Praxis from world_size == expert_parallel_size, which is
+# what previously pinned it to exactly 32 nodes and made the two families
+# finish 43 hours apart.
 topology:
-  world_size: 128
-  expert_parallel_size: 128
-  expert_replica_count: 1
+  world_size: 160
+  expert_parallel_size: 32
+  expert_replica_count: 5
 
 max_passes: 5
 target_mean_passes: 2.0
@@ -57,6 +64,10 @@ k_budget_coefficient: 0.01
 depth_budget_coefficient: 0.01
 continuation_entropy_coefficient: 0.001
 tie_embeddings: true
+# Software-pipeline depth for the expert dispatch/expert/combine chain.  The
+# bytes, peers, and fan-out are unchanged; the expert GEMMs for chunk c simply
+# run while chunk c+1 is still on the wire.  One reproduces the serial path.
+moe_dispatch_chunks: 3
 activation_recompute_policy: pass
 
 ngram_memory:
@@ -68,7 +79,7 @@ ngram_memory:
     '2': [578957, 579947, 580939, 581941, 582937, 583937, 584951, 585737]
     '3': [586139, 586939, 587947, 588937, 589993, 590959, 591937, 592793]
   hash_seeds: [2654435761, 2246822519, 3266489917, 668265263, 374761393, 3550635117, 4251991749, 3043081225]
-  table_mode: replicated
+  table_mode: row_sharded
   sparse_gradients: true
   optimizer: sparse_adam
   learning_rate_scale: 2.0
@@ -79,6 +90,7 @@ ngram_memory:
 precision:
   backend: auto
   fp8_format: hybrid_e4m3_e5m2
+  expert_collective_wire: fp8
   parameter_dtype: bfloat16
   activation_dtype: bfloat16
   master_weight_dtype: float32
@@ -112,7 +124,7 @@ autotune:
     compile_modes: [default, reduce-overhead, none]
     precision_profiles: [fp8, bf16]
     dispatch_overlap: ['on', 'off']
-    ngram_table_modes: [replicated, row_sharded]
+    ngram_table_modes: [row_sharded, replicated]
   gates:
     max_hbm_fraction: 0.90
     max_fp8_loss_relative_error: 0.02

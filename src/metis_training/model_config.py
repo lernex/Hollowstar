@@ -10,6 +10,14 @@ import yaml
 MANIFEST_SCHEMA = "metis.model-family/v1"
 _PLACEMENTS = {"replicated", "expert_sharded", "sparse_table"}
 _TABLE_MODES = {"replicated", "row_sharded"}
+_FFN_MODES = {"moe", "dense"}
+_EXPERT_EXECUTIONS = {"loop", "grouped"}
+_PATHWAY_MODES = {"per_pass", "frozen"}
+# Families whose manifests are research artifacts rather than release contracts.
+# Production geometry, context, and pass locks are relaxed for these; every
+# structural invariant that the executable model depends on still applies.
+_RELAXED_FAMILIES = frozenset({"tiny", "ablation"})
+_FAMILIES = frozenset({"praxis", "logos", "tiny", "ablation"})
 
 
 def _is_prime(value: int) -> bool:
@@ -94,6 +102,14 @@ class PrecisionConfig:
         "loss_accumulation",
         "mamba_sensitive",
     )
+    # Wire format for the expert-parallel dispatch/combine all-to-all.  This is
+    # a collective payload policy, not a GEMM role, so it stays outside
+    # ``fp8_roles`` and outside the sealed precision-role plan.
+    #   bfloat16      -- both directions on the wire in BF16
+    #   fp8_dispatch  -- FP8 token dispatch, BF16 expert-output combine
+    #   fp8           -- both directions in FP8
+    # Forward payloads use E4M3 and gradients E5M2, per ``fp8_format``.
+    expert_collective_wire: str = "bfloat16"
     require_fp8_validation: bool = True
     allow_bf16_fallback: bool = True
 
@@ -126,6 +142,19 @@ class PrecisionConfig:
             raise ValueError(
                 "precision.fp8_format must be e4m3fn, e4m3fnuz, or "
                 "hybrid_e4m3_e5m2."
+            )
+        if self.expert_collective_wire not in {"bfloat16", "fp8_dispatch", "fp8"}:
+            raise ValueError(
+                "precision.expert_collective_wire must be bfloat16, "
+                "fp8_dispatch, or fp8."
+            )
+        if (
+            self.expert_collective_wire != "bfloat16"
+            and self.fp8_format != "hybrid_e4m3_e5m2"
+        ):
+            raise ValueError(
+                "An FP8 expert collective wire needs hybrid_e4m3_e5m2 so that "
+                "forward payloads use E4M3 and gradients use E5M2."
             )
 
 
@@ -206,6 +235,42 @@ class NGramMemoryConfig:
             slots = self.slots_by_order.get(order)
             if slots is None or len(slots) != self.tables_per_order:
                 raise ValueError(f"slots_by_order[{order}] must contain eight prime-sized tables.")
+            if any(slot <= 2 for slot in slots):
+                raise ValueError("N-gram table slot counts must be greater than two.")
+            if any(not _is_prime(slot) for slot in slots):
+                raise ValueError("Every N-gram hash-table slot count must be prime.")
+
+    def validate_relaxed(self) -> None:
+        """Validate structure without the production table-size constants.
+
+        Research families scale the table geometry with the model, so
+        ``tables_per_order``, ``value_dim``, and the canonicalization policy are
+        free.  Everything the lookup kernel actually depends on -- suffix
+        orders, one seed per hash head, one prime slot count per head -- is
+        still enforced, because those are correctness constraints rather than
+        release contracts.
+        """
+
+        if self.orders != (2, 3):
+            raise ValueError("Metis-1.6 conditional memory is locked to suffix orders (2, 3).")
+        if self.tables_per_order <= 0:
+            raise ValueError("tables_per_order must be positive.")
+        if self.value_dim <= 0:
+            raise ValueError("N-gram table rows must have positive width.")
+        if len(self.hash_seeds) != self.tables_per_order:
+            raise ValueError("hash_seeds must contain one seed per hash head.")
+        if self.table_mode not in _TABLE_MODES:
+            raise ValueError("ngram_memory.table_mode must be replicated or row_sharded.")
+        if self.optimizer != "sparse_adam":
+            raise ValueError("N-gram tables require a sparse Adam-style optimizer.")
+        if self.weight_decay != 0.0:
+            raise ValueError("N-gram sparse tables must not use weight decay.")
+        for order in self.orders:
+            slots = self.slots_by_order.get(order)
+            if slots is None or len(slots) != self.tables_per_order:
+                raise ValueError(
+                    f"slots_by_order[{order}] must contain one prime slot count per hash head."
+                )
             if any(slot <= 2 for slot in slots):
                 raise ValueError("N-gram table slot counts must be greater than two.")
             if any(not _is_prime(slot) for slot in slots):
@@ -381,6 +446,18 @@ class Metis16Config:
     min_routed_k: int = 1
     max_routed_k: int = 8
     target_mean_routed_k: float = 4.0
+    # Feed-forward sublayer family.  ``moe`` is the production Metis-1.6 path.
+    # ``dense`` replaces the routed/shared expert mixture with a single SwiGLU
+    # block and is only reachable from the ``ablation`` family, where the paper
+    # needs dense controls that are otherwise architecturally identical.
+    ffn_mode: str = "moe"
+    dense_ffn_intermediate_dim: int = 0
+    # ``loop`` issues one GEMM pair per local expert, which is what production
+    # expert parallelism wants because each rank owns a handful of experts.
+    # ``grouped`` sorts the assignments once, derives segment boundaries with a
+    # single host synchronization per layer, and then slices -- the only viable
+    # path when every rank replicates all routed experts.
+    expert_execution: str = "loop"
     world_size: int = 128
     expert_parallel_size: int = 128
     expert_replicas: int = 1
@@ -398,8 +475,21 @@ class Metis16Config:
     depth_budget_coefficient: float = 1.0e-2
     continuation_entropy_coefficient: float = 1.0e-3
     tie_embeddings: bool = True
+    # Software-pipeline depth for the expert-parallel dispatch/expert/combine
+    # chain.  One reproduces the serial path byte for byte; higher values keep
+    # the same bytes on the wire but overlap them with the expert GEMMs.
+    moe_dispatch_chunks: int = 1
     lm_head_chunk_size: int = 1_024
+    # ``pass`` replays a whole recurrent pass; ``layer`` replays one block at a
+    # time.  The FLOP cost is identical -- the same forward is re-executed
+    # either way -- but ``layer`` keeps only one block's activations live, which
+    # is the difference between fitting and not fitting at 163,840 tokens.
     activation_recompute_policy: str = "pass"
+    # Sequence sharding for context extension.  1 leaves every code path byte
+    # identical to pretraining; above 1 each rank owns ``sequence / size``
+    # contiguous positions and the mixers exchange the state that crosses the
+    # boundary.
+    context_parallel_size: int = 1
     ngram_memory: NGramMemoryConfig = field(default_factory=NGramMemoryConfig)
     precision: PrecisionConfig = field(default_factory=PrecisionConfig)
     autotune: AutotuneConfig = field(default_factory=AutotuneConfig)
@@ -468,15 +558,24 @@ class Metis16Config:
     def validate(self) -> None:
         if self.schema != MANIFEST_SCHEMA:
             raise ValueError(f"Expected schema {MANIFEST_SCHEMA!r}, got {self.schema!r}.")
-        if self.family not in {"praxis", "logos", "tiny"}:
-            raise ValueError("family must be praxis, logos, or tiny.")
-        if self.vocab_size != 65_536 and self.family != "tiny":
+        if self.family not in _FAMILIES:
+            raise ValueError("family must be praxis, logos, tiny, or ablation.")
+        if self.ffn_mode not in _FFN_MODES:
+            raise ValueError("ffn_mode must be moe or dense.")
+        if self.expert_execution not in _EXPERT_EXECUTIONS:
+            raise ValueError("expert_execution must be loop or grouped.")
+        if self.ffn_mode == "dense" and self.family not in _RELAXED_FAMILIES:
+            raise ValueError(
+                "A dense feed-forward sublayer is an ablation control; production "
+                "Praxis/Logos are locked to the routed expert mixture."
+            )
+        if self.vocab_size != 65_536 and self.family not in _RELAXED_FAMILIES:
             raise ValueError("Praxis and Logos require the locked 65,536-token vocabulary.")
-        if self.sequence_length != 4_096 and self.family != "tiny":
+        if self.sequence_length != 4_096 and self.family not in _RELAXED_FAMILIES:
             raise ValueError("Praxis and Logos pretraining context is locked to 4,096.")
-        if self.final_context_length != 131_072 and self.family != "tiny":
+        if self.final_context_length != 131_072 and self.family not in _RELAXED_FAMILIES:
             raise ValueError("Praxis and Logos deployment context is locked to 131,072.")
-        if self.context_extension_train_length != 163_840 and self.family != "tiny":
+        if self.context_extension_train_length != 163_840 and self.family not in _RELAXED_FAMILIES:
             raise ValueError("Context-extension training is locked to the 163,840-token overshoot.")
         if self.context_extension_train_length < self.final_context_length:
             raise ValueError("context_extension_train_length cannot be below deployment context.")
@@ -495,7 +594,7 @@ class Metis16Config:
         if any(index < 0 or index >= self.n_layers for index in self.attention_indices):
             raise ValueError("attention_indices must refer to physical layers.")
         if self.mamba_expand != 2 or self.mamba_d_state != 128:
-            if self.family != "tiny":
+            if self.family not in _RELAXED_FAMILIES:
                 raise ValueError("Production Metis-1.6 uses Mamba-2 expand=2 and d_state=128.")
         if self.mamba_head_dim <= 0 or (self.d_model * self.mamba_expand) % self.mamba_head_dim:
             raise ValueError("Expanded Mamba width must be divisible by mamba_head_dim.")
@@ -509,39 +608,65 @@ class Metis16Config:
             raise ValueError("mHC requires at least two Sinkhorn iterations.")
         if self.mhc_backend not in {"fused_required", "torch_reference"}:
             raise ValueError("mhc_backend must be fused_required or torch_reference.")
-        if self.family != "tiny" and self.mhc_backend != "fused_required":
+        if self.family not in _RELAXED_FAMILIES and self.mhc_backend != "fused_required":
             raise ValueError(
                 "Production Praxis/Logos require the fused Triton/ROCm mHC backend."
             )
         if self.latent_dim <= 0 or self.latent_dim > self.d_model:
             raise ValueError("latent_dim must be positive and no wider than d_model.")
-        if self.n_routed_experts <= 0 or self.n_shared_experts != 1:
-            raise ValueError("Metis-1.6 requires routed experts plus exactly one shared expert.")
-        if self.n_routed_experts % self.expert_parallel_size:
-            raise ValueError("n_routed_experts must divide evenly across expert_parallel_size.")
+        if self.ffn_mode == "dense":
+            # A dense control has no expert mixture at all: routed and shared
+            # expert counts must be zero so the parameter audit stays honest
+            # rather than charging the model for weights it never builds.
+            if self.n_routed_experts != 0 or self.n_shared_experts != 0:
+                raise ValueError(
+                    "ffn_mode=dense requires n_routed_experts and n_shared_experts "
+                    "to be zero; the audit must not charge unbuilt experts."
+                )
+            if self.dense_ffn_intermediate_dim <= 0:
+                raise ValueError("ffn_mode=dense requires a positive dense_ffn_intermediate_dim.")
+            if self.expert_parallel_size != 1:
+                raise ValueError("A dense feed-forward stack cannot use expert parallelism.")
+        else:
+            if self.n_routed_experts <= 0 or self.n_shared_experts != 1:
+                raise ValueError(
+                    "Metis-1.6 requires routed experts plus exactly one shared expert."
+                )
+            if self.n_routed_experts % self.expert_parallel_size:
+                raise ValueError(
+                    "n_routed_experts must divide evenly across expert_parallel_size."
+                )
+            if not 1 <= self.min_routed_k <= self.max_routed_k <= self.n_routed_experts:
+                raise ValueError("Dynamic routed k bounds are invalid.")
+            if not self.min_routed_k <= self.target_mean_routed_k <= self.max_routed_k:
+                raise ValueError("target_mean_routed_k must lie inside the routed-k bounds.")
         if self.world_size != self.expert_parallel_size * self.expert_replicas:
             raise ValueError("world_size must equal expert_parallel_size * expert_replicas.")
-        if not 1 <= self.min_routed_k <= self.max_routed_k <= self.n_routed_experts:
-            raise ValueError("Dynamic routed k bounds are invalid.")
-        if not self.min_routed_k <= self.target_mean_routed_k <= self.max_routed_k:
-            raise ValueError("target_mean_routed_k must lie inside the routed-k bounds.")
-        if self.expert_balance_coefficient != 0.0 and self.family != "tiny":
+        if self.expert_balance_coefficient != 0.0 and self.family not in _RELAXED_FAMILIES:
             raise ValueError(
                 "Production Metis-1.6 uses aux-loss-free expert bias balancing."
             )
         if self.expert_balance_bias_update_rate <= 0.0:
             raise ValueError("expert_balance_bias_update_rate must be positive.")
-        if self.max_passes != 5 and self.family != "tiny":
+        if self.max_passes != 5 and self.family not in _RELAXED_FAMILIES:
             raise ValueError("Production Metis-1.6 is locked to five passes.")
         if not 1.0 <= self.target_mean_passes <= self.max_passes:
             raise ValueError("target_mean_passes must lie in [1, max_passes].")
         if self.memory_dim % self.memory_heads:
             raise ValueError("memory_dim must be divisible by memory_heads.")
+        if not 1 <= self.moe_dispatch_chunks <= 8:
+            raise ValueError("moe_dispatch_chunks must be between 1 and 8.")
         if self.lm_head_chunk_size <= 0:
             raise ValueError("lm_head_chunk_size must be positive.")
-        if self.activation_recompute_policy not in {"none", "pass"}:
-            raise ValueError("activation_recompute_policy must be none or pass.")
-        self.ngram_memory.validate()
+        self._validate_memory_policies()
+        if self.family == "ablation":
+            # The ablation proxy keeps the production backbone -- four mHC
+            # streams, the hybrid mixer stack, N-gram conditional memory -- but
+            # scales the table geometry with the model.  Structural invariants
+            # (prime slots, one seed per head, matching head counts) still hold.
+            self.ngram_memory.validate_relaxed()
+        else:
+            self.ngram_memory.validate()
         self.precision.validate()
         self.autotune.validate()
         if self.family == "praxis":
@@ -640,11 +765,44 @@ class Metis16Config:
         config._validate_tiny()
         return config
 
+    def _validate_memory_policies(self) -> None:
+        """Validate the two knobs that decide whether a step fits in HBM.
+
+        Shared by the production and tiny validation paths so a manifest cannot
+        enable context parallelism on one lane and silently ignore it on the
+        other.
+        """
+
+        if self.activation_recompute_policy not in {"none", "pass", "layer"}:
+            raise ValueError(
+                "activation_recompute_policy must be none, pass, or layer."
+            )
+        if self.context_parallel_size < 1:
+            raise ValueError("context_parallel_size must be at least 1.")
+        if self.context_parallel_size > 1:
+            for name, length in (
+                ("context_extension_train_length", self.context_extension_train_length),
+                ("final_context_length", self.final_context_length),
+            ):
+                if length % self.context_parallel_size:
+                    raise ValueError(
+                        f"{name}={length} is not divisible by "
+                        f"context_parallel_size={self.context_parallel_size}; "
+                        "Metis-1.6 requires equal sequence shards."
+                    )
+            if self.activation_recompute_policy == "none":
+                # Sharding the sequence without recomputing activations is a
+                # configuration that only ever arises by accident: it spends the
+                # communication and keeps the memory.
+                raise ValueError(
+                    "context_parallel_size above 1 requires activation "
+                    "recompute; use policy 'layer' for context extension."
+                )
+
     def _validate_tiny(self) -> None:
         if self.family != "tiny":
             raise ValueError("_validate_tiny is only valid for tiny configs.")
-        if self.activation_recompute_policy not in {"none", "pass"}:
-            raise ValueError("activation_recompute_policy must be none or pass.")
+        self._validate_memory_policies()
         if self.mhc_backend != "torch_reference":
             raise ValueError("Tiny/CPU tests require the torch mHC reference backend.")
         if self.ngram_memory.orders != (2, 3):
@@ -656,6 +814,22 @@ class Metis16Config:
                 raise ValueError("Tiny N-gram table geometry is inconsistent.")
         self.precision.validate()
         self.autotune.validate()
+
+    @property
+    def expert_entropy_normalizer(self) -> float:
+        """Denominator that turns router entropy into a 0-1 ratio.
+
+        A dense ablation control has no routed experts, so the natural
+        normalizer ``log(n_routed_experts)`` is undefined.  Returning 1.0 makes
+        the ratio identically zero there, which is the truthful reading: a
+        sublayer with no routing decision has no routing uncertainty.
+        """
+
+        import math as _math
+
+        if self.n_routed_experts <= 1:
+            return 1.0
+        return _math.log(float(self.n_routed_experts))
 
     def logical_parameter_audit(self) -> ParameterAudit:
         """Return exact logical counts for the modules implemented in model.py."""
@@ -701,20 +875,30 @@ class Metis16Config:
         stream_embeddings = self.n_streams * d
         mhc = self.n_layers * 2 * mhc_per_connection + pass_embeddings + stream_embeddings
 
-        latent_per_layer = d * latent + latent * d
-        latent_projections = self.n_layers * latent_per_layer
-        expert_per = 3 * latent * expert_hidden
-        routed_experts = self.n_layers * self.n_routed_experts * expert_per
-        shared_experts = self.n_layers * self.n_shared_experts * expert_per
-        route_input = latent + self.route_feature_dim
-        router_per_layer = (
-            route_input * self.n_routed_experts
-            + self.n_routed_experts
-            + route_input * (self.max_routed_k - self.min_routed_k + 1)
-            + (self.max_routed_k - self.min_routed_k + 1)
-            + self.n_routed_experts * self.route_feature_dim
-        )
-        expert_routers = self.n_layers * router_per_layer
+        if self.ffn_mode == "dense":
+            # The dense control keeps the latent bottleneck so the sublayer's
+            # shape is comparable to the mixture it replaces, and spends its
+            # whole feed-forward budget on one SwiGLU block per layer.
+            latent_per_layer = d * latent + latent * d
+            latent_projections = self.n_layers * latent_per_layer
+            routed_experts = 0
+            shared_experts = self.n_layers * 3 * latent * self.dense_ffn_intermediate_dim
+            expert_routers = 0
+        else:
+            latent_per_layer = d * latent + latent * d
+            latent_projections = self.n_layers * latent_per_layer
+            expert_per = 3 * latent * expert_hidden
+            routed_experts = self.n_layers * self.n_routed_experts * expert_per
+            shared_experts = self.n_layers * self.n_shared_experts * expert_per
+            route_input = latent + self.route_feature_dim
+            router_per_layer = (
+                route_input * self.n_routed_experts
+                + self.n_routed_experts
+                + route_input * (self.max_routed_k - self.min_routed_k + 1)
+                + (self.max_routed_k - self.min_routed_k + 1)
+                + self.n_routed_experts * self.route_feature_dim
+            )
+            expert_routers = self.n_layers * router_per_layer
 
         # Global recurrent-memory projections and typed metadata.
         memory_metadata_width = self.route_feature_dim + 4
@@ -782,7 +966,10 @@ class Metis16Config:
             + ngram_fusion
             + final_norm
         )
-        routed_per_k = self.n_layers * expert_per
+        # A dense sublayer activates all of its feed-forward weight on every
+        # token, so its routed-per-k slope is zero and min/mean/max collapse to
+        # the same value.  That is the whole point of the dense control.
+        routed_per_k = 0 if self.ffn_mode == "dense" else self.n_layers * expert_per
         # Only retrieved table rows are active; count them once per sequence
         # token because they are cached across recurrent passes.
         retrieved = self.ngram_memory.concatenated_dim

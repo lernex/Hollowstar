@@ -21,6 +21,25 @@ class SubmittedJob:
     dependency: str | None
     task_offset: int
     command: tuple[str, ...]
+    tasks_per_job: int = 1
+
+
+def stage_tasks_per_job(profile: dict[str, Any], stage: str) -> int:
+    """Number of global task indices one allocation runs concurrently.
+
+    On a partition that hands out whole nodes, one Slurm task per unit of work
+    would leave almost every core of a 96-core node idle, because each stage
+    task is a single-threaded process. Grouping also keeps the array well under
+    the site ``MaxArraySize`` and cuts scheduler and Lustre metadata pressure.
+    """
+
+    scheduler = profile.get("scheduler", {})
+    stage_config = scheduler.get(stage, {})
+    value = stage_config.get("tasks_per_job", scheduler.get("default_tasks_per_job", 1))
+    tasks_per_job = int(value or 1)
+    if tasks_per_job < 1:
+        raise ValueError(f"scheduler.{stage}.tasks_per_job must be at least 1")
+    return tasks_per_job
 
 
 def _auto_scheduler_value(value: Any) -> str | None:
@@ -79,6 +98,8 @@ def submit_stage(
     indices: Iterable[int] | None = None,
     dependency: str | None = None,
     task_offset: int = 0,
+    tasks_per_job: int = 1,
+    task_limit: int = 0,
     dry_run: bool = False,
 ) -> SubmittedJob:
     scheduler = profile["scheduler"]
@@ -91,6 +112,8 @@ def submit_stage(
     command.append(f"--output={logs}/%A_%a.out")
     command.append(f"--error={logs}/%A_%a.err")
     if indices is not None:
+        # With grouping enabled, max_concurrent throttles allocations (nodes),
+        # not individual work units.
         maximum = int(stage_config.get("max_concurrent", stage_config.get("workers", 0)) or 0)
         maximum_array_size = int(scheduler.get("max_array_size", 1000))
         command.append(
@@ -101,52 +124,79 @@ def submit_stage(
     account = _auto_scheduler_value(scheduler.get("account"))
     partition = _auto_scheduler_value(scheduler.get("partition"))
     qos = _auto_scheduler_value(scheduler.get("qos"))
+    reservation = _auto_scheduler_value(scheduler.get("reservation"))
     if account:
         command.append(f"--account={account}")
     if partition:
         command.append(f"--partition={partition}")
     if qos:
         command.append(f"--qos={qos}")
+    if reservation:
+        command.append(f"--reservation={reservation}")
     if stage_config.get("time"):
         command.append(f"--time={stage_config['time']}")
-    if stage_config.get("cpus_per_task"):
-        command.append(f"--cpus-per-task={int(stage_config['cpus_per_task'])}")
-    if stage_config.get("memory_gb"):
-        command.append(f"--mem={int(stage_config['memory_gb'])}G")
+    if scheduler.get("exclusive_nodes"):
+        # A whole-node partition cannot pack several allocations onto one node,
+        # so the allocation asks for the entire node and the stage runner fans
+        # out across its cores itself.
+        command.append("--nodes=1")
+        command.append("--exclusive")
+        command.append("--mem=0")
+    else:
+        if stage_config.get("cpus_per_task"):
+            command.append(f"--cpus-per-task={int(stage_config['cpus_per_task'])}")
+        if stage_config.get("memory_gb"):
+            command.append(f"--mem={int(stage_config['memory_gb'])}G")
+    for option in scheduler.get("extra_sbatch_options", []):
+        command.append(str(option))
     command.extend(
         [
-            f"--export=ALL,METIS_PROFILE={profile_path},METIS_STAGE={stage},METIS_TASK_OFFSET={int(task_offset)}",
+            f"--export=ALL,METIS_PROFILE={profile_path},METIS_STAGE={stage}"
+            f",METIS_TASK_OFFSET={int(task_offset)}"
+            f",METIS_TASKS_PER_JOB={int(tasks_per_job)}"
+            f",METIS_TASK_LIMIT={int(task_limit)}",
             str(script),
         ]
     )
     array = next((arg.split("=", 1)[1] for arg in command if arg.startswith("--array=")), None)
     if dry_run:
-        return SubmittedJob(stage, f"dry-{stage}", array, dependency, int(task_offset), tuple(command))
+        return SubmittedJob(
+            stage, f"dry-{stage}", array, dependency, int(task_offset), tuple(command), int(tasks_per_job)
+        )
     if not shutil.which("sbatch"):
-        raise RuntimeError("sbatch is unavailable; use --dry-run outside Portage")
+        raise RuntimeError("sbatch is unavailable; use --dry-run outside the compute cluster")
     result = subprocess.run(command, check=True, capture_output=True, text=True)
     job_id = result.stdout.strip().split(";")[0]
-    return SubmittedJob(stage, job_id, array, dependency, int(task_offset), tuple(command))
+    return SubmittedJob(
+        stage, job_id, array, dependency, int(task_offset), tuple(command), int(tasks_per_job)
+    )
 
 
-def _contiguous_chunks(indices: Iterable[int], maximum_array_size: int) -> list[range]:
+def _contiguous_chunks(
+    indices: Iterable[int], maximum_array_size: int, tasks_per_job: int = 1
+) -> list[range]:
     """Map arbitrary global task indices onto Slurm-safe local arrays.
 
     Slurm sites commonly cap both the number of array entries and the largest
-    array task ID.  Every returned range is contiguous and no larger than the
-    configured cap, so it can be submitted as ``0..N-1`` with the range start
-    exported as ``METIS_TASK_OFFSET``.
+    array task ID.  Every returned range is contiguous, and one array entry
+    covers ``tasks_per_job`` consecutive global indices, so a run is capped at
+    ``maximum_array_size * tasks_per_job`` indices. The range start is exported
+    as ``METIS_TASK_OFFSET`` and the range end as ``METIS_TASK_LIMIT``, which is
+    what keeps a trailing partial group from reaching into the next chunk.
     """
 
     if maximum_array_size <= 0:
         raise ValueError("scheduler.max_array_size must be a positive integer")
+    if tasks_per_job <= 0:
+        raise ValueError("tasks_per_job must be a positive integer")
+    span = maximum_array_size * tasks_per_job
     values = sorted(set(int(index) for index in indices))
     if not values:
         return []
     chunks: list[range] = []
     run_start = run_previous = values[0]
     for value in values[1:] + [values[-1] + 2]:
-        if value == run_previous + 1 and value - run_start < maximum_array_size:
+        if value == run_previous + 1 and value - run_start < span:
             run_previous = value
             continue
         chunks.append(range(run_start, run_previous + 1))
@@ -164,18 +214,23 @@ def _submit_array_chunks(
     dry_run: bool,
 ) -> list[SubmittedJob]:
     maximum_array_size = int(profile["scheduler"].get("max_array_size", 1000))
-    chunks = _contiguous_chunks(global_indices, maximum_array_size)
+    tasks_per_job = stage_tasks_per_job(profile, stage)
+    chunks = _contiguous_chunks(global_indices, maximum_array_size, tasks_per_job)
     jobs: list[SubmittedJob] = []
     for chunk_number, chunk in enumerate(chunks):
         # Local array IDs always start at zero. The batch wrapper adds the
-        # immutable global offset before dispatching the Python stage.
+        # immutable global offset and the group stride before dispatching the
+        # Python stage.
+        entries = -(-len(chunk) // tasks_per_job)
         job = submit_stage(
             stage=stage,
             profile_path=profile_path,
             profile=profile,
-            indices=range(len(chunk)),
+            indices=range(entries),
             dependency=dependency,
             task_offset=chunk.start,
+            tasks_per_job=tasks_per_job,
+            task_limit=chunk.stop,
             dry_run=dry_run,
         )
         if dry_run and len(chunks) > 1:
@@ -186,6 +241,7 @@ def _submit_array_chunks(
                 dependency=job.dependency,
                 task_offset=job.task_offset,
                 command=job.command,
+                tasks_per_job=job.tasks_per_job,
             )
         jobs.append(job)
     return jobs
@@ -224,7 +280,12 @@ BUILD_GRAPH = (
     ("final_hash_find", "final_hash_buckets"),
     ("final_hash_filter", "normalize_tasks"),
     ("cleanup_final_hash", None),
-    ("tokenizer_sample", None),
+    # The tokenizer sample is a stratified read of the whole eligible corpus.
+    # Scan counts availability per shard, plan apportions the exact per-source
+    # byte targets across shards, and the write pass emits only its own slice.
+    ("tokenizer_sample_scan", "normalize_tasks"),
+    ("tokenizer_sample_plan", None),
+    ("tokenizer_sample", "normalize_tasks"),
     ("tokenizer_train", None),
     ("cleanup_tokenizer_sample", None),
     ("token_count", "normalize_tasks"),
@@ -235,6 +296,10 @@ BUILD_GRAPH = (
     ("select", None),
     ("cleanup_selection_inputs", None),
     ("pack", "pack_tasks"),
+    # Per-shard re-hash and index audit of the 1.82TiB release, parallel by
+    # shard; `verify` then aggregates the receipts and re-checks anything
+    # missing or produced under a different selection policy.
+    ("verify_shard", "pack_tasks"),
     ("verify", None),
     ("cleanup_pack_inputs", None),
     ("release", None),

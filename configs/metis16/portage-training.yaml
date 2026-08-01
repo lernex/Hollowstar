@@ -39,18 +39,18 @@ training:
 families:
   praxis:
     manifest: configs/metis16/praxis.yaml
-    nodes: 32
-    world_size: 128
+    nodes: 40
+    world_size: 160
     relative_node: 0
-    expert_parallel_size: 128
-    expert_replicas: 1
+    expert_parallel_size: 32
+    expert_replicas: 5
   logos:
     manifest: configs/metis16/logos.yaml
-    nodes: 96
-    world_size: 384
-    relative_node: 32
-    expert_parallel_size: 192
-    expert_replicas: 2
+    nodes: 88
+    world_size: 352
+    relative_node: 40
+    expert_parallel_size: 32
+    expert_replicas: 11
 
 bringup:
   stages:

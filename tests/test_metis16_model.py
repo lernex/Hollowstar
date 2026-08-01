@@ -53,8 +53,8 @@ def _fixed_curriculum(k: int = 2, *, target_depth: float = 2.0):
 @pytest.mark.parametrize(
     ("family", "stored", "active", "world", "ep", "replicas"),
     [
-        ("praxis", 3_545_482_071, 470_844_375, 128, 128, 1),
-        ("logos", 12_000_001_676, 1_189_454_220, 384, 192, 2),
+        ("praxis", 3_545_482_071, 470_844_375, 160, 32, 5),
+        ("logos", 12_000_001_676, 1_189_454_220, 352, 32, 11),
     ],
 )
 def test_production_manifests_are_locked_and_audited(
@@ -747,7 +747,7 @@ def test_zero_local_active_rank_keeps_ep_pass_sequence_without_dummy_accounting(
     monkeypatch.setattr(
         model_module,
         "_group_any_active",
-        lambda _active_mask, *, group: True,
+        lambda _active_mask, *, group, groups=(): True,
     )
     try:
         sentinel_output = sentinel(input_ids, **kwargs)
@@ -763,3 +763,418 @@ def test_zero_local_active_rank_keeps_ep_pass_sequence_without_dummy_accounting(
         reference_output.final_hidden_state,
     )
     torch.testing.assert_close(sentinel_output.loss, reference_output.loss)
+
+
+def _loopback_all_to_all(monkeypatch: pytest.MonkeyPatch, world_size: int = 2) -> None:
+    """Run collective code paths in-process against a split-preserving loopback."""
+
+    monkeypatch.setattr(
+        model_module,
+        "_group_world_size",
+        lambda group=None: world_size,
+    )
+
+    def all_to_all_single(output, values, output_split_sizes=None, input_split_sizes=None, **_):
+        if list(output_split_sizes or []) != list(input_split_sizes or []):
+            raise AssertionError("loopback requires symmetric splits")
+        output.copy_(values)
+
+    monkeypatch.setattr(model_module.dist, "all_to_all_single", all_to_all_single)
+
+
+def test_fp8_expert_wire_round_trips_through_the_collective(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _loopback_all_to_all(monkeypatch)
+    torch.manual_seed(3)
+    # Row scales must survive a four-order-of-magnitude spread across rows,
+    # which is exactly what a per-tensor scale would destroy.
+    values = (
+        torch.randn(64, 1024, dtype=torch.float32)
+        * torch.logspace(-2, 2, 64).unsqueeze(-1)
+    ).bfloat16().requires_grad_(True)
+    splits = [32, 32]
+
+    received = model_module._variable_all_to_all(
+        values,
+        input_splits=splits,
+        output_splits=splits,
+        group=object(),
+        wire="fp8",
+    )
+    assert received.dtype == values.dtype
+    relative = (
+        (received.float() - values.float()).norm(dim=-1)
+        / values.float().norm(dim=-1).clamp_min(1e-12)
+    )
+    # E4M3 carries three mantissa bits, so ~3% per row is the floor, not a bug.
+    assert float(relative.detach().amax()) < 0.05
+
+    received.float().square().sum().backward()
+    assert values.grad is not None
+    assert torch.isfinite(values.grad).all()
+
+
+def test_bf16_profile_forces_a_bf16_expert_wire() -> None:
+    config = Metis16Config.tiny_for_tests()
+    config = replace(
+        config,
+        precision=replace(config.precision, expert_collective_wire="fp8"),
+    )
+
+    class _Policy:
+        fp8_enabled = False
+
+        def linear(self, in_features, out_features, bias=True, *, role, **kwargs):
+            del role
+            return nn.Linear(in_features, out_features, bias=bias, **kwargs)
+
+    fp8_model = Metis16ForCausalLM(config, dtype=torch.float32)
+    assert fp8_model.layers[0].moe.dispatch_wire == "fp8"
+    assert fp8_model.layers[0].moe.combine_wire == "fp8"
+
+    bf16_model = Metis16ForCausalLM(config, precision_policy=_Policy(), dtype=torch.float32)
+    assert bf16_model.layers[0].moe.dispatch_wire == "bfloat16"
+    assert bf16_model.layers[0].moe.combine_wire == "bfloat16"
+
+
+def test_fp8_wire_probe_error_stays_inside_the_bringup_gate() -> None:
+    torch.manual_seed(11)
+    values = torch.randn(512, 1024, dtype=torch.bfloat16)
+    assert model_module.expert_collective_wire_error(values) < 0.08
+    assert model_module.expert_collective_wire_error(values, gradient=True) < 0.15
+
+
+@pytest.mark.parametrize("family", ["praxis", "logos"])
+def test_locked_manifests_select_the_low_traffic_collective_plan(family: str) -> None:
+    config = load_family_config(family)
+    # Replicated tables all-gather every touched row across the whole family on
+    # every backward; row sharding replaces that with a per-row exchange.
+    assert config.ngram_memory.table_mode == "row_sharded"
+    assert config.precision.expert_collective_wire == "fp8"
+    assert config.autotune.ngram_table_modes[0] == "row_sharded"
+
+
+class _StubWork:
+    """Loopback stand-in for a torch.distributed async work handle."""
+
+    def __init__(self, apply) -> None:
+        self._apply = apply
+        self.waited = False
+
+    def wait(self) -> None:
+        self._apply()
+        self.waited = True
+
+
+def _loopback_collectives(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    world_size: int = 2,
+    trace: list[str] | None = None,
+) -> None:
+    """World-size-N loopback that preserves split structure and async semantics.
+
+    Every rank in a single-process loopback is this rank, so a symmetric split
+    plan copies straight through.  Deferring the copy until ``wait`` is what
+    catches a pipeline that reads a buffer before its transfer completes.
+    """
+
+    monkeypatch.setattr(model_module, "_group_world_size", lambda group=None: world_size)
+
+    def all_to_all_single(
+        output, values, output_split_sizes=None, input_split_sizes=None,
+        group=None, async_op=False,
+    ):
+        if list(output_split_sizes or []) != list(input_split_sizes or []):
+            raise AssertionError("loopback requires symmetric splits")
+        if trace is not None:
+            trace.append(f"a2a{tuple(values.shape)}")
+        copy = values.detach().clone()
+
+        def apply() -> None:
+            output.copy_(copy)
+
+        if async_op:
+            return _StubWork(apply)
+        apply()
+        return None
+
+    monkeypatch.setattr(model_module.dist, "all_to_all_single", all_to_all_single)
+
+
+def _tiny_expert_parallel(chunks: int, *, expert_parallel_size: int = 4):
+    """Tiny config with a real EP group, so the dispatch path is not skipped."""
+
+    config = Metis16Config.tiny_for_tests()
+    return replace(
+        config,
+        moe_dispatch_chunks=chunks,
+        expert_parallel_size=expert_parallel_size,
+        world_size=expert_parallel_size,
+    )
+
+
+def _moe_dispatch_case(config, chunks: int, trace: list[str] | None = None):
+    torch.manual_seed(17)
+    config = replace(config, moe_dispatch_chunks=chunks)
+    model = Metis16ForCausalLM(config, dtype=torch.float32)
+    moe = model.layers[0].moe
+    experts = 12
+    latent = config.latent_dim
+    hidden = torch.randn(experts, latent, dtype=torch.float32, requires_grad=True)
+    expert_ids = torch.tensor([0, 3, 1, 2, 3, 0, 2, 1, 3, 0, 1, 2])
+    expert_ids = expert_ids % config.n_routed_experts
+    weights = torch.rand(experts)
+    token_indices = torch.tensor([0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5])
+    combined, processed, wire_bytes, _elapsed = moe._dispatch(
+        hidden, expert_ids, weights, token_indices, 6
+    )
+    combined.square().sum().backward()
+    return combined, processed, wire_bytes, hidden.grad, moe
+
+
+def test_pipelined_dispatch_matches_the_serial_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _tiny_expert_parallel(1)
+    trace: list[str] = []
+    _loopback_collectives(
+        monkeypatch,
+        world_size=config.expert_parallel_size,
+        trace=trace,
+    )
+
+    serial, serial_processed, serial_bytes, serial_grad, _ = _moe_dispatch_case(config, 1)
+    serial_collectives = len(trace)
+    assert serial_collectives > 0, "serial dispatch never reached the collective path"
+    for chunks in (2, 3, 4):
+        trace.clear()
+        piped, processed, wire_bytes, grad, moe = _moe_dispatch_case(config, chunks)
+        assert moe.dispatch_chunks == chunks
+        assert len(trace) > serial_collectives, "pipeline did not chunk its transfers"
+        torch.testing.assert_close(piped, serial)
+        torch.testing.assert_close(grad, serial_grad)
+        # Telemetry must not drift with the pipeline depth: the same rows are
+        # processed and the same bytes cross the wire, just at different times.
+        assert int(processed) == int(serial_processed)
+        assert int(wire_bytes) == int(serial_bytes)
+
+
+def test_pipelined_dispatch_issues_a_load_independent_collective_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Divergent collective counts across ranks would deadlock the EP group."""
+
+    config = _tiny_expert_parallel(1)
+    counts = []
+    for seed_shift in range(3):
+        trace: list[str] = []
+        _loopback_collectives(
+            monkeypatch,
+            world_size=config.expert_parallel_size,
+            trace=trace,
+        )
+        torch.manual_seed(101 + seed_shift)
+        chunked = replace(config, moe_dispatch_chunks=3)
+        moe = Metis16ForCausalLM(chunked, dtype=torch.float32).layers[0].moe
+        rows = 9 + seed_shift * 5
+        hidden = torch.randn(rows, config.latent_dim)
+        # Deliberately lopsided routing, including a destination with no rows.
+        expert_ids = torch.zeros(rows, dtype=torch.long)
+        expert_ids[: rows // 2] = 1 % config.n_routed_experts
+        moe._dispatch(
+            hidden,
+            expert_ids,
+            torch.rand(rows),
+            torch.arange(rows) % 4,
+            4,
+        )
+        counts.append(len(trace))
+    assert len(set(counts)) == 1, f"collective count varies with local load: {counts}"
+
+
+def test_pipeline_defers_reads_until_its_transfers_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A carrier read before its wait would silently train on empty buffers."""
+
+    config = _tiny_expert_parallel(1)
+    _loopback_collectives(monkeypatch, world_size=config.expert_parallel_size)
+    combined, _processed, _bytes, grad, _moe = _moe_dispatch_case(config, 3)
+    assert torch.isfinite(combined).all() and combined.abs().sum() > 0
+    assert grad is not None and torch.isfinite(grad).all() and grad.abs().sum() > 0
+
+
+# ---------------------------------------------------------------------------
+# Overlapped gradient reduction
+# ---------------------------------------------------------------------------
+
+
+def _reducer_topology(world_size: int, replicas: int = 1):
+    from metis_training.distributed import ParallelTopology
+
+    return ParallelTopology(
+        family="tiny",
+        world_size=world_size,
+        rank=0,
+        local_rank=0,
+        expert_parallel_size=world_size // replicas,
+        expert_replica_count=replicas,
+        expert_group=object(),
+        expert_group_ranks=tuple(range(world_size // replicas)),
+        expert_data_group=object() if replicas > 1 else None,
+        expert_data_group_ranks=tuple(range(replicas)),
+        dense_data_group=object(),
+    )
+
+
+def _loopback_all_reduce(monkeypatch: pytest.MonkeyPatch, order: list[int] | None = None):
+    """Sum-preserving single-process all_reduce that records issue order."""
+
+    import metis_training.distributed as distributed_module
+
+    def all_reduce(tensor, group=None, async_op=False):
+        if order is not None:
+            order.append(int(tensor.numel()))
+        # One rank looping back: reducing across a group of identical ranks
+        # multiplies by the group size, which the divisor then undoes.
+        tensor.mul_(_LOOPBACK_RANKS)
+        if async_op:
+            return _StubWork(lambda: None)
+        return None
+
+    monkeypatch.setattr(distributed_module.dist, "all_reduce", all_reduce)
+
+
+_LOOPBACK_RANKS = 4
+
+
+def _tiny_grads(seed: int = 5):
+    config = Metis16Config.tiny_for_tests(table_mode="row_sharded")
+    torch.manual_seed(seed)
+    model = Metis16ForCausalLM(config, dtype=torch.float32)
+    input_ids, labels, _reset = _batch(config, batch=2, length=8)
+    model(
+        input_ids,
+        labels=labels,
+        return_logits=False,
+        curriculum=_fixed_curriculum(2),
+    ).loss.backward()
+    return model
+
+
+def test_overlapped_reduction_matches_the_synchronous_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from metis_training.distributed import (
+        OverlappedGradientReducer,
+        synchronize_gradients,
+    )
+
+    topology = _reducer_topology(_LOOPBACK_RANKS)
+    _loopback_all_reduce(monkeypatch)
+
+    reference = _tiny_grads()
+    synchronize_gradients(reference, topology)
+    expected = {name: p.grad.clone() for name, p in reference.named_parameters()}
+
+    overlapped = _tiny_grads()
+    reducer = OverlappedGradientReducer(overlapped, topology)
+    reducer.arm()
+    # Gradients already exist, so nothing fired from a hook; finalize must
+    # still flush every bucket in order and produce the identical result.
+    synchronize_gradients(overlapped, topology, reducer=reducer)
+    for name, parameter in overlapped.named_parameters():
+        torch.testing.assert_close(parameter.grad, expected[name], msg=name)
+
+
+def test_reducer_fires_during_backward_and_only_when_armed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from metis_training.distributed import OverlappedGradientReducer
+
+    config = Metis16Config.tiny_for_tests(table_mode="row_sharded")
+    topology = _reducer_topology(_LOOPBACK_RANKS)
+    issued: list[int] = []
+    _loopback_all_reduce(monkeypatch, order=issued)
+
+    torch.manual_seed(5)
+    model = Metis16ForCausalLM(config, dtype=torch.float32)
+    reducer = OverlappedGradientReducer(model, topology)
+    input_ids, labels, _reset = _batch(config, batch=2, length=8)
+
+    # An unarmed backward is an accumulation micro-step: nothing may reduce.
+    kwargs = {
+        "labels": labels,
+        "return_logits": False,
+        "curriculum": _fixed_curriculum(2),
+    }
+    model(input_ids, **kwargs).loss.backward()
+    assert issued == []
+
+    reducer.arm()
+    model(input_ids, **kwargs).loss.backward()
+    assert issued, "armed backward issued no reduction before finalize"
+    reducer.finalize()
+
+
+def test_reducer_issue_order_is_fixed_regardless_of_gradient_arrival(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ranks that issue buckets in different orders deadlock RCCL."""
+
+    from metis_training.distributed import OverlappedGradientReducer
+
+    topology = _reducer_topology(_LOOPBACK_RANKS)
+    orders = []
+    for seed in (5, 11, 23):
+        issued: list[int] = []
+        _loopback_all_reduce(monkeypatch, order=issued)
+        model = _tiny_grads(seed)
+        reducer = OverlappedGradientReducer(model, topology)
+        reducer.arm()
+        reducer.finalize()
+        orders.append(issued)
+    assert orders[0] == orders[1] == orders[2], f"bucket order drifted: {orders}"
+
+
+def test_reducer_flushes_buckets_whose_parameters_never_got_a_gradient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Routing can leave a parameter gradient-free; the bucket must still fire."""
+
+    from metis_training.distributed import OverlappedGradientReducer
+
+    topology = _reducer_topology(_LOOPBACK_RANKS, replicas=2)
+    issued: list[int] = []
+    _loopback_all_reduce(monkeypatch, order=issued)
+
+    model = _tiny_grads()
+    reducer = OverlappedGradientReducer(model, topology)
+    total_buckets = len(reducer._buckets)
+    reducer.arm()
+    assert reducer.finalize() is True
+    assert len(issued) == total_buckets
+    # N-gram tables are sparse or row-owned and deliberately sit outside the
+    # dense reducer, so only reducer-managed placements are guaranteed a
+    # materialised gradient here.
+    placements = model.parameter_placements()
+    managed = {"replicated", "expert_sharded"}
+    for name, parameter in model.named_parameters():
+        if placements[name] in managed:
+            assert parameter.grad is not None, name
+
+
+def test_production_topology_constants_agree_across_the_repository() -> None:
+    """distributed._production_shape duplicates the manifests; keep them equal."""
+
+    from metis_training.distributed import _production_shape
+
+    for family in ("praxis", "logos"):
+        config = load_family_config(family)
+        assert _production_shape(family) == (
+            config.world_size,
+            config.expert_parallel_size,
+            config.expert_replicas,
+        )

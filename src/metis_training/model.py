@@ -6,7 +6,7 @@ from inspect import signature
 import math
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 import torch
 import torch.distributed as dist
@@ -14,6 +14,21 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.checkpoint import checkpoint, set_checkpoint_early_stop
 
+from .context_parallel import (
+    ContextParallelContext,
+    align_document_ids,
+    all_gather_differentiable,
+    build_context_parallel_attention_layout,
+    conv_left_halo,
+    gather_context_parallel_kv,
+    global_segment_stride,
+    keep_graph_edge,
+    left_halo,
+    mamba_incoming_state,
+    mamba_shard_summary,
+    packed_segment_keys,
+    reference_context_parallel_attention,
+)
 from .mhc_kernels import mhc_masked_write, mhc_read_mix
 from .model_config import Metis16Config, load_family_config
 
@@ -45,14 +60,32 @@ def _group_rank(group: Any = None) -> int:
 
 
 @torch.no_grad()
-def _group_any_active(active_mask: Tensor, *, group: Any) -> bool:
+def _group_any_active(active_mask: Tensor, *, group: Any, groups: Sequence[Any] = ()) -> bool:
+    """Whether any rank that must stay in lockstep still has a live token.
+
+    Continuation is per token, so one rank can exhaust its active set several
+    passes before its peers.  If it left the loop there it would stop issuing
+    collectives while the others kept going, and the job would deadlock on the
+    next gather rather than fail.  Every group whose members share a pass
+    schedule -- the data-parallel world and, when the sequence is sharded, the
+    context-parallel group -- therefore votes here.
+    """
+
     indicator = torch.tensor(
         int(bool(active_mask.any().item())),
         device=active_mask.device,
         dtype=torch.int32,
     )
-    if _group_world_size(group) > 1:
-        dist.all_reduce(indicator, op=dist.ReduceOp.MAX, group=group)
+    seen: set[int] = set()
+    for candidate in (group, *groups):
+        if candidate is None or _group_world_size(candidate) <= 1:
+            continue
+        # A group can appear twice (the CP group is a subset of the world);
+        # reducing over it twice is harmless but pointless.
+        if id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        dist.all_reduce(indicator, op=dist.ReduceOp.MAX, group=candidate)
     return bool(indicator.item())
 
 
@@ -154,6 +187,128 @@ class MetisProcessGroups:
     expert_data: Any = None
     table_lookup: Any = None
     table_gradient: Any = None
+    # ``context`` holds the ranks that jointly own one sequence during context
+    # extension.  It is orthogonal to ``expert``: an EP group shards parameters
+    # across the same sequence, a CP group shards one sequence across the same
+    # parameters.
+    context: Any = None
+
+
+@dataclass(frozen=True)
+class ContextParallelPassState:
+    """Everything the mixers need to cross a sequence-shard boundary.
+
+    Rebuilt once per recurrent pass rather than per layer, because continuation
+    packing is what changes between passes: the number of active tokens differs
+    per rank, so the gather capacity and the per-token document identity both
+    have to be re-derived after each halt.
+    """
+
+    context: ContextParallelContext
+    capacity: int
+    local_count: int
+    counts: Tensor
+    local_segments: Tensor
+    gathered_segments: Tensor
+    layout: Any
+    continues_previous: bool
+
+
+def _build_context_parallel_pass_state(
+    context: ContextParallelContext,
+    *,
+    document_ids: Tensor | None,
+    selector: Tensor,
+    batch_size: int,
+    sequence_length: int,
+    segment_stride: int,
+    local_count: int,
+) -> ContextParallelPassState:
+    """Resolve the group-wide attention layout for one recurrent pass.
+
+    Everything here depends on the packing, not on the layer, so it is built
+    once per pass and shared by all attention layers -- three builds saved per
+    pass on Logos.  Continuation is what forces the rebuild in the first place:
+    tokens halt at different depths on different ranks, so both the number of
+    live tokens and their document identities change after every halt.
+
+    ``local_count`` is zero when this rank has no surviving tokens.  It still
+    joins every collective -- a rank that skipped the gather because it ran out
+    of work would desynchronise the group and hang it on the next pass.
+    """
+
+    device = selector.device
+    segments = packed_segment_keys(
+        document_ids,
+        selector,
+        batch_size=batch_size,
+        sequence_length=sequence_length,
+        stride=segment_stride,
+    )
+    local_segments = segments[:local_count]
+
+    counts = torch.zeros(context.size, device=device, dtype=torch.long)
+    counts[context.rank] = local_count
+    dist.all_reduce(counts, op=dist.ReduceOp.SUM, group=context.group)
+    capacity = max(int(counts.max().item()), 1)
+
+    # -1 can never collide with a real (batch row, document) key, so padded
+    # rows drop out of every downstream comparison without a separate mask.
+    padded = torch.full((capacity,), -1, device=device, dtype=torch.long)
+    if local_count:
+        padded[:local_count] = local_segments
+    gathered_segments = all_gather_differentiable(padded, context)
+
+    layout = build_context_parallel_attention_layout(
+        local_segments=local_segments,
+        gathered_segments=gathered_segments,
+        counts=counts,
+        context=context,
+        capacity=capacity,
+    )
+    return ContextParallelPassState(
+        context=context,
+        capacity=capacity,
+        local_count=local_count,
+        counts=counts,
+        local_segments=local_segments,
+        gathered_segments=gathered_segments,
+        layout=layout,
+        continues_previous=_continues_previous_shard(
+            local_segments,
+            gathered_segments,
+            counts,
+            context=context,
+            capacity=capacity,
+        ),
+    )
+
+
+def _continues_previous_shard(
+    local_segments: Tensor,
+    gathered_segments: Tensor,
+    counts: Tensor,
+    *,
+    context: ContextParallelContext,
+    capacity: int,
+) -> bool:
+    """Whether this rank's first live token continues the preceding rank's last.
+
+    The preceding rank is the nearest one below this rank that still has live
+    tokens -- continuation can empty a shard entirely, and when it does the
+    document simply spans the gap.
+    """
+
+    if context.rank == 0 or int(local_segments.numel()) == 0:
+        return False
+    host_counts = counts.tolist()
+    for source in range(context.rank - 1, -1, -1):
+        available = int(host_counts[source])
+        if available == 0:
+            continue
+        last = gathered_segments[source * capacity + available - 1]
+        return bool((last == local_segments[0]).item())
+    return False
 
 
 class CollectiveEventTimer:
@@ -217,6 +372,15 @@ class CurriculumState:
     temperature: float = 1.0
     target_mean_depth: float | None = None
     target_mean_routed_k: float | None = None
+    # ``per_pass`` re-decides the expert coalition at every pass, which is the
+    # MoRE pathway axis.  ``frozen`` reuses pass 1's coalition for the whole
+    # token, isolating that axis at identical executed FLOPs.
+    pathway_mode: str = "per_pass"
+    # Seed for the random-policy controls.  These deliberately spend the same
+    # mean budget as the learned policies while carrying no information, which
+    # is what makes them the sharpest test of whether the learned allocation
+    # does anything at all.
+    random_policy_seed: int = 0
 
     @classmethod
     def from_value(
@@ -230,11 +394,26 @@ class CurriculumState:
         return cls(**dict(value))
 
     def validate(self, config: Metis16Config) -> None:
-        if self.continuation_mode not in {"adaptive", "depth_one", "fixed_max"}:
-            raise ValueError("continuation_mode must be adaptive, depth_one, or fixed_max.")
-        if self.routed_k_mode not in {"adaptive", "fixed"}:
-            raise ValueError("routed_k_mode must be adaptive or fixed.")
-        if not config.min_routed_k <= self.fixed_routed_k <= config.max_routed_k:
+        if self.continuation_mode not in {
+            "adaptive",
+            "depth_one",
+            "fixed_max",
+            "random",
+        }:
+            raise ValueError(
+                "continuation_mode must be adaptive, depth_one, fixed_max, or random."
+            )
+        if self.routed_k_mode not in {"adaptive", "fixed", "random"}:
+            raise ValueError("routed_k_mode must be adaptive, fixed, or random.")
+        if self.pathway_mode not in {"per_pass", "frozen"}:
+            raise ValueError("pathway_mode must be per_pass or frozen.")
+        if config.ffn_mode == "dense":
+            if self.routed_k_mode != "adaptive" or self.pathway_mode != "per_pass":
+                raise ValueError(
+                    "A dense feed-forward stack has no width or pathway decision; "
+                    "leave routed_k_mode and pathway_mode at their defaults."
+                )
+        elif not config.min_routed_k <= self.fixed_routed_k <= config.max_routed_k:
             raise ValueError("fixed_routed_k is outside the model's routed-k bounds.")
         if self.max_passes is not None and not 1 <= self.max_passes <= config.max_passes:
             raise ValueError("curriculum max_passes is outside [1, config.max_passes].")
@@ -252,6 +431,83 @@ class CurriculumState:
             <= config.max_routed_k
         ):
             raise ValueError("target_mean_routed_k is outside the routed-k bounds.")
+
+
+def max_entropy_categorical(values: Sequence[int], mean: float) -> tuple[float, ...]:
+    """Least-informative distribution over ``values`` with the given mean.
+
+    The random-policy ablation controls must spend the same compute budget as
+    the learned policies while carrying no information about the token.  The
+    exponential tilt ``p(v) is proportional to exp(lambda * v)`` is the maximum-entropy
+    distribution subject to a mean constraint, so it is the honest way to say
+    "same budget, no signal": any other choice would smuggle in a prior about
+    which widths or depths matter.
+    """
+
+    support = [float(value) for value in values]
+    if not support:
+        raise ValueError("max_entropy_categorical needs a non-empty support.")
+    low, high = min(support), max(support)
+    if not low <= mean <= high:
+        raise ValueError(f"mean {mean} lies outside the support [{low}, {high}].")
+    if len(support) == 1:
+        return (1.0,)
+    if abs(mean - low) < 1e-12:
+        return tuple(1.0 if value == low else 0.0 for value in support)
+    if abs(mean - high) < 1e-12:
+        return tuple(1.0 if value == high else 0.0 for value in support)
+
+    def _mean_at(lam: float) -> float:
+        peak = max(lam * value for value in support)
+        weights = [math.exp(lam * value - peak) for value in support]
+        total = sum(weights)
+        return sum(w * v for w, v in zip(weights, support)) / total
+
+    lower, upper = -50.0, 50.0
+    for _ in range(200):
+        middle = 0.5 * (lower + upper)
+        if _mean_at(middle) < mean:
+            lower = middle
+        else:
+            upper = middle
+    lam = 0.5 * (lower + upper)
+    peak = max(lam * value for value in support)
+    weights = [math.exp(lam * value - peak) for value in support]
+    total = sum(weights)
+    return tuple(weight / total for weight in weights)
+
+
+def geometric_continue_probability(max_passes: int, mean_depth: float) -> float:
+    """Per-pass continuation probability giving ``mean_depth`` under a cap.
+
+    A memoryless halt with continue-probability ``p`` and at most ``max_passes``
+    passes has expected depth ``(1 - p**max_passes) / (1 - p)``.  This is the
+    depth-axis analogue of :func:`max_entropy_categorical`: same mean budget,
+    no dependence on the token.
+    """
+
+    if max_passes < 1:
+        raise ValueError("max_passes must be at least one.")
+    if not 1.0 <= mean_depth <= float(max_passes):
+        raise ValueError("mean_depth must lie in [1, max_passes].")
+    if max_passes == 1 or abs(mean_depth - 1.0) < 1e-12:
+        return 0.0
+    if abs(mean_depth - float(max_passes)) < 1e-12:
+        return 1.0
+
+    def _depth_at(p: float) -> float:
+        if p >= 1.0 - 1e-12:
+            return float(max_passes)
+        return (1.0 - p ** max_passes) / (1.0 - p)
+
+    lower, upper = 0.0, 1.0
+    for _ in range(200):
+        middle = 0.5 * (lower + upper)
+        if _depth_at(middle) < mean_depth:
+            lower = middle
+        else:
+            upper = middle
+    return 0.5 * (lower + upper)
 
 
 @dataclass
@@ -283,6 +539,105 @@ class RouteState:
     auxiliary_losses: dict[str, Tensor] = field(default_factory=dict)
 
 
+def fp8_wire_dtypes(device: torch.device) -> tuple[torch.dtype, torch.dtype]:
+    """Return the (forward, backward) FP8 wire formats for this accelerator.
+
+    gfx942 implements the OCP ``fnuz`` variants natively, so ROCm uses those and
+    everything else falls back to the CUDA-style encodings.  Only casts happen
+    on the wire -- no GEMM consumes these bytes directly -- so the choice only
+    changes the representable range, which ``torch.finfo`` supplies.
+    """
+
+    if getattr(torch.version, "hip", None) and hasattr(torch, "float8_e4m3fnuz"):
+        return torch.float8_e4m3fnuz, torch.float8_e5m2fnuz
+    return torch.float8_e4m3fn, torch.float8_e5m2
+
+
+def _quantize_rows(values: Tensor, wire_dtype: torch.dtype) -> tuple[Tensor, Tensor]:
+    """Scale each row to the FP8 range and return (byte payload, FP32 scales).
+
+    Per-row scaling costs four bytes per row against a payload of ``latent_dim``
+    bytes -- under half a percent -- and removes any dependence on cross-rank
+    amax history, so the collective stays free of extra synchronisation.
+    """
+
+    limit = float(torch.finfo(wire_dtype).max)
+    amax = values.detach().abs().amax(dim=-1).float()
+    scale = (amax / limit).clamp_min(torch.finfo(torch.float32).tiny)
+    payload = (
+        values.float()
+        .div(scale.unsqueeze(-1))
+        .clamp(-limit, limit)
+        .to(wire_dtype)
+    )
+    return payload.view(torch.uint8), scale
+
+
+def _dequantize_rows(
+    payload: Tensor,
+    scale: Tensor,
+    *,
+    wire_dtype: torch.dtype,
+    value_dtype: torch.dtype,
+) -> Tensor:
+    return (
+        payload.view(wire_dtype).float().mul(scale.unsqueeze(-1)).to(value_dtype)
+    )
+
+
+def _fp8_all_to_all(
+    values: Tensor,
+    *,
+    input_splits: tuple[int, ...],
+    output_splits: tuple[int, ...],
+    group: Any,
+    wire_dtype: torch.dtype,
+) -> Tensor:
+    """Exchange rows as one-byte payloads plus their per-row FP32 scales."""
+
+    payload, scale = _quantize_rows(values.contiguous(), wire_dtype)
+    received = payload.new_empty((sum(output_splits), *payload.shape[1:]))
+    dist.all_to_all_single(
+        received,
+        payload,
+        output_split_sizes=list(output_splits),
+        input_split_sizes=list(input_splits),
+        group=group,
+    )
+    received_scale = scale.new_empty((sum(output_splits),))
+    dist.all_to_all_single(
+        received_scale,
+        scale.contiguous(),
+        output_split_sizes=list(output_splits),
+        input_split_sizes=list(input_splits),
+        group=group,
+    )
+    return _dequantize_rows(
+        received,
+        received_scale,
+        wire_dtype=wire_dtype,
+        value_dtype=values.dtype,
+    )
+
+
+def _bf16_all_to_all(
+    values: Tensor,
+    *,
+    input_splits: tuple[int, ...],
+    output_splits: tuple[int, ...],
+    group: Any,
+) -> Tensor:
+    output = values.new_empty((sum(output_splits), *values.shape[1:]))
+    dist.all_to_all_single(
+        output,
+        values.contiguous(),
+        output_split_sizes=list(output_splits),
+        input_split_sizes=list(input_splits),
+        group=group,
+    )
+    return output
+
+
 class _VariableAllToAll(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -291,31 +646,261 @@ class _VariableAllToAll(torch.autograd.Function):
         input_splits: tuple[int, ...],
         output_splits: tuple[int, ...],
         group: Any,
+        wire: str,
     ) -> Tensor:
         ctx.input_splits = input_splits
         ctx.output_splits = output_splits
         ctx.group = group
-        output = values.new_empty((sum(output_splits), *values.shape[1:]))
-        dist.all_to_all_single(
+        ctx.wire = wire
+        if wire == "bfloat16":
+            return _bf16_all_to_all(
+                values,
+                input_splits=input_splits,
+                output_splits=output_splits,
+                group=group,
+            )
+        forward_dtype, _ = fp8_wire_dtypes(values.device)
+        return _fp8_all_to_all(
+            values,
+            input_splits=input_splits,
+            output_splits=output_splits,
+            group=group,
+            wire_dtype=forward_dtype,
+        )
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: Tensor):
+        if ctx.wire == "bfloat16":
+            grad_input = _bf16_all_to_all(
+                grad_output,
+                input_splits=ctx.output_splits,
+                output_splits=ctx.input_splits,
+                group=ctx.group,
+            )
+        else:
+            # Gradients span a wider dynamic range than activations, so the
+            # return leg uses E5M2 as ``hybrid_e4m3_e5m2`` prescribes.
+            _, backward_dtype = fp8_wire_dtypes(grad_output.device)
+            grad_input = _fp8_all_to_all(
+                grad_output,
+                input_splits=ctx.output_splits,
+                output_splits=ctx.input_splits,
+                group=ctx.group,
+                wire_dtype=backward_dtype,
+            )
+        return grad_input, None, None, None, None
+
+
+class _CollectiveHandle:
+    """Slot carrying one in-flight all-to-all between its start and its wait.
+
+    ``start`` enqueues the transfer and hands back a correctly shaped carrier
+    tensor whose contents are not yet valid.  ``complete`` synchronises and
+    materialises the real payload, which for an FP8 wire also means applying
+    the per-row scales that travelled alongside it.
+    """
+
+    __slots__ = ("_works", "_finish")
+
+    def __init__(self) -> None:
+        self._works: list[Any] = []
+        self._finish: Callable[[], Tensor] | None = None
+
+    def arm(self, works: list[Any], finish: Callable[[], Tensor]) -> None:
+        self._works = works
+        self._finish = finish
+
+    def complete(self) -> Tensor:
+        if self._finish is None:
+            raise RuntimeError("Collective wait reached an unarmed handle")
+        for work in self._works:
+            if work is not None:
+                work.wait()
+        payload = self._finish()
+        self._works = []
+        self._finish = None
+        return payload
+
+
+def _start_all_to_all(
+    values: Tensor,
+    *,
+    input_splits: tuple[int, ...],
+    output_splits: tuple[int, ...],
+    group: Any,
+    wire_dtype: torch.dtype | None,
+    handle: _CollectiveHandle,
+) -> Tensor:
+    """Enqueue an asynchronous exchange and return its carrier tensor."""
+
+    received_rows = sum(output_splits)
+    if wire_dtype is None:
+        output = values.new_empty((received_rows, *values.shape[1:]))
+        work = dist.all_to_all_single(
             output,
             values.contiguous(),
             output_split_sizes=list(output_splits),
             input_split_sizes=list(input_splits),
             group=group,
+            async_op=True,
         )
+        handle.arm([work], lambda: output)
         return output
+
+    payload, scale = _quantize_rows(values.contiguous(), wire_dtype)
+    received = payload.new_empty((received_rows, *payload.shape[1:]))
+    received_scale = scale.new_empty((received_rows,))
+    works = [
+        dist.all_to_all_single(
+            received,
+            payload,
+            output_split_sizes=list(output_splits),
+            input_split_sizes=list(input_splits),
+            group=group,
+            async_op=True,
+        ),
+        dist.all_to_all_single(
+            received_scale,
+            scale.contiguous(),
+            output_split_sizes=list(output_splits),
+            input_split_sizes=list(input_splits),
+            group=group,
+            async_op=True,
+        ),
+    ]
+    value_dtype = values.dtype
+    handle.arm(
+        works,
+        lambda: _dequantize_rows(
+            received,
+            received_scale,
+            wire_dtype=wire_dtype,
+            value_dtype=value_dtype,
+        ),
+    )
+    # The carrier only has to carry shape and autograd lineage; the real values
+    # arrive when the matching wait dequantises the received payload.
+    return values.new_empty((received_rows, *values.shape[1:]))
+
+
+class _PipelinedAllToAllStart(torch.autograd.Function):
+    """Issue the forward exchange; complete the backward one.
+
+    Paired with :class:`_PipelinedAllToAllWait`, which does the mirror image.
+    Autograd runs every wait node before any start node, because the waits were
+    created later and therefore hold higher sequence numbers, so the backward
+    exchanges are all in flight before the first of them is consumed.  That is
+    what makes the backward pipeline as well as the forward one.
+    """
+
+    @staticmethod
+    def forward(
+        ctx: Any,
+        values: Tensor,
+        input_splits: tuple[int, ...],
+        output_splits: tuple[int, ...],
+        group: Any,
+        wire: str,
+        forward_handle: _CollectiveHandle,
+        backward_handle: _CollectiveHandle,
+    ) -> Tensor:
+        ctx.backward_handle = backward_handle
+        forward_dtype = None if wire == "bfloat16" else fp8_wire_dtypes(values.device)[0]
+        return _start_all_to_all(
+            values,
+            input_splits=input_splits,
+            output_splits=output_splits,
+            group=group,
+            wire_dtype=forward_dtype,
+            handle=forward_handle,
+        )
 
     @staticmethod
     def backward(ctx: Any, grad_output: Tensor):
-        grad_input = grad_output.new_empty((sum(ctx.input_splits), *grad_output.shape[1:]))
-        dist.all_to_all_single(
-            grad_input,
-            grad_output.contiguous(),
-            output_split_sizes=list(ctx.input_splits),
-            input_split_sizes=list(ctx.output_splits),
-            group=ctx.group,
+        del grad_output  # a carrier; the real gradient is in the handle
+        return ctx.backward_handle.complete(), None, None, None, None, None, None
+
+
+class _PipelinedAllToAllWait(torch.autograd.Function):
+    """Complete the forward exchange; issue the backward one."""
+
+    @staticmethod
+    def forward(
+        ctx: Any,
+        carrier: Tensor,
+        input_splits: tuple[int, ...],
+        output_splits: tuple[int, ...],
+        group: Any,
+        wire: str,
+        forward_handle: _CollectiveHandle,
+        backward_handle: _CollectiveHandle,
+    ) -> Tensor:
+        ctx.input_splits = input_splits
+        ctx.output_splits = output_splits
+        ctx.group = group
+        ctx.wire = wire
+        ctx.backward_handle = backward_handle
+        del carrier
+        return forward_handle.complete()
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: Tensor):
+        # Gradients span a wider dynamic range than activations, so an FP8
+        # return leg uses E5M2 as ``hybrid_e4m3_e5m2`` prescribes.
+        backward_dtype = (
+            None if ctx.wire == "bfloat16" else fp8_wire_dtypes(grad_output.device)[1]
         )
-        return grad_input, None, None, None
+        _start_all_to_all(
+            grad_output,
+            input_splits=ctx.output_splits,
+            output_splits=ctx.input_splits,
+            group=ctx.group,
+            wire_dtype=backward_dtype,
+            handle=ctx.backward_handle,
+        )
+        return grad_output, None, None, None, None, None, None
+
+
+def _pipelined_all_to_all_start(
+    values: Tensor,
+    *,
+    input_splits: list[int],
+    output_splits: list[int],
+    group: Any,
+    wire: str,
+    forward_handle: _CollectiveHandle,
+    backward_handle: _CollectiveHandle,
+) -> Tensor:
+    return _PipelinedAllToAllStart.apply(
+        values,
+        tuple(int(value) for value in input_splits),
+        tuple(int(value) for value in output_splits),
+        group,
+        wire,
+        forward_handle,
+        backward_handle,
+    )
+
+
+def _pipelined_all_to_all_wait(
+    carrier: Tensor,
+    *,
+    input_splits: list[int],
+    output_splits: list[int],
+    group: Any,
+    wire: str,
+    forward_handle: _CollectiveHandle,
+    backward_handle: _CollectiveHandle,
+) -> Tensor:
+    return _PipelinedAllToAllWait.apply(
+        carrier,
+        tuple(int(value) for value in input_splits),
+        tuple(int(value) for value in output_splits),
+        group,
+        wire,
+        forward_handle,
+        backward_handle,
+    )
 
 
 def _variable_all_to_all(
@@ -324,6 +909,7 @@ def _variable_all_to_all(
     input_splits: list[int],
     output_splits: list[int],
     group: Any,
+    wire: str = "bfloat16",
 ) -> Tensor:
     if _group_world_size(group) == 1:
         return values
@@ -332,7 +918,38 @@ def _variable_all_to_all(
         tuple(int(value) for value in input_splits),
         tuple(int(value) for value in output_splits),
         group,
+        wire,
     )
+
+
+def _wire_element_bytes(wire: str, values: Tensor) -> float:
+    """Bytes per element actually placed on the wire, including row scales."""
+
+    if wire == "bfloat16":
+        return float(values.element_size())
+    return 1.0 + 4.0 / float(max(values.shape[-1], 1))
+
+
+def expert_collective_wire_error(values: Tensor, *, gradient: bool = False) -> float:
+    """Round-trip relative error the FP8 expert wire would introduce.
+
+    ``allow_fp8_collectives_only_after_probe`` requires evidence before an FP8
+    wire carries a production step; this is the local half of that evidence and
+    needs no process group, so a single-APU canary can produce it.
+    """
+
+    forward_dtype, backward_dtype = fp8_wire_dtypes(values.device)
+    wire_dtype = backward_dtype if gradient else forward_dtype
+    payload, scale = _quantize_rows(values, wire_dtype)
+    restored = _dequantize_rows(
+        payload,
+        scale,
+        wire_dtype=wire_dtype,
+        value_dtype=values.dtype,
+    )
+    reference = values.float()
+    denominator = reference.abs().amax().clamp_min(torch.finfo(torch.float32).tiny)
+    return float((restored.float() - reference).abs().amax() / denominator)
 
 
 @torch.no_grad()
@@ -555,7 +1172,21 @@ def _active_token_layout(active_mask: Tensor) -> ActiveTokenLayout:
 def _packed_document_metadata(
     layout: ActiveTokenLayout,
     document_ids: Tensor | None,
+    *,
+    continues_previous: bool = False,
 ) -> tuple[Tensor, Tensor]:
+    """Document ids and reset flags for one pass's packed active tokens.
+
+    ``continues_previous`` says whether the first packed token carries on a
+    document that some other rank holds.  It is False for every unsharded run,
+    where the packed buffer really does start a sequence.  Under context
+    parallelism it is usually True, and getting it wrong is expensive but
+    quiet: a spurious reset at position 0 zeroes the SSM state and the
+    convolution history that the shard exchange just went to the trouble of
+    fetching, so the model trains as if every shard boundary were a document
+    boundary.
+    """
+
     indices = layout.flat_token_indices
     batch_ids = torch.div(
         indices,
@@ -571,6 +1202,7 @@ def _packed_document_metadata(
         device=indices.device,
         dtype=torch.bool,
     )
+    boundaries[0] = not continues_previous
     if layout.token_count > 1:
         boundaries[1:] = (batch_ids[1:] != batch_ids[:-1]) | (
             source_documents[1:] != source_documents[:-1]
@@ -678,6 +1310,7 @@ class ReferenceMamba2(nn.Module):
         *,
         document_ids: Tensor | None,
         reset_mask: Tensor | None,
+        context_parallel: ContextParallelContext | None = None,
     ) -> Tensor:
         del document_ids
         batch_size, seq_len, _ = hidden_states.shape
@@ -692,45 +1325,91 @@ class ReferenceMamba2(nn.Module):
             dim=-1,
         )
         conv_dim = xbc.shape[-1]
+        parallel = context_parallel if context_parallel is not None else None
+        sharded = parallel is not None and parallel.enabled
+
+        # The convolution and the scan are independent chains -- conv state
+        # depends only on the projection, scan state only on the conv output --
+        # so running them as two loops instead of one interleaved loop is an
+        # exact refactor.  It buys the seam that context parallelism needs: the
+        # shard summary has to see every post-convolution input before the first
+        # scan step can begin.
         conv_state = hidden_states.new_zeros(batch_size, conv_dim, self.d_conv)
+        if sharded and self.d_conv > 1:
+            # Without the predecessor's tail every shard but the first would
+            # convolve its opening tokens against zeros.
+            halo = conv_left_halo(xbc, parallel, width=self.d_conv)
+            conv_state = torch.cat(
+                (conv_state[:, :, :1], halo.transpose(1, 2)),
+                dim=-1,
+            )
+        conv_outputs: list[Tensor] = []
+        for index in range(seq_len):
+            if reset_mask is not None:
+                reset = reset_mask[:, index].view(batch_size, 1, 1)
+                conv_state = torch.where(reset, torch.zeros_like(conv_state), conv_state)
+            conv_state = torch.roll(conv_state, shifts=-1, dims=-1)
+            conv_state[:, :, -1] = xbc[:, index]
+            conv_out = (
+                conv_state * self.conv_weight.unsqueeze(0)
+            ).sum(dim=-1) + self.conv_bias
+            conv_outputs.append(F.silu(conv_out))
+
+        heads_per_group = self.n_heads // self.n_groups
+        head_groups = torch.arange(self.n_heads, device=hidden_states.device) // heads_per_group
+        decay = -torch.exp(self.A_log.float())
+        convolved = torch.stack(conv_outputs, dim=1)
+        x_all, b_all, c_all = torch.split(
+            convolved,
+            (
+                self.d_inner,
+                self.n_groups * self.d_state,
+                self.n_groups * self.d_state,
+            ),
+            dim=-1,
+        )
+        x_all = x_all.view(batch_size, seq_len, self.n_heads, self.head_dim)
+        b_all = b_all.view(batch_size, seq_len, self.n_groups, self.d_state).index_select(
+            2, head_groups
+        )
+        c_all = c_all.view(batch_size, seq_len, self.n_groups, self.d_state).index_select(
+            2, head_groups
+        )
+        delta_all = F.softplus(dt.float() + self.dt_bias)
+
         ssm_state = hidden_states.new_zeros(
             batch_size,
             self.n_heads,
             self.head_dim,
             self.d_state,
         )
-        heads_per_group = self.n_heads // self.n_groups
-        head_groups = torch.arange(self.n_heads, device=hidden_states.device) // heads_per_group
-        decay = -torch.exp(self.A_log.float())
+        if sharded:
+            shard_decay, shard_state = mamba_shard_summary(
+                x_all,
+                b_all,
+                delta_all,
+                self.A_log,
+                reset_mask=reset_mask,
+            )
+            ssm_state = mamba_incoming_state(
+                shard_decay,
+                shard_state,
+                parallel,
+            ).to(ssm_state.dtype)
+
         outputs: list[Tensor] = []
         for index in range(seq_len):
             if reset_mask is not None:
                 reset = reset_mask[:, index].view(batch_size, 1, 1)
-                conv_state = torch.where(reset, torch.zeros_like(conv_state), conv_state)
                 ssm_state = torch.where(
                     reset.unsqueeze(-1),
                     torch.zeros_like(ssm_state),
                     ssm_state,
                 )
-            conv_state = torch.roll(conv_state, shifts=-1, dims=-1)
-            conv_state[:, :, -1] = xbc[:, index]
-            conv_out = (
-                conv_state * self.conv_weight.unsqueeze(0)
-            ).sum(dim=-1) + self.conv_bias
-            conv_out = F.silu(conv_out)
-            x_t, b_t, c_t = torch.split(
-                conv_out,
-                (
-                    self.d_inner,
-                    self.n_groups * self.d_state,
-                    self.n_groups * self.d_state,
-                ),
-                dim=-1,
-            )
-            x_t = x_t.view(batch_size, self.n_heads, self.head_dim)
-            b_t = b_t.view(batch_size, self.n_groups, self.d_state).index_select(1, head_groups)
-            c_t = c_t.view(batch_size, self.n_groups, self.d_state).index_select(1, head_groups)
-            delta = F.softplus(dt[:, index].float() + self.dt_bias)
+            x_t = x_all[:, index]
+            b_t = b_all[:, index]
+            c_t = c_all[:, index]
+            delta = delta_all[:, index]
             transition = torch.exp(delta[:, :, None, None] * decay[None, :, None, None])
             update = (
                 delta[:, :, None, None].to(x_t.dtype)
@@ -837,7 +1516,15 @@ class FusedMamba2(nn.Module):
         *,
         document_ids: Tensor | None,
         reset_mask: Tensor | None,
+        context_parallel: ContextParallelContext | None = None,
     ) -> Tensor:
+        if context_parallel is not None and context_parallel.enabled:
+            return self._context_parallel_forward(
+                hidden_states,
+                document_ids=document_ids,
+                reset_mask=reset_mask,
+                context_parallel=context_parallel,
+            )
         kwargs: dict[str, Any] = {}
         if "seq_idx" in self.accepted_forward and document_ids is not None:
             # mamba_ssm's fused packed-sequence kernels use an int32 segment
@@ -850,6 +1537,166 @@ class FusedMamba2(nn.Module):
                 "document boundaries. Refusing to leak state across documents."
             )
         return self.mixer(hidden_states, **kwargs)
+
+    def _context_parallel_forward(
+        self,
+        hidden_states: Tensor,
+        *,
+        document_ids: Tensor | None,
+        reset_mask: Tensor | None,
+        context_parallel: ContextParallelContext,
+    ) -> Tensor:
+        """Run the fused SSD scan with a state carried in from the left shard.
+
+        ``Mamba2.forward`` owns its own zero initial state and offers no way to
+        seed it, so context parallelism has to step one level down and drive
+        ``mamba_chunk_scan_combined`` directly.  Everything around the scan --
+        the projection split, the causal convolution, the gated norm -- is
+        replayed here in the order the installed module uses.
+
+        Replaying another package's internals is exactly the kind of code that
+        rots silently across a version bump, so it is not trusted on faith:
+        :meth:`assert_context_parallel_parity` runs both paths at ``CP=1`` and
+        refuses the job if they disagree.  A layout change then costs a startup
+        error instead of a week of quietly wrong long-context gradients.
+        """
+
+        scan = _load_fused_ssd_scan()
+        mixer = self.mixer
+        batch, seq_len, _ = hidden_states.shape
+        d_inner = int(mixer.d_inner)
+        n_groups = int(mixer.ngroups)
+        d_state = int(mixer.d_state)
+        n_heads = int(mixer.nheads)
+        head_dim = int(mixer.headdim)
+        d_conv = int(mixer.d_conv)
+
+        projected = mixer.in_proj(hidden_states)
+        extra = projected.shape[-1] - 2 * d_inner - 2 * n_groups * d_state - n_heads
+        if extra < 0 or extra % 2:
+            raise RuntimeError(
+                "Installed Mamba2 in_proj width does not match its documented "
+                "z/xBC/dt split; context parallelism cannot decompose it."
+            )
+        mlp_width = extra // 2
+        _z0, _x0, z, xbc, dt = torch.split(
+            projected,
+            [mlp_width, mlp_width, d_inner, d_inner + 2 * n_groups * d_state, n_heads],
+            dim=-1,
+        )
+
+        if d_conv > 1:
+            halo = conv_left_halo(xbc, context_parallel, width=d_conv)
+            extended = torch.cat((halo, xbc), dim=1)
+        else:
+            extended = xbc
+        extended_len = extended.shape[1]
+        convolved = mixer.conv1d(extended.transpose(1, 2))[..., :extended_len]
+        xbc = mixer.act(convolved.transpose(1, 2)[:, extended_len - seq_len :])
+
+        x, b_matrix, c_matrix = torch.split(
+            xbc,
+            [d_inner, n_groups * d_state, n_groups * d_state],
+            dim=-1,
+        )
+        x = x.view(batch, seq_len, n_heads, head_dim)
+        b_matrix = b_matrix.view(batch, seq_len, n_groups, d_state)
+        c_matrix = c_matrix.view(batch, seq_len, n_groups, d_state)
+
+        delta = F.softplus(dt.float() + mixer.dt_bias.float())
+        heads_per_group = n_heads // n_groups
+        shard_decay, shard_state = mamba_shard_summary(
+            x,
+            b_matrix.repeat_interleave(heads_per_group, dim=2),
+            delta,
+            mixer.A_log,
+            reset_mask=reset_mask,
+        )
+        initial_states = mamba_incoming_state(
+            shard_decay,
+            shard_state,
+            context_parallel,
+        ).to(x.dtype)
+
+        sequence_index = (
+            document_ids.to(dtype=torch.int32) if document_ids is not None else None
+        )
+        attended = scan(
+            x,
+            dt,
+            -torch.exp(mixer.A_log.float()),
+            b_matrix,
+            c_matrix,
+            chunk_size=int(mixer.chunk_size),
+            D=mixer.D,
+            z=None,
+            dt_bias=mixer.dt_bias,
+            dt_softplus=True,
+            seq_idx=sequence_index,
+            initial_states=initial_states,
+            return_final_states=False,
+        )
+        if isinstance(attended, tuple):
+            attended = attended[0]
+        attended = attended.reshape(batch, seq_len, d_inner)
+        return mixer.out_proj(mixer.norm(attended, z))
+
+    @torch.no_grad()
+    def assert_context_parallel_parity(
+        self,
+        *,
+        batch: int = 1,
+        seq_len: int = 64,
+        tolerance: float = 2e-2,
+    ) -> None:
+        """Fail fast if the decomposed scan diverges from the module's own forward.
+
+        Called once per job when context parallelism is enabled.  At ``CP=1``
+        the decomposed path carries a zero initial state, so it must reproduce
+        ``Mamba2.forward`` exactly up to bf16 accumulation order.
+        """
+
+        device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
+        probe = torch.randn(batch, seq_len, self.mixer.d_model, device=device, dtype=dtype)
+        expected = self.forward(probe, document_ids=None, reset_mask=None)
+        observed = self._context_parallel_forward(
+            probe,
+            document_ids=None,
+            reset_mask=None,
+            context_parallel=ContextParallelContext.disabled(seq_len).with_local_length(
+                seq_len
+            ),
+        )
+        difference = (expected.float() - observed.float()).abs().max().item()
+        scale = expected.float().abs().max().clamp_min(1e-6).item()
+        if difference > tolerance * scale:
+            raise RuntimeError(
+                "The decomposed context-parallel Mamba2 path disagrees with the "
+                f"installed fused module (max |Δ| {difference:.3e} vs tolerance "
+                f"{tolerance * scale:.3e}). The pinned mamba_ssm build changed "
+                "its projection or normalization layout; update "
+                "FusedMamba2._context_parallel_forward before training."
+            )
+
+
+def _load_fused_ssd_scan() -> Callable[..., Tensor]:
+    try:
+        from mamba_ssm.ops.triton.ssd_combined import (  # type: ignore
+            mamba_chunk_scan_combined,
+        )
+    except Exception as exc:  # pragma: no cover - exercised on Portage
+        raise RuntimeError(
+            "Context-parallel Mamba2 requires mamba_ssm's "
+            "mamba_chunk_scan_combined, which accepts the initial_states "
+            "argument that carries SSD state across a sequence shard boundary."
+        ) from exc
+    if "initial_states" not in signature(mamba_chunk_scan_combined).parameters:
+        raise RuntimeError(
+            "The installed mamba_chunk_scan_combined has no initial_states "
+            "argument; context parallelism cannot seed the scan."
+        )
+    return mamba_chunk_scan_combined
 
 
 class Mamba2Mixer(nn.Module):
@@ -904,12 +1751,16 @@ class Mamba2Mixer(nn.Module):
         sequence_mask: Tensor,
         packed_layout: PackedDocumentLayout,
         pass_index: int,
+        context_parallel: "ContextParallelPassState | None" = None,
     ) -> Tensor:
         del pass_index, sequence_mask, packed_layout
         return self.impl(
             hidden_states,
             document_ids=document_ids,
             reset_mask=reset_mask,
+            context_parallel=(
+                context_parallel.context if context_parallel is not None else None
+            ),
         )
 
 
@@ -1007,6 +1858,7 @@ class NoPEGQAAttention(nn.Module):
         sequence_mask: Tensor,
         packed_layout: PackedDocumentLayout,
         pass_index: int,
+        context_parallel: "ContextParallelPassState | None" = None,
     ) -> Tensor:
         del reset_mask
         batch, seq_len, _ = hidden_states.shape
@@ -1020,6 +1872,14 @@ class NoPEGQAAttention(nn.Module):
         query = query.view(batch, seq_len, self.n_heads, self.head_dim)
         key = key.view(batch, seq_len, self.n_kv_heads, self.head_dim)
         value = value.view(batch, seq_len, self.n_kv_heads, self.head_dim)
+        if context_parallel is not None and context_parallel.context.enabled:
+            return self._context_parallel_attention(
+                query,
+                key,
+                value,
+                packed_layout=packed_layout,
+                state=context_parallel,
+            )
         if self.varlen_attention is not None:
             if packed_layout.max_seqlen == 0:
                 attended = torch.zeros_like(query)
@@ -1087,6 +1947,102 @@ class NoPEGQAAttention(nn.Module):
         attended = attended.transpose(1, 2).reshape(batch, seq_len, self.d_model)
         return self.out(attended)
 
+    def _context_parallel_attention(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        *,
+        packed_layout: PackedDocumentLayout,
+        state: "ContextParallelPassState",
+    ) -> Tensor:
+        """Attend local queries against keys gathered from the whole CP group.
+
+        Only keys and values cross the wire.  Queries stay put, so attention
+        FLOPs shard with the sequence exactly like every other layer -- at the
+        price of a causal imbalance, since rank ``r`` attends over roughly
+        ``(r+1)/CP`` of the sequence and the last rank therefore sets the pace.
+        Grouped-query attention is what makes the trade worth taking: at four KV
+        heads the gathered buffer is a fraction of the layer's activation, so a
+        few hundred megabytes of intra-node traffic buys the entire memory
+        reduction.
+        """
+
+        batch, seq_len, _, _ = query.shape
+        flat_indices = packed_layout.flat_token_indices
+        flat_query = query.reshape(batch * seq_len, self.n_heads, self.head_dim)
+        packed_query = flat_query.index_select(0, flat_indices)
+        # A rank whose tokens have all halted still joins the gather -- with a
+        # zero-row contribution -- because leaving the collective would hang the
+        # ranks whose tokens are still running.
+        packed_key = key.reshape(
+            batch * seq_len, self.n_kv_heads, self.head_dim
+        ).index_select(0, flat_indices)[: state.local_count]
+        packed_value = value.reshape(
+            batch * seq_len, self.n_kv_heads, self.head_dim
+        ).index_select(0, flat_indices)[: state.local_count]
+
+        gathered_key, gathered_value, _counts = gather_context_parallel_kv(
+            packed_key,
+            packed_value,
+            state.context,
+            capacity=state.capacity,
+        )
+
+        layout = state.layout
+        scale = self.head_dim ** -0.5
+        if layout.empty:
+            # Nothing left to attend from on this rank, but the gathered keys
+            # still need a backward edge or this rank alone would skip the
+            # reduce-scatter its peers are waiting on.
+            packed_output = keep_graph_edge(
+                torch.zeros_like(packed_query), gathered_key, gathered_value
+            )
+        elif self.varlen_attention is not None:
+            # Keys are truncated per document at this rank's last local query,
+            # which is what makes FlashAttention's bottom-right causal alignment
+            # coincide with the true causal mask for a middle shard.
+            selected_key = gathered_key.index_select(0, layout.key_indices)
+            selected_value = gathered_value.index_select(0, layout.key_indices)
+            packed_output = self.varlen_attention(
+                packed_query,
+                selected_key,
+                selected_value,
+                layout.cu_seqlens_q,
+                layout.cu_seqlens_k,
+                layout.max_seqlen_q,
+                layout.max_seqlen_k,
+                0.0,
+                scale,
+                True,
+            )
+            if isinstance(packed_output, tuple):
+                packed_output = packed_output[0]
+        else:
+            if gathered_key.shape[0] > 8_192:
+                raise RuntimeError(
+                    "Dense reference attention is bounded to 8,192 gathered "
+                    "tokens; the context-extension lane requires the fused "
+                    "varlen backend."
+                )
+            packed_output = reference_context_parallel_attention(
+                packed_query,
+                gathered_key,
+                gathered_value,
+                local_segments=state.local_segments,
+                gathered_segments=state.gathered_segments,
+                counts=state.counts,
+                context=state.context,
+                capacity=state.capacity,
+                scale=scale,
+            )
+
+        flat_output = torch.zeros_like(flat_query).index_copy(
+            0, flat_indices, packed_output
+        )
+        attended = flat_output.view(batch, seq_len, self.d_model)
+        return self.out(attended)
+
 
 class SwiGLUExpert(nn.Module):
     def __init__(
@@ -1145,6 +2101,139 @@ class SwiGLUExpert(nn.Module):
                     reset()
 
 
+class PathwayCache:
+    """Pass-one expert identities, addressed in the full token layout.
+
+    Later passes run over a packed subset of tokens, so the cache stores the
+    unpacked ``[batch, sequence, max_k]`` selection and is gathered through the
+    same active-token layout the streams use.  Only integer identity is cached;
+    nothing here carries a gradient.
+    """
+
+    __slots__ = ("_indices", "_widths", "_layout")
+
+    def __init__(self) -> None:
+        self._indices: dict[int, Tensor] = {}
+        self._widths: dict[int, Tensor] = {}
+        self._layout: ActiveTokenLayout | None = None
+
+    def set_layout(self, layout: "ActiveTokenLayout | None") -> None:
+        self._layout = layout
+
+    def store(self, layer_index: int, top_indices: Tensor, chosen_k: Tensor) -> None:
+        # Write-once.  Pass-level activation recompute replays pass one during
+        # the backward, by which point ``_layout`` belongs to a later pass; a
+        # second write would scatter pass-one identities through the wrong map.
+        if layer_index in self._indices:
+            return
+        indices = top_indices.detach()
+        widths = chosen_k.detach()
+        if self._layout is not None:
+            indices = self._layout.scatter(indices)
+            widths = self._layout.scatter(widths)
+        self._indices[layer_index] = indices
+        self._widths[layer_index] = widths
+
+    def lookup(self, layer_index: int) -> tuple[Tensor, Tensor] | None:
+        indices = self._indices.get(layer_index)
+        widths = self._widths.get(layer_index)
+        if indices is None or widths is None:
+            return None
+        if self._layout is not None:
+            return self._layout.pack(indices), self._layout.pack(widths)
+        return indices, widths
+
+    def clear(self) -> None:
+        self._indices.clear()
+        self._widths.clear()
+        self._layout = None
+
+
+class DenseFFN(nn.Module):
+    """Single SwiGLU sublayer standing in for the expert mixture.
+
+    Rows 1, 2, and 7 of the ablation ladder need a feed-forward path that is
+    architecturally identical to the mixture it replaces -- same latent
+    bottleneck, same activation, same mHC read/write -- so that the only thing
+    the comparison isolates is conditional routing.  It reports a zeroed
+    ``RouteState`` so every downstream telemetry consumer keeps working without
+    a branch.
+    """
+
+    def __init__(
+        self,
+        config: Metis16Config,
+        *,
+        precision_policy: Any,
+        device: torch.device | str | None,
+        dtype: torch.dtype | None,
+    ) -> None:
+        super().__init__()
+        self.config = config
+        self.latent_down = _make_linear(
+            precision_policy,
+            config.d_model,
+            config.latent_dim,
+            bias=False,
+            role="latent_down_projection",
+            device=device,
+            dtype=dtype,
+        )
+        self.latent_up = _make_linear(
+            precision_policy,
+            config.latent_dim,
+            config.d_model,
+            bias=False,
+            role="latent_up_projection",
+            device=device,
+            dtype=dtype,
+        )
+        self.ffn = SwiGLUExpert(
+            config.latent_dim,
+            config.dense_ffn_intermediate_dim,
+            precision_policy=precision_policy,
+            device=device,
+            dtype=dtype,
+        )
+        self.collective_timer: CollectiveEventTimer | None = None
+        self.dispatch_overlap = False
+
+    def forward(
+        self,
+        hidden_states: Tensor,
+        *,
+        route_features: Tensor,
+        active_mask: Tensor,
+        curriculum: CurriculumState,
+        pass_index: int = 0,
+        pathway_cache: "PathwayCache | None" = None,
+    ) -> tuple[Tensor, RouteState]:
+        del route_features, curriculum, pass_index, pathway_cache
+        latent = self.latent_down(hidden_states)
+        activated = self.ffn(latent) * active_mask.unsqueeze(-1).to(latent.dtype)
+        output = self.latent_up(activated)
+        zero = output.float().sum() * 0.0
+        batch, seq_len, _ = hidden_states.shape
+        shape = (batch, seq_len)
+        return output, RouteState(
+            summary=output.new_zeros(batch, seq_len, self.config.route_feature_dim),
+            mean_k=output.new_zeros(shape, dtype=torch.float32),
+            expected_k=output.new_zeros(shape, dtype=torch.float32),
+            entropy=output.new_zeros(shape, dtype=torch.float32),
+            confidence=output.new_ones(shape, dtype=torch.float32),
+            token_difficulty=output.new_zeros(shape, dtype=torch.float32),
+            assignments=torch.zeros((), device=output.device, dtype=torch.long),
+            processed_assignments=torch.zeros((), device=output.device, dtype=torch.long),
+            expert_counts=torch.zeros(
+                self.config.n_routed_experts, device=output.device, dtype=torch.long
+            ),
+            expert_load_cv=zero,
+            all_to_all_bytes=torch.zeros((), device=output.device, dtype=torch.long),
+            all_to_all_seconds=torch.zeros((), device=output.device, dtype=torch.float32),
+            auxiliary_losses={name: zero for name in ROUTE_AUXILIARY_LOSS_NAMES},
+        )
+
+
 class AdaptiveDroplessMoE(nn.Module):
     def __init__(
         self,
@@ -1163,6 +2252,28 @@ class AdaptiveDroplessMoE(nn.Module):
         self.collective_timer: CollectiveEventTimer | None = None
         self.dispatch_overlap = False
         self._shared_compute_stream: torch.cuda.Stream | None = None
+        # Off by default and read only by the ablation routing analyzer, which
+        # turns it on for a single forward.  Training never pays for it.
+        self.capture_selection = False
+        self._analysis_last_selection: tuple[Tensor, Tensor] | None = None
+        # Dispatch payloads are about to be cast to E4M3 by the expert
+        # ``gate_up`` GEMM anyway, and combine payloads by ``latent_up``, so an
+        # FP8 wire mostly relocates a quantisation that already happens.  It is
+        # still a numerical change, so it is bound to the effective FP8 profile:
+        # the BF16 autotune candidate stays BF16 end to end and remains a true
+        # parity reference for ``maximum_fp8_loss_relative_error``.  That is
+        # what ``allow_fp8_collectives_only_after_probe`` asks for.
+        wire = config.precision.expert_collective_wire
+        if precision_policy is not None and not getattr(
+            precision_policy, "fp8_enabled", False
+        ):
+            wire = "bfloat16"
+        self.dispatch_wire = "fp8" if wire in {"fp8", "fp8_dispatch"} else "bfloat16"
+        self.combine_wire = "fp8" if wire == "fp8" else "bfloat16"
+        # One chunk reproduces the serial path exactly; more than one turns the
+        # dispatch/expert/combine chain into a software pipeline so the fabric
+        # and the matrix cores are busy at the same time.
+        self.dispatch_chunks = int(config.moe_dispatch_chunks)
         self.world_size = _group_world_size(process_group)
         self.rank = _group_rank(process_group)
         if self.world_size not in {1, config.expert_parallel_size}:
@@ -1247,6 +2358,45 @@ class AdaptiveDroplessMoE(nn.Module):
             expert.reset_parameters_for_global_expert(seed_base + global_expert_id * 97)
         self.shared_expert.reset_parameters_for_global_expert(seed_base + 90_000_001)
 
+    def _random_k_weights(self, target: float, device: torch.device) -> Tensor:
+        cached = getattr(self, "_random_k_weight_cache", None)
+        if cached is not None and cached[0] == target and cached[1].device == device:
+            return cached[1]
+        weights = torch.tensor(
+            max_entropy_categorical(
+                range(self.config.min_routed_k, self.config.max_routed_k + 1),
+                target,
+            ),
+            device=device,
+            dtype=torch.float32,
+        ).unsqueeze(0)
+        self._random_k_weight_cache = (target, weights)
+        return weights
+
+    def _random_policy_generator(
+        self,
+        curriculum: CurriculumState,
+        device: torch.device,
+    ) -> torch.Generator | None:
+        """Per-layer deterministic stream for the random-policy controls.
+
+        Seeding by layer keeps the control reproducible across restarts without
+        making every layer draw the same widths, which would turn a per-token
+        random policy into a per-token constant.
+        """
+
+        if not curriculum.random_policy_seed:
+            return None
+        cached = getattr(self, "_random_policy_generator_cache", None)
+        if cached is not None and cached.device == device:
+            return cached
+        generator = torch.Generator(device=device)
+        generator.manual_seed(
+            int(curriculum.random_policy_seed) + 1_000_003 * (self.layer_idx + 1)
+        )
+        self._random_policy_generator_cache = generator
+        return generator
+
     def _choose_k(
         self,
         logits: Tensor,
@@ -1262,6 +2412,26 @@ class AdaptiveDroplessMoE(nn.Module):
         expected = torch.sum(probabilities * choices, dim=-1)
         if curriculum.routed_k_mode == "fixed":
             chosen = torch.full_like(expected, curriculum.fixed_routed_k, dtype=torch.long)
+        elif curriculum.routed_k_mode == "random":
+            # Same expected width as the learned policy, zero dependence on the
+            # token.  ``expected`` is replaced by the constant target so the
+            # k-budget loss stays well defined and the straight-through envelope
+            # contributes no gradient -- there is no policy here to teach.
+            target = (
+                curriculum.target_mean_routed_k
+                if curriculum.target_mean_routed_k is not None
+                else self.config.target_mean_routed_k
+            )
+            weights = self._random_k_weights(float(target), logits.device)
+            flat = torch.multinomial(
+                weights.expand(logits[..., 0].numel(), -1),
+                num_samples=1,
+                replacement=True,
+                generator=self._random_policy_generator(curriculum, logits.device),
+            ).squeeze(-1)
+            chosen = flat.view(logits.shape[:-1]) + self.config.min_routed_k
+            expected = torch.full_like(expected, float(target))
+            probabilities = weights.expand_as(probabilities)
         elif self.training and curriculum.stochastic_routing:
             chosen_index = F.gumbel_softmax(
                 logits.float(),
@@ -1274,7 +2444,64 @@ class AdaptiveDroplessMoE(nn.Module):
             chosen = probabilities.argmax(dim=-1) + self.config.min_routed_k
         return chosen.to(torch.long), expected, probabilities
 
+    def _execute_local_grouped(
+        self,
+        hidden_states: Tensor,
+        local_indices: Tensor,
+    ) -> Tensor:
+        """Sorted, single-synchronization expert execution.
+
+        The per-expert ``torch.nonzero`` in :meth:`_execute_local` forces a
+        device-to-host synchronization for every expert, which is invisible when
+        an expert-parallel rank owns a handful of experts and ruinous when a
+        data-parallel rank replicates all of them: 96 experts x 10 layers x
+        several passes is thousands of stalls per forward.  Sorting once and
+        deriving segment boundaries from a single ``bincount`` reduces that to
+        one synchronization per layer.  Numerics are unchanged -- the same rows
+        reach the same experts -- only the scheduling differs.
+        """
+
+        expert_count = len(self.local_experts)
+        output = torch.zeros_like(hidden_states)
+        order = torch.argsort(local_indices, stable=True)
+        sorted_hidden = hidden_states.index_select(0, order)
+        counts = torch.bincount(local_indices, minlength=expert_count)
+        # The one and only host synchronization in this path.
+        segment_sizes = counts.tolist()
+        start = 0
+        pieces: list[Tensor] = []
+        for local_index, expert in enumerate(self.local_experts):
+            size = int(segment_sizes[local_index])
+            if size == 0:
+                # DelayedScaling reduces amax for every Transformer Engine
+                # module at context exit, so every rank must still invoke every
+                # local expert slot even when it received no tokens.  The zero
+                # probe preserves graph and collective order without
+                # fabricating an assignment.
+                probe = expert(hidden_states[:1])
+                output = output + probe.sum() * 0.0
+                continue
+            pieces.append((local_index, start, expert(sorted_hidden[start : start + size])))
+            start += size
+        if not pieces:
+            return output
+        combined = torch.cat([piece for _index, _start, piece in pieces], dim=0)
+        # ``order`` maps sorted rows back to their original assignment slots.
+        # Only rows belonging to a non-empty expert were computed, and they are
+        # contiguous in sorted order, so the same iteration order rebuilds the
+        # matching destination index.
+        computed_positions = torch.cat(
+            [
+                order[start : start + int(segment_sizes[index])]
+                for index, start, _piece in pieces
+            ],
+            dim=0,
+        )
+        return output.index_copy(0, computed_positions, combined.to(output.dtype))
+
     def _execute_local(self, hidden_states: Tensor, local_indices: Tensor) -> Tensor:
+        if self.config.expert_execution == "grouped":
+            return self._execute_local_grouped(hidden_states, local_indices)
         output = torch.zeros_like(hidden_states)
         for local_index, expert in enumerate(self.local_experts):
             positions = torch.nonzero(local_indices == local_index, as_tuple=False).flatten()
@@ -1331,6 +2558,185 @@ class AdaptiveDroplessMoE(nn.Module):
         )
         return top_indices, top_weights, selected
 
+    def _recombine_frozen_experts(
+        self,
+        expert_logits: Tensor,
+        top_indices: Tensor,
+        chosen_k: Tensor,
+        active_mask: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Softmax over a pathway that was decided at pass one."""
+
+        top_logits = expert_logits.gather(-1, top_indices)
+        slot_ids = torch.arange(
+            self.config.max_routed_k,
+            device=expert_logits.device,
+        )
+        selected = slot_ids.view(1, 1, -1) < chosen_k.unsqueeze(-1)
+        selected = selected & active_mask.unsqueeze(-1)
+        masked_logits = top_logits.masked_fill(~selected, float("-inf"))
+        top_weights = torch.softmax(masked_logits, dim=-1)
+        top_weights = torch.where(selected, top_weights, torch.zeros_like(top_weights))
+        return top_weights, selected
+
+    def _chunk_permutation(
+        self,
+        destinations: Tensor,
+        send_counts: Tensor,
+        chunks: int,
+    ) -> tuple[Tensor, Tensor]:
+        """Split destination-sorted assignments into ``chunks`` balanced groups.
+
+        Every rank uses the same chunk count, so every rank issues an identical
+        collective sequence no matter how routing skewed its local load.  Within
+        a chunk the rows stay grouped by destination, which is what keeps each
+        chunk a well-formed all-to-all.  A chunk that receives no rows for some
+        destination simply contributes a zero split.
+        """
+
+        total = int(destinations.numel())
+        offsets = torch.cumsum(send_counts, dim=0) - send_counts
+        per_destination_rank = (
+            torch.arange(total, device=destinations.device)
+            - offsets.index_select(0, destinations)
+        )
+        destination_size = send_counts.index_select(0, destinations).clamp_min(1)
+        chunk_of_row = torch.div(
+            per_destination_rank * chunks,
+            destination_size,
+            rounding_mode="floor",
+        ).clamp_(0, chunks - 1)
+        key = chunk_of_row * self.world_size + destinations
+        permutation = torch.argsort(key, stable=True)
+        counts = torch.bincount(
+            key.index_select(0, permutation),
+            minlength=chunks * self.world_size,
+        ).view(chunks, self.world_size)
+        return permutation, counts
+
+    def _exchange_chunk_counts(self, counts: Tensor) -> Tensor:
+        """Trade the whole [chunks, ranks] send plan in one small exchange."""
+
+        if self.world_size == 1:
+            return counts.clone()
+        sent = counts.t().contiguous()
+        received = torch.empty_like(sent)
+        dist.all_to_all_single(received, sent, group=self.process_group)
+        return received.t().contiguous()
+
+    def _pipelined_dispatch(
+        self,
+        send_hidden: Tensor,
+        send_local: Tensor,
+        destinations: Tensor,
+        send_counts_tensor: Tensor,
+        chunks: int,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Dispatch, run experts, and combine as a software pipeline.
+
+        Chunk ``c``'s expert GEMMs execute while chunk ``c + 1``'s dispatch and
+        chunk ``c - 1``'s combine are still on the wire.  The bytes, the peer
+        set, and the fan-out are all identical to the serial path -- only the
+        idle time between them disappears.
+        """
+
+        permutation, counts = self._chunk_permutation(
+            destinations,
+            send_counts_tensor,
+            chunks,
+        )
+        received_counts = self._exchange_chunk_counts(counts)
+        send_plan = counts.tolist()
+        recv_plan = received_counts.tolist()
+
+        send_hidden = send_hidden.index_select(0, permutation)
+        send_local = send_local.index_select(0, permutation)
+        send_bounds = [0]
+        recv_bounds = [0]
+        for chunk in range(chunks):
+            send_bounds.append(send_bounds[-1] + sum(send_plan[chunk]))
+            recv_bounds.append(recv_bounds[-1] + sum(recv_plan[chunk]))
+
+        # Index routing carries no gradient and is three orders of magnitude
+        # smaller than the payload, so it is exchanged up front rather than
+        # occupying a pipeline stage.
+        local_by_chunk = [
+            _all_to_all_indices(
+                send_local[send_bounds[chunk] : send_bounds[chunk + 1]],
+                input_splits=send_plan[chunk],
+                output_splits=recv_plan[chunk],
+                group=self.process_group,
+            )
+            for chunk in range(chunks)
+        ]
+
+        dispatch_handles = [(_CollectiveHandle(), _CollectiveHandle()) for _ in range(chunks)]
+        combine_handles = [(_CollectiveHandle(), _CollectiveHandle()) for _ in range(chunks)]
+
+        def start_dispatch(chunk: int) -> Tensor:
+            return _pipelined_all_to_all_start(
+                send_hidden[send_bounds[chunk] : send_bounds[chunk + 1]],
+                input_splits=send_plan[chunk],
+                output_splits=recv_plan[chunk],
+                group=self.process_group,
+                wire=self.dispatch_wire,
+                forward_handle=dispatch_handles[chunk][0],
+                backward_handle=dispatch_handles[chunk][1],
+            )
+
+        carriers = [None] * chunks
+        combined_carriers: list[Tensor] = []
+        carriers[0] = start_dispatch(0)
+        processed = 0
+        for chunk in range(chunks):
+            if chunk + 1 < chunks:
+                carriers[chunk + 1] = start_dispatch(chunk + 1)
+            received = _pipelined_all_to_all_wait(
+                carriers[chunk],
+                input_splits=send_plan[chunk],
+                output_splits=recv_plan[chunk],
+                group=self.process_group,
+                wire=self.dispatch_wire,
+                forward_handle=dispatch_handles[chunk][0],
+                backward_handle=dispatch_handles[chunk][1],
+            )
+            output = self._execute_local(received, local_by_chunk[chunk])
+            processed += int(output.shape[0])
+            combined_carriers.append(
+                _pipelined_all_to_all_start(
+                    output,
+                    input_splits=recv_plan[chunk],
+                    output_splits=send_plan[chunk],
+                    group=self.process_group,
+                    wire=self.combine_wire,
+                    forward_handle=combine_handles[chunk][0],
+                    backward_handle=combine_handles[chunk][1],
+                )
+            )
+
+        returned = torch.cat(
+            [
+                _pipelined_all_to_all_wait(
+                    combined_carriers[chunk],
+                    input_splits=recv_plan[chunk],
+                    output_splits=send_plan[chunk],
+                    group=self.process_group,
+                    wire=self.combine_wire,
+                    forward_handle=combine_handles[chunk][0],
+                    backward_handle=combine_handles[chunk][1],
+                )
+                for chunk in range(chunks)
+            ],
+            dim=0,
+        )
+        inverse = torch.empty_like(permutation)
+        inverse[permutation] = torch.arange(permutation.numel(), device=permutation.device)
+        return returned.index_select(0, inverse), send_hidden, send_local, torch.tensor(
+            processed,
+            device=send_hidden.device,
+            dtype=torch.long,
+        )
+
     def _dispatch(
         self,
         hidden_states: Tensor,
@@ -1353,6 +2759,37 @@ class AdaptiveDroplessMoE(nn.Module):
             device=hidden_states.device,
             dtype=torch.int64,
         )
+        chunks = self.dispatch_chunks if self.world_size > 1 else 1
+        if chunks > 1:
+            timing = (
+                self.collective_timer.begin(send_hidden)
+                if self.collective_timer is not None
+                else (time.perf_counter(), None)
+            )
+            returned, send_hidden, send_local, processed = self._pipelined_dispatch(
+                send_hidden,
+                send_local,
+                destinations,
+                send_counts_tensor,
+                chunks,
+            )
+            if self.collective_timer is not None:
+                self.collective_timer.end(timing, returned)
+                elapsed = 0.0
+            else:
+                elapsed = time.perf_counter() - timing[0]
+            return self._combine_outputs(
+                returned,
+                order=order,
+                send_hidden=send_hidden,
+                send_local=send_local,
+                weights=weights,
+                token_indices=token_indices,
+                token_count=token_count,
+                hidden_states=hidden_states,
+                processed=processed,
+                elapsed=elapsed,
+            )
         first_collectives = (
             self.collective_timer.begin(send_hidden)
             if self.collective_timer is not None and self.world_size > 1
@@ -1366,6 +2803,7 @@ class AdaptiveDroplessMoE(nn.Module):
             input_splits=send_counts,
             output_splits=recv_counts,
             group=self.process_group,
+            wire=self.dispatch_wire,
         )
         recv_local = _all_to_all_indices(
             send_local,
@@ -1389,11 +2827,45 @@ class AdaptiveDroplessMoE(nn.Module):
             input_splits=recv_counts,
             output_splits=send_counts,
             group=self.process_group,
+            wire=self.combine_wire,
         )
         if self.collective_timer is not None and self.world_size > 1:
             self.collective_timer.end(return_collective, returned)
         else:
             elapsed += time.perf_counter() - return_collective[0]
+        return self._combine_outputs(
+            returned,
+            order=order,
+            send_hidden=send_hidden,
+            send_local=send_local,
+            weights=weights,
+            token_indices=token_indices,
+            token_count=token_count,
+            hidden_states=hidden_states,
+            processed=returned.new_tensor(recv_output.shape[0], dtype=torch.long),
+            elapsed=elapsed,
+        )
+
+    def _combine_outputs(
+        self,
+        returned: Tensor,
+        *,
+        order: Tensor,
+        send_hidden: Tensor,
+        send_local: Tensor,
+        weights: Tensor,
+        token_indices: Tensor,
+        token_count: int,
+        hidden_states: Tensor,
+        processed: Tensor,
+        elapsed: float,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Undo the dispatch ordering and scatter the weighted expert results.
+
+        Shared by the serial and pipelined dispatch paths so both produce
+        identical values, telemetry, and gradients.
+        """
+
         inverse_order = torch.empty_like(order)
         inverse_order[order] = torch.arange(order.numel(), device=order.device)
         returned = returned.index_select(0, inverse_order)
@@ -1403,15 +2875,15 @@ class AdaptiveDroplessMoE(nn.Module):
         combined = hidden_states.new_zeros(token_count, hidden_states.shape[-1])
         combined.index_add_(0, token_indices, returned)
         wire_bytes = (
-            send_hidden.numel() * send_hidden.element_size()
+            send_hidden.numel() * _wire_element_bytes(self.dispatch_wire, send_hidden)
             + send_local.numel() * send_local.element_size()
-            + returned.numel() * returned.element_size()
+            + returned.numel() * _wire_element_bytes(self.combine_wire, returned)
         )
         if self.world_size == 1:
             wire_bytes = 0
         return (
             combined,
-            returned.new_tensor(returned.shape[0], dtype=torch.long),
+            processed.to(device=returned.device, dtype=torch.long),
             returned.new_tensor(wire_bytes, dtype=torch.long),
             returned.new_tensor(elapsed, dtype=torch.float64),
         )
@@ -1431,6 +2903,8 @@ class AdaptiveDroplessMoE(nn.Module):
         route_features: Tensor,
         active_mask: Tensor,
         curriculum: CurriculumState,
+        pass_index: int = 0,
+        pathway_cache: "PathwayCache | None" = None,
     ) -> tuple[Tensor, RouteState]:
         batch, seq_len, _ = hidden_states.shape
         latent = self.latent_down(hidden_states)
@@ -1446,7 +2920,7 @@ class AdaptiveDroplessMoE(nn.Module):
         # detached here so K-budget gradients cannot reshape the expert router,
         # while a monotonic bias makes uncertain tokens prefer more experts.
         token_difficulty = (
-            entropy / math.log(float(self.config.n_routed_experts))
+            entropy / self.config.expert_entropy_normalizer
         ).clamp(0.0, 1.0)
         k_choices = torch.arange(
             self.config.min_routed_k,
@@ -1461,11 +2935,42 @@ class AdaptiveDroplessMoE(nn.Module):
             + token_difficulty.detach().unsqueeze(-1) * centered_choices
         )
         chosen_k, expected_k, _k_probabilities = self._choose_k(k_logits, curriculum)
-        top_indices, top_weights, selected = self._select_experts(
-            expert_logits,
-            chosen_k,
-            active_mask,
+        # ``pass_index`` is zero-based: the first pass through the shared stack
+        # is 0, so pass one stores and every later pass reuses.
+        frozen = (
+            pathway_cache.lookup(self.layer_idx)
+            if pathway_cache is not None and pass_index > 0
+            else None
         )
+        if frozen is None:
+            top_indices, top_weights, selected = self._select_experts(
+                expert_logits,
+                chosen_k,
+                active_mask,
+            )
+            if pathway_cache is not None and pass_index == 0:
+                pathway_cache.store(self.layer_idx, top_indices, chosen_k)
+        else:
+            # Pathway-frozen control: reuse pass 1's expert identity and width,
+            # but recompute the combination weights from this pass's logits.
+            # Caching the weights themselves would thread a gradient path from
+            # pass r back into pass 1's router across a checkpoint boundary; the
+            # axis under test is *which* experts, not how they are blended.
+            cached_indices, cached_k = frozen
+            top_indices = cached_indices
+            chosen_k = cached_k
+            expected_k = expected_k.detach() * 0.0 + cached_k.to(expected_k.dtype)
+            top_weights, selected = self._recombine_frozen_experts(
+                expert_logits,
+                top_indices,
+                chosen_k,
+                active_mask,
+            )
+        if self.capture_selection:
+            self._analysis_last_selection = (
+                top_indices[..., 0].detach(),
+                chosen_k.detach(),
+            )
 
         flat_latent = latent.reshape(batch * seq_len, self.config.latent_dim)
         flat_indices = top_indices.reshape(-1)
@@ -2057,7 +3562,7 @@ class RecurrentDepthMemory(nn.Module):
                 route_state.summary,
                 route_state.mean_k.unsqueeze(-1) / float(self.config.max_routed_k),
                 route_state.entropy.unsqueeze(-1)
-                / math.log(float(self.config.n_routed_experts)),
+                / self.config.expert_entropy_normalizer,
                 route_state.confidence.unsqueeze(-1),
                 continuation_confidence.unsqueeze(-1),
             ),
@@ -2116,7 +3621,16 @@ class RecurrentDepthMemory(nn.Module):
         gates = torch.sigmoid(gate_logits) * float(gate_scale)
         fused = streams + gates[..., None].to(streams.dtype) * projected
         fused = torch.where(active_mask[..., None, None], fused, streams)
-        return fused, projected.mean(dim=-2), weights
+        # The summary feeds the *routing* path -- continuation, adaptive k, and
+        # expert identity all consume it -- so it must obey ``gate_scale`` too.
+        # Scaling only ``fused`` would leave a model with the memory nominally
+        # disabled still routing on retrieved memory, which is precisely the
+        # difference the MoRE-Core / MoRE-RM ablation pair exists to measure.
+        # At the production scale of 1.0 this multiplication is exact.
+        summary = projected.mean(dim=-2)
+        if gate_scale != 1.0:
+            summary = summary * float(gate_scale)
+        return fused, summary, weights
 
 
 class ContinuationController(nn.Module):
@@ -2206,13 +3720,22 @@ class Metis16Block(nn.Module):
             device=device,
             dtype=dtype,
         )
-        self.moe = AdaptiveDroplessMoE(
-            config,
-            layer_idx=layer_index,
-            process_group=process_groups.expert,
-            precision_policy=precision_policy,
-            device=device,
-            dtype=dtype,
+        self.moe = (
+            DenseFFN(
+                config,
+                precision_policy=precision_policy,
+                device=device,
+                dtype=dtype,
+            )
+            if config.ffn_mode == "dense"
+            else AdaptiveDroplessMoE(
+                config,
+                layer_idx=layer_index,
+                process_group=process_groups.expert,
+                precision_policy=precision_policy,
+                device=device,
+                dtype=dtype,
+            )
         )
         self.moe_connection = MHCConnection(
             config,
@@ -2234,8 +3757,13 @@ class Metis16Block(nn.Module):
         pass_index: int,
         pass_embedding: Tensor,
         curriculum: CurriculumState,
+        pathway_cache: "PathwayCache | None" = None,
+        context_parallel: "ContextParallelPassState | None" = None,
     ) -> tuple[Tensor, RouteState]:
         mixer_input, mixer_residual = self.mixer_connection.read(streams, pass_embedding)
+        # Only the mixers see the shard boundary. mHC, routing, the experts and
+        # both memories are per token, so a sequence shard is just a smaller
+        # batch of tokens to them and they need no CP awareness at all.
         mixer_output = self.mixer(
             mixer_input,
             document_ids=document_ids,
@@ -2243,6 +3771,7 @@ class Metis16Block(nn.Module):
             sequence_mask=sequence_mask,
             packed_layout=packed_layout,
             pass_index=pass_index,
+            context_parallel=context_parallel,
         )
         streams = self.mixer_connection.write(
             mixer_residual,
@@ -2255,6 +3784,8 @@ class Metis16Block(nn.Module):
             route_features=route_features,
             active_mask=active_mask,
             curriculum=curriculum,
+            pass_index=pass_index,
+            pathway_cache=pathway_cache,
         )
         streams = self.moe_connection.write(
             moe_residual,
@@ -2262,6 +3793,84 @@ class Metis16Block(nn.Module):
             active_mask=active_mask,
         )
         return streams, route_state
+
+
+def _context_group_shape(group: Any, configured: int) -> tuple[int, int]:
+    """Resolve the context-parallel group's size and this rank's place in it."""
+
+    if configured <= 1:
+        if group is not None:
+            raise RuntimeError(
+                "A context-parallel process group was supplied but "
+                "context_parallel_size is 1; the manifest and the launcher "
+                "disagree about whether the sequence is sharded."
+            )
+        return 1, 0
+    if group is None or not _dist_ready():
+        raise RuntimeError(
+            "context_parallel_size above 1 requires an initialized process "
+            "group; sequence shards cannot exchange mixer state without one."
+        )
+    size = dist.get_world_size(group=group)
+    if size != configured:
+        raise RuntimeError(
+            f"Context-parallel group holds {size} ranks but the manifest "
+            f"declares context_parallel_size={configured}."
+        )
+    return size, dist.get_rank(group=group)
+
+
+_ROUTE_STATE_TENSOR_FIELDS = (
+    "summary",
+    "mean_k",
+    "expected_k",
+    "entropy",
+    "confidence",
+    "token_difficulty",
+    "assignments",
+    "processed_assignments",
+    "expert_counts",
+    "expert_load_cv",
+    "all_to_all_bytes",
+    "all_to_all_seconds",
+)
+
+
+def _route_state_to_flat(state: RouteState) -> tuple[Tensor, ...]:
+    """Flatten a ``RouteState`` for transport across a checkpoint boundary.
+
+    ``torch.utils.checkpoint`` only tracks tensors it can see in the output
+    structure; a dataclass carrying a dict of losses would have its gradients
+    silently dropped.  Every routed FFN -- sparse or dense -- emits the full
+    auxiliary-loss key set, so the flattened layout is fixed and the round trip
+    is total rather than best-effort.
+    """
+
+    missing = [
+        name for name in ROUTE_AUXILIARY_LOSS_NAMES
+        if name not in state.auxiliary_losses
+    ]
+    if missing:
+        raise RuntimeError(
+            f"RouteState is missing auxiliary losses {missing}; the checkpoint "
+            "boundary requires the complete key set."
+        )
+    return (
+        *(getattr(state, name) for name in _ROUTE_STATE_TENSOR_FIELDS),
+        *(state.auxiliary_losses[name] for name in ROUTE_AUXILIARY_LOSS_NAMES),
+    )
+
+
+def _route_state_from_flat(values: Sequence[Tensor]) -> RouteState:
+    expected = len(_ROUTE_STATE_TENSOR_FIELDS) + len(ROUTE_AUXILIARY_LOSS_NAMES)
+    if len(values) != expected:
+        raise RuntimeError(
+            f"Flattened RouteState has {len(values)} entries; expected {expected}."
+        )
+    split = len(_ROUTE_STATE_TENSOR_FIELDS)
+    fields = dict(zip(_ROUTE_STATE_TENSOR_FIELDS, values[:split], strict=True))
+    losses = dict(zip(ROUTE_AUXILIARY_LOSS_NAMES, values[split:], strict=True))
+    return RouteState(**fields, auxiliary_losses=losses)
 
 
 def _add_loss(target: dict[str, Tensor], name: str, value: Tensor) -> None:
@@ -2349,6 +3958,12 @@ class Metis16ForCausalLM(nn.Module):
         self.collective_timer = CollectiveEventTimer()
         self.dispatch_overlap_enabled = False
         self.activation_recompute_policy = config.activation_recompute_policy
+        self.context_parallel_size, self.context_parallel_rank = _context_group_shape(
+            self.process_groups.context,
+            config.context_parallel_size,
+        )
+        self._pathway_cache: PathwayCache | None = None
+        self.analysis_telemetry_enabled = False
         for layer in self.layers:
             layer.moe.collective_timer = self.collective_timer
         self.continuation = ContinuationController(
@@ -2456,6 +4071,11 @@ class Metis16ForCausalLM(nn.Module):
         the same deterministic, non-gradient bias update.
         """
 
+        if self.config.ffn_mode == "dense":
+            # A dense ablation control has no routed experts and therefore no
+            # load to balance. Returning is correct rather than lenient: there
+            # is no selection bias to update.
+            return
         expected = (self.config.n_layers, self.config.n_routed_experts)
         if tuple(counts_by_layer.shape) != expected:
             raise ValueError(
@@ -2580,6 +4200,21 @@ class Metis16ForCausalLM(nn.Module):
             all_to_all_seconds=torch.zeros((), device=input_ids.device, dtype=torch.float64),
         )
 
+    def _random_depth_generator(
+        self,
+        curriculum: CurriculumState,
+        device: torch.device,
+    ) -> torch.Generator | None:
+        if not curriculum.random_policy_seed:
+            return None
+        cached = getattr(self, "_random_depth_generator_cache", None)
+        if cached is not None and cached.device == device:
+            return cached
+        generator = torch.Generator(device=device)
+        generator.manual_seed(int(curriculum.random_policy_seed) + 7_919)
+        self._random_depth_generator_cache = generator
+        return generator
+
     def _continuation_decision(
         self,
         probability: Tensor,
@@ -2601,11 +4236,173 @@ class Metis16ForCausalLM(nn.Module):
             decision = torch.zeros_like(active_mask)
         elif curriculum.continuation_mode == "fixed_max":
             decision = torch.ones_like(active_mask)
+        elif curriculum.continuation_mode == "random":
+            # Memoryless halt tuned to the same mean depth as the learned
+            # policy.  The continuation router still runs -- its parameters and
+            # its budget loss stay in the model so the comparison is
+            # parameter-matched -- but nothing it produces reaches this
+            # decision.
+            target = (
+                curriculum.target_mean_depth
+                if curriculum.target_mean_depth is not None
+                else self.config.target_mean_passes
+            )
+            continue_probability = geometric_continue_probability(
+                self.config.max_passes, float(target)
+            )
+            draws = torch.rand(
+                probability.shape,
+                device=probability.device,
+                dtype=torch.float32,
+                generator=self._random_depth_generator(curriculum, probability.device),
+            )
+            decision = draws < continue_probability
         elif self.training and curriculum.stochastic_routing:
             decision = torch.rand_like(probability) < probability
         else:
             decision = probability >= 0.5
         return active_mask & decision
+
+    def _retrieve_ngram_memory(
+        self,
+        input_ids: Tensor,
+        *,
+        canonical_ids: Tensor | None,
+        document_ids: Tensor | None,
+        reset_mask: Tensor | None,
+        attention_mask: Tensor,
+        context_parallel: ContextParallelContext,
+    ) -> Tensor:
+        """Look up the N-gram memory, with the left context a shard is missing.
+
+        An order-``n`` key hashes the ``n-1`` preceding tokens, so on every
+        shard but the first those leading positions would hash against zero
+        padding and then be masked out as invalid n-grams.  Only two tokens per
+        shard, but they are wrong *by construction* and stay wrong for the whole
+        run, so the token halo is worth its two-position gather.
+        """
+
+        if not context_parallel.enabled:
+            return self._precision_call(
+                self.ngram_memory.retrieve,
+                input_ids,
+                canonical_ids=canonical_ids,
+                document_ids=document_ids,
+                reset_mask=reset_mask,
+                attention_mask=attention_mask,
+            )
+
+        width = max(self.config.ngram_memory.orders) - 1
+        if width <= 0:
+            return self._precision_call(
+                self.ngram_memory.retrieve,
+                input_ids,
+                canonical_ids=canonical_ids,
+                document_ids=document_ids,
+                reset_mask=reset_mask,
+                attention_mask=attention_mask,
+            )
+
+        def _extend(values: Tensor | None, fill: float | int | bool) -> Tensor | None:
+            if values is None:
+                return None
+            return torch.cat(
+                (left_halo(values, context_parallel, width=width, fill=fill), values),
+                dim=1,
+            )
+
+        # Rank 0's halo is masked out, so its content is irrelevant; the fills
+        # only have to keep the true first position looking like a start.
+        extended_ids = _extend(input_ids, 0)
+        retrieved = self._precision_call(
+            self.ngram_memory.retrieve,
+            extended_ids,
+            canonical_ids=_extend(canonical_ids, 0),
+            document_ids=_extend(document_ids, -1),
+            reset_mask=_extend(reset_mask, True),
+            attention_mask=_extend(attention_mask, False),
+        )
+        return retrieved[:, width:]
+
+    def _run_layer_unit(
+        self,
+        streams: Tensor,
+        route_history: Tensor,
+        state_difference: Tensor,
+        pass_embedding: Tensor,
+        *memory_inputs: Tensor,
+        layer_index: int,
+        memory_entry_count: int,
+        active_mask: Tensor,
+        document_ids: Tensor | None,
+        reset_mask: Tensor | None,
+        attention_mask: Tensor,
+        packed_layout: PackedDocumentLayout,
+        pass_index: int,
+        curriculum: CurriculumState,
+        context_parallel: "ContextParallelPassState | None",
+    ) -> tuple[Tensor, ...]:
+        """Run one block, plus the memory read that feeds it, as a pure function.
+
+        This is the finer of the two activation-recompute boundaries.  A whole
+        pass costs about 137 GiB of live activations for Praxis at 163,840
+        tokens and 287 GiB for Logos, against 128 GB of unified HBM per APU --
+        and because that is a per-rank figure, adding ranks does not help.
+        Replaying a block at a time instead of a pass at a time keeps one
+        block's activations live and brings Praxis under the limit outright.
+
+        The FLOP cost is unchanged: the same forward is re-executed either way,
+        which is already priced into the 8/6 replay factor the throughput model
+        uses.  What changes is that recompute granularity is now decoupled from
+        the recurrence, so context extension can pay for memory in blocks
+        instead of in passes.
+
+        Memory-bank entries arrive as explicit tensor arguments rather than
+        through the bank object, so the checkpoint boundary keeps no closure
+        over layer activations.
+        """
+
+        expected_memory_inputs = 2 * memory_entry_count
+        if len(memory_inputs) != expected_memory_inputs:
+            raise RuntimeError(
+                "Layer-unit memory input count does not match its checkpoint boundary."
+            )
+        bank = RecurrentMemoryBank(
+            entries=list(memory_inputs[:memory_entry_count]),
+            valid_masks=list(memory_inputs[memory_entry_count:]),
+        )
+        layer = self.layers[layer_index]
+        streams, memory_summary, _memory_weights = self._precision_call(
+            self.depth_memory.retrieve,
+            bank,
+            streams,
+            active_mask=active_mask,
+            gate_scale=curriculum.memory_gate_scale,
+        )
+        state = streams.mean(dim=-2)
+        route_features = self._precision_call(
+            self.depth_memory.routing_features,
+            state,
+            memory_summary,
+            state_difference,
+            route_history,
+        )
+        streams, route_state = self._precision_call(
+            layer,
+            streams,
+            route_features=route_features,
+            active_mask=active_mask,
+            document_ids=document_ids,
+            reset_mask=reset_mask,
+            sequence_mask=attention_mask,
+            packed_layout=packed_layout,
+            pass_index=pass_index,
+            pass_embedding=pass_embedding,
+            curriculum=curriculum,
+            pathway_cache=self._pathway_cache,
+            context_parallel=context_parallel,
+        )
+        return (streams, *_route_state_to_flat(route_state))
 
     def _run_physical_pass(
         self,
@@ -2624,6 +4421,7 @@ class Metis16ForCausalLM(nn.Module):
         attention_mask: Tensor,
         packed_layout: PackedDocumentLayout,
         curriculum: CurriculumState,
+        context_parallel: "ContextParallelPassState | None" = None,
     ) -> tuple[Tensor, ...]:
         """Run one recurrent pass as a pure checkpointable tensor function.
 
@@ -2666,35 +4464,58 @@ class Metis16ForCausalLM(nn.Module):
         )
         attention_anchor = 0
 
+        recompute_layers = (
+            self.training
+            and torch.is_grad_enabled()
+            and self.activation_recompute_policy == "layer"
+        )
+
         for layer_index, layer in enumerate(self.layers):
-            streams, memory_summary, _memory_weights = self._precision_call(
-                self.depth_memory.retrieve,
-                bank,
+            unit_arguments = (
                 streams,
-                active_mask=active_mask,
-                gate_scale=curriculum.memory_gate_scale,
-            )
-            state = streams.mean(dim=-2)
-            route_features = self._precision_call(
-                self.depth_memory.routing_features,
-                state,
-                memory_summary,
-                state_difference,
                 route_history,
+                state_difference,
+                pass_embedding,
+                *bank.entries,
+                *bank.valid_masks,
             )
-            streams, route_state = self._precision_call(
-                layer,
-                streams,
-                route_features=route_features,
-                active_mask=active_mask,
-                document_ids=document_ids,
-                reset_mask=reset_mask,
-                sequence_mask=attention_mask,
-                packed_layout=packed_layout,
-                pass_index=pass_index,
-                pass_embedding=pass_embedding,
-                curriculum=curriculum,
-            )
+            unit_keywords = {
+                "layer_index": layer_index,
+                "memory_entry_count": bank.slot_count,
+                "active_mask": active_mask,
+                "document_ids": document_ids,
+                "reset_mask": reset_mask,
+                "attention_mask": attention_mask,
+                "packed_layout": packed_layout,
+                "pass_index": pass_index,
+                "curriculum": curriculum,
+                "context_parallel": context_parallel,
+            }
+            if recompute_layers:
+
+                def checkpointed_layer(
+                    *arguments: Tensor,
+                    _keywords: dict[str, Any] = unit_keywords,
+                ) -> tuple[Tensor, ...]:
+                    return self._run_layer_unit(*arguments, **_keywords)
+
+                # Same reasoning as the pass-level boundary: early stop would
+                # let ranks replay different amounts of the block and desync the
+                # expert-parallel collective sequence.
+                with set_checkpoint_early_stop(False):
+                    unit_outputs = checkpoint(
+                        checkpointed_layer,
+                        *unit_arguments,
+                        use_reentrant=False,
+                        preserve_rng_state=True,
+                        context_fn=_activation_checkpoint_context_fn(
+                            self.precision_policy
+                        ),
+                    )
+            else:
+                unit_outputs = self._run_layer_unit(*unit_arguments, **unit_keywords)
+            streams = unit_outputs[0]
+            route_state = _route_state_from_flat(unit_outputs[1:])
             route_history = torch.where(
                 active_mask.unsqueeze(-1),
                 0.5 * route_history + 0.5 * route_state.summary,
@@ -2978,13 +4799,38 @@ class Metis16ForCausalLM(nn.Module):
             if self.training
             else self.config.final_context_length
         )
-        if input_ids.shape[1] > maximum_context:
+        context_parallel = ContextParallelContext(
+            group=self.process_groups.context,
+            size=self.context_parallel_size,
+            rank=self.context_parallel_rank,
+            local_length=int(input_ids.shape[1]),
+        )
+        # Under context parallelism the limit applies to the sequence the group
+        # jointly owns, not to the slice this rank happens to hold.
+        global_length = input_ids.shape[1] * context_parallel.size
+        if global_length > maximum_context:
             raise ValueError(
-                f"Sequence length {input_ids.shape[1]} exceeds the active "
+                f"Sequence length {global_length} exceeds the active "
                 f"Metis-1.6 context limit {maximum_context}."
+            )
+        if context_parallel.enabled and input_ids.shape[0] != 1:
+            # Continuation packing flattens [batch, sequence] into one row
+            # ordered by batch and then position.  Concatenated across shards
+            # that interleaves the batch rows, so rank r+1's row-0 tokens would
+            # inherit rank r's row-1 SSM state instead of its own.  Context
+            # extension runs one sequence per rank anyway -- 163,840 tokens is
+            # already the whole micro-batch -- so this is a guard, not a
+            # limitation anyone has to work around.
+            raise ValueError(
+                "Context parallelism requires micro-batch 1; observed "
+                f"{input_ids.shape[0]}. Packing interleaves batch rows across "
+                "shards, which would carry mixer state between them."
             )
         curriculum_state = CurriculumState.from_value(curriculum)
         curriculum_state.validate(self.config)
+        self._pathway_cache = (
+            PathwayCache() if curriculum_state.pathway_mode == "frozen" else None
+        )
         effective_passes = max_passes or curriculum_state.max_passes or self.config.max_passes
         if not 1 <= effective_passes <= self.config.max_passes:
             raise ValueError("max_passes is outside [1, config.max_passes].")
@@ -3002,12 +4848,26 @@ class Metis16ForCausalLM(nn.Module):
                 raise ValueError(
                     "Labels outside attention_mask must use ignore_index -100."
                 )
-        document_ids, reset_mask = _derive_document_ids(
-            input_ids,
-            document_ids=document_ids,
-            reset_mask=reset_mask,
+        document_ids, reset_mask = (
+            align_document_ids(
+                input_ids,
+                document_ids=document_ids,
+                reset_mask=reset_mask,
+                context=context_parallel,
+            )
+            if context_parallel.enabled
+            else _derive_document_ids(
+                input_ids,
+                document_ids=document_ids,
+                reset_mask=reset_mask,
+            )
         )
         packed_layout = _build_packed_document_layout(attention_mask, document_ids)
+        segment_stride = (
+            global_segment_stride(document_ids, context_parallel)
+            if context_parallel.enabled
+            else 1
+        )
         if self.training and self.config.world_size > 1:
             replicated_requires_group = self.config.ngram_memory.table_mode == "replicated"
             sharded_replicas_require_group = (
@@ -3033,13 +4893,13 @@ class Metis16ForCausalLM(nn.Module):
             self.config.n_streams,
             self.config.d_model,
         )
-        cached_ngram = self._precision_call(
-            self.ngram_memory.retrieve,
+        cached_ngram = self._retrieve_ngram_memory(
             input_ids,
             canonical_ids=canonical_ids,
             document_ids=document_ids,
             reset_mask=reset_mask,
             attention_mask=attention_mask,
+            context_parallel=context_parallel,
         )
         bank = RecurrentMemoryBank()
         active_mask = attention_mask.clone()
@@ -3102,6 +4962,7 @@ class Metis16ForCausalLM(nn.Module):
                     if self.process_groups.world is not None
                     else self.process_groups.expert
                 ),
+                groups=(self.process_groups.context,),
             ):
                 active_masks.extend(
                     active_mask.clone()
@@ -3120,6 +4981,7 @@ class Metis16ForCausalLM(nn.Module):
             pass_input_route_history = route_history
             memory_entry_count = bank.slot_count
             token_layout: ActiveTokenLayout | None = None
+            pass_context_parallel: ContextParallelPassState | None = None
             run_document_ids = document_ids
             run_reset_mask = reset_mask
             run_attention_mask = attention_mask
@@ -3147,14 +5009,38 @@ class Metis16ForCausalLM(nn.Module):
                     )
                 )
                 packed_passes = packed_passes + 1
-                run_document_ids, run_reset_mask = _packed_document_metadata(
-                    token_layout,
-                    document_ids,
-                )
                 run_attention_mask = torch.ones(
                     (1, token_layout.token_count),
                     device=input_ids.device,
                     dtype=torch.bool,
+                )
+                # The packed buffer's first token continues a neighbouring
+                # shard's document more often than not, and only the group
+                # knows that, so the CP state has to be resolved before the
+                # reset flags can be written.
+                pass_context_parallel = (
+                    _build_context_parallel_pass_state(
+                        context_parallel,
+                        document_ids=document_ids,
+                        selector=token_layout.flat_token_indices,
+                        batch_size=input_ids.shape[0],
+                        sequence_length=input_ids.shape[1],
+                        segment_stride=segment_stride,
+                        local_count=(
+                            token_layout.token_count if local_has_active else 0
+                        ),
+                    )
+                    if context_parallel.enabled
+                    else None
+                )
+                run_document_ids, run_reset_mask = _packed_document_metadata(
+                    token_layout,
+                    document_ids,
+                    continues_previous=(
+                        pass_context_parallel.continues_previous
+                        if pass_context_parallel is not None
+                        else False
+                    ),
                 )
                 run_packed_layout = _build_packed_document_layout(
                     run_attention_mask,
@@ -3178,6 +5064,24 @@ class Metis16ForCausalLM(nn.Module):
                 run_memory_masks = tuple(
                     token_layout.pack(mask) for mask in bank.valid_masks
                 )
+            if context_parallel.enabled and pass_context_parallel is None:
+                pass_context_parallel = _build_context_parallel_pass_state(
+                    context_parallel,
+                    document_ids=document_ids,
+                    selector=run_packed_layout.flat_token_indices,
+                    batch_size=input_ids.shape[0],
+                    sequence_length=input_ids.shape[1],
+                    segment_stride=segment_stride,
+                    local_count=(
+                        int(run_packed_layout.flat_token_indices.numel())
+                        if local_has_active
+                        else 0
+                    ),
+                )
+            # The pathway cache stores pass-one identities in the unpacked token
+            # layout, so it needs this pass's packing map to gather them back.
+            if self._pathway_cache is not None:
+                self._pathway_cache.set_layout(token_layout)
             pass_arguments = (
                 run_streams,
                 run_route_history,
@@ -3194,8 +5098,11 @@ class Metis16ForCausalLM(nn.Module):
                 and torch.is_grad_enabled()
                 and self.activation_recompute_policy == "pass"
             )
-            if recompute_this_pass:
+            if self.training and torch.is_grad_enabled() and (
+                self.activation_recompute_policy in {"pass", "layer"}
+            ):
                 activation_recompute_used = True
+            if recompute_this_pass:
 
                 def checkpointed_pass(
                     *arguments: Tensor,
@@ -3205,6 +5112,7 @@ class Metis16ForCausalLM(nn.Module):
                     _reset_mask: Tensor | None = run_reset_mask,
                     _attention_mask: Tensor = run_attention_mask,
                     _packed_layout: PackedDocumentLayout = run_packed_layout,
+                    _context_parallel: ContextParallelPassState | None = pass_context_parallel,
                 ) -> tuple[Tensor, ...]:
                     return self._run_physical_pass(
                         *arguments,
@@ -3215,6 +5123,7 @@ class Metis16ForCausalLM(nn.Module):
                         attention_mask=_attention_mask,
                         packed_layout=_packed_layout,
                         curriculum=curriculum_state,
+                        context_parallel=_context_parallel,
                     )
 
                 # Disabling non-reentrant early-stop makes every rank replay the
@@ -3239,6 +5148,7 @@ class Metis16ForCausalLM(nn.Module):
                     attention_mask=run_attention_mask,
                     packed_layout=run_packed_layout,
                     curriculum=curriculum_state,
+                    context_parallel=pass_context_parallel,
                 )
             (
                 run_streams,
@@ -3629,7 +5539,7 @@ class Metis16ForCausalLM(nn.Module):
             (
                 expert_entropy_sum
                 / expert_entropy_count.float()
-                / math.log(float(self.config.n_routed_experts))
+                / self.config.expert_entropy_normalizer
             ).clamp(0.0, 1.0)
             if int(expert_entropy_count.item()) > 0
             else final_hidden.new_ones((), dtype=torch.float32)
@@ -3731,6 +5641,8 @@ __all__ = [
     "PLACEMENT_REPLICATED",
     "PLACEMENT_ROW_SHARDED_TABLE",
     "PLACEMENT_SPARSE_TABLE",
+    "expert_collective_wire_error",
+    "fp8_wire_dtypes",
     "load_family_config",
     "sinkhorn_doubly_stochastic",
 ]

@@ -103,9 +103,11 @@ def validate_family_manifest(payload: Mapping[str, Any]) -> dict[str, Any]:
     topology = payload.get("topology")
     if not isinstance(topology, Mapping):
         raise RuntimeError("Family manifest is missing topology")
+    # 40 nodes / 88 nodes of the 128-node parry allocation, both families at a
+    # 32-wide dispatch radius so they exhaust the 1T-token contract together.
     expected = {
-        "praxis": (128, 128, 1),
-        "logos": (384, 192, 2),
+        "praxis": (160, 32, 5),
+        "logos": (352, 32, 11),
     }[family]
     observed = (
         int(topology.get("world_size", 0)),
