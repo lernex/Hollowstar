@@ -365,6 +365,41 @@ class FreshWebUnitTests(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_lane_width_does_not_reach_the_run_fingerprint(self) -> None:
+        """Widening the Common Crawl lane must resume, never orphan.
+
+        ``max_workers`` is a FINGERPRINT_OPTION_FIELD, so anything that feeds it
+        becomes part of run identity.  ``process_workers`` used to be
+        ``min(10, 10 // lane_workers, range_workers)``, which meant raising
+        lane_max_workers.common_crawl from 1 to 4 halved it, changed the
+        fingerprint, and stranded every partition already fetched under the old
+        one -- a terabyte-scale loss triggered by a throughput knob.  Lane width
+        is scheduling; it must not be identity.
+        """
+        item = {
+            "source_id": "software",
+            "license": {"status": "per_record_required"},
+            "access": {
+                "route": "software_docs",
+                "cutoff_start": "2025-01-01",
+                "cutoff_end": "2026-06-30",
+            },
+        }
+        widths = (1, 2, 4, 8, 16)
+        observed = {
+            width: freshweb_options_for_item(
+                item,
+                {
+                    "acquisition": {
+                        "lane_max_workers": {"common_crawl": width},
+                        "common_crawl": {"range_workers": 4},
+                    }
+                },
+            ).max_workers
+            for width in widths
+        }
+        self.assertEqual(set(observed.values()), {4}, observed)
+
     def test_route_category_gate_rejects_out_of_scope_pages(self) -> None:
         policy = OptOutPolicy(
             domains=frozenset(),
@@ -950,7 +985,12 @@ class FreshWebDownloadDispatchTests(unittest.TestCase):
                 )
             )
             self.assertEqual(options.data_root, "https://common-crawl.test/root")
-            self.assertEqual(options.max_workers, 5)
+            # No range_workers set, so this falls back to acquisition.max_workers
+            # under the hard ceiling of 10. It was 5 while process_workers was
+            # divided by the lane width; that division is gone because it put
+            # lane concurrency inside the run fingerprint. See
+            # test_lane_width_does_not_reach_the_run_fingerprint.
+            self.assertEqual(options.max_workers, 8)
             self.assertEqual(options.request_timeout_seconds, 900)
             self.assertEqual(options.max_retries, 7)
             self.assertTrue(options.keep_index_files)

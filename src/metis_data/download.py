@@ -242,13 +242,17 @@ def freshweb_options_for_item(item: dict[str, Any], profile: dict[str, Any]) -> 
     common_crawl = acquisition.get("common_crawl", {})
     if not isinstance(common_crawl, dict):
         raise ValueError("profile acquisition.common_crawl must be a mapping")
-    lane_workers = max(
-        1,
-        int(acquisition.get("lane_max_workers", {}).get("common_crawl", 1)),
-    )
+    # range_workers is per task and deliberately independent of how many Common
+    # Crawl tasks the lane runs at once.  It reaches FreshWebOptions.max_workers,
+    # which is a FINGERPRINT_OPTION_FIELD, so deriving it from the lane width --
+    # as `min(10, 10 // lane_workers, range_workers)` once did -- meant widening
+    # the lane silently rewrote every in-flight run's fingerprint and orphaned
+    # its partitions.  Retuning lane concurrency has to be resumable, the same
+    # guarantee index_scan_workers already carries, so total range pressure is
+    # now the honest product of lane width and range_workers, bounded by
+    # configuring those two directly.
     process_workers = min(
         10,
-        max(1, 10 // lane_workers),
         max(1, int(common_crawl.get("range_workers", acquisition.get("max_workers", 10)))),
     )
     max_records = common_crawl.get("max_records_per_partition")

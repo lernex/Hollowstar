@@ -41,8 +41,19 @@ acquisition:
     canonical_git: canonical
     canonical_http: canonical
     derived_after_download: derived
+  # Common Crawl is the only lane with work left, and every remaining source
+  # uses it, so this cap alone decides whether they run in series or together.
+  # Total concurrent range processes are lane width x common_crawl.range_workers
+  # and total index-scan processes are lane width x index_scan_workers; size it
+  # against the host's cores, not by feel. Retuning it is resumable -- it does
+  # not reach the FreshWeb run fingerprint -- but that is only true because
+  # range_workers no longer derives from it; see metis_data/download.py.
   lane_max_workers:
-    {github: 1, github_discussions: 1, common_crawl: 1, canonical: 1, derived: 1}
+    github: 1
+    github_discussions: 1
+    common_crawl: ${METIS_CC_LANE_WORKERS:-1}
+    canonical: 1
+    derived: 1
   # The fresh-GitHub archive walk sustained ~3.7 archive fetches and ~0.3
   # accepted repositories per hour here: about a gigabyte per repository, and
   # roughly one in twelve carries an allowlisted root license. At that rate its
