@@ -546,5 +546,34 @@ class AcquisitionLaneTests(unittest.TestCase):
         )
 
 
+
+class ConfigurationParseTests(unittest.TestCase):
+    def test_every_shipped_configuration_file_parses(self) -> None:
+        """Every YAML under configs/ must parse, before anything validates it.
+
+        A `${VAR:-default}` substitution inside a YAML *flow* mapping --
+        `{a: 1, b: ${X:-2}}` -- is a parse error, because `{` opens a nested
+        mapping in flow style. It shipped in portage-cpu.yaml and broke both
+        doctor and submit, and the suite stayed green because nothing here
+        loaded a profile. Parsing is checked on the raw text, which is the
+        order load_profile uses: yaml.safe_load first, expand_environment
+        after.
+        """
+        from metis_data.config import load_yaml, repository_root
+
+        roots = [repository_root() / "configs", repository_root() / "manifests"]
+        checked = 0
+        for root in roots:
+            for path in sorted(root.rglob("*.yaml")):
+                with self.subTest(config=str(path.relative_to(repository_root()))):
+                    try:
+                        payload = load_yaml(path)
+                    except Exception as exc:  # noqa: BLE001 - report the file
+                        self.fail(f"{path} failed to parse: {type(exc).__name__}: {exc}")
+                    self.assertIsInstance(payload, dict)
+                checked += 1
+        self.assertGreater(checked, 10, "expected to find the shipped configs")
+
+
 if __name__ == "__main__":
     unittest.main()

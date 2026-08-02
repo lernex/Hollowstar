@@ -194,7 +194,14 @@ scheduler:
   # 144GB of cache, roughly a third of the node, and is eight times the old
   # default. Do not copy login2's 16384 here: that profile runs four concurrent
   # tasks, and 72 x 16GiB is 1.15TB on a 501GB machine.
-  minhash_priority: {bucket_count: 256, maximum_open_files: 32, sqlite_cache_mb: ${METIS_MINHASH_CACHE_MIB:-2048}, transaction_rows: 100000}
+  # Block style, not flow. `${...}` inside a YAML flow mapping is a parse error:
+  # `{` opens a nested mapping there, so the substitution has to live on its own
+  # line like every other env-overridable value in this file.
+  minhash_priority:
+    bucket_count: 256
+    maximum_open_files: 32
+    sqlite_cache_mb: ${METIS_MINHASH_CACHE_MIB:-2048}
+    transaction_rows: 100000
   code_structural: {finder_tasks: 64, block_tokens: 96, duplicate_fraction: 0.80, semantic_dedup: false}
   final_hash: {finder_tasks: 64, algorithm: sha256}
   tokenize: {tasks: 2000, workers: 400}
