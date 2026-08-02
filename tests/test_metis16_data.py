@@ -805,6 +805,9 @@ class AcquisitionTruthTests(unittest.TestCase):
             environment = {
                 **os.environ,
                 "METIS_PYTHON": str(fake_python),
+                # Slurm runs a staged copy of this script, so it cannot find the
+                # checkout on its own. See tests/test_slurm_script_staging.py.
+                "METIS_ROOT": str(Path(__file__).resolve().parents[1]),
                 "METIS_PROFILE": str(root / "rhea.yaml"),
                 "METIS_STAGE": "normalize",
                 "METIS_TASK_OFFSET": "3000",
@@ -1607,6 +1610,9 @@ class ParallelCpuBuildTests(unittest.TestCase):
             environment = {
                 **os.environ,
                 "METIS_PYTHON": str(fake_python),
+                # Slurm runs a staged copy of this script, so it cannot find the
+                # checkout on its own. See tests/test_slurm_script_staging.py.
+                "METIS_ROOT": str(Path(__file__).resolve().parents[1]),
                 "METIS_PROFILE": str(root / "portage-cpu.yaml"),
                 "METIS_STAGE": "normalize",
                 "METIS_TASK_OFFSET": "3000",

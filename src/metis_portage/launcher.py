@@ -215,7 +215,9 @@ class SlurmSubmitter:
             str(self.campaign_root / "logs" / "slurm-%x-%j.out"),
             "--error",
             str(self.campaign_root / "logs" / "slurm-%x-%j.out"),
-            "--export=ALL",
+            # Slurm runs a staged copy of the batch script from /var/spool, so
+            # the script cannot derive the checkout from its own path.
+            f"--export=ALL,METIS_ROOT={self.config.repository}",
             *self._site_options(),
         ]
         if dependency is not None:

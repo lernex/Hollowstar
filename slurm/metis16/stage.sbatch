@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Slurm does not run a batch script from where it was submitted: it stages a
+# copy under /var/spool/slurmd/job<id>/slurm_script. So BASH_SOURCE points into
+# the spool directory, and deriving the checkout from it silently yields
+# /var/spool. The submitter passes the real checkout in METIS_ROOT; refuse to
+# run without it rather than resolving somewhere plausible and wrong.
+ROOT="${METIS_ROOT:?METIS_ROOT is required: submit through metisctl, which exports the repository checkout}"
+if [[ ! -d "$ROOT/src/metis_data" ]]; then
+  echo "METIS_ROOT does not look like a Metis checkout: $ROOT" >&2
+  exit 2
+fi
 RUNTIME="${METIS_RUNTIME_DIR:-$ROOT/.metis-runtime}"
 PYTHON="${METIS_PYTHON:-$RUNTIME/bin/python}"
 

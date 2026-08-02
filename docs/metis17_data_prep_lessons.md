@@ -186,6 +186,17 @@ this document.
 - Ctrl-C inside a C-level SQLite call is deferred and echoes `^C` only. Use
   Ctrl-Z then `kill -9 %N`.
 - Deleting ~2 TB on Lustre takes many minutes and looks like a hang.
+- **`sbatch` does not run the script you submitted.** It copies the contents to
+  `/var/spool/slurmd/job<id>/slurm_script` and runs that, so `BASH_SOURCE`
+  resolves under the spool directory. `stage.sbatch` derived the checkout that
+  way and every array entry died in three seconds looking for
+  `/var/spool/.metis-runtime/bin/python`. The submitter now exports
+  `METIS_ROOT` and the script refuses to start without it. The two training
+  scripts had the identical line.
+  **This is a testing lesson more than a Slurm one:** two existing tests already
+  executed the wrapper and asserted on its argv, but they ran it from its real
+  path in the checkout -- the one condition that never holds in production. A
+  wrapper test has to reproduce the staging, not just the environment.
 - HF **API** runs ~45 KB/s here (EDR TLS inspection, latency-bound); bulk **CDN**
   transfer exceeds 100 MB/s. That asymmetry is why pointer corpora are
   catastrophic and content corpora are trivial.

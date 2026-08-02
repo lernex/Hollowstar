@@ -9,7 +9,9 @@ RUNTIME_SETUP="${4:?runtime setup is required}"
 MAX_ATTEMPTS="${5:?maximum attempts is required}"
 
 source "$RUNTIME_SETUP"
-cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# BASH_SOURCE resolves into /var/spool/slurmd here: Slurm runs a staged copy of
+# this script, not the one in the checkout. The launcher exports METIS_ROOT.
+cd "${METIS_ROOT:?METIS_ROOT is required: submit through the Portage launcher}"
 
 export MASTER_ADDR
 MASTER_ADDR="$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)"

@@ -7,7 +7,9 @@ CAMPAIGN_ROOT="${2:?campaign root is required}"
 RUNTIME_SETUP="${3:?runtime setup is required}"
 
 source "$RUNTIME_SETUP"
-cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# BASH_SOURCE resolves into /var/spool/slurmd here: Slurm runs a staged copy of
+# this script, not the one in the checkout. The launcher exports METIS_ROOT.
+cd "${METIS_ROOT:?METIS_ROOT is required: submit through the Portage launcher}"
 export PYTHONUNBUFFERED=1
 
 checkpoint_requested=0

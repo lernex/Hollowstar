@@ -151,7 +151,11 @@ def submit_stage(
         command.append(str(option))
     command.extend(
         [
-            f"--export=ALL,METIS_PROFILE={profile_path},METIS_STAGE={stage}"
+            # METIS_ROOT is not a convenience: Slurm executes a staged copy of
+            # the batch script out of /var/spool, so the script cannot find the
+            # checkout -- and therefore neither the runtime nor src -- on its own.
+            f"--export=ALL,METIS_ROOT={repository_root()}"
+            f",METIS_PROFILE={profile_path},METIS_STAGE={stage}"
             f",METIS_TASK_OFFSET={int(task_offset)}"
             f",METIS_TASKS_PER_JOB={int(tasks_per_job)}"
             f",METIS_TASK_LIMIT={int(task_limit)}",
