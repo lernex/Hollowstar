@@ -67,7 +67,12 @@ scheduler:
   # partition MaxTime=5-00:00:00. Every declared stage walltime fits under that
   # ceiling, including the 72h minhash_components reducer.
   site_values_confirmed: true
-  required_fields: [account, partition, max_array_size]
+  # No account. sacct shows a blank Account for a completed probe job on this
+  # cluster, so submissions charge the default association and `sbatch` needs no
+  # --account. account stays below as an env-overridable knob for a site that
+  # does use them; requiring it here would only force an invented value through
+  # the preflight.
+  required_fields: [partition, max_array_size]
 
   account: ${METIS_SLURM_ACCOUNT:-auto}
   partition: ${METIS_SLURM_PARTITION:-parry}
