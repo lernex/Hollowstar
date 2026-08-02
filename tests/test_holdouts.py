@@ -155,3 +155,70 @@ class FragmentExplosionTests(unittest.TestCase):
         }
         kinds = {kind for kind, _ in _benchmark_fragments(row)}
         self.assertTrue({"query", "choices", "answer", "code"} <= kinds)
+
+
+class ExtractionBoundsTests(unittest.TestCase):
+    """No benchmark schema may produce unbounded holdout text.
+
+    Three separate bugs in one day came from the same shape: a benchmark row
+    carrying something enormous that the extractor happily walked. Tokenized
+    word lists gave 1.8M single-word fragments. Raw Wikipedia HTML took the
+    registry to 7GB. Naming each offending key as it appears does not converge,
+    so the row is bounded outright and every bound reports itself.
+    """
+
+    def _nq_row(self) -> dict:
+        return {
+            "question": {
+                "text": "who sang the theme to the grand tour series",
+                "tokens": ["who", "sang", "the", "theme"],
+            },
+            "document": {
+                "title": "The Grand Tour (TV series)",
+                "url": "https://en.wikipedia.org/wiki/The_Grand_Tour",
+                "html": "<html>" + ("<p>filler</p>" * 100000) + "</html>",
+                "text": "A" * 400_000,
+                "tokens": {"token": ["episode", "celebrity", "guests"]},
+            },
+        }
+
+    def test_markup_and_locators_never_become_fragments(self) -> None:
+        from metis_data.holdouts import _benchmark_fragments
+
+        texts = [text for _kind, text in _benchmark_fragments(self._nq_row())]
+        joined = " ".join(texts)
+        self.assertNotIn("<p>", joined)
+        self.assertNotIn("wikipedia.org", joined)
+        self.assertLess(sum(len(t) for t in texts), 1000)
+
+    def test_an_oversized_fragment_is_dropped_and_counted(self) -> None:
+        from metis_data.holdouts import (
+            MAXIMUM_FRAGMENT_CHARACTERS,
+            _benchmark_fragments,
+        )
+
+        stats: dict = {}
+        row = {"context": "B" * (MAXIMUM_FRAGMENT_CHARACTERS + 1)}
+        self.assertEqual(list(_benchmark_fragments(row, stats)), [])
+        self.assertEqual(stats.get("fragments_dropped_oversized"), 1)
+
+    def test_a_row_cannot_exceed_the_character_budget(self) -> None:
+        from metis_data.holdouts import (
+            MAXIMUM_CHARACTERS_PER_ROW,
+            _benchmark_fragments,
+        )
+
+        # Each passage is under the per-fragment limit, so only the row budget
+        # can stop this -- the bound that needs no knowledge of the schema.
+        stats: dict = {}
+        row = {"context": [("C" * 20_000) + f" {i}" for i in range(40)]}
+        total = sum(len(t) for _kind, t in _benchmark_fragments(row, stats))
+        self.assertLessEqual(total, MAXIMUM_CHARACTERS_PER_ROW + 20_001)
+        self.assertEqual(stats.get("rows_truncated_character_budget"), 1)
+
+    def test_bounds_are_reported_rather_than_silent(self) -> None:
+        from metis_data.holdouts import _benchmark_fragments
+
+        stats: dict = {}
+        list(_benchmark_fragments(self._nq_row(), stats))
+        self.assertTrue(stats, "a bound fired but reported nothing")

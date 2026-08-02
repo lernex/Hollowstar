@@ -18,7 +18,7 @@ from .state import StateStore, utc_now
 
 
 HOLDOUT_BUNDLE_SCHEMA = "metis.holdout-bundle/v4"
-HOLDOUT_EXTRACTOR_VERSION = "metis-benchmark-fragments-2026-08-01-v4"
+HOLDOUT_EXTRACTOR_VERSION = "metis-benchmark-fragments-2026-08-01-v5"
 
 # Keys holding a tokenized parallel encoding of text that is already present in
 # the same record. Natural Questions stores question and document as
@@ -32,11 +32,45 @@ _TOKENIZATION_KEYS = frozenset(
     }
 )
 
-# Backstop for schemas that expand pathologically in a way _TOKENIZATION_KEYS
-# does not name. No honest benchmark row carries this many distinct meaningful
-# fragments, and the cost of being wrong in the other direction is a registry
-# that grows without bound. Truncation is counted by the caller so a row that
-# hits it is visible rather than silent.
+# Keys holding markup or locators rather than prose. Training text is
+# normalized long before it is ever compared, so a raw HTML blob cannot match
+# anything -- it is pure registry weight. Natural Questions attaches the full
+# HTML of a Wikipedia page to every row, which is what took the registry from
+# hundreds of megabytes to seven gigabytes.
+_NON_PROSE_KEYS = frozenset(
+    {
+        "html", "raw_html", "document_html", "page_html", "body_html", "markup",
+        "url", "urls", "document_url", "source_url", "wikipedia_url",
+        "image_url", "filename", "file_name", "checksum", "sha256", "md5",
+    }
+)
+
+# Keys the unknown-schema sweep has always ignored, hoisted so the two skip
+# sets are visible together.
+_OPAQUE_KEYS = frozenset(
+    {
+        "id", "idx", "index", "image", "images", "audio", "video", "label",
+        "score", "metadata",
+    }
+)
+
+_SKIP_KEYS = _TOKENIZATION_KEYS | _NON_PROSE_KEYS
+
+# A benchmark item is a question, a passage, an answer, or a code snippet.
+# Nothing legitimate is 32k characters; past that it is a source document that
+# happened to be attached to the row. Dropping those is also right on the
+# merits rather than merely convenient: Natural Questions attaches whole
+# Wikipedia articles as supporting evidence, and Wikipedia is a manifest source
+# in its own right, so treating those articles as holdouts would strip real
+# training data to guard against the model knowing what an encyclopedia says.
+MAXIMUM_FRAGMENT_CHARACTERS = 32_768
+
+# The bound that does not depend on anticipating a schema. Whatever a future
+# benchmark nests under whatever key, one row cannot contribute more than this.
+# Every fix above this line names something; this one does not have to.
+MAXIMUM_CHARACTERS_PER_ROW = 131_072
+
+# No honest benchmark row carries this many distinct meaningful fragments.
 MAXIMUM_FRAGMENTS_PER_ROW = 256
 
 
@@ -83,7 +117,7 @@ def _strings(value: Any) -> Iterator[str]:
             yield from _strings(item)
     elif isinstance(value, dict):
         for key, item in value.items():
-            if str(key).lower() in _TOKENIZATION_KEYS:
+            if str(key).lower() in _SKIP_KEYS:
                 continue
             if isinstance(item, (str, int, float, bool)):
                 text = str(item).strip()
@@ -93,40 +127,79 @@ def _strings(value: Any) -> Iterator[str]:
                 yield from _strings(item)
 
 
-def _benchmark_fragments(row: dict[str, Any]) -> Iterator[tuple[str, str]]:
+def _benchmark_fragments(
+    row: dict[str, Any], stats: dict[str, int] | None = None
+) -> Iterator[tuple[str, str]]:
+    """Yield the text a benchmark row contributes to the decontamination index.
+
+    Bounded three ways, deliberately in this order: skip content that cannot
+    match normalized training text, drop any single fragment too large to be a
+    benchmark item, and then cap the row outright. Only the first two depend on
+    recognising a schema, so an unfamiliar benchmark still cannot run away.
+    ``stats`` records every bound that fires, so the next surprise shows up in
+    HOLDOUTS.json instead of as a growing file nobody is watching.
+    """
     seen: set[str] = set()
     used_fields: set[str] = set()
+    remaining = MAXIMUM_CHARACTERS_PER_ROW
+
+    def note(name: str) -> None:
+        if stats is not None:
+            stats[name] = stats.get(name, 0) + 1
+
+    def admit(normalized: str) -> str | None:
+        nonlocal remaining
+        if not normalized or normalized in seen:
+            return None
+        if len(normalized) > MAXIMUM_FRAGMENT_CHARACTERS:
+            note("fragments_dropped_oversized")
+            return None
+        if len(seen) >= MAXIMUM_FRAGMENTS_PER_ROW:
+            return "stop_fragment_cap"
+        if len(normalized) > remaining:
+            return "stop_character_budget"
+        remaining -= len(normalized)
+        seen.add(normalized)
+        return "keep"
+
     for kind, fields in FRAGMENT_FIELDS.items():
         for field in fields:
             if field not in row:
                 continue
             used_fields.add(field)
             for text in _strings(row[field]):
-                normalized = canonical_text(text)
-                if normalized and normalized not in seen:
-                    seen.add(normalized)
-                    if len(seen) > MAXIMUM_FRAGMENTS_PER_ROW:
-                        return
-                    yield kind, text
+                verdict = admit(canonical_text(text))
+                if verdict is None:
+                    continue
+                if verdict != "keep":
+                    note(f"rows_truncated_{verdict[5:]}")
+                    return
+                yield kind, text
 
     # Unknown benchmark schemas fail safely toward broader exclusion. Binary
     # image/audio payloads and opaque numeric metadata are deliberately ignored.
     for field, value in row.items():
-        if field in used_fields or field.lower() in {
-            "id", "idx", "index", "image", "images", "audio", "video", "label", "score", "metadata"
-        }:
+        if field in used_fields or field.lower() in _OPAQUE_KEYS | _SKIP_KEYS:
             continue
         for text in _strings(value):
             normalized = canonical_text(text)
-            if len(normalized) >= 24 and normalized not in seen:
-                seen.add(normalized)
-                if len(seen) > MAXIMUM_FRAGMENTS_PER_ROW:
-                    return
-                yield "other", text
+            if len(normalized) < 24:
+                continue
+            verdict = admit(normalized)
+            if verdict is None:
+                continue
+            if verdict != "keep":
+                note(f"rows_truncated_{verdict[5:]}")
+                return
+            yield "other", text
 
 
 def _normalized_benchmark_rows(
-    entry: dict[str, Any], job: str, index: int, row: dict[str, Any]
+    entry: dict[str, Any],
+    job: str,
+    index: int,
+    row: dict[str, Any],
+    stats: dict[str, int] | None = None,
 ) -> Iterator[dict[str, Any]]:
     row_id = row.get("id", row.get("idx", row.get("index", index)))
     holdout_row_id = hashlib.sha256(
@@ -136,7 +209,7 @@ def _normalized_benchmark_rows(
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-    for fragment_index, (kind, text) in enumerate(_benchmark_fragments(row)):
+    for fragment_index, (kind, text) in enumerate(_benchmark_fragments(row, stats)):
         yield {
             "id": f"{entry['id']}:{job}:{row_id}:{fragment_index}",
             "text": text,
@@ -383,10 +456,16 @@ def prepare_holdouts(profile: dict[str, Any], state: StateStore) -> dict[str, An
                 job_name = str(job["job"])
                 source_rows = 0
                 fragments = 0
+                characters = 0
+                # Every extraction bound that fires is recorded per job. A
+                # benchmark whose schema fights the extractor is then visible in
+                # HOLDOUTS.json, instead of only as a file growing faster than
+                # whoever happens to be watching it.
+                bounds: dict[str, int] = {}
                 for index, row in _benchmark_source_rows(benchmark, job, cache_dir):
                     source_rows += 1
                     for normalized in _normalized_benchmark_rows(
-                        benchmark, job_name, index, row
+                        benchmark, job_name, index, row, bounds
                     ):
                         handle.write(
                             json.dumps(
@@ -395,6 +474,7 @@ def prepare_holdouts(profile: dict[str, Any], state: StateStore) -> dict[str, An
                             + "\n"
                         )
                         fragments += 1
+                        characters += len(normalized["text"])
                 if source_rows == 0:
                     raise RuntimeError(
                         "Fail-closed: evaluation holdout job "
@@ -413,6 +493,8 @@ def prepare_holdouts(profile: dict[str, Any], state: StateStore) -> dict[str, An
                         "job": job_name,
                         "source_rows": source_rows,
                         "fragments": fragments,
+                        "characters": characters,
+                        "extraction_bounds": dict(sorted(bounds.items())),
                     }
                 )
             if benchmark_fragments == 0:
