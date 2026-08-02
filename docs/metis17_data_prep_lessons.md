@@ -197,6 +197,14 @@ this document.
   executed the wrapper and asserted on its argv, but they ran it from its real
   path in the checkout -- the one condition that never holds in production. A
   wrapper test has to reproduce the staging, not just the environment.
+- **The runtime is not inside the checkout.** `metisctl` falls back to
+  `~/.cache/metis/runtime-<host>` when `$ROOT/.metis-runtime` is absent, and on
+  this site that fallback is the real interpreter -- the one that downloaded all
+  1.4 TB. `stage.sbatch` only knew the in-checkout default, so fixing
+  `METIS_ROOT` alone would still have failed. The submitter now exports
+  `METIS_PYTHON=sys.executable`, so the stages run under the exact interpreter
+  the operator did. Two components deriving "the" runtime from independent
+  defaults is a bug waiting for the day the defaults disagree.
 - HF **API** runs ~45 KB/s here (EDR TLS inspection, latency-bound); bulk **CDN**
   transfer exceeds 100 MB/s. That asymmetry is why pointer corpora are
   catastrophic and content corpora are trivial.

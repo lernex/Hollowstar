@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -154,7 +155,15 @@ def submit_stage(
             # METIS_ROOT is not a convenience: Slurm executes a staged copy of
             # the batch script out of /var/spool, so the script cannot find the
             # checkout -- and therefore neither the runtime nor src -- on its own.
+            #
+            # METIS_PYTHON pins the stages to this exact interpreter. The runtime
+            # is not always inside the checkout (metisctl falls back to
+            # ~/.cache/metis/runtime-<host>), and a wrapper that re-derives it
+            # from a default path can disagree with the operator's about which
+            # hash-locked environment is in use. Whatever ran the submission runs
+            # the stages.
             f"--export=ALL,METIS_ROOT={repository_root()}"
+            f",METIS_PYTHON={sys.executable}"
             f",METIS_PROFILE={profile_path},METIS_STAGE={stage}"
             f",METIS_TASK_OFFSET={int(task_offset)}"
             f",METIS_TASKS_PER_JOB={int(tasks_per_job)}"

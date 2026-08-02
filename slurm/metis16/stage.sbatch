@@ -13,6 +13,15 @@ if [[ ! -d "$ROOT/src/metis_data" ]]; then
 fi
 RUNTIME="${METIS_RUNTIME_DIR:-$ROOT/.metis-runtime}"
 PYTHON="${METIS_PYTHON:-$RUNTIME/bin/python}"
+# The runtime is not always inside the checkout: metisctl falls back to
+# ~/.cache/metis/runtime-<host>, so this default can point at nothing even when
+# METIS_ROOT is correct. Say which interpreter is missing, and from where -- the
+# bare "No such file or directory" bash prints costs a whole submission to read.
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Metis runtime interpreter is not executable on $(hostname): $PYTHON" >&2
+  echo "The submitter exports METIS_PYTHON; check that its path is readable from compute nodes." >&2
+  exit 2
+fi
 
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1

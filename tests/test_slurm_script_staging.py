@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -93,6 +94,30 @@ class SlurmScriptStagingTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("METIS_ROOT", result.stderr)
 
+    def test_stage_script_names_a_missing_interpreter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            staged = _stage_like_slurm(
+                repository_root() / "slurm" / "metis16" / "stage.sbatch", workspace
+            )
+            absent = workspace / "no-such-runtime" / "bin" / "python"
+            result = subprocess.run(
+                ["bash", str(staged)],
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "METIS_ROOT": str(repository_root()),
+                    "METIS_PYTHON": str(absent),
+                    "METIS_PROFILE": "/does/not/need/to/exist.yaml",
+                    "METIS_STAGE": "handoff_signature",
+                },
+            )
+            self.assertNotEqual(result.returncode, 0)
+            # Bash's bare "No such file or directory" cost a whole submission.
+            self.assertIn(str(absent), result.stderr)
+            self.assertIn("runtime interpreter", result.stderr)
+
     def test_no_batch_script_derives_the_checkout_from_its_own_path(self) -> None:
         for name in SCRIPTS:
             with self.subTest(script=name):
@@ -131,6 +156,10 @@ class SlurmSubmissionExportsTests(unittest.TestCase):
                     )
                     self.assertIsNotNone(export)
                     self.assertIn(f"METIS_ROOT={repository_root()}", export)
+                    # The runtime can live outside the checkout, so the stages
+                    # must inherit the submitter's interpreter rather than
+                    # re-deriving one from a default path.
+                    self.assertIn(f"METIS_PYTHON={sys.executable}", export)
 
     def test_the_portage_launcher_exports_the_checkout(self) -> None:
         source = (repository_root() / "src" / "metis_portage" / "launcher.py").read_text(
