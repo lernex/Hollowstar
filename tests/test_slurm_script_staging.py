@@ -160,6 +160,10 @@ class SlurmSubmissionExportsTests(unittest.TestCase):
                     # must inherit the submitter's interpreter rather than
                     # re-deriving one from a default path.
                     self.assertIn(f"METIS_PYTHON={sys.executable}", export)
+                    # One task the scheduler kills must not strand the other 51
+                    # jobs behind an unsatisfiable afterok. Safe because every
+                    # stage skips work that already has a completion marker.
+                    self.assertIn("--requeue", job.command)
 
     def test_the_portage_launcher_exports_the_checkout(self) -> None:
         source = (repository_root() / "src" / "metis_portage" / "launcher.py").read_text(

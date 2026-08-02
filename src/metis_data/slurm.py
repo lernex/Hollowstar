@@ -110,6 +110,13 @@ def submit_stage(
     logs.mkdir(parents=True, exist_ok=True)
     script = repository_root() / "slurm" / "metis16" / "stage.sbatch"
     command = ["sbatch", "--parsable", f"--job-name=metis16-{stage}"]
+    # Every stage is idempotent: each task writes a completion marker and a
+    # rerun skips finished work. So letting Slurm reschedule a task it killed
+    # for reasons of its own -- a node draining under the allocation, a node
+    # failure -- costs a repeat of at most one task. Without this, one evicted
+    # task fails the array, afterok holds all 51 downstream jobs, and the
+    # operator has to notice and resubmit by hand.
+    command.append("--requeue")
     command.append(f"--output={logs}/%A_%a.out")
     command.append(f"--error={logs}/%A_%a.err")
     if indices is not None:

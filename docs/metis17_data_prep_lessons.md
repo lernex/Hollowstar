@@ -205,6 +205,14 @@ this document.
   `METIS_PYTHON=sys.executable`, so the stages run under the exact interpreter
   the operator did. Two components deriving "the" runtime from independent
   defaults is a bug waiting for the day the defaults disagree.
+- **Submit every stage `--requeue`.** Five of 58 `handoff_signature` tasks were
+  killed at one second with `ExitCode 0:0` and no log file written at all --
+  the scheduler ended them before they started. `afterok` then held all 51
+  downstream jobs behind an unsatisfiable dependency, for five tasks worth ten
+  seconds of work. Every stage is already idempotent through completion
+  markers, so requeueing costs at most one repeated task and removes the entire
+  class of "one evicted task stops the graph". A long single-node reducer is
+  where this would really hurt.
 - HF **API** runs ~45 KB/s here (EDR TLS inspection, latency-bound); bulk **CDN**
   transfer exceeds 100 MB/s. That asymmetry is why pointer corpora are
   catastrophic and content corpora are trivial.
