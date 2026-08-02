@@ -3536,10 +3536,14 @@ def _verify_shard(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
 
 
 def _verify(profile: dict[str, Any]) -> dict[str, Any]:
-    root, state = _paths(profile)
-    manifest = _manifest(profile)
+    # First, before any filesystem work. This is the gate that actually holds
+    # an unreviewed corpus back -- the compute preflight only warns, because the
+    # ledger being reviewed is produced by the build itself. A policy refusal
+    # should not depend on the state store being readable to fire.
     if profile.get("gates", {}).get("require_license_ledger") and not profile.get("gates", {}).get("license_review_complete", False):
         raise RuntimeError("Fail-closed: the source/license review has not been marked complete in the CPU build profile")
+    root, state = _paths(profile)
+    manifest = _manifest(profile)
     directories = profile["storage"]["directories"]
     context = _verify_selection_context(profile, state)
     selection = context["selection"]

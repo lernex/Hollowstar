@@ -423,7 +423,13 @@ def run_doctor(
         )
     )
     license_review_complete = bool(profile.get("gates", {}).get("license_review_complete", False))
-    license_status = "PASS" if license_review_complete else ("FAIL" if compute_checks else "WARN")
+    # Warn, never fail. The review is of the per-record license ledger, and the
+    # ledger is produced *by* the build -- so failing the compute preflight on
+    # it blocked the only thing that could generate the evidence it asks for.
+    # The gate itself is not weakened: _verify fail-closes on exactly this key
+    # immediately before release (stage_runner._verify), which is where the
+    # ledger exists and where an unreviewed corpus would actually cause harm.
+    license_status = "PASS" if license_review_complete else "WARN"
     checks.append(
         Check(
             "license-review",

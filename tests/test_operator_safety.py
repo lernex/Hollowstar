@@ -575,5 +575,42 @@ class ConfigurationParseTests(unittest.TestCase):
         self.assertGreater(checked, 10, "expected to find the shipped configs")
 
 
+
+class LicenseReviewGateTests(unittest.TestCase):
+    """The license attestation blocks release, not the build that feeds it.
+
+    The review is of the per-record license ledger, and the ledger is produced
+    by the build. Failing the compute preflight on it blocked the only thing
+    that could produce the evidence. The gate still fail-closes, one stage
+    before release, which is where an unreviewed corpus could actually cause
+    harm -- this pins that it does.
+    """
+
+    def _profile(self, complete: bool) -> dict:
+        return {
+            "name": "gate-test",
+            "gates": {
+                "require_license_ledger": True,
+                "license_review_complete": complete,
+            },
+            "storage": {"lustre_root": "/nonexistent", "directories": {}},
+        }
+
+    def test_verify_refuses_an_unreviewed_corpus(self) -> None:
+        from metis_data import stage_runner
+
+        with self.assertRaisesRegex(RuntimeError, "license review has not been marked complete"):
+            stage_runner._verify(self._profile(False))
+
+    def test_verify_gets_past_the_gate_once_attested(self) -> None:
+        from metis_data import stage_runner
+
+        # Fails later, on the missing corpus -- not on the license gate.
+        with self.assertRaises(Exception) as caught:
+            stage_runner._verify(self._profile(True))
+        self.assertNotIn(
+            "license review has not been marked complete", str(caught.exception)
+        )
+
 if __name__ == "__main__":
     unittest.main()
