@@ -61,9 +61,12 @@ storage:
 scheduler:
   mode: slurm
 
-  # Flip to true only after `./ops/collect-site-info.sh --role compute` has
-  # confirmed cores/node, RealMemory, SelectTypeParameters, and MaxArraySize.
-  site_values_confirmed: false
+  # Confirmed 2026-08-02 from ./ops/collect-site-info.sh --role compute and a
+  # probe job on parrypeak082: 192 cores and 501GB per node (488 available),
+  # 128 nodes, SelectType=cons_tres with CR_CORE_MEMORY, MaxArraySize=1001,
+  # partition MaxTime=5-00:00:00. Every declared stage walltime fits under that
+  # ceiling, including the 72h minhash_components reducer.
+  site_values_confirmed: true
   required_fields: [account, partition, max_array_size]
 
   account: ${METIS_SLURM_ACCOUNT:-auto}
@@ -180,7 +183,13 @@ scheduler:
   exact_dedup: {tasks: 2000, find_tasks: 256}
   repeated_span: {finder_tasks: 64, sentence_count: 3, minimum_span_words: 24, minimum_remaining_words: 50, minimum_remaining_sentences: 3, maximum_open_files: 32, external_sort_chunk_records: 250000, external_sort_max_open_runs: 64, semantic_dedup: false}
   minhash: {tasks: 2000, workers: 400, num_buckets: 20, hashes_per_bucket: 10, n_grams: 5, target_similarity_operating_region: 0.82}
-  minhash_priority: {bucket_count: 256, maximum_open_files: 32, sqlite_cache_mb: 256, transaction_rows: 100000}
+  # sqlite_cache_mb is per task, and minhash_priority_candidates and _finalize
+  # each run 72 tasks on one node, so this is multiplied by 72 against 501GB of
+  # node memory that also has to hold the tmpfs scratch below. 2GiB gives
+  # 144GB of cache, roughly a third of the node, and is eight times the old
+  # default. Do not copy login2's 16384 here: that profile runs four concurrent
+  # tasks, and 72 x 16GiB is 1.15TB on a 501GB machine.
+  minhash_priority: {bucket_count: 256, maximum_open_files: 32, sqlite_cache_mb: ${METIS_MINHASH_CACHE_MIB:-2048}, transaction_rows: 100000}
   code_structural: {finder_tasks: 64, block_tokens: 96, duplicate_fraction: 0.80, semantic_dedup: false}
   final_hash: {finder_tasks: 64, algorithm: sha256}
   tokenize: {tasks: 2000, workers: 400}
@@ -195,7 +204,23 @@ runtime:
   # storage keeps that traffic off the shared filesystem; SLURM_TMPDIR is used
   # automatically when this stays `auto`. If Portage nodes have no local disk,
   # set this to a Lustre path and expect the sort stages to run slower.
-  node_local_temp_dir: ${METIS_NODE_LOCAL_TMP:-auto}
+  # Must not be left at `auto`. Resolution is node_local_temp_dir, then
+  # $SLURM_TMPDIR, then runtime.temp_dir -- and temp_dir is relative, so it
+  # resolves under the Lustre root. Portage does not set SLURM_TMPDIR (verified
+  # on parrypeak082), so `auto` silently puts the dedup databases on Lustre.
+  # Those are WITHOUT ROWID B-trees written at random positions, and that exact
+  # arrangement turned the Common Crawl ledger into 663GB of SQLite yielding
+  # 184KiB of documents in eleven days.
+  #
+  # Portage compute nodes have no local disk -- Lustre is the filesystem. /tmp
+  # is a 251GB tmpfs, which is the only storage on the node that is not a
+  # network round trip per page. It is RAM-backed and shares the node's 501GB
+  # with the tasks themselves, so scratch and working set draw on one pool.
+  # Most stages are sharded 256 ways and stay small; minhash_components is the
+  # exception, a single-node union-find over the whole corpus, and it is the
+  # one stage where this setting decides success. If a stage ever hits ENOSPC
+  # here, point this at a Lustre path to trade speed for capacity.
+  node_local_temp_dir: ${METIS_NODE_LOCAL_TMP:-/tmp}
   # Each cleanup stage SHA-256s the whole successor corpus before retiring its
   # predecessor. hashlib releases the GIL, so this threads to the Lustre limit
   # instead of running one file at a time on a 96-core node.
