@@ -59,7 +59,24 @@ sources:
         typescript/*.parquet, verilog/*.parquet, vhdl/*.parquet,
         visual-basic/*.parquet, xslt/*.parquet, yacc/*.parquet, yaml/*.parquet,
         zig/*.parquet]
-    license: {status: per_record_required, expression: repository-license}
+    # Was per_record_required/repository-license. StarCoderData's language
+    # shards carry max_stars_repo_path/name/count, id and content -- the
+    # per-file licence is not among them, so no row could satisfy that status.
+    #
+    # The grant is real but corpus-level: The Stack v1.2 was built only from
+    # permissively licensed GitHub repositories, with copyleft (MPL, EPL, LGPL)
+    # excluded and opt-out requests processed, and StarCoderData is its
+    # preprocessed training subset. The dataset card's SPDX field says "other"
+    # because the contents are a mixture of MIT/Apache-2.0/BSD, not because the
+    # licensing is unknown.
+    #
+    # Operator decision, 2026-08-02. Understand the limit it accepts: permissive
+    # licences carry attribution obligations, and the shipped columns do not
+    # let a per-file attribution list be produced from this corpus. That is a
+    # weaker position than the ODC-By web sources, where no such obligation
+    # attaches. Acquiring a licence-bearing variant of The Stack would remove
+    # the limitation and is the right move for 1.7.
+    license: {status: reviewed, expression: permissive-only-The-Stack-v1.2-filtered}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 2.00, compressed_bytes_per_token: 0.65}
     processing: {quality_profile: repository_code_v1, dedup_namespace: global_code, priority: 90}
 

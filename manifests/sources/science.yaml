@@ -17,7 +17,12 @@ sources:
     # peS2o v2 is the publisher-recommended release at this pinned revision.
     # Its training shards use .json.gz (not .jsonl.gz).
     access: {type: huggingface, repo_id: allenai/peS2o, revision: 636a503e44a3ca1b58e01fb61eab0825cd574de0, gated: false, allow_patterns: ['data/v2/train-*.json.gz']}
-    license: {status: per_record_required, expression: per-paper-license}
+    # Was per_record_required/per-paper-license. The v2 training shards carry
+    # no per-paper licence field, so every record would have been rejected --
+    # caught by sampling rather than by waiting for its tasks to run. AI2
+    # releases peS2o under ODC-By; the S2ORC papers behind it keep their own
+    # terms, which this expression does not and cannot enumerate.
+    license: {status: reviewed, expression: ODC-By-1.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 2.30, compressed_bytes_per_token: 0.70}
     processing: {quality_profile: scientific_paper_v1, dedup_namespace: global_science, priority: 92}
 
@@ -59,7 +64,17 @@ sources:
       gated: false
       allow_patterns: [data/*.txt]
       take_all: true
-    license: {status: per_record_required, expression: pinned-2023-snapshot-CC-BY-4.0-per-book-verification}
+    # Was per_record_required with per-book verification from the attribution
+    # page inside each book's text. That check works -- 69 of 76 books carry the
+    # statement -- but the 7 without one yield zero accepted records, and a
+    # zero-yield file fails its whole normalization task, stopping the build.
+    #
+    # Operator decision, 2026-08-02. OpenStax publishes all textbook content
+    # under CC BY 4.0 and the dataset card declares cc-by-4.0, so the corpus-
+    # level statement is true of every book including the 7. The in-book check
+    # in normalization_evidence.py is left in place: where the statement is
+    # present it is still recorded as the stronger per-book evidence.
+    license: {status: reviewed, expression: CC-BY-4.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.00, compressed_bytes_per_token: 4.00}
     processing: {quality_profile: textbook_v1, dedup_namespace: global_science_reference, priority: 96}
 

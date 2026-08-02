@@ -207,6 +207,7 @@ class NormalizationEvidenceTests(unittest.TestCase):
         self.assertEqual(metadata["license"], "CC-BY-4.0")
         self.assertTrue(metadata["structurally_complete"])
         self.assertTrue(decision.keep, decision.reason)
+        self.assertEqual(self.license_method(metadata), "openstax_in_book_license_statement_v1")
 
         row["text"] = row["text"].replace(
             "Textbook content produced by OpenStax is licensed under a Creative Commons "
@@ -218,8 +219,21 @@ class NormalizationEvidenceTests(unittest.TestCase):
             row,
             repo_path="data/Biology2e-WEB.txt",
         )
-        self.assertNotIn("license", metadata)
-        self.assertFalse(decision.keep and bool(metadata.get("license")))
+        # openstax is now corpus-licensed CC-BY-4.0, so a book with no
+        # attribution page is still licensed -- 7 of 76 lack the page, and a
+        # zero-yield file fails its whole normalization task. What must not be
+        # lost is the distinction: where the book states its own licence that
+        # is per-book evidence, and where it does not the value comes from the
+        # manifest. Recording both under one method would erase that.
+        self.assertEqual(metadata["license"], "CC-BY-4.0")
+        self.assertEqual(self.license_method(metadata), "pinned_source_manifest_license_v1")
+
+    @staticmethod
+    def license_method(metadata: dict) -> str | None:
+        for entry in metadata.get("normalization_evidence", []):
+            if entry.get("field") == "license":
+                return entry.get("method")
+        return None
 
     @staticmethod
     def math_row() -> dict:
