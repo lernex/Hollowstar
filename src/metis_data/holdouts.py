@@ -18,7 +18,26 @@ from .state import StateStore, utc_now
 
 
 HOLDOUT_BUNDLE_SCHEMA = "metis.holdout-bundle/v4"
-HOLDOUT_EXTRACTOR_VERSION = "metis-benchmark-fragments-2026-07-22-v3"
+HOLDOUT_EXTRACTOR_VERSION = "metis-benchmark-fragments-2026-08-01-v4"
+
+# Keys holding a tokenized parallel encoding of text that is already present in
+# the same record. Natural Questions stores question and document as
+# {"text": ..., "tokens": [...]}, and recursing into that list emits one holdout
+# fragment per word -- 'episode', 'celebrity', 'guests'. That produced 1.8M
+# records in minutes and was heading for tens of gigabytes.
+_TOKENIZATION_KEYS = frozenset(
+    {
+        "tokens", "token", "input_ids", "word_ids", "offsets", "spans",
+        "start_byte", "end_byte", "start_token", "end_token", "is_html",
+    }
+)
+
+# Backstop for schemas that expand pathologically in a way _TOKENIZATION_KEYS
+# does not name. No honest benchmark row carries this many distinct meaningful
+# fragments, and the cost of being wrong in the other direction is a registry
+# that grows without bound. Truncation is counted by the caller so a row that
+# hits it is visible rather than silent.
+MAXIMUM_FRAGMENTS_PER_ROW = 256
 
 
 def _sha256_file(path: Path, chunk_size: int = 16 * 1024 * 1024) -> str:
@@ -64,6 +83,8 @@ def _strings(value: Any) -> Iterator[str]:
             yield from _strings(item)
     elif isinstance(value, dict):
         for key, item in value.items():
+            if str(key).lower() in _TOKENIZATION_KEYS:
+                continue
             if isinstance(item, (str, int, float, bool)):
                 text = str(item).strip()
                 if text:
@@ -84,6 +105,8 @@ def _benchmark_fragments(row: dict[str, Any]) -> Iterator[tuple[str, str]]:
                 normalized = canonical_text(text)
                 if normalized and normalized not in seen:
                     seen.add(normalized)
+                    if len(seen) > MAXIMUM_FRAGMENTS_PER_ROW:
+                        return
                     yield kind, text
 
     # Unknown benchmark schemas fail safely toward broader exclusion. Binary
@@ -97,6 +120,8 @@ def _benchmark_fragments(row: dict[str, Any]) -> Iterator[tuple[str, str]]:
             normalized = canonical_text(text)
             if len(normalized) >= 24 and normalized not in seen:
                 seen.add(normalized)
+                if len(seen) > MAXIMUM_FRAGMENTS_PER_ROW:
+                    return
                 yield "other", text
 
 

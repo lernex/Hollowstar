@@ -96,3 +96,62 @@ class RemoteCodeTests(unittest.TestCase):
         repos = {str(e.get("repo_id")) for e in registry["benchmarks"]}
         self.assertNotIn("maveriq/bigbenchhard", repos)
         self.assertIn("lukaemon/bbh", repos)
+
+
+class FragmentExplosionTests(unittest.TestCase):
+    def test_a_tokenized_parallel_encoding_does_not_become_one_fragment_per_word(
+        self,
+    ) -> None:
+        """Natural Questions carries {"text": ..., "tokens": [...]} everywhere.
+
+        Recursing into those token lists emitted one holdout fragment per word
+        -- 'episode', 'celebrity', 'guests' -- and produced 1.8M records in
+        minutes, heading for tens of gigabytes. The token list is a redundant
+        encoding of text that is already in the record, so it carries no
+        information the text form does not.
+        """
+        from metis_data.holdouts import _benchmark_fragments
+
+        row = {
+            "question": {
+                "text": "who sang the theme to the grand tour series",
+                "tokens": ["who", "sang", "the", "theme", "grand", "tour"],
+            },
+            "document": {
+                "title": "The Grand Tour (TV series)",
+                "tokens": {"token": ["episode", "celebrity", "guests"]},
+            },
+        }
+        texts = [text for _kind, text in _benchmark_fragments(row)]
+        self.assertEqual(len(texts), 2)
+        joined = " ".join(texts)
+        self.assertIn("who sang the theme to the grand tour series", joined)
+        self.assertIn("The Grand Tour (TV series)", joined)
+        for word in ("episode", "celebrity", "guests", "sang"):
+            self.assertNotIn(word, [t.strip() for t in texts])
+
+    def test_a_row_cannot_emit_unbounded_fragments(self) -> None:
+        # Backstop for an expanding schema no key name anticipates.
+        from metis_data.holdouts import (
+            MAXIMUM_FRAGMENTS_PER_ROW,
+            _benchmark_fragments,
+        )
+
+        row = {"context": [f"sentence number {i} of the passage" for i in range(5000)]}
+        self.assertEqual(
+            len(list(_benchmark_fragments(row))), MAXIMUM_FRAGMENTS_PER_ROW
+        )
+
+    def test_short_answers_and_code_are_still_extracted(self) -> None:
+        # The cap must not become a length filter: real benchmark answers and
+        # test assertions are short, and dropping them was the wrong fix.
+        from metis_data.holdouts import _benchmark_fragments
+
+        row = {
+            "question": "What does the function return?",
+            "choices": ["zero", "the input plus one"],
+            "solution": "The input plus one.",
+            "test_list": ["assert f(1) == 2"],
+        }
+        kinds = {kind for kind, _ in _benchmark_fragments(row)}
+        self.assertTrue({"query", "choices", "answer", "code"} <= kinds)
