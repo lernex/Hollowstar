@@ -435,11 +435,33 @@ def cmd_rehandoff(args: argparse.Namespace) -> int:
             "binding. Re-attestation only rebinds a stale source lock. "
             + json.dumps(violations, sort_keys=True)
         )
+    # A new handoff digest invalidates everything the deep-verification stages
+    # signed against the old one: each artifact marker and the reduced
+    # HANDOFF_VERIFIED.json both carry handoff_sha256 and raise when it moves,
+    # rather than recomputing. Leaving them behind turns a successful
+    # re-attestation into a submission that fails two commands later, so the
+    # operation that invalidates them is the one that clears them -- archived
+    # under the same timestamp as the handoff they belonged to, never deleted.
+    superseded: list[str] = []
+    for parts in (
+        ("completed", "handoff_signature"),
+        ("completed", "handoff_verify"),
+        ("HANDOFF_VERIFIED.json",),
+    ):
+        stale = state.path(*parts)
+        if not stale.exists():
+            continue
+        destination = archive_dir / f"{parts[-1].removesuffix('.json')}.{stamp}"
+        if stale.is_file():
+            destination = destination.with_suffix(".json")
+        shutil.move(str(stale), str(destination))
+        superseded.append(str(destination))
     _print(
         {
             "ok": True,
             "archived_previous_handoff": str(archive),
             "archived_previous_source_lock": str(lock_archive) if lock_archive else None,
+            "archived_handoff_bound_markers": superseded,
             "rebound": {
                 field: {
                     "before": previous.get(field),

@@ -194,6 +194,33 @@ class RehandoffTests(unittest.TestCase):
             self.assertNotEqual(before["source_lock_sha256"], after["source_lock_sha256"])
             verify_acquisition_handoff(profile, manifest, state)
 
+    def test_markers_signed_against_the_old_handoff_are_cleared(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "mount"
+            root.mkdir()
+            state, profile, manifest, _, identity = _build_acquisition(root)
+            # Stand in for a completed deep-verification pass. Both of these
+            # carry handoff_sha256 and raise rather than recompute when it
+            # moves, so a re-attestation that leaves them behind produces a
+            # submission that fails two commands later.
+            state.write("completed", "handoff_signature", "task-000000-abc.json", payload={"n": 1})
+            state.write("completed", "handoff_verify", "task-000000.json", payload={"n": 1})
+            state.write("HANDOFF_VERIFIED.json", payload={"n": 1})
+
+            _rewrite_lock(
+                state, identity, commit=FOREIGN_COMMIT, resolved_at="2026-07-25T00:00:00Z"
+            )
+            self._run(profile, manifest, state, identity)
+
+            self.assertFalse(state.path("completed", "handoff_signature").exists())
+            self.assertFalse(state.path("completed", "handoff_verify").exists())
+            self.assertFalse(state.path("HANDOFF_VERIFIED.json").exists())
+            # Cleared means archived, never deleted.
+            archived = sorted(p.name for p in state.path("handoff-archive").iterdir())
+            self.assertTrue(any(name.startswith("handoff_signature.") for name in archived))
+            self.assertTrue(any(name.startswith("handoff_verify.") for name in archived))
+            self.assertTrue(any(name.startswith("HANDOFF_VERIFIED.") for name in archived))
+
     def test_superseded_attestations_are_archived_byte_for_byte(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "mount"
