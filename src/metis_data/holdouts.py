@@ -221,6 +221,13 @@ def _benchmark_source_rows(
         revision=entry["revision"],
         streaming=True,
         cache_dir=str(cache_dir),
+        # Never execute a dataset's loading script. A benchmark that needs one
+        # is asking to run third-party Python on the acquisition host to build
+        # a decontamination registry, which is not a trade this pipeline makes.
+        # Passing it explicitly also stops datasets prompting on stdin -- inside
+        # Screen that prompt is an immediate failed run, which is how
+        # maveriq/bigbenchhard took one down. Pin a data-only mirror instead.
+        trust_remote_code=False,
     )
     dataset = _without_media_decoding(dataset)
     try:
