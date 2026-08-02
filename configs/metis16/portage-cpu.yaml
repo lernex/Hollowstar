@@ -86,7 +86,19 @@ scheduler:
   # matters because each stage task is a single-threaded process: without it a
   # 96-core node would run one task and waste 95 cores.
   exclusive_nodes: true
-  extra_sbatch_options: []
+
+  # parrypeak073 and parrypeak079 accept an allocation, kill the task after
+  # about a second with ExitCode 0:0, and never write a log file. Measured, not
+  # suspected: on 2026-08-02 every one of the eight cancelled handoff_signature
+  # tasks across two separate submissions landed on one of these two, and no
+  # task that landed elsewhere was cancelled. Neither node appears in
+  # `sinfo -R`, so Slurm still schedules onto them and --requeue alone can put
+  # a task straight back on the same node.
+  #
+  # Re-check with `sinfo -R -p parry` before a new release; drop them from this
+  # list once they are repaired, since excluding healthy nodes only lengthens
+  # the queue on a partition that runs fully allocated.
+  extra_sbatch_options: ['--exclude=parrypeak073,parrypeak079']
 
   # `tasks_per_job` is concurrent single-threaded tasks per node, chosen from
   # measured per-task memory rather than core count alone. `max_concurrent` now

@@ -213,6 +213,14 @@ this document.
   markers, so requeueing costs at most one repeated task and removes the entire
   class of "one evicted task stops the graph". A long single-node reducer is
   where this would really hurt.
+- **Group failures by node before blaming the code.** All eight of those
+  cancellations, across two submissions a day apart, landed on `parrypeak073`
+  or `parrypeak079`; nothing that ran elsewhere was cancelled. Neither node
+  appears in `sinfo -R`, so Slurm keeps scheduling onto them and requeueing can
+  land a task straight back on the same node. `sacct --format=JobID,State,
+  NodeList` takes one command and would have pointed at the cluster
+  immediately. Excluded via `scheduler.extra_sbatch_options`; re-check before
+  the next release rather than carrying the exclusion forever.
 - HF **API** runs ~45 KB/s here (EDR TLS inspection, latency-bound); bulk **CDN**
   transfer exceeds 100 MB/s. That asymmetry is why pointer corpora are
   catastrophic and content corpora are trivial.
