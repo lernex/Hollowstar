@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import traceback
 from pathlib import Path
@@ -13,7 +14,7 @@ from .doctor import run_doctor
 from .download import run_download_task
 from .manifest import candidate_plan, dump_json, validate_manifest
 from .holdouts import prepare_holdouts
-from .handoff import verify_acquisition_handoff
+from .handoff import verify_acquisition_handoff, write_acquisition_handoff
 from .reporting import report, status
 from .slurm import submit_graph
 from .source_lock import resolve_sources
@@ -331,6 +332,101 @@ def cmd_verify_handoff(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rehandoff(args: argparse.Namespace) -> int:
+    """Rebind a still-true acquisition handoff to a re-resolved source lock.
+
+    The handoff binds the source lock's digest, and the source lock binds the
+    repository commit. So any code change after acquisition invalidates the
+    handoff even though every acquired byte is untouched. The only alternative
+    to this command is deleting a self-hashed attestation by hand, which is
+    exactly the habit that makes forged provenance easy. Re-attesting runs the
+    identical `write_acquisition_handoff` validation the original ran, and
+    refuses outright if the acquired data itself moved.
+    """
+
+    _, profile, manifest, state = _context(args.profile)
+    _require_profile_role(profile, "acquisition")
+    live = state.path("ACQUISITION_READY.json")
+    previous = state.read("ACQUISITION_READY.json")
+    if not previous:
+        raise RuntimeError(
+            "There is no acquisition handoff to re-attest; finish acquisition first"
+        )
+    # Rebind the lock to this checkout before re-attesting, so the new handoff
+    # records the lock the build will actually verify against.
+    resolve_sources(manifest, profile, state)
+    archive = state.path(
+        "handoff-archive", f"ACQUISITION_READY.{utc_now().replace(':', '-')}.json"
+    )
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    # Copy rather than move: every superseded attestation is kept byte-for-byte
+    # for audit, and the copy doubles as the rollback source below.
+    shutil.copy2(live, archive)
+
+    def restore() -> None:
+        shutil.copy2(archive, live)
+
+    live.unlink()
+    try:
+        current = write_acquisition_handoff(profile, manifest, state)
+    except BaseException:
+        # Never leave acquisition without an attestation on disk.
+        restore()
+        raise
+    # Re-attestation rebinds provenance. It must never become a way to move a
+    # different set of bytes into a build, so anything describing the acquired
+    # data itself has to be identical.
+    sealed = {
+        "release": (previous.get("release"), current.get("release")),
+        "manifest_sha256": (previous.get("manifest_sha256"), current.get("manifest_sha256")),
+        "completion_markers_sha256": (
+            previous.get("completion_markers_sha256"),
+            current.get("completion_markers_sha256"),
+        ),
+        "artifact_count": (previous.get("artifact_count"), current.get("artifact_count")),
+        "artifact_bytes": (previous.get("artifact_bytes"), current.get("artifact_bytes")),
+        "holdouts.sha256": (
+            previous.get("holdouts", {}).get("sha256"),
+            current.get("holdouts", {}).get("sha256"),
+        ),
+        "holdouts.report_sha256": (
+            previous.get("holdouts", {}).get("report_sha256"),
+            current.get("holdouts", {}).get("report_sha256"),
+        ),
+    }
+    violations = {
+        field: {"before": before, "after": after}
+        for field, (before, after) in sealed.items()
+        if before != after
+    }
+    if violations:
+        restore()
+        raise RuntimeError(
+            "Refusing to re-attest: the acquired data changed, not just its provenance "
+            "binding. Re-attestation only rebinds a stale source lock. "
+            + json.dumps(violations, sort_keys=True)
+        )
+    _print(
+        {
+            "ok": True,
+            "archived_previous_handoff": str(archive),
+            "rebound": {
+                field: {
+                    "before": previous.get(field),
+                    "after": current.get(field),
+                }
+                for field in ("source_lock_sha256", "handoff_sha256")
+            },
+            "repository_commit": {
+                "before": previous.get("repository", {}).get("commit"),
+                "after": current.get("repository", {}).get("commit"),
+            },
+            "unchanged": {field: current.get(field) for field in ("release", "artifact_count", "artifact_bytes")},
+        }
+    )
+    return 0
+
+
 def cmd_training_contract(args: argparse.Namespace) -> int:
     contract = Path(args.contract)
     if not contract.is_absolute():
@@ -386,6 +482,13 @@ def build_parser() -> argparse.ArgumentParser:
     handoff.add_argument("--profile", default="rhea")
     handoff.add_argument("--deep", action="store_true", help="Rehash every acquired artifact")
     handoff.set_defaults(func=cmd_verify_handoff)
+
+    rehandoff = subparsers.add_parser(
+        "rehandoff",
+        help="Rebind an unchanged acquisition to a re-resolved source lock after a code change",
+    )
+    rehandoff.add_argument("--profile", default="login2")
+    rehandoff.set_defaults(func=cmd_rehandoff)
 
     submit = subparsers.add_parser("submit", help="Launch local acquisition or submit the Slurm build graph")
     submit.add_argument("target", choices=("download", "build", "pipeline"))

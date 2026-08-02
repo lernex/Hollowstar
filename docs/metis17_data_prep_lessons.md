@@ -168,6 +168,14 @@ this document.
   Use filesystem checks for liveness instead.
 - Every `git pull` invalidates the source lock (`repository_commit` binding) and
   forces a re-resolve. Batch code changes; do not pull mid-run.
+- **That invalidation cascades.** A re-resolve writes a new lock file with a new
+  digest, and `ACQUISITION_READY.json` records the *old* digest, so
+  `submit build` dies with `The immutable source lock changed after
+  acquisition` even though every acquired byte is untouched. Any code change
+  between acquisition and submission triggers it. The fix is `metisctl
+  rehandoff`, which re-runs the full attestation and refuses if anything
+  describing the data moved; the trap is that without such a command the
+  obvious workaround is deleting a self-hashed artifact by hand.
 - Ctrl-C inside a C-level SQLite call is deferred and echoes `^C` only. Use
   Ctrl-Z then `kill -9 %N`.
 - Deleting ~2 TB on Lustre takes many minutes and looks like a hang.
