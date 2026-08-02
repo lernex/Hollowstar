@@ -176,6 +176,13 @@ this document.
   rehandoff`, which re-runs the full attestation and refuses if anything
   describing the data moved; the trap is that without such a command the
   obvious workaround is deleting a self-hashed artifact by hand.
+- **`resolve_sources` never rebuilds an existing lock — it only validates one**,
+  and raises on a commit mismatch. Re-resolving therefore *requires* archiving
+  the current lock out of the way first; calling the resolver and expecting a
+  fresh lock silently gets you a validation failure instead. This is safe to
+  automate only because `_validate_outputs` demands a completion marker whose
+  `task_sha256` matches every task in whatever lock comes back, so a re-resolve
+  that moved a task identity fails rather than rebinding to different work.
 - Ctrl-C inside a C-level SQLite call is deferred and echoes `^C` only. Use
   Ctrl-Z then `kill -9 %N`.
 - Deleting ~2 TB on Lustre takes many minutes and looks like a hang.

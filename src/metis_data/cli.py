@@ -17,7 +17,7 @@ from .holdouts import prepare_holdouts
 from .handoff import verify_acquisition_handoff, write_acquisition_handoff
 from .reporting import report, status
 from .slurm import submit_graph
-from .source_lock import resolve_sources
+from .source_lock import _repository_commit, resolve_sources
 from .state import StateStore, utc_now
 from .training_contract import validate_training_release
 from .local_download import launch_local_download
@@ -352,19 +352,39 @@ def cmd_rehandoff(args: argparse.Namespace) -> int:
         raise RuntimeError(
             "There is no acquisition handoff to re-attest; finish acquisition first"
         )
-    # Rebind the lock to this checkout before re-attesting, so the new handoff
-    # records the lock the build will actually verify against.
-    resolve_sources(manifest, profile, state)
-    archive = state.path(
-        "handoff-archive", f"ACQUISITION_READY.{utc_now().replace(':', '-')}.json"
-    )
-    archive.parent.mkdir(parents=True, exist_ok=True)
-    # Copy rather than move: every superseded attestation is kept byte-for-byte
-    # for audit, and the copy doubles as the rollback source below.
+    stamp = utc_now().replace(":", "-")
+    archive_dir = state.path("handoff-archive")
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive = archive_dir / f"ACQUISITION_READY.{stamp}.json"
+    # Copy rather than move: every superseded artifact is kept byte-for-byte for
+    # audit, and the copies double as the rollback sources below.
     shutil.copy2(live, archive)
+    restorable: list[tuple[Path, Path]] = [(archive, live)]
 
     def restore() -> None:
-        shutil.copy2(archive, live)
+        for source, destination in restorable:
+            shutil.copy2(source, destination)
+
+    # Rebind the lock to this checkout before re-attesting, so the new handoff
+    # records the lock the build will actually verify against. `resolve_sources`
+    # only ever validates a lock that already exists, so a stale one has to be
+    # archived out of the way for it to resolve a replacement. That is safe
+    # rather than convenient: `_validate_outputs` demands a completion marker
+    # whose task_sha256 matches every task in whatever lock comes back, so a
+    # re-resolve that moved any task identity fails instead of rebinding.
+    lock_live = state.path("sources.lock.json")
+    existing_lock = state.read("sources.lock.json") or {}
+    lock_archive: Path | None = None
+    if existing_lock.get("repository_commit") not in (None, _repository_commit()[0]):
+        lock_archive = archive_dir / f"sources.lock.{stamp}.json"
+        shutil.copy2(lock_live, lock_archive)
+        restorable.append((lock_archive, lock_live))
+        lock_live.unlink()
+    try:
+        resolve_sources(manifest, profile, state)
+    except BaseException:
+        restore()
+        raise
 
     live.unlink()
     try:
@@ -410,6 +430,7 @@ def cmd_rehandoff(args: argparse.Namespace) -> int:
         {
             "ok": True,
             "archived_previous_handoff": str(archive),
+            "archived_previous_source_lock": str(lock_archive) if lock_archive else None,
             "rebound": {
                 field: {
                     "before": previous.get(field),
