@@ -224,17 +224,41 @@ def _normalized_benchmark_rows(
         }
 
 
+def _parse_json(text: str, *, source: str, line: int | None = None) -> Any:
+    """json.loads with the source named in the failure.
+
+    A bare JSONDecodeError says "line 1 column 3415" and nothing about which of
+    two hundred benchmark files it came from. That cost most of a day.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        where = source if line is None else f"{source} line {line}"
+        raise RuntimeError(
+            f"Holdout benchmark file {where} is not valid JSON at character "
+            f"{exc.pos} of {len(text)}: {exc.msg}. Context: "
+            f"{text[max(0, exc.pos - 60):exc.pos + 60]!r}"
+        ) from exc
+
+
 def _records_from_bytes(name: str, payload: bytes) -> Iterator[dict[str, Any]]:
     lower = name.lower()
     if lower.endswith(".jsonl"):
-        for line in payload.decode("utf-8").splitlines():
+        # Split on newline only. str.splitlines() also breaks on U+2028,
+        # U+2029 and U+0085, which are legal raw characters inside a JSON
+        # string -- so a document containing one was cut in half and the first
+        # half raised "Unterminated string". JSON Lines is defined as
+        # newline-delimited, so anything else splitting a record is a bug.
+        text = payload.decode("utf-8")
+        for number, line in enumerate(text.split("\n"), start=1):
+            line = line.rstrip("\r")
             if line.strip():
-                row = json.loads(line)
+                row = _parse_json(line, source=name, line=number)
                 if isinstance(row, dict):
                     yield row
         return
     if lower.endswith(".json"):
-        value = json.loads(payload.decode("utf-8"))
+        value = _parse_json(payload.decode("utf-8"), source=name)
         if isinstance(value, list):
             yield from (row for row in value if isinstance(row, dict))
         elif isinstance(value, dict):

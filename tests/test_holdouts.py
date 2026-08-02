@@ -222,3 +222,58 @@ class ExtractionBoundsTests(unittest.TestCase):
         stats: dict = {}
         list(_benchmark_fragments(self._nq_row(), stats))
         self.assertTrue(stats, "a bound fired but reported nothing")
+
+
+class JsonlSplittingTests(unittest.TestCase):
+    """JSON Lines is newline-delimited. Nothing else may split a record.
+
+    str.splitlines() also breaks on U+2028, U+2029 and U+0085, and all three
+    are legal raw characters inside a JSON string. LongBench is a long-context
+    benchmark full of scraped web text, so it contains them -- and every run
+    died with the same "Unterminated string starting at: line 1 column 3415",
+    because the record had been cut in half before json.loads ever saw it.
+    """
+
+    def _payload(self, separator: str) -> bytes:
+        import json as _json
+
+        row = {
+            "context": "A" * 3400 + separator + "rest of the long document",
+            "answer": "x",
+        }
+        return (_json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+
+    def test_unicode_separators_inside_a_string_do_not_split_the_record(
+        self,
+    ) -> None:
+        from metis_data.holdouts import _records_from_bytes
+
+        for name, code in (("U+2028", 0x2028), ("U+2029", 0x2029), ("U+0085", 0x85)):
+            with self.subTest(separator=name):
+                rows = list(
+                    _records_from_bytes(
+                        "data/long.jsonl", self._payload(chr(code))
+                    )
+                )
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(len(rows[0]["context"]), 3426)
+                self.assertEqual(rows[0]["answer"], "x")
+
+    def test_carriage_returns_are_tolerated(self) -> None:
+        from metis_data.holdouts import _records_from_bytes
+
+        payload = b'{"a": 1}\r\n{"a": 2}\r\n'
+        rows = list(_records_from_bytes("data/crlf.jsonl", payload))
+        self.assertEqual([r["a"] for r in rows], [1, 2])
+
+    def test_a_malformed_record_names_its_file_and_line(self) -> None:
+        # The bare JSONDecodeError said "line 1 column 3415" and nothing about
+        # which of two hundred benchmark files produced it.
+        from metis_data.holdouts import _records_from_bytes
+
+        payload = b'{"a": 1}\n{"b": "unterminated\n'
+        with self.assertRaises(RuntimeError) as caught:
+            list(_records_from_bytes("data/broken.jsonl", payload))
+        message = str(caught.exception)
+        self.assertIn("data/broken.jsonl", message)
+        self.assertIn("line 2", message)

@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -433,7 +434,13 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         return 130
     except Exception as exc:
+        # Keep the one-line FAIL for log greps, but never only that. A
+        # production tool that hides its stack trace turns a five-minute fix
+        # into a day of bisecting by symptom, which is exactly what happened
+        # to the holdout builder. Set METIS_NO_TRACEBACK=1 to suppress.
         print(f"FAIL {type(exc).__name__}: {exc}", file=sys.stderr)
+        if os.environ.get("METIS_NO_TRACEBACK", "") not in {"1", "true", "yes"}:
+            traceback.print_exc()
         return 1
 
 
