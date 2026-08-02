@@ -109,12 +109,26 @@ scheduler:
 
   download: {target_bytes_per_task: 20000000000, max_concurrent: 1}
 
-  handoff_signature: {tasks_per_job: 32, time: '24:00:00', max_concurrent: 8}
+  # Declared walltimes are what Slurm backfills against, not just kill timers.
+  # A 24h declaration almost never fits the gap before a reserved job starts;
+  # a 1h declaration usually does. On a partition held by one user's queue of
+  # 16-node 3-day jobs, that difference is the whole wait.
+  #
+  # Measured 2026-08-02 over all 1851 artifacts: each array entry hashes its 32
+  # artifacts in 7-27s, whole stage ~15 min at 8 concurrent. 1h is ~130x the
+  # observed per-entry cost.
+  handoff_signature: {tasks_per_job: 32, time: '01:00:00', max_concurrent: 8}
   handoff_verify: {time: '02:00:00'}
 
   # Language identification and quality models are loaded per worker, so this
   # stage is the most memory-hungry of the wide passes.
-  normalize: {tasks_per_job: 48, time: '24:00:00', max_concurrent: 32}
+  # Measured 2026-08-02: entries 458930_10 and _11 completed 48 tasks each in
+  # 18:31 and 18:40. 4h is ~13x that, which covers entries whose 48 files are
+  # much larger than average while staying short enough to backfill. Only two
+  # of 39 entries had finished when the run was cancelled, so this margin is
+  # deliberately wider than the sample alone would justify -- a TIMEOUT is not
+  # requeued and would stop the chain.
+  normalize: {tasks_per_job: 48, time: '04:00:00', max_concurrent: 32}
 
   exact_signature: {tasks_per_job: 80, time: '12:00:00', max_concurrent: 32}
   exact_find: {tasks_per_job: 32, time: '12:00:00', max_concurrent: 16}
