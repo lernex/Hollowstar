@@ -396,9 +396,18 @@ def cmd_rehandoff(args: argparse.Namespace) -> int:
     # Re-attestation rebinds provenance. It must never become a way to move a
     # different set of bytes into a build, so anything describing the acquired
     # data itself has to be identical.
+    # manifest_sha256 is deliberately not sealed. It is a digest of the whole
+    # manifest, so correcting a licence status -- metadata that decides how a
+    # record is treated, never which bytes were fetched -- moves it while the
+    # acquisition is untouched. Sealing it would block exactly the corrections
+    # re-attestation exists to carry, and it protects nothing that is not
+    # already enforced more precisely: source ids are compared against the lock
+    # directly, and _validate_outputs demands a completion marker whose
+    # task_sha256 matches every task in the re-resolved lock, so any manifest
+    # edit that changed what was acquired fails there instead. The change is
+    # reported rather than swallowed.
     sealed = {
         "release": (previous.get("release"), current.get("release")),
-        "manifest_sha256": (previous.get("manifest_sha256"), current.get("manifest_sha256")),
         "completion_markers_sha256": (
             previous.get("completion_markers_sha256"),
             current.get("completion_markers_sha256"),
@@ -436,7 +445,7 @@ def cmd_rehandoff(args: argparse.Namespace) -> int:
                     "before": previous.get(field),
                     "after": current.get(field),
                 }
-                for field in ("source_lock_sha256", "handoff_sha256")
+                for field in ("source_lock_sha256", "handoff_sha256", "manifest_sha256")
             },
             "repository_commit": {
                 "before": previous.get("repository", {}).get("commit"),

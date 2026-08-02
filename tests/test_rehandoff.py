@@ -236,6 +236,56 @@ class RehandoffTests(unittest.TestCase):
             self.assertEqual(state.path("ACQUISITION_READY.json").read_bytes(), original)
             self.assertEqual(state.path("sources.lock.json").read_bytes(), stale_lock)
 
+    def test_a_manifest_metadata_correction_is_carried_not_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "mount"
+            root.mkdir()
+            state, profile, manifest, _, identity = _build_acquisition(root)
+            before = state.read("ACQUISITION_READY.json")
+
+            _rewrite_lock(
+                state, identity, commit=FOREIGN_COMMIT, resolved_at="2026-07-25T00:00:00Z"
+            )
+            # A licence status decides how a record is treated, never which
+            # bytes were fetched. Re-attestation has to carry that, or the only
+            # way to correct a policy error is to redo an eleven-day
+            # acquisition.
+            manifest["sources"][0]["license"] = {
+                "status": "reviewed",
+                "expression": "ODC-By-1.0",
+            }
+
+            self._run(profile, manifest, state, identity)
+
+            after = state.read("ACQUISITION_READY.json")
+            self.assertNotEqual(before["manifest_sha256"], after["manifest_sha256"])
+            # Everything describing the acquired bytes is still identical.
+            self.assertEqual(before["completion_markers_sha256"], after["completion_markers_sha256"])
+            self.assertEqual(before["artifact_bytes"], after["artifact_bytes"])
+            self.assertEqual(before["holdouts"]["sha256"], after["holdouts"]["sha256"])
+            verify_acquisition_handoff(profile, manifest, state)
+
+    def test_a_manifest_change_that_moves_a_download_task_is_still_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "mount"
+            root.mkdir()
+            state, profile, manifest, _, identity = _build_acquisition(root)
+            original = state.path("ACQUISITION_READY.json").read_bytes()
+
+            _rewrite_lock(
+                state, identity, commit=FOREIGN_COMMIT, resolved_at="2026-07-25T00:00:00Z"
+            )
+            # Not sealing manifest_sha256 must not mean a manifest edit can
+            # quietly rebind the attestation to work that was never done. A
+            # re-resolve that moves a task identity has no completion marker.
+            moved = dict(identity)
+            moved["task_sha256"] = "f" * 64
+            moved["task_id"] = "download-000000-" + "f" * 16
+
+            with self.assertRaisesRegex(RuntimeError, "task is incomplete"):
+                self._run(profile, manifest, state, moved)
+            self.assertEqual(state.path("ACQUISITION_READY.json").read_bytes(), original)
+
     def test_rehandoff_refuses_when_the_holdouts_changed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "mount"
