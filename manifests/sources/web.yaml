@@ -55,7 +55,12 @@ sources:
       revision: a3b142c183aebe5af344955ae20836eb34dcf69b
       gated: false
       allow_patterns: [global-shard_*/**]
-    license: {status: per_record_required, expression: per-record-and-upstream-terms}
+    # Was per_record_required, which no row can satisfy: DCLM ships url, text
+    # and WARC/quality signals, because a Common Crawl derivative has no
+    # per-document license to ship. The grant that does exist is the
+    # publisher's over the compilation -- CC-BY-4.0 on the dataset card --
+    # which is the same shape already recorded for metis_freshweb_2025.
+    license: {status: reviewed, expression: CC-BY-4.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.50, compressed_bytes_per_token: 0.68}
     processing: {quality_profile: web_general_v1, dedup_namespace: global_web, priority: 75}
 
@@ -70,7 +75,9 @@ sources:
       revision: ce4eccc7e9604667b6d7f32cb6274b8b41f3113d
       gated: false
       allow_patterns: [data/**]
-    license: {status: per_record_required, expression: per-record-and-upstream-terms}
+    # See dclm_baseline. The card states Essential-Web contributions are made
+    # available under the ODC attribution license.
+    license: {status: reviewed, expression: ODC-By-1.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.45, compressed_bytes_per_token: 0.70}
     processing: {quality_profile: web_hq_v1, dedup_namespace: global_web, priority: 82}
 
@@ -88,7 +95,10 @@ sources:
       # Restrict acquisition to ProX-filtered, globally unique web documents;
       # exclude the synthetic QA and transformed multilingual additions.
       allow_patterns: ['v1.1/TxT360_BestOfWeb/cc_1-1/*.jsonl']
-    license: {status: per_record_required, expression: per-component}
+    # See dclm_baseline. Changed pre-emptively: the selected BestOfWeb subset
+    # is Common Crawl derived and carries no per-record license, so it would
+    # have failed identically once its normalization tasks were scheduled.
+    license: {status: reviewed, expression: ODC-By-1.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.40, compressed_bytes_per_token: 0.72}
     processing: {quality_profile: web_hq_v1, dedup_namespace: global_web, priority: 80}
 
@@ -103,7 +113,8 @@ sources:
       revision: bc389cd62969a275b2e3c3e11db826ba1918411a
       gated: false
       allow_patterns: [data/**]
-    license: {status: per_record_required, expression: per-component}
+    # See dclm_baseline. The card states Zyda-2 is released under ODC-BY.
+    license: {status: reviewed, expression: ODC-By-1.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.60, compressed_bytes_per_token: 0.72}
     processing: {quality_profile: web_general_v1, dedup_namespace: global_web, priority: 70}
 

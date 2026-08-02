@@ -842,6 +842,15 @@ def derive_normalization_evidence(
         "all_licenses",
         "licenses",
         "file_info.detected_licenses",
+        # Stack-derived corpora keep provenance in a "meta" blob rather than
+        # the "metadata" key _find already descends into, and name the field
+        # after the repository statistic it was collected with. Proof-Pile-2
+        # carries a real per-record license there -- e.g. ["MIT"] -- so reading
+        # it is evidence, not a relaxation.
+        "max_stars_repo_licenses",
+        "meta.max_stars_repo_licenses",
+        "meta.detected_licenses",
+        "meta.license",
     )
     license_expression = _normalise_license(license_value)
     if license_expression:

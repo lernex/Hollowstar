@@ -221,27 +221,40 @@ class NormalizationEvidenceTests(unittest.TestCase):
         self.assertNotIn("license", metadata)
         self.assertFalse(decision.keep and bool(metadata.get("license")))
 
-    def test_equation_integrity_is_measured_and_missing_license_stays_closed(self) -> None:
-        row = {
+    @staticmethod
+    def math_row() -> dict:
+        return {
             "id": "math-1",
             "text": (
                 "A theorem describes the sum of the first terms in a sequence. "
                 "We use the equation $S_n = n(n+1)/2$ and then prove the result "
                 "by induction. Therefore the formula is valid for every positive integer.\n\n"
-                + self.prose(8)
+                + NormalizationEvidenceTests.prose(8)
             ),
             "language": "en",
             "language_score": 0.99,
             "url": "https://example.org/math/1",
             "metadata": {"license": "Public Domain"},
         }
-        _, metadata, decision = self.derive("openwebmath_unique", row)
+
+    def test_equation_integrity_is_measured(self) -> None:
+        _, metadata, decision = self.derive("openwebmath_unique", self.math_row())
         self.assertTrue(decision.keep, decision.reason)
         self.assertTrue(metadata["equation_integrity_passed"])
         self.assertEqual(metadata["math_score"], 3.0)
 
+    def test_missing_per_record_license_stays_closed(self) -> None:
+        # Pinned to a source that is still per_record_required. openwebmath is
+        # no longer one: it is corpus-licensed ODC-By-1.0, because a Common
+        # Crawl derivative has no per-document license to carry. Asserting
+        # fail-closed through a source that cannot fail closed would leave the
+        # guard untested while still passing.
+        row = self.math_row()
         row["metadata"] = {}
-        _, metadata, decision = self.derive("openwebmath_unique", row)
+        _, metadata, decision = self.derive("proof_pile2_math", row)
+        self.assertEqual(
+            self.sources["proof_pile2_math"]["license"]["status"], "per_record_required"
+        )
         self.assertNotIn("license", metadata)
         # The stage-level per-record-license guard runs immediately before the
         # profile gate; a profile-only decision must not manufacture a license.
@@ -541,3 +554,32 @@ class NormalizationEvidenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StackDerivedLicenseTests(unittest.TestCase):
+    def test_proof_pile_2_per_record_license_is_read_from_meta(self) -> None:
+        """Proof-Pile-2 carries a genuine per-record license inside `meta`.
+
+        `_find` descends into `metadata` but not `meta`, so the whole source
+        normalized to zero accepted records under `per_record_required` even
+        though every row names its repository licence.
+        """
+
+        row = {
+            "text": "open import Web.Semantic.DL.Role\n",
+            "meta": {
+                "hexsha": "3dcbe7dd3386a3c21b79cceb2d381b1a16a4f075",
+                "ext": "agda",
+                "max_stars_repo_name": "agda/agda-web-semantic",
+                "max_stars_repo_licenses": ["MIT"],
+            },
+        }
+        source = {
+            "id": "proof_pile2_math",
+            "category": "math",
+            "license": {"status": "per_record_required", "expression": "per-component"},
+            "provenance": {},
+            "processing": {"quality_profile": "math_score3_v1"},
+        }
+        evidence = derive_normalization_evidence(row, source, {}, row["text"])
+        self.assertEqual(evidence.get("license"), "MIT")

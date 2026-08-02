@@ -66,7 +66,12 @@ sources:
     phase_tokens: {phase_a: 2000000000, phase_b: 2000000000, phase_c: 1000000000}
     provenance: {generated: false, transformed: false, fresh: false}
     access: {type: huggingface, repo_id: LLM360/MegaMath, revision: 3cbc64616594d6bc8759abaa0b2a71858f880f0d, gated: false, allow_patterns: ['**/*.parquet']}
-    license: {status: per_record_required, expression: per-component}
+    # Was per_record_required/per-component, which no row can satisfy: MegaMath
+    # ships text with no license column, because Common Crawl derivatives have
+    # no per-document license to ship. The grant that does exist is the
+    # publisher's over the compilation, declared ODC-By on the dataset card --
+    # the same shape already recorded for metis_freshweb_2025 (FineWeb).
+    license: {status: reviewed, expression: ODC-By-1.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.55, compressed_bytes_per_token: 0.72}
     processing: {quality_profile: math_score3_v1, dedup_namespace: global_math_web, priority: 78}
 
@@ -76,7 +81,10 @@ sources:
     phase_tokens: {phase_a: 1000000000, phase_b: 1000000000, phase_c: 0}
     provenance: {generated: false, transformed: false, fresh: false}
     access: {type: huggingface, repo_id: open-web-math/open-web-math, revision: fde8ef8de2300f5e778f56261843dab89f230815, gated: false, allow_patterns: ['**/*.parquet']}
-    license: {status: per_record_required, expression: per-record-and-upstream-terms}
+    # See megamath_unique. The card states OpenWebMath is released under
+    # ODC-By-1.0 and that users should also abide by the Common Crawl terms of
+    # use, which is a corpus-level grant, not a per-record one.
+    license: {status: reviewed, expression: ODC-By-1.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.70, compressed_bytes_per_token: 0.72}
     processing: {quality_profile: math_score3_v1, dedup_namespace: global_math_web, priority: 70}
 

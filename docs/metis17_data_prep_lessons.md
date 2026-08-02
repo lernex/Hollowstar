@@ -136,6 +136,47 @@ time took a day.
 
 ---
 
+## 4b. `per_record_required` was asserted for data that has no per-record license
+
+Over half the corpus -- 1,016 of 1,849 files across nine sources -- normalized
+to **zero accepted records**, every one rejected `missing_license`. Not a code
+fault: the manifest declared `license.status: per_record_required`, which means
+*each row carries its own license*, for sources where that is impossible.
+
+The conflation is subtle and worth naming precisely. `per_record_required` and
+"the upstream corpus aggregates differently-licensed material" sound like the
+same statement and are not. The second is true of DCLM, Zyda-2, Essential-Web,
+TxT360, OpenWebMath and MegaMath; the first is false of all of them, because a
+Common Crawl derivative ships url, text and quality signals and has no
+per-document license to ship. What those publishers actually grant is a
+compilation licence -- CC-BY-4.0 or ODC-By-1.0 on the dataset card. The
+manifest already recorded exactly that shape correctly for FineWeb, so the
+correct value was one line away in the same file.
+
+Two of the nine were different, and the difference only showed up by reading
+real rows:
+
+- **Proof-Pile-2 genuinely has per-record licences**, in `meta.
+  max_stars_repo_licenses` (e.g. `["MIT"]`). `_find` descends into `metadata`
+  but not `meta`, so a source that fully satisfied the policy failed it. Fixed
+  by reading the field, not by relaxing anything.
+- **OpenStax has a deliberate stricter rule**: accept CC BY 4.0 only when the
+  statement appears in the book text, explicitly refusing the dataset-card
+  label as per-book evidence. It works -- 69 of 76 books pass -- but the 7 that
+  lack an attribution page yield zero records and therefore fail their whole
+  task.
+
+**Do for 1.7:** validate the licence policy against sampled rows at manifest
+time, the same way sources are checked for text payload. One command per source
+-- does a row satisfy the status this manifest asserts? -- would have caught all
+nine before an eleven-day acquisition, let alone before a build. And note the
+failure shape: a legitimately zero-yield file fails its entire array entry,
+because "accepted zero records" is fail-closed. That guard is right and found
+this, but a source with a small number of genuinely unlicensable documents
+cannot currently express that.
+
+---
+
 ## 5. Swallowed tracebacks were the most expensive bug of all
 
 `cli.main` caught every exception and printed one line with no stack. Compare:
