@@ -146,10 +146,19 @@ benchmarks:
     use: evaluation_only
   - id: bbq
     family: bias
-    repo_id: heegyu/bbq
-    revision: 5d6faae52070aa5eb71b46d1c0723d3ba7930209
-    configs: [Age, Disability_status, Gender_identity, Nationality, Physical_appearance, Race_ethnicity, Race_x_SES, Race_x_gender, Religion, SES, Sexual_orientation]
-    split: test
+    # Was heegyu/bbq, which ships bbq.py and can only be resolved by executing
+    # it. oskarvanderwal/bbq publishes the same eleven categories as JSONL under
+    # exactly these names, so this reads the files directly and load_dataset --
+    # and therefore any dataset loading script -- is never involved. All.jsonl
+    # is excluded deliberately: it is the union of the eleven and would double
+    # count every row.
+    repo_id: oskarvanderwal/bbq
+    revision: ab00114b0fbf59c7c539ff9158f6ce717d13ab63
+    files: [
+      data/Age.jsonl, data/Disability_status.jsonl, data/Gender_identity.jsonl,
+      data/Nationality.jsonl, data/Physical_appearance.jsonl,
+      data/Race_ethnicity.jsonl, data/Race_x_SES.jsonl, data/Race_x_gender.jsonl,
+      data/Religion.jsonl, data/SES.jsonl, data/Sexual_orientation.jsonl]
     use: evaluation_only
   - {id: toxic_chat, family: safety, repo_id: lmsys/toxic-chat, revision: 29df8e4dba60e1f4af4b4075c0705c5b313548a8, configs: [toxicchat0124, toxicchat1123], split: test, use: evaluation_only}
   - {id: real_toxicity_prompts, family: safety, repo_id: allenai/real-toxicity-prompts, revision: f21629712ffd6a3d13a54fd2807ccd521c55ef74, config: default, split: train, use: evaluation_only}

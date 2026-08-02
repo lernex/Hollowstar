@@ -94,8 +94,42 @@ class RemoteCodeTests(unittest.TestCase):
             repository_root() / "manifests" / "contamination" / "eval-holdouts.yaml"
         )
         repos = {str(e.get("repo_id")) for e in registry["benchmarks"]}
+        # Both script-backed repos that actually reached load_dataset. A sweep
+        # of all sixty-three found six with a .py file; the other four either
+        # ship a parquet export alongside it or are read through `files:`,
+        # which never touches load_dataset.
         self.assertNotIn("maveriq/bigbenchhard", repos)
+        self.assertNotIn("heegyu/bbq", repos)
         self.assertIn("lukaemon/bbh", repos)
+        self.assertIn("oskarvanderwal/bbq", repos)
+
+    def test_script_backed_repos_are_read_through_files_not_load_dataset(
+        self,
+    ) -> None:
+        """The remaining loading-script repos must never reach load_dataset.
+
+        livecodebench, codeparrot/apps and THUDM/LongBench all publish a
+        loading script. They are safe only because their registry entries
+        declare `files:`, which downloads the data directly. Turning any of
+        them back into a config/split entry would resolve the script instead,
+        and trust_remote_code=False would then stop the run.
+        """
+        from metis_data.config import load_yaml, repository_root
+
+        registry = load_yaml(
+            repository_root() / "manifests" / "contamination" / "eval-holdouts.yaml"
+        )
+        script_backed = {
+            "livecodebench/code_generation_lite",
+            "codeparrot/apps",
+            "THUDM/LongBench",
+        }
+        for entry in registry["benchmarks"]:
+            if str(entry.get("repo_id")) in script_backed:
+                self.assertTrue(
+                    entry.get("files"),
+                    f"{entry['repo_id']} must be read through files:, not load_dataset",
+                )
 
 
 class FragmentExplosionTests(unittest.TestCase):
