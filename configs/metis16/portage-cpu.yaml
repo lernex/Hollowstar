@@ -122,13 +122,23 @@ scheduler:
 
   # Language identification and quality models are loaded per worker, so this
   # stage is the most memory-hungry of the wide passes.
-  # Measured 2026-08-02: entries 458930_10 and _11 completed 48 tasks each in
-  # 18:31 and 18:40. 4h is ~13x that, which covers entries whose 48 files are
-  # much larger than average while staying short enough to backfill. Only two
-  # of 39 entries had finished when the run was cancelled, so this margin is
-  # deliberately wider than the sample alone would justify -- a TIMEOUT is not
-  # requeued and would stop the chain.
-  normalize: {tasks_per_job: 48, time: '04:00:00', max_concurrent: 32}
+  # Back to 24h after 4h produced TIMEOUTs. The mistake was statistical, not
+  # arithmetic: 4h was sized from the only two entries that had finished, and
+  # in a distribution where entry input bytes span 80.9x -- 103.2 GB for entry
+  # 18 against 1.3 GB for entry 22 -- the first finishers are by construction
+  # the smallest. A uniform limit has to cover the largest entry, so the fastest
+  # samples are the wrong statistic entirely. 24h is the value that ran without
+  # a single TIMEOUT before it was cut.
+  #
+  # The backfill argument for cutting it no longer applies: the partition went
+  # from one user holding 113 of 118 nodes to roughly 50 idle. A TIMEOUT is not
+  # requeued and strands every downstream job, so it is far more expensive than
+  # queue time whenever nodes are available at all.
+  #
+  # For 1.7: pack entries by input bytes rather than by file count. Equal-sized
+  # entries would let the limit track real work instead of the worst case, and
+  # would stop the largest entries from setting the cost for all 39.
+  normalize: {tasks_per_job: 48, time: '24:00:00', max_concurrent: 32}
 
   exact_signature: {tasks_per_job: 80, time: '12:00:00', max_concurrent: 32}
   exact_find: {tasks_per_job: 32, time: '12:00:00', max_concurrent: 16}

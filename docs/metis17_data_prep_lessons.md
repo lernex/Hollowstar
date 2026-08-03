@@ -254,6 +254,14 @@ this document.
   markers, so requeueing costs at most one repeated task and removes the entire
   class of "one evicted task stops the graph". A long single-node reducer is
   where this would really hurt.
+- **Never size a walltime from the first samples to finish.** `normalize` was
+  cut from 24h to 4h on the strength of the only two array entries that had
+  completed, at 18:31 and 18:40. Five entries then hit the limit. Entry input
+  bytes span **80.9x** -- 103.2 GB against 1.3 GB -- so the first finishers are
+  by construction the smallest, and a uniform limit has to cover the largest.
+  A TIMEOUT is not requeued, so each one stranded the whole downstream graph.
+  The real fix is to pack array entries by input bytes rather than file count,
+  so the limit tracks work instead of the worst case.
 - **Group failures by node before blaming the code.** All eight of those
   cancellations, across two submissions a day apart, landed on `parrypeak073`
   or `parrypeak079`; nothing that ran elsewhere was cancelled. Neither node
