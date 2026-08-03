@@ -1017,10 +1017,24 @@ def derive_normalization_evidence(
     # proof-structure check below.
     extension_value, _ = _find(searchable, "ext", "meta.ext", "extension", "language", "lang")
     formal_language = str(extension_value or "").strip().lower().lstrip(".")
-    is_formal_language_row = (
-        profile_name in {"proof_v1", "formal_proof_v1"}
-        and formal_language in _FORMAL_LANGUAGE_EXTENSIONS
+    # Not every corpus states the language in a field. Nemotron-Math-Proofs
+    # ships one file, `lean.jsonl`, whose rows carry `formal_statement` and
+    # `lean_header` and no extension at all, so the extension test above never
+    # fired and the Lean was scored as English prose: a row reading
+    # `∀ (U V : Set α), IsOpen U → ...` came out at 0.64 language probability
+    # against a 0.80 floor. A row that ships a formal statement is a formal
+    # development on stronger evidence than a filename suffix would be.
+    formal_statement_value, formal_statement_path = _find(
+        searchable, "formal_statement", "lean_header", "formal_proof", "formal_code"
     )
+    has_formal_statement = bool(str(formal_statement_value or "").strip())
+    is_formal_language_row = profile_name in {"proof_v1", "formal_proof_v1"} and (
+        formal_language in _FORMAL_LANGUAGE_EXTENSIONS or has_formal_statement
+    )
+    if has_formal_statement and not formal_language:
+        # Recorded so the evidence names what identified the row, rather than
+        # leaving `extension` empty in `formal_language_proof_structure`.
+        formal_language = f"declared:{formal_statement_path}"
 
     # Direct canonical aliases. Nested Common Pile metadata and JSON-encoded
     # metadata are searched before source-level fallbacks.

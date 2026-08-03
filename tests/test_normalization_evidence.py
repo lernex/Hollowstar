@@ -121,6 +121,46 @@ class NormalizationEvidenceTests(unittest.TestCase):
         )
         self.assertTrue(decision.keep, decision.reason)
 
+    def test_a_lean_row_without_an_extension_is_read_as_formal(self) -> None:
+        # Nemotron-Math-Proofs ships lean.jsonl with no `ext` field; the row
+        # declares itself with `formal_statement` and `lean_header` instead.
+        row = {
+            "problem": "Is a single point topologically connected?",
+            "formal_statement": (
+                "theorem single_point_preconnected {a : Type*} [TopologicalSpace a] "
+                "(x : a) : IsPreconnected ({x} : Set a) := by simp"
+            ),
+            "lean_header": "import Mathlib",
+            "license": "cc-by-4.0",
+            "text": (
+                "Problem:\nIs a single point topologically connected?\n\n"
+                "Formal statement:\ntheorem single_point_preconnected {a : Type*} "
+                "[TopologicalSpace a] (x : a) : IsPreconnected ({x} : Set a) := by\n"
+                "  simp [IsPreconnected]\n"
+            ),
+        }
+        _, metadata, _ = self.derive("nemotron_math_proofs", row)
+        self.assertEqual(metadata["language_probability"], 1.0)
+        self.assertEqual(self._language_method(metadata),
+                         "natural_language_gate_not_applicable_to_code_v1")
+
+    def test_english_prose_under_proof_v1_is_still_scored_as_prose(self) -> None:
+        # The widened test must not exempt an ordinary prose proof, which has
+        # no formal-statement field at all. Asserting on the value alone cannot
+        # show this -- clean English prose scores exactly 1.0 on its own merits
+        # -- so assert on the method that produced it.
+        row = {"text": self.prose(12), "license": "cc-by-4.0"}
+        _, metadata, _ = self.derive("nemotron_math_proofs", row)
+        self.assertEqual(self._language_method(metadata),
+                         "computed_english_text_evidence_v1")
+
+    @staticmethod
+    def _language_method(metadata: dict) -> str | None:
+        for item in metadata.get("normalization_evidence", []):
+            if item["field"] == "language_probability":
+                return item["method"]
+        return None
+
     def _paginated(self, pages: int = 6) -> tuple[str, list[int]]:
         """A well-ordered document that repeats a running head on every page."""
 
