@@ -293,16 +293,38 @@ class NormalizationEvidenceTests(unittest.TestCase):
             metadata["genealogy"]["generator_models"],
             ["Qwen3-30B-A3B-Instruct-2507"],
         )
+        # The point of this test is unchanged: a generator name is lineage, not
+        # a verification result, and the row carries no grounding document. It
+        # used to prove that by watching the record be rejected. The rejection
+        # was the wrong remedy -- fact-seeking rows never had either field, so
+        # the gate discarded 15B tokens without reading one -- but the claim
+        # itself must still never be manufactured, which is what is asserted
+        # here now that the record is admitted on its lineage and its text.
         self.assertNotIn("source_document_id", metadata)
         self.assertNotIn("verification_passed", metadata)
-        self.assertFalse(decision.keep)
-        self.assertEqual(decision.reason, "missing_source_document_id")
-
-        verified = dict(actual_shape)
-        verified["source_document_id"] = "wiki:Q123"
-        verified["verification_passed"] = True
-        _, _, decision = self.derive(source_id, verified)
         self.assertTrue(decision.keep, decision.reason)
+
+        grounded = dict(actual_shape)
+        grounded["source_document_id"] = "wiki:Q123"
+        _, metadata, decision = self.derive(source_id, grounded)
+        self.assertEqual(metadata["source_document_id"], "wiki:Q123")
+        self.assertNotIn("verification_passed", metadata)
+        self.assertTrue(decision.keep, decision.reason)
+
+    def test_a_synthetic_row_without_a_generator_is_still_rejected(self) -> None:
+        # Genealogy is the one provenance field these corpora do ship, so it
+        # stays required. Dropping the unshippable fields must not turn the
+        # synthetic profiles into a free pass.
+        anonymous = {
+            "uuid": "row-2",
+            "text": "Which result follows? " + self.prose(4),
+            "license": "cc-by-4.0",
+            "metadata": {"category": "Nemotron-Pretraining-Fact-Seeking"},
+        }
+        _, metadata, decision = self.derive("nemotron_specialized_fact_seeking", anonymous)
+        self.assertNotIn("genealogy", metadata)
+        self.assertFalse(decision.keep)
+        self.assertEqual(decision.reason, "missing_genealogy")
 
     def test_reasoning_partition_does_not_imply_programmatic_verification(self) -> None:
         row = {
@@ -316,9 +338,15 @@ class NormalizationEvidenceTests(unittest.TestCase):
         }
         _, metadata, decision = self.derive("nemotron_rqa_verified_reasoning", row)
         self.assertIn("genealogy", metadata)
+        # The subset is named "verified"; the dataset card documents generators
+        # and no verification step. Neither the partition name nor the source id
+        # may become a verification_passed, whether or not the row is kept.
         self.assertNotIn("verification_passed", metadata)
-        self.assertFalse(decision.keep)
-        self.assertEqual(decision.reason, "missing_verification_passed")
+        self.assertTrue(decision.keep, decision.reason)
+        self.assertEqual(
+            self.sources["nemotron_rqa_verified_reasoning"]["processing"]["quality_profile"],
+            "synthetic_reasoning_v1",
+        )
 
     def test_government_record_date_is_auditable_version_evidence(self) -> None:
         row = {
@@ -357,9 +385,27 @@ class NormalizationEvidenceTests(unittest.TestCase):
             },
         }
         _, metadata, decision = self.derive("roots_stackexchange", row)
+        # `sort: votes` is still not a score and must not become one. The
+        # profile no longer asks for a score the release does not carry; it
+        # asks whether the record poses a question and answers it, which is
+        # what the score was standing in for and is visible in the text.
         self.assertNotIn("answer_score", metadata)
+        self.assertTrue(metadata["question_and_answer"])
+        self.assertTrue(decision.keep, decision.reason)
+
+    def test_a_bare_question_with_no_answer_is_rejected(self) -> None:
+        row = {
+            "id": "stack-2",
+            "text": "How does this system work?",
+            "metadata": {
+                "license": "Creative Commons - Attribution Share-Alike - "
+                "https://creativecommons.org/licenses/by-sa/4.0/",
+                "sort": "votes",
+            },
+        }
+        _, metadata, decision = self.derive("roots_stackexchange", row)
+        self.assertNotIn("question_and_answer", metadata)
         self.assertFalse(decision.keep)
-        self.assertEqual(decision.reason, "missing_answer_score")
 
     def test_split_proof_fields_are_rendered_and_checked(self) -> None:
         row = {

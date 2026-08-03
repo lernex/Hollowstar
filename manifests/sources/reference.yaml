@@ -176,6 +176,17 @@ sources:
       allow_patterns: [uk_hansard-*.json.gz]
       take_all: true
     license: {status: per_record_required, expression: Open-Parliament-Licence}
+    # official_docs_v1 requires a canonical source URL. The Hansard records
+    # carry an id, a year, and the publication they came from, but no per-row
+    # URL, so every record was rejected for not restating an origin that is
+    # fixed for the whole corpus.
+    attestation_basis: >-
+      This is a pinned snapshot of the official UK Parliament Hansard record,
+      whose canonical publication is hansard.parliament.uk. The canonical origin
+      is a property of the publication, identical for every row; each record's
+      own id and sitting date locate it within that publication.
+    attestations:
+      canonical_url: https://hansard.parliament.uk/
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.60, compressed_bytes_per_token: 1.28}
     processing: {quality_profile: official_docs_v1, dedup_namespace: global_reference, priority: 90}
 

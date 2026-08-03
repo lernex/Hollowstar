@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .config import load_yaml, repository_root
+from .normalization_evidence import validated_attestations
 
 
 PHASES = ("phase_a", "phase_b", "phase_c")
@@ -193,6 +194,10 @@ def validate_manifest(path: str | Path | None = None) -> ValidationResult:
         license_status = source.get("license", {}).get("status")
         if not license_status or license_status == "unresolved":
             errors.append(f"{source_id}: unresolved license status")
+        try:
+            validated_attestations(source)
+        except ValueError as error:
+            errors.append(str(error))
 
     for category in categories:
         category_id = category["id"]

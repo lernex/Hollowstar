@@ -72,6 +72,39 @@ _ENGLISH_LABELS = {
 # branch below already encodes this, but formal mathematics is filed under
 # `math`, so Lean, Coq, Isabelle, and Metamath fell through and every record was
 # rejected on `language_probability_minimum`.
+# Evidence that can be true of a pinned corpus as a whole and simply not
+# repeated on every row: mathlib and the AFP are compiler-checked by their own
+# CI, Hansard's canonical origin is the parliamentary publication it was taken
+# from, a synthetic corpus names one generator for every record it contains.
+#
+# The boundary is deliberate and narrow. These are facts about the *source*.
+# Anything measured from an individual document -- its length, its structure,
+# its own licence, the specific document a synthetic row was grounded in --
+# is not attestable, because a corpus-level answer to a per-record question is
+# not evidence, it is a rubber stamp. `source_document_id` is excluded for
+# exactly that reason: one value shared by every row identifies nothing.
+_FORMAL_LANGUAGE_EXTENSIONS = frozenset(
+    {
+        "agda", "lagda",
+        "lean", "hlean",
+        "v", "coq",
+        "thy", "isabelle",
+        "mm", "metamath",
+        "rkt", "idr", "idris",
+    }
+)
+_ATTESTABLE_FIELDS = frozenset(
+    {
+        "genealogy",
+        "verification_passed",
+        "parser_or_compiler_passed",
+        "canonical_url",
+        "primary_source",
+        "jurisdiction",
+        "version",
+        "open_access",
+    }
+)
 _NON_PROSE_QUALITY_PROFILES = frozenset(
     {
         "formal_proof_v1",
@@ -79,6 +112,23 @@ _NON_PROSE_QUALITY_PROFILES = frozenset(
         "fresh_repository_code_v1",
         "executable_code_v1",
         "verified_synthetic_code_v1",
+        "synthetic_code_v1",
+    }
+)
+# Profiles whose text is judged on measured hygiene rather than on an upstream
+# score their corpora do not publish.
+_COMPUTED_QUALITY_PROFILES = frozenset(
+    {
+        "web_hq_v1",
+        "web_general_v1",
+        "web_diversity_v1",
+        "fresh_web_2026_v1",
+        "code_interleaved_v1",
+        "math_score3_v1",
+        "grounded_synthetic_v1",
+        "synthetic_qa_v1",
+        "synthetic_reasoning_v1",
+        "legal_synthetic_v1",
     }
 )
 _ENGLISH_FUNCTION_WORDS = {
@@ -410,15 +460,41 @@ def _equation_integrity(text: str) -> tuple[bool, dict[str, Any]]:
     display_close = text.count(r"\]")
     environments_open = re.findall(r"\\begin\{([^{}]+)\}", text)
     environments_close = re.findall(r"\\end\{([^{}]+)\}", text)
-    math_signal_count = (
+    latex_signal_count = (
         unescaped_dollars // 2
         + inline_open
         + display_open
         + len(environments_open)
         + len(re.findall(r"\\(?:frac|sum|int|sqrt|begin)\b", text))
     )
+    # Most web mathematics is not written in LaTeX. FineMath and MegaMath carry
+    # forum answers and worked solutions in plain text, so counting only markup
+    # made "has equations" mean "has markup" and the gate failed the majority of
+    # two corpora selected upstream for being mathematical. A relation with
+    # numbers or variables on both sides is an equation whether or not anyone
+    # typeset it.
+    plain_relations = len(
+        re.findall(
+            r"(?<![=<>!])[=≠≤≥≈≡<>](?![=])",
+            re.sub(r"https?://\S+", " ", text),
+        )
+    )
+    plain_operators = len(re.findall(r"[∫∑∏√±×÷∞≈≤≥∈∉⊆∪∩→∂∇]", text))
+    plain_expressions = len(
+        re.findall(
+            r"(?:\d+|\b[a-zA-Z]\b)\s*[-+*/^]\s*(?:\d+|\b[a-zA-Z]\b)",
+            text,
+        )
+    )
+    plain_signal_count = plain_operators + (
+        plain_expressions if plain_relations >= 2 else 0
+    )
+    math_signal_count = latex_signal_count + plain_signal_count
     passed = (
         math_signal_count > 0
+        # Balance is a property of markup. A plain-text document has no
+        # delimiters to leave unclosed, so these four checks are vacuously true
+        # for it and remain a real check on anything that does use LaTeX.
         and unescaped_dollars % 2 == 0
         and inline_open == inline_close
         and display_open == display_close
@@ -426,6 +502,9 @@ def _equation_integrity(text: str) -> tuple[bool, dict[str, Any]]:
     )
     return passed, {
         "math_signal_count": math_signal_count,
+        "latex_signal_count": latex_signal_count,
+        "plain_signal_count": plain_signal_count,
+        "plain_relation_count": plain_relations,
         "unescaped_dollar_count": unescaped_dollars,
         "inline_pairs": [inline_open, inline_close],
         "display_pairs": [display_open, display_close],
@@ -600,10 +679,20 @@ def _title_or_abstract(row: Mapping[str, Any], searchable: Mapping[str, Any], te
     )
     if isinstance(value, str) and len(value.strip()) >= 3:
         return True
-    return bool(
-        re.search(r"(?im)^\s*(?:#{1,6}\s*)?abstract\s*$", text[:20_000])
-        or re.search(r"(?m)^\s*#{1,2}\s+\S.{3,200}$", text[:5_000])
-    )
+    if re.search(r"(?im)^\s*(?:#{1,6}\s*)?abstract\s*$", text[:20_000]) or re.search(
+        r"(?m)^\s*#{1,2}\s+\S.{3,200}$", text[:5_000]
+    ):
+        return True
+    # Plain-text paper corpora carry the title as the opening line with no
+    # markup and no separate field -- peS2o's s2ag records are exactly a title
+    # followed by its abstract. Requiring a markdown heading rejected all of
+    # them for lacking a structure the corpus never uses.
+    for line in text.split("\n", 8)[:8]:
+        heading = line.strip()
+        if not heading:
+            continue
+        return 10 <= len(heading) <= 300 and len(text) > 2 * len(heading)
+    return False
 
 
 def _structurally_complete_textbook(
@@ -627,11 +716,62 @@ def _chapter_integrity(text: str) -> tuple[bool, dict[str, Any]]:
     chapters = len(_CHAPTER_RE.findall(text))
     gutenberg_begin = bool(re.search(r"\*{3}\s*START OF (?:THE|THIS) PROJECT GUTENBERG", text, re.IGNORECASE))
     gutenberg_end = bool(re.search(r"\*{3}\s*END OF (?:THE|THIS) PROJECT GUTENBERG", text, re.IGNORECASE))
-    passed = len(text) >= 10_000 and (chapters >= 2 or (gutenberg_begin and gutenberg_end))
+    # What this gate is for is catching a book that stops in the middle. Chapter
+    # headings are one way to see that and not the only way: the pre-1929 and
+    # Library of Congress scans include verse, reference works, statutes, and
+    # reports that are complete without a single "Chapter". For those, the
+    # observable evidence of completeness is book-length text that ends on a
+    # finished sentence rather than mid-word.
+    ending = text.rstrip()[-1:] if text.strip() else ""
+    finished_ending = ending in {".", "!", "?", '"', "'", "”", "’", "*", ")"}
+    unchaptered_complete = len(text) >= 20_000 and finished_ending
+    passed = len(text) >= 10_000 and (
+        chapters >= 2 or (gutenberg_begin and gutenberg_end) or unchaptered_complete
+    )
     return passed, {
         "chapter_heading_count": chapters,
         "gutenberg_start_marker": gutenberg_begin,
         "gutenberg_end_marker": gutenberg_end,
+        "unchaptered_complete_work": unchaptered_complete,
+        "final_character": ending,
+    }
+
+
+def _question_and_answer(text: str) -> tuple[bool, dict[str, Any]]:
+    """Does this record actually pose a question and answer it?
+
+    Stands in for ``answer_score_minimum``, which asked the Common Pile
+    StackExchange release for a vote count it does not ship. A score was only
+    ever a proxy for "someone answered this usefully"; the two halves being
+    present, and the answer having substance, is the part that can be observed
+    in the record itself.
+    """
+
+    head = text[:4_000]
+    question = bool(
+        re.search(r"\?(?:\s|$)", head)
+        or re.search(r"^\s*(?:#+\s*)?(?:question|q)\b\s*[:.\-]", head, re.IGNORECASE | re.MULTILINE)
+        or re.search(
+            r"\b(?:how do i|how can i|why does|what is the|is it possible)\b",
+            head,
+            re.IGNORECASE,
+        )
+    )
+    answer_marker = re.search(
+        r"^\s*(?:#+\s*)?(?:answer|a|accepted answer|best answer)\b\s*[:.\-]",
+        text,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    # Dolma-formatted Stack Exchange concatenates the post and its replies
+    # without labelling them, so the fallback is positional: substantive prose
+    # that continues well past the question mark.
+    first_question = text.find("?")
+    trailing = len(text) - first_question if first_question >= 0 else 0
+    passed = question and (bool(answer_marker) or trailing >= 400)
+    return passed, {
+        "question_signal": question,
+        "answer_marker": bool(answer_marker),
+        "characters_after_first_question": trailing,
     }
 
 
@@ -805,6 +945,37 @@ def extract_training_text(row: Mapping[str, Any]) -> str:
     return "\n\n".join(sections)
 
 
+def validated_attestations(source: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a source's manifest attestations, or raise if they are malformed.
+
+    Split out of the evidence pass so ``metisctl validate`` rejects a bad
+    attestation on a login node instead of a normalize array discovering it
+    hours into a build. The first version of this read the block from
+    ``provenance`` while both manifests wrote it at the source top level, so
+    two attestations sat in the repository doing nothing at all -- silence is
+    the one failure mode a fail-closed pipeline cannot catch for you.
+    """
+
+    attestations = source.get("attestations") or {}
+    if not attestations:
+        return {}
+    source_id = str(source.get("id", "<missing>"))
+    if not isinstance(attestations, Mapping):
+        raise ValueError(f"{source_id}: attestations must be a mapping of field to value")
+    if not str(source.get("attestation_basis") or "").strip():
+        raise ValueError(
+            f"{source_id}: attestations requires an attestation_basis recording why "
+            "the claim is true of this corpus"
+        )
+    unknown = sorted(set(attestations) - _ATTESTABLE_FIELDS)
+    if unknown:
+        raise ValueError(
+            f"{source_id}: {unknown} cannot be attested at manifest level; "
+            f"attestable fields are {sorted(_ATTESTABLE_FIELDS)}"
+        )
+    return dict(attestations)
+
+
 def derive_normalization_evidence(
     row: Mapping[str, Any],
     source: Mapping[str, Any],
@@ -817,6 +988,17 @@ def derive_normalization_evidence(
     source_id = str(source["id"])
     profile_name = str(source["processing"]["quality_profile"])
     source_file = str(file_record.get("repo_path") or "")
+
+    # Proof-Pile-2 files AlgebraicStack sources under a prose proof profile, so
+    # a row can be a formal development while its profile expects English. This
+    # is settled once here because it governs both the language gate and the
+    # proof-structure check below.
+    extension_value, _ = _find(searchable, "ext", "meta.ext", "extension", "language", "lang")
+    formal_language = str(extension_value or "").strip().lower().lstrip(".")
+    is_formal_language_row = (
+        profile_name in {"proof_v1", "formal_proof_v1"}
+        and formal_language in _FORMAL_LANGUAGE_EXTENSIONS
+    )
 
     # Direct canonical aliases. Nested Common Pile metadata and JSON-encoded
     # metadata are searched before source-level fallbacks.
@@ -857,6 +1039,13 @@ def derive_normalization_evidence(
             "source_document_id",
             "source_doc_id",
             "grounding_document_id",
+            # Nemotron-CC document-grounded QA names the Common Crawl record it
+            # was generated from. That is a real per-record grounding
+            # identifier, and every row carries one.
+            "warc_record_id",
+            "metadata.warc_record_id",
+            "seed_document_id",
+            "source_id",
         ),
     }
     for canonical, aliases in direct_aliases.items():
@@ -966,14 +1155,7 @@ def derive_normalization_evidence(
                 source_field="access.allow_patterns",
             )
 
-    if profile_name in {
-        "web_hq_v1",
-        "web_general_v1",
-        "web_diversity_v1",
-        "fresh_web_2026_v1",
-        "code_interleaved_v1",
-        "math_score3_v1",
-    } and metadata.get("quality_score") is None:
+    if profile_name in _COMPUTED_QUALITY_PROFILES and metadata.get("quality_score") is None:
         computed_quality, details = _computed_document_quality(text)
         _set_evidence(
             metadata,
@@ -1007,8 +1189,26 @@ def derive_normalization_evidence(
         elif source_id == "nemotron_cc_math_unique_3":
             score, path = max(score or 0.0, 3.0), "access.allow_patterns"
         equation_passed, equation_details = _equation_integrity(text)
-        if score is None and source_id == "openwebmath_unique" and equation_passed:
-            score, path = 3.0, "computed_equation_integrity_v1"
+        if score is None and source_id in {
+            "openwebmath_unique",
+            # MegaMath ships no score column either. Both corpora were selected
+            # upstream for being mathematical; what the profile still needs to
+            # know is that a given row really is mathematics rather than a page
+            # that mentions it.
+            "megamath_unique",
+        }:
+            # Split by signal kind rather than by count. Typeset mathematics in
+            # a corpus curated for mathematics is decisive on its own, which is
+            # how openwebmath has always qualified. Plain-text signal is not:
+            # an invoice has an equals sign, so that path has to clear a density
+            # bar before it stands in for a score.
+            plain = equation_details["plain_signal_count"]
+            density = plain / max(1.0, len(text) / 1_000.0)
+            if equation_passed and (
+                equation_details["latex_signal_count"] >= 1
+                or (plain >= 8 and density >= 2.0)
+            ):
+                score, path = 3.0, "computed_equation_integrity_v1"
         _set_evidence(
             metadata,
             "math_score",
@@ -1066,17 +1266,23 @@ def derive_normalization_evidence(
                 method="pinned_multilingual_partition_language_v1",
                 source_field=full_lid_path if full_lid else language_path,
             )
-    elif source.get("category") == "code" or profile_name in _NON_PROSE_QUALITY_PROFILES:
+    elif (
+        source.get("category") == "code"
+        or profile_name in _NON_PROSE_QUALITY_PROFILES
+        or is_formal_language_row
+    ):
+        if source.get("category") == "code":
+            gate_source = "source.category"
+        elif is_formal_language_row:
+            gate_source = "row.ext"
+        else:
+            gate_source = "processing.quality_profile"
         _set_evidence(
             metadata,
             "language_probability",
             1.0,
             method="natural_language_gate_not_applicable_to_code_v1",
-            source_field=(
-                "source.category"
-                if source.get("category") == "code"
-                else "processing.quality_profile"
-            ),
+            source_field=gate_source,
         )
     elif label:
         if english_label:
@@ -1190,6 +1396,36 @@ def derive_normalization_evidence(
             re.search(r"\b(?:proof|solution|therefore|hence|thus|by\s+(?:induction|contradiction|sorry))\b", text, re.IGNORECASE)
             or re.search(r"(?m):=\s*by\b", text)
         )
+        # Proof-Pile-2's AlgebraicStack files are Agda, Coq, Isabelle, and Lean
+        # sources under proof_v1. They are statements with arguments -- that is
+        # what a formal development is -- but the English prose regexes above
+        # cannot see one, so the whole component normalized to zero. Read the
+        # declaration syntax of the language the row says it is written in.
+        if not (statement_signal and argument_signal):
+            if is_formal_language_row:
+                declaration = re.search(
+                    r"(?m)^\s*(?:private\s+|protected\s+|public\s+|noncomputable\s+|"
+                    r"@\[[^\]]*\]\s*)*"
+                    r"(?:theorem|lemma|corollary|proposition|example|instance|"
+                    r"definition|def|abbrev|record|structure|data|postulate|"
+                    r"inductive|Theorem|Lemma|Definition|Fixpoint|Inductive|"
+                    r"Proposition|Corollary|axiom|abstract_theorem|\$[pa]\b)\b",
+                    text,
+                )
+                # Agda declares without a keyword: a top-level `name : type` is
+                # the statement and the defining equations below it are the
+                # argument. Requiring a keyword would have kept rejecting the
+                # component this branch exists for.
+                signature = re.search(r"(?m)^[^\s:=#/-][^\n:]{0,80}\s:\s\S", text)
+                body = re.search(r"(?m)^\S[^\n]*=\s*\S", text) or re.search(
+                    r"(?mi)^\s*(?:proof|begin|by|:=\s*by)\b", text
+                )
+                if (declaration or signature) and body:
+                    statement_signal = argument_signal = True
+                    metadata["formal_language_proof_structure"] = {
+                        "extension": formal_language,
+                        "declaration": (declaration or signature).group(0).strip()[:80],
+                    }
         if statement_signal and argument_signal:
             _set_evidence(
                 metadata,
@@ -1385,8 +1621,8 @@ def derive_normalization_evidence(
                 source_field=f"{format_path},{audience_path}",
             )
 
-    # Explicit per-row answer scores are required.  The fact that Stack
-    # Exchange rows are sorted by votes is not itself a score and is therefore
+    # An explicit per-row answer score is still read where one exists. The fact
+    # that Stack Exchange rows are sorted by votes is not itself a score and is
     # deliberately not converted into ``answer_score``.
     answer_score, answer_score_path = _find(searchable, "answer_score", "accepted_answer_score")
     _set_evidence(
@@ -1396,5 +1632,36 @@ def derive_normalization_evidence(
         method="upstream_answer_score_v1",
         source_field=answer_score_path,
     )
+
+    if profile_name == "explanatory_qa_v1":
+        answered, qa_details = _question_and_answer(text)
+        if answered:
+            _set_evidence(
+                metadata,
+                "question_and_answer",
+                True,
+                method="computed_question_and_answer_structure_v1",
+                source_field="text",
+            )
+        metadata["question_and_answer_evidence"] = qa_details
+
+    # Corpus-level attestations, applied last and only where the row itself
+    # supplied nothing. Five sources normalized to zero because a profile asked
+    # every record to restate something true of the whole pinned collection.
+    #
+    # This is not a way to pass a gate. Each value is written by hand in the
+    # manifest beside an `attestation_basis` stating why it holds -- the field
+    # is mandatory below -- it can never overwrite evidence found in the
+    # document, and the audit trail records the manifest as its source so a
+    # reviewer can tell an attested field from an observed one.
+    for field, value in validated_attestations(source).items():
+        if metadata.get(field) in (None, "", [], {}):
+            _set_evidence(
+                metadata,
+                field,
+                value,
+                method="pinned_source_manifest_attestation_v1",
+                source_field=f"attestations.{field}",
+            )
 
     return metadata

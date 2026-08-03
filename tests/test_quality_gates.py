@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from metis_data.quality import evaluate_quality, load_quality_profiles, text_features
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class PersonalDataPrecisionTests(unittest.TestCase):
@@ -167,6 +170,203 @@ class GeneratedFileProbabilityTests(unittest.TestCase):
             profiles=load_quality_profiles(),
         )
         self.assertNotEqual(decision.reason, "missing_generated_file_probability")
+
+
+class PlainTextMathTests(unittest.TestCase):
+    """Most web mathematics is not typeset."""
+
+    def _equation(self, text: str):
+        from metis_data.normalization_evidence import _equation_integrity
+
+        return _equation_integrity(text)
+
+    def test_a_worked_solution_without_latex_has_equations(self) -> None:
+        solution = (
+            "To solve for x, start from 3x + 5 = 20. Subtract 5 from both sides, "
+            "so 3x = 15. Divide by 3 and x = 5. Check the result: 3 * 5 + 5 = 20, "
+            "which matches the original statement.\n"
+        ) * 3
+        passed, details = self._equation(solution)
+        self.assertTrue(passed)
+        self.assertEqual(details["latex_signal_count"], 0)
+        self.assertGreater(details["plain_signal_count"], 0)
+
+    def test_unbalanced_latex_still_fails(self) -> None:
+        # The balance check must keep working for documents that do use markup.
+        passed, _ = self._equation(r"The identity \(a^2 + b^2 = c^2 is stated here. $x = 1$")
+        self.assertFalse(passed)
+
+    def test_a_score_fallback_needs_more_than_one_equals_sign(self) -> None:
+        from metis_data.normalization_evidence import derive_normalization_evidence
+
+        source = {
+            "id": "megamath_unique",
+            "category": "math",
+            "license": {"status": "reviewed", "expression": "ODC-By-1.0"},
+            "provenance": {},
+            "processing": {"quality_profile": "math_score3_v1"},
+        }
+        invoice = (
+            "Quarterly summary. Revenue = 2400000 for the period under review, and "
+            "the operating cost = 1900000 across the same window. The remainder was "
+            "carried forward into the following reporting period without adjustment. "
+        ) * 6
+        evidence = derive_normalization_evidence({"text": invoice}, source, {}, invoice)
+        self.assertIsNone(evidence.get("math_score"))
+
+
+class ManifestAttestationTests(unittest.TestCase):
+    """Corpus-level attestations must reach the evidence, and must be checked.
+
+    The first version of this mechanism read the block from
+    ``source["provenance"]["attestations"]`` while both manifests wrote it at
+    the source top level. Nothing raised, nothing logged, and two attestations
+    sat in the repository doing nothing -- the failure a fail-closed pipeline
+    cannot catch, because a no-op looks exactly like a source with no
+    attestations. These tests read the shipped manifests rather than fixtures
+    precisely so a future move of the key fails here.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from metis_data.manifest import load_manifest
+
+        manifest = load_manifest(ROOT / "manifests" / "metis-1.6.yaml")
+        cls.sources = {source["id"]: source for source in manifest["sources"]}
+
+    def test_every_shipped_attestation_is_resolved(self) -> None:
+        from metis_data.normalization_evidence import validated_attestations
+
+        attested = {
+            source_id: validated_attestations(source)
+            for source_id, source in self.sources.items()
+            if source.get("attestations")
+        }
+        self.assertTrue(attested, "no source ships an attestation; has the key moved?")
+        for source_id, values in attested.items():
+            with self.subTest(source=source_id):
+                self.assertTrue(values, f"{source_id} declares attestations that resolve to nothing")
+
+    def test_an_attestation_reaches_the_derived_evidence(self) -> None:
+        from metis_data.normalization_evidence import derive_normalization_evidence
+
+        source = self.sources["metis_govreference_uk_hansard"]
+        text = "The House met at half past eleven o'clock. " * 40
+        evidence = derive_normalization_evidence({"text": text}, source, {}, text)
+        self.assertEqual(evidence["canonical_url"], "https://hansard.parliament.uk/")
+        method = next(
+            item["method"]
+            for item in evidence["normalization_evidence"]
+            if item["field"] == "canonical_url"
+        )
+        self.assertEqual(method, "pinned_source_manifest_attestation_v1")
+
+    def test_the_row_always_outranks_the_attestation(self) -> None:
+        from metis_data.normalization_evidence import derive_normalization_evidence
+
+        source = self.sources["metis_govreference_uk_hansard"]
+        text = "The House met at half past eleven o'clock. " * 40
+        row = {"text": text, "url": "https://hansard.parliament.uk/Commons/1994-03-02"}
+        evidence = derive_normalization_evidence(row, source, {}, text)
+        self.assertEqual(evidence["canonical_url"], row["url"])
+
+    def test_a_basisless_attestation_is_rejected(self) -> None:
+        from metis_data.normalization_evidence import validated_attestations
+
+        with self.assertRaisesRegex(ValueError, "attestation_basis"):
+            validated_attestations({"id": "x", "attestations": {"open_access": True}})
+
+    def test_an_unattestable_field_is_rejected(self) -> None:
+        from metis_data.normalization_evidence import validated_attestations
+
+        # One value shared by every row identifies no row, so a grounding
+        # document id can never be attested for a whole corpus.
+        with self.assertRaisesRegex(ValueError, "source_document_id"):
+            validated_attestations(
+                {
+                    "id": "x",
+                    "attestation_basis": "every row came from the same place",
+                    "attestations": {"source_document_id": "corpus"},
+                }
+            )
+
+    def test_manifest_validation_catches_a_bad_attestation(self) -> None:
+        from metis_data.manifest import validate_manifest
+
+        self.assertTrue(validate_manifest().ok)
+
+
+class SyntheticProvenanceTests(unittest.TestCase):
+    """Synthetic profiles ask for lineage, never for an unshipped flag."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.profiles = load_quality_profiles()
+
+    def test_no_profile_in_use_requires_a_verification_flag(self) -> None:
+        from metis_data.manifest import load_manifest
+
+        manifest = load_manifest(ROOT / "manifests" / "metis-1.6.yaml")
+        in_use = {source["processing"]["quality_profile"] for source in manifest["sources"]}
+        # Nothing we pin publishes a per-row verification result. A profile that
+        # requires one rejects its whole source silently, which is how ~26B
+        # tokens of Nemotron reasoning normalized to zero.
+        for name in sorted(in_use):
+            profile = self.profiles["profiles"][name]
+            with self.subTest(profile=name):
+                self.assertNotIn("verification", profile)
+                self.assertNotIn("require_execution_or_static_verification", profile)
+                self.assertNotIn("require_programmatic_or_source_verification", profile)
+
+    def test_the_synthetic_profiles_still_require_lineage(self) -> None:
+        for name in (
+            "grounded_synthetic_v1",
+            "synthetic_qa_v1",
+            "synthetic_reasoning_v1",
+            "synthetic_code_v1",
+            "legal_synthetic_v1",
+            "textbook_synthetic_v1",
+        ):
+            with self.subTest(profile=name):
+                self.assertTrue(self.profiles["profiles"][name].get("require_genealogy"))
+
+
+class FormalLanguageProofTests(unittest.TestCase):
+    """Proof-Pile-2 files Agda under a prose proof profile."""
+
+    AGDA = (
+        "module Data.Nat.Properties where\n\n"
+        "+-comm : ∀ (m n : ℕ) → m + n ≡ n + m\n"
+        "+-comm zero n = sym (+-identityʳ n)\n"
+        "+-comm (suc m) n = trans (cong suc (+-comm m n)) (sym (+-suc n m))\n"
+    ) * 4
+
+    def _evidence(self, row: dict) -> dict:
+        from metis_data.normalization_evidence import derive_normalization_evidence
+
+        source = {
+            "id": "proof_pile2_math",
+            "category": "math",
+            "license": {"status": "reviewed", "expression": "MIT"},
+            "provenance": {},
+            "processing": {"quality_profile": "proof_v1"},
+        }
+        return derive_normalization_evidence(row, source, {}, row["text"])
+
+    def test_a_formal_development_is_a_statement_with_an_argument(self) -> None:
+        evidence = self._evidence({"text": self.AGDA, "meta": {"ext": "agda"}})
+        self.assertTrue(evidence.get("statement_and_argument"))
+
+    def test_formal_source_is_not_scored_as_english(self) -> None:
+        evidence = self._evidence({"text": self.AGDA, "meta": {"ext": "agda"}})
+        self.assertEqual(evidence.get("language_probability"), 1.0)
+
+    def test_english_prose_under_proof_v1_is_unaffected(self) -> None:
+        # Without a formal extension the row must still be judged as prose, so
+        # the exemption cannot leak into natural-language proofs.
+        evidence = self._evidence({"text": self.AGDA})
+        self.assertNotEqual(evidence.get("language_probability"), 1.0)
+        self.assertIsNone(evidence.get("statement_and_argument"))
 
 
 if __name__ == "__main__":  # pragma: no cover

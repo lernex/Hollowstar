@@ -95,5 +95,19 @@ sources:
     provenance: {generated: false, transformed: false, fresh: false}
     access: {type: canonical_registry, registry: manifests/registries/systems_formal.yaml, selector: formal_math}
     license: {status: per_record_required, expression: canonical-source-license}
+    # formal_proof_v1 requires parser_or_compiler_passed, and this pipeline runs
+    # no Lean, Coq, Isabelle, or Metamath toolchain -- so no record could ever
+    # satisfy it and the source normalized to zero. The property is real but it
+    # holds of the corpus, not of anything measurable here.
+    attestation_basis: >-
+      Every member of this registry is a released, tagged snapshot of a formal
+      library whose own continuous integration compiles the entire development
+      before publication -- mathlib, the Archive of Formal Proofs, the Coq
+      standard library, and the Metamath set.mm database. Machine-checkability
+      is the defining property of these artifacts rather than an assertion made
+      about them here. Re-running the toolchains would reproduce that result,
+      not establish it.
+    attestations:
+      parser_or_compiler_passed: true
     acquisition: {driver: canonical_git, candidate_multiplier: 1.00, compressed_bytes_per_token: 0.72}
     processing: {quality_profile: formal_proof_v1, dedup_namespace: global_formal, priority: 98}

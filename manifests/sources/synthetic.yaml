@@ -7,7 +7,11 @@ sources:
     access: {type: huggingface, repo_id: nvidia/Nemotron-Pretraining-Specialized-v1.2, revision: 807afc1fa65c441d46ebc7d9b95295a35499a527, gated: false, allow_patterns: [Nemotron-Pretraining-Fact-Seeking/**]}
     license: {status: reviewed, expression: CC-BY-4.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.25, compressed_bytes_per_token: 0.78}
-    processing: {quality_profile: grounded_synthetic_v1, dedup_namespace: synthetic_grounded, priority: 96}
+    # Fact-seeking rows are short question-and-answer pairs generated from a
+    # prompt, not from a grounding document, so grounded_synthetic_v1 asked two
+    # things of them that are not true: a source document they never had, and a
+    # 200-character floor that most correct answers fall below.
+    processing: {quality_profile: synthetic_qa_v1, dedup_namespace: synthetic_grounded, priority: 96}
 
   - id: nemotron_v21_dqa
     label: Nemotron-CC-v2.1 high-quality document-grounded QA
@@ -32,7 +36,13 @@ sources:
       allow_patterns: [Nemotron-Pretraining-InfiniByte-Reasoning/**, Nemotron-Pretraining-Scientific-Coding/**]
     license: {status: reviewed, expression: CC-BY-4.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.45, compressed_bytes_per_token: 0.78}
-    processing: {quality_profile: verified_reasoning_v1, dedup_namespace: synthetic_reasoning, priority: 88}
+    # The Nemotron-Pretraining-Specialized-v1 card documents the generators for
+    # the InfiniByte-Reasoning and Scientific-Coding subsets (QwQ-32B,
+    # Qwen3-235B-A22B-Thinking-2507, Qwen3-235B-A22B) and does not document any
+    # verification of their outputs. verified_reasoning_v1 was therefore
+    # unsatisfiable, and attesting the verification would have asserted
+    # something NVIDIA does not claim.
+    processing: {quality_profile: synthetic_reasoning_v1, dedup_namespace: synthetic_reasoning, priority: 88}
 
   - id: nemotron_wiki_rewrite
     label: Nemotron Wiki structured factual explanations
@@ -87,4 +97,8 @@ sources:
       allow_patterns: [Nemotron-Pretraining-RQA/**]
     license: {status: reviewed, expression: CC-BY-4.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.55, compressed_bytes_per_token: 0.78}
-    processing: {quality_profile: verified_reasoning_v1, dedup_namespace: synthetic_reasoning, priority: 98}
+    # See nemotron_specialized_reasoning_scicode. The subset name says
+    # "verified"; the dataset card documents no verification step. The id is
+    # left alone because it is bound into dedup and holdout state, but the
+    # profile now states what is actually known about these rows.
+    processing: {quality_profile: synthetic_reasoning_v1, dedup_namespace: synthetic_reasoning, priority: 98}

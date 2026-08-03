@@ -176,5 +176,17 @@ sources:
       gated: manual
       allow_patterns: [Synthetic-Code/**]
     license: {status: requires_acceptance, expression: NVIDIA-Data-Agreement-for-Model-Training}
+    # These rows carry content, language, seed_source, and an id -- no
+    # models_used column, unlike every other Nemotron subset -- so genealogy
+    # could not be read per record even though it is documented for the whole
+    # subset. Execution verification is not documented at all and is therefore
+    # not attested; the profile no longer asks for it.
+    attestation_basis: >-
+      The Nemotron-Pretraining-Code-v2 dataset card names the models that
+      generated the Synthetic-Code subset: Qwen3-32B and Mixtral-8x22B. The
+      generator is a property of how the pinned subset was produced, identical
+      for every row, and is stated by the publisher rather than inferred here.
+    attestations:
+      genealogy: {generator_models: [Qwen3-32B, Mixtral-8x22B]}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.40, compressed_bytes_per_token: 0.75}
-    processing: {quality_profile: verified_synthetic_code_v1, dedup_namespace: synthetic_code, priority: 85}
+    processing: {quality_profile: synthetic_code_v1, dedup_namespace: synthetic_code, priority: 85}

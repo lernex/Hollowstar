@@ -31,14 +31,19 @@ profiles:
   code_interleaved_v1: {minimum_characters: 300, maximum_repeated_line_fraction: 0.50, code_text_interleave_minimum: 0.15, quality_score_minimum: 0.70}
   engineering_discussion_v1: {minimum_characters: 120, require_technical_context: true, pii_scan: required}
   swe_interleave_v1: {minimum_components: 3, require_tests_or_examples: true, require_license: true}
+  # For a corpus that ships a per-row verification result. Nothing we pin does
+  # -- see the synthetic block below -- so these have no users today. They are
+  # kept because they state the standard a future corpus could meet, and
+  # because deleting them would hide that the standard exists.
   verified_synthetic_code_v1: {require_execution_or_static_verification: true, require_genealogy: true}
+  verified_reasoning_v1: {require_programmatic_or_source_verification: true, require_genealogy: true}
   executable_code_v1: {require_execution_pass: true, require_license: true}
   # Worked mathematics repeats lines structurally -- aligned equation steps,
   # repeated `\\begin{align}`, restated expressions between manipulations. Same
   # reasoning as the code profiles above.
   math_4plus_v1: {minimum_characters: 200, maximum_repeated_line_fraction: 0.45, equation_integrity: required, math_score_minimum: 4}
   math_score3_v1: {minimum_characters: 300, maximum_repeated_line_fraction: 0.45, equation_integrity: required, math_score_minimum: 3, quality_score_minimum: 0.72}
-  proof_v1: {minimum_characters: 250, require_statement_and_argument: true}
+  proof_v1: {minimum_characters: 250, maximum_repeated_line_fraction: 0.50, require_statement_and_argument: true}
   formal_proof_v1: {minimum_characters: 40, parser_or_compiler_check: required}
   pdf_technical_v1: {minimum_characters: 800, ocr_confidence_minimum: 0.90, repeated_header_footer_maximum: 0.08, reading_order_check: required}
   scientific_paper_v1: {minimum_characters: 1000, require_title_or_abstract: true, bibliography_body_ratio_maximum: 0.35}
@@ -47,18 +52,48 @@ profiles:
   # documents, so a complete textbook -- OpenStax ships 5MB of text per book --
   # was discarded for being a book. The cap still exists to catch a pathological
   # blob; sequence-length chunking happens later, in packing.
-  textbook_v1: {minimum_characters: 800, maximum_characters: 40000000, structural_completeness: required}
+  #
+  # The repeated-line allowance is the same category error at book scale: a
+  # textbook restates its running header, its section numbering, and its
+  # per-page attribution footer on every one of a few thousand pages, so the
+  # 0.20 default measures the format rather than the prose.
+  textbook_v1: {minimum_characters: 800, maximum_characters: 40000000, maximum_repeated_line_fraction: 0.40, structural_completeness: required}
   fresh_science_v1: {minimum_characters: 800, require_publication_date: true, require_open_access: true}
   official_docs_v1: {minimum_characters: 200, require_canonical_source: true, require_version_metadata: true}
   engineering_report_v1: {minimum_characters: 800, structural_completeness: required}
-  grounded_synthetic_v1: {require_source_document: true, require_genealogy: true, verification: required}
-  verified_reasoning_v1: {require_programmatic_or_source_verification: true, require_genealogy: true}
+  # Synthetic corpora ship the text and the generator. None of the released
+  # ones ship a per-row grounding-document id or a per-row verification flag:
+  # the publisher ran whatever checks it ran before release and recorded the
+  # outcome in a dataset card, not in a column. Demanding those two fields
+  # rejected every record of five sources -- roughly 58B tokens -- without
+  # reading one of them.
+  #
+  # What a synthetic row can actually be judged on is its generator lineage,
+  # which every Nemotron row carries in `models_used`, and the measured
+  # condition of its text. Grounding is used wherever a corpus does ship it
+  # (Cosmopedia's seed_data, Nemotron-CC-v2.1's warc_record_id) and is not
+  # demanded of corpora that do not. `quality_score_minimum` is a text-hygiene
+  # floor -- truncation, mojibake, degenerate repetition -- and is not a
+  # substitute for verification; it does not claim to be one. The real controls
+  # on unverified synthetic text are the pinned generator, the share of the mix
+  # this category is allotted, and decontamination, all of which hold.
+  grounded_synthetic_v1: {minimum_characters: 200, maximum_repeated_line_fraction: 0.45, require_genealogy: true, quality_score_minimum: 0.68}
+  synthetic_qa_v1: {minimum_characters: 120, maximum_repeated_line_fraction: 0.45, require_genealogy: true, quality_score_minimum: 0.60}
+  synthetic_reasoning_v1: {minimum_characters: 300, maximum_repeated_line_fraction: 0.45, require_genealogy: true, quality_score_minimum: 0.68}
+  synthetic_code_v1: {minimum_characters: 120, maximum_repeated_line_fraction: 0.60, require_genealogy: true, secret_scan: required}
+  # Cosmopedia does ship its seed document, so this one keeps the grounding
+  # requirement it can actually satisfy.
   textbook_synthetic_v1: {require_source_document: true, require_genealogy: true, stylistic_diversity_check: required}
   reference_v1: {minimum_characters: 500, require_license: true}
-  longform_book_v1: {minimum_characters: 2000, maximum_characters: 40000000, chapter_integrity: required, require_license: true}
-  explanatory_qa_v1: {minimum_characters: 150, answer_score_minimum: 2, require_license: true}
+  longform_book_v1: {minimum_characters: 2000, maximum_characters: 40000000, maximum_repeated_line_fraction: 0.35, chapter_integrity: required, require_license: true}
+  # `answer_score_minimum` asked for a vote count that the Common Pile
+  # StackExchange release does not carry -- its own filtering pass is what
+  # selected these posts, and it kept the prose rather than the score. The
+  # replacement measures the thing the score was a proxy for: that the record
+  # actually contains a question and a substantive answer.
+  explanatory_qa_v1: {minimum_characters: 250, require_license: true, require_question_and_answer: true}
   legal_primary_v1: {minimum_characters: 500, require_primary_source: true, require_jurisdiction: true}
-  legal_synthetic_v1: {require_source_document: true, require_genealogy: true}
+  legal_synthetic_v1: {minimum_characters: 300, require_genealogy: true, quality_score_minimum: 0.68}
   translated_english_v1: {minimum_characters: 300, language_probability_minimum: 0.90, translation_quality_check: required}
   multilingual_native_v1: {minimum_characters: 300, language_probability_minimum: 0.90, allowed_language_registry: required}
 

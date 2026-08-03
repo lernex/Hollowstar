@@ -173,6 +173,7 @@ def evaluate_quality(
         "require_tests_or_examples": "tests_or_examples",
         "require_statement_and_argument": "statement_and_argument",
         "require_title_or_abstract": "title_or_abstract",
+        "require_question_and_answer": "question_and_answer",
         "require_primary_source": "primary_source",
         "require_jurisdiction": "jurisdiction",
     }
