@@ -432,6 +432,67 @@ class RoleMailboxTests(unittest.TestCase):
                 self.assertTrue(self._features(text)["contains_personal_data"])
 
 
+class ContactAllowanceTests(unittest.TestCase):
+    """One contact block is a document; a roster of people is a directory."""
+
+    BODY = "This technical report describes the measurement procedure in detail. " * 40
+
+    def _decide(self, text: str, profile: str = "pdf_technical_v1"):
+        from metis_data.quality import evaluate_quality
+
+        return evaluate_quality(
+            text,
+            profile_name=profile,
+            metadata={
+                "ocr_confidence": 0.99,
+                "repeated_header_footer_fraction": 0.0,
+                "reading_order_passed": True,
+                "language_probability": 0.99,
+                "license": "cc-by-4.0",
+            },
+        )
+
+    def test_a_single_author_contact_is_kept(self) -> None:
+        text = self.BODY + "\nCorrespondence: j.researcher@university.edu, (617) 555-0142.\n"
+        self.assertTrue(self._decide(text).keep)
+
+    def test_a_directory_of_people_is_still_rejected(self) -> None:
+        roster = "\n".join(
+            f"Delegate {n}: person{n}@agency.gov, (202) 555-01{n:02d}" for n in range(12)
+        )
+        decision = self._decide(self.BODY + "\n" + roster)
+        self.assertFalse(decision.keep)
+        self.assertEqual(decision.reason, "personal_data")
+
+    def test_one_contact_repeated_is_not_many_contacts(self) -> None:
+        # Distinctness matters: a running footer repeating one address on every
+        # page is one contact, not forty. The lines are varied so that this
+        # asserts the contact rule rather than the repeated-line one.
+        repeated = "".join(
+            f"\nSection {n} was prepared by j.researcher@university.edu for review.\n"
+            for n in range(40)
+        )
+        decision = self._decide(self.BODY + repeated)
+        self.assertTrue(decision.keep, decision.reason)
+
+    def test_profiles_without_the_allowance_are_unchanged(self) -> None:
+        # web_general_v1 never opted in, so any single contact still rejects.
+        from metis_data.quality import evaluate_quality
+
+        text = self.BODY + "\nCall me at (617) 555-0142.\n"
+        decision = evaluate_quality(
+            text, profile_name="web_general_v1",
+            metadata={"quality_score": 0.9, "language_probability": 0.99},
+        )
+        self.assertFalse(decision.keep)
+        self.assertEqual(decision.reason, "personal_data")
+
+    def test_an_ssn_counts_toward_the_allowance(self) -> None:
+        from metis_data.quality import personal_contacts
+
+        self.assertIn(("ssn", "123-45-6789"), personal_contacts("SSN 123-45-6789 appears."))
+
+
 class LegalPrimaryContactTests(unittest.TestCase):
     """An official notice prints the office to contact; that is the record."""
 

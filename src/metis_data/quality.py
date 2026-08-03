@@ -61,11 +61,37 @@ RESERVED_EMAIL_DOMAIN_RE = re.compile(
 # only suppresses the match that starts where it is anchored, and the engine
 # then restarts one character later, so `no-reply@x.org` was skipped at `no`
 # and matched again at `reply`. The local part has to be parsed and compared.
+SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 PERSONAL_DATA_PATTERNS = (
     PHONE_PUNCTUATED,
     PHONE_ANNOUNCED,
-    re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+    SSN_RE,
 )
+
+
+def personal_contacts(text: str) -> set[tuple[str, str]]:
+    """Distinct personal contact identifiers, role and placeholder ones removed.
+
+    Distinct rather than counted: a technical document repeats the one address
+    it wants you to write to, and repetition of a single contact is not more
+    personal data than one mention of it.
+    """
+
+    found: set[tuple[str, str]] = set()
+    for match in EMAIL_RE.finditer(text):
+        local, _, domain = match.group(0).partition("@")
+        if local.lower() in ROLE_MAILBOXES:
+            continue
+        if RESERVED_EMAIL_DOMAIN_RE.match(domain):
+            continue
+        found.add(("email", match.group(0).lower()))
+    for pattern in (PHONE_PUNCTUATED, PHONE_ANNOUNCED):
+        for match in pattern.finditer(text):
+            digits = "".join(c for c in match.group(0) if c.isdigit())[-10:]
+            found.add(("phone", digits))
+    for match in SSN_RE.finditer(text):
+        found.add(("ssn", match.group(0)))
+    return found
 
 
 def contains_personal_email(text: str) -> bool:
@@ -114,6 +140,7 @@ def text_features(text: str) -> dict[str, float | int | bool]:
             any(pattern.search(text) is not None for pattern in PERSONAL_DATA_PATTERNS)
             or contains_personal_email(text)
         ),
+        "distinct_personal_contacts": len(personal_contacts(text)),
         "probable_model_boilerplate": MODEL_BOILERPLATE.search(text) is not None,
     }
 
@@ -153,8 +180,18 @@ def evaluate_quality(
             return QualityDecision(False, rule, features)
     if profile.get("reject_secrets") and features["contains_secret"]:
         return QualityDecision(False, "secret", features)
+    # A published technical document names the person to contact about it. That
+    # is one contact block, and rejecting the whole document over it discarded
+    # 18 of 60 sampled FinePDFs-Edu records. A staff directory is a different
+    # object, and it is distinguishable by how many distinct people it lists:
+    # over 300 sampled records the count is 0 for 258, 1 or 2 for 31, and only
+    # a thin tail runs higher. `personal_data_maximum_contacts` lets a profile
+    # say where the line sits; without it the gate is unchanged and any contact
+    # still rejects, so no profile that has not opted in is affected.
     if profile.get("reject_personal_data") and features["contains_personal_data"]:
-        return QualityDecision(False, "personal_data", features)
+        allowance = profile.get("personal_data_maximum_contacts")
+        if allowance is None or int(features["distinct_personal_contacts"]) > int(allowance):
+            return QualityDecision(False, "personal_data", features)
     if profile.get("reject_probable_model_generated") and features["probable_model_boilerplate"]:
         return QualityDecision(False, "probable_model_generated", features)
 

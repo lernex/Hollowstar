@@ -51,7 +51,12 @@ profiles:
   # max 0.667: the mass at zero is unpaginated extractions and the tail is
   # ordinary running heads. 0.35 keeps 95% of records while still catching a
   # document whose page edges are mostly boilerplate.
-  pdf_technical_v1: {minimum_characters: 800, ocr_confidence_minimum: 0.90, repeated_header_footer_maximum: 0.35, reading_order_check: required}
+  # A technical PDF prints the author or office to contact about it, and
+  # `personal_data` was its single largest rejection at 18 of 60. The allowance
+  # admits a document carrying a contact block and still rejects one that lists
+  # people in bulk -- a staff directory or a delegate roster -- which is the
+  # object the gate is actually for.
+  pdf_technical_v1: {minimum_characters: 800, ocr_confidence_minimum: 0.90, repeated_header_footer_maximum: 0.35, reading_order_check: required, personal_data_maximum_contacts: 4}
   scientific_paper_v1: {minimum_characters: 1000, require_title_or_abstract: true, bibliography_body_ratio_maximum: 0.35}
   biomedical_paper_v1: {minimum_characters: 1000, require_open_access: true, bibliography_body_ratio_maximum: 0.35}
   # A book arrives as one record. The 2M-character default is sized for
