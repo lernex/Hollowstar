@@ -48,6 +48,15 @@ ROLE_MAILBOXES = (
     "webmaster", "noreply", "no-reply", "donotreply", "do-not-reply",
 )
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+# RFC 2606 and RFC 6761 reserve these names so that documentation can print an
+# address that cannot resolve to anyone. Technical PDFs use them exactly as
+# intended -- `firstname.lastname@example.org` and `email@example.com` are both
+# real matches in FinePDFs-Edu -- and treating a reserved placeholder as a
+# person's contact details discards the document that was being careful.
+RESERVED_EMAIL_DOMAIN_RE = re.compile(
+    r"^(?:.+\.)?(?:example\.(?:com|net|org)|example|test|invalid|localhost)$",
+    re.IGNORECASE,
+)
 # Matching the exemption inside the pattern does not work: a negative lookahead
 # only suppresses the match that starts where it is anchored, and the engine
 # then restarts one character later, so `no-reply@x.org` was skipped at `no`
@@ -61,8 +70,12 @@ PERSONAL_DATA_PATTERNS = (
 
 def contains_personal_email(text: str) -> bool:
     for match in EMAIL_RE.finditer(text):
-        if match.group(0).split("@", 1)[0].lower() not in ROLE_MAILBOXES:
-            return True
+        local, _, domain = match.group(0).partition("@")
+        if local.lower() in ROLE_MAILBOXES:
+            continue
+        if RESERVED_EMAIL_DOMAIN_RE.match(domain):
+            continue
+        return True
     return False
 MODEL_BOILERPLATE = re.compile(
     r"\b(?:as an ai language model|i do not have personal opinions|here (?:is|are) (?:a|the) (?:five|seven|ten)-section)\b",

@@ -392,18 +392,43 @@ class RoleMailboxTests(unittest.TestCase):
     def test_every_listed_role_mailbox_is_exempt(self) -> None:
         from metis_data.quality import ROLE_MAILBOXES
 
+        # Routable domain on purpose: this asserts the role-mailbox rule, not
+        # the reserved-domain one.
         for mailbox in ROLE_MAILBOXES:
             with self.subTest(mailbox=mailbox):
-                text = f"Reach the desk at {mailbox}@example.org for assistance."
+                text = f"Reach the desk at {mailbox}@university.edu for assistance."
                 self.assertFalse(self._features(text)["contains_personal_data"])
+
+    def test_reserved_placeholder_domains_are_not_personal_data(self) -> None:
+        # RFC 2606 / RFC 6761 names cannot resolve to a person. Both of these
+        # are real matches in FinePDFs-Edu.
+        body = "This technical note describes the procedure. " * 30
+        for address in ("firstname.lastname@example.org", "email@example.com",
+                        "a.person@sub.example.net", "someone@localhost"):
+            with self.subTest(address=address):
+                self.assertFalse(
+                    self._features(body + f"\nWrite to {address}.\n")["contains_personal_data"]
+                )
+
+    def test_a_real_domain_resembling_example_is_still_personal_data(self) -> None:
+        # `example.edu` is a routable name and is not reserved; only the
+        # reserved set is exempt.
+        body = "This technical note describes the procedure. " * 30
+        for address in ("a.person@example.edu", "a.person@myexample.com"):
+            with self.subTest(address=address):
+                self.assertTrue(
+                    self._features(body + f"\nWrite to {address}.\n")["contains_personal_data"]
+                )
 
     def test_a_role_word_inside_a_personal_local_part_is_not_exempt(self) -> None:
         # The exemption is the whole local part, not a prefix: `support.hotline`
         # is a desk, but `supportive.person` and `jsupport` are not the literal
         # role mailbox and must not inherit its exemption.
+        # The domain must be routable, or the reserved-domain exemption would
+        # carry the assertion instead of the local-part rule under test.
         for local in ("supportive.person", "jsupport", "info.smith"):
             with self.subTest(local=local):
-                text = f"Contact {local}@example.org about this matter."
+                text = f"Contact {local}@university.edu about this matter."
                 self.assertTrue(self._features(text)["contains_personal_data"])
 
 
