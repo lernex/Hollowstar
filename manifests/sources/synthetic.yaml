@@ -74,8 +74,43 @@ sources:
     # 'cosmopedia-v2/**' matches 104 files / 122GB. Note the form: this repo's
     # matcher is fnmatch, so 'cosmopedia-v2/**/*.parquet' matches NOTHING.
     access: {type: huggingface, repo_id: HuggingFaceTB/cosmopedia-v2, revision: 3ba9d605774198c5868892d7a8deda78031a781f, gated: false, allow_patterns: ['cosmopedia-v2/**']}
-    license: {status: reviewed, expression: apache-2.0}
-    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.45, compressed_bytes_per_token: 0.75}
+    # The Hub card for this revision states odc-by; apache-2.0 was recorded here
+    # in error.
+    license: {status: reviewed, expression: odc-by}
+    # The pattern alone leaves this source at 0%. The config ships prompt, text,
+    # token_length, audience, format and seed_data, and no models_used or
+    # genealogy column of any kind -- verified against the parquet footers of
+    # shards 00000, 00052 and 00103. textbook_synthetic_v1 requires genealogy,
+    # so 720 sampled rows normalized to 0 accepted, 705 of them on
+    # missing_genealogy. With this attestation the same rows yield 97.9%.
+    #
+    # The generator is a property of the release rather than of a row: every
+    # record in Cosmopedia v2 was produced by the same pinned model, which the
+    # dataset card names, and no per-row column could say anything the card does
+    # not already fix for the whole corpus.
+    attestation_basis: >-
+      Cosmopedia v2 was generated in full by Mixtral-8x7B-Instruct-v0.1, stated
+      by the dataset card for this pinned revision. The generator is fixed for
+      the release, so it is a property of the corpus rather than of any record;
+      no released shard carries a per-row generator column that could restate
+      it. This attests the model that produced the text, and deliberately
+      attests nothing about verification, which the publisher does not report.
+    attestations:
+      genealogy:
+        generator_models: [Mixtral-8x7B-Instruct-v0.1]
+    # 0.75 was out by a factor of five and would have been silently self-
+    # confirming: _select_files stops once selected bytes reach
+    # candidate_tokens * this ratio, and the shortfall check divides those same
+    # bytes by the same ratio, so a wrong constant reports its own target as
+    # met. Measured from train-00000 column-chunk metadata over 40 row groups /
+    # 40,000 rows: 3,098.5 compressed bytes per row against a mean token_length
+    # of 812.3, i.e. 3.86 compressed bytes per token (SNAPPY achieves only
+    # 0.576 here, and the prompt column is a quarter of the payload while
+    # contributing no training text). At 0.75 the resolver would have taken 8 of
+    # 104 shards, about 2.4B candidate tokens against an 8B budget, and reported
+    # candidate_target_met. 122GB is on the Hub, so the correction costs only
+    # download bytes.
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.45, compressed_bytes_per_token: 3.86}
     processing: {quality_profile: textbook_synthetic_v1, dedup_namespace: synthetic_grounded, priority: 82}
 
   - id: nemotron_math_textbooks
