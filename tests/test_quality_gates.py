@@ -407,6 +407,51 @@ class RoleMailboxTests(unittest.TestCase):
                 self.assertTrue(self._features(text)["contains_personal_data"])
 
 
+class LegalPrimaryContactTests(unittest.TestCase):
+    """An official notice prints the office to contact; that is the record."""
+
+    def _decide(self, text: str, profile: str):
+        from metis_data.quality import evaluate_quality
+
+        return evaluate_quality(
+            text,
+            profile_name=profile,
+            metadata={
+                "primary_source": True,
+                "jurisdiction": "US",
+                "license": "public-domain",
+                "language_probability": 0.99,
+                "quality_score": 0.9,
+            },
+        )
+
+    def test_an_agency_contact_number_does_not_discard_a_notice(self) -> None:
+        text = (
+            "AGENCY: Federal Aviation Administration, DOT. ACTION: Final rule. "
+            "FOR FURTHER INFORMATION CONTACT: the Operations Support Group, "
+            "telephone: (817) 222-5110. " + "This notice amends the airspace description. " * 20
+        )
+        self.assertTrue(self._decide(text, "legal_primary_v1").keep)
+
+    def test_the_exemption_does_not_leak_to_other_profiles(self) -> None:
+        # Scoped to primary legal text only: the same contact block in a scraped
+        # web record must still be treated as personal data.
+        text = "Call me at (817) 222-5110 about the listing. " + "Some ordinary prose here. " * 30
+        decision = self._decide(text, "web_general_v1")
+        self.assertFalse(decision.keep)
+        self.assertEqual(decision.reason, "personal_data")
+
+    def test_secrets_are_still_rejected_in_legal_text(self) -> None:
+        # Only the personal-data gate is relaxed; credential leakage is not.
+        text = (
+            "AGENCY: Department of Commerce. -----BEGIN PRIVATE KEY----- "
+            + "This notice concerns the record. " * 30
+        )
+        decision = self._decide(text, "legal_primary_v1")
+        self.assertFalse(decision.keep)
+        self.assertEqual(decision.reason, "secret")
+
+
 class ShortRowLanguageEvidenceTests(unittest.TestCase):
     """A short row is uncertain, not unmeasurable."""
 

@@ -92,7 +92,17 @@ profiles:
   # replacement measures the thing the score was a proxy for: that the record
   # actually contains a question and a substantive answer.
   explanatory_qa_v1: {minimum_characters: 250, require_license: true, require_question_and_answer: true}
-  legal_primary_v1: {minimum_characters: 500, require_primary_source: true, require_jurisdiction: true}
+  # Primary legal text publishes contact details as part of the record. A
+  # Federal Register notice names the agency office to write to and prints its
+  # telephone number, because that is what the notice is for. `reject_personal_data`
+  # was written for scraped web pages, where a phone number is likely a private
+  # individual's; here it discarded 38 of 60 sampled USGPO records over numbers
+  # like (817) 222-5110 (FAA Fort Worth) and (843) 571-4366 (NOAA Southeast),
+  # taking the source from 81.7% to 18.3%. Unlike an email, a phone number's
+  # digits cannot say whether the line belongs to a desk or a person, so the
+  # exemption is scoped to the one profile whose corpus is by definition an
+  # official published government record.
+  legal_primary_v1: {minimum_characters: 500, require_primary_source: true, require_jurisdiction: true, reject_personal_data: false}
   legal_synthetic_v1: {minimum_characters: 300, require_genealogy: true, quality_score_minimum: 0.68}
   translated_english_v1: {minimum_characters: 300, language_probability_minimum: 0.90, translation_quality_check: required}
   multilingual_native_v1: {minimum_characters: 300, language_probability_minimum: 0.90, allowed_language_registry: required}
