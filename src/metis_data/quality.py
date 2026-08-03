@@ -34,12 +34,36 @@ PHONE_ANNOUNCED = re.compile(
     r"(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]\d{3}[-. ]\d{4}\b",
     re.IGNORECASE,
 )
+# A role mailbox belongs to a desk, not a person. Publishers print them on
+# purpose -- OpenStax puts `support@openstax.org` in the colophon of every
+# book -- so matching them discarded a 1.6M-character textbook over the one
+# address its publisher wants readers to use. The gate is aimed at a private
+# individual's contact details, and a role address is the one kind of address
+# that is definitionally not that.
+ROLE_MAILBOXES = (
+    "abuse", "admin", "billing", "contact", "customerservice", "editor",
+    "editorial", "enquiries", "feedback", "help", "hello", "info", "inquiries",
+    "legal", "mail", "media", "office", "orders", "permissions", "postmaster",
+    "press", "privacy", "sales", "security", "service", "support", "team",
+    "webmaster", "noreply", "no-reply", "donotreply", "do-not-reply",
+)
+EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+# Matching the exemption inside the pattern does not work: a negative lookahead
+# only suppresses the match that starts where it is anchored, and the engine
+# then restarts one character later, so `no-reply@x.org` was skipped at `no`
+# and matched again at `reply`. The local part has to be parsed and compared.
 PERSONAL_DATA_PATTERNS = (
     PHONE_PUNCTUATED,
     PHONE_ANNOUNCED,
-    re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
     re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
 )
+
+
+def contains_personal_email(text: str) -> bool:
+    for match in EMAIL_RE.finditer(text):
+        if match.group(0).split("@", 1)[0].lower() not in ROLE_MAILBOXES:
+            return True
+    return False
 MODEL_BOILERPLATE = re.compile(
     r"\b(?:as an ai language model|i do not have personal opinions|here (?:is|are) (?:a|the) (?:five|seven|ten)-section)\b",
     re.IGNORECASE,
@@ -73,7 +97,10 @@ def text_features(text: str) -> dict[str, float | int | bool]:
         "repeated_line_fraction": 1.0 - unique_lines / max(1, len(lines)),
         "url_density_per_100_words": 100.0 * len(URL_RE.findall(text)) / max(1, word_count),
         "contains_secret": any(pattern.search(text) is not None for pattern in SECRET_PATTERNS),
-        "contains_personal_data": any(pattern.search(text) is not None for pattern in PERSONAL_DATA_PATTERNS),
+        "contains_personal_data": (
+            any(pattern.search(text) is not None for pattern in PERSONAL_DATA_PATTERNS)
+            or contains_personal_email(text)
+        ),
         "probable_model_boilerplate": MODEL_BOILERPLATE.search(text) is not None,
     }
 

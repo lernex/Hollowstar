@@ -399,7 +399,12 @@ def _text_lines(text: str) -> list[str]:
 def _computed_english_probability(text: str) -> tuple[float, dict[str, Any]] | None:
     letters = [character for character in text if character.isalpha()]
     words = [match.group(0).lower() for match in _WORD_RE.finditer(text[:250_000])]
-    if len(letters) < 100 or len(words) < 30:
+    # A short row is uncertain, not unmeasurable. The old 100-letter/30-word
+    # floor returned None for a grounded QA answer, and None fails closed, so
+    # `nemotron_specialized_fact_seeking` lost 44 of 60 rows to
+    # `missing_language_probability` -- rejected for being short rather than
+    # for being non-English. Its rows run 18-55 words.
+    if len(letters) < 40 or len(words) < 12:
         return None
     latin_letters = sum(
         "LATIN" in unicodedata.name(character, "") for character in letters
@@ -409,7 +414,12 @@ def _computed_english_probability(text: str) -> tuple[float, dict[str, Any]] | N
     distinct_hits = len(set(hits))
     hit_fraction = len(hits) / len(words)
     script_score = min(1.0, latin_fraction / 0.985)
-    vocabulary_score = min(1.0, distinct_hits / 12.0)
+    # The distinct-function-word target scales with how many words there are to
+    # draw from: a 20-word answer cannot contain 12 distinct function words, so
+    # a fixed target measured length rather than language. At 30+ words the
+    # target is still 12, so nothing longer changes.
+    vocabulary_target = min(12.0, max(3.0, len(words) / 2.5))
+    vocabulary_score = min(1.0, distinct_hits / vocabulary_target)
     frequency_score = min(1.0, hit_fraction / 0.11)
     probability = 0.50 * script_score + 0.30 * vocabulary_score + 0.20 * frequency_score
     details = {

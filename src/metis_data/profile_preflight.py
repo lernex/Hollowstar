@@ -28,31 +28,47 @@ from .state import StateStore
 PER_RECORD_LICENSE = {"per_record_required", "inherited", "requires_review"}
 
 
-def _fixture_rows(path: Path, limit: int) -> Iterator[dict[str, Any]]:
-    with path.open("r", encoding="utf-8") as handle:
-        for index, line in enumerate(handle):
-            if index >= limit:
-                return
-            line = line.rstrip("\r")
-            if line.strip():
-                yield json.loads(line)
+# Readers take every input file a source has and draw from them in turn until
+# the sample is full. Sampling only the first file assumes a file holds many
+# records, which is true of a 800k-row parquet shard and false of a corpus that
+# ships one document per file: `openstax` is 76 textbooks in 76 `.txt` files, so
+# the sweep read one book, called it the whole source, and reported `0/1`. Each
+# row is paired with the file record it came from, because that record is what
+# the evidence step reads licence and partition facts out of.
+def _fixture_rows(
+    entries: list[tuple[dict[str, Any], Path]], limit: int
+) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
+    emitted = 0
+    for file_record, path in entries:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if emitted >= limit:
+                    return
+                line = line.rstrip("\r")
+                if line.strip():
+                    emitted += 1
+                    yield file_record, json.loads(line)
 
 
-def _live_rows(path: Path, limit: int) -> Iterator[dict[str, Any]]:
+def _live_rows(
+    entries: list[tuple[dict[str, Any], Path]], limit: int
+) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
     # Imported lazily: the stage runner pulls in the whole build stack, which a
     # fixture-only sweep on a laptop has no reason to require.
     from .stage_runner import _iter_rows
 
-    for index, row in enumerate(_iter_rows(path)):
-        if index >= limit:
-            return
-        yield row
+    emitted = 0
+    for file_record, path in entries:
+        for row in _iter_rows(path):
+            if emitted >= limit:
+                return
+            emitted += 1
+            yield file_record, row
 
 
 def evaluate_source_sample(
     source: dict[str, Any],
-    file_record: dict[str, Any],
-    rows: Iterator[dict[str, Any]],
+    rows: Iterator[tuple[dict[str, Any], dict[str, Any]]],
     *,
     profiles: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -63,7 +79,7 @@ def evaluate_source_sample(
     per_record_license = source["license"]["status"] in PER_RECORD_LICENSE
     reasons: Counter[str] = Counter()
     accepted = sampled = 0
-    for row in rows:
+    for file_record, row in rows:
         sampled += 1
         text = extract_training_text(row)
         if not text:
@@ -111,7 +127,7 @@ def run_profile_preflight(
 
     sources = {str(item["id"]): item for item in manifest["sources"]}
     profiles = load_quality_profiles()
-    targets: list[tuple[dict[str, Any], dict[str, Any], Path, bool]] = []
+    targets: list[tuple[dict[str, Any], list[tuple[dict[str, Any], Path]], bool]] = []
     if fixture is not None:
         index = json.loads((fixture / "FIXTURE.json").read_text(encoding="utf-8"))
         for source_id, entry in sorted(index.items()):
@@ -119,27 +135,30 @@ def run_profile_preflight(
             sample = fixture / f"{source_id}.jsonl"
             if source is None or not sample.is_file():
                 continue
-            targets.append((source, entry.get("file_record") or {}, sample, True))
+            targets.append((source, [(entry.get("file_record") or {}, sample)], True))
     else:
         if state is None:
             raise ValueError("a StateStore is required when no fixture is given")
         inputs = state.read("build.inputs.json")
         if not inputs:
             raise RuntimeError("build.inputs.json is missing; run the build graph first")
-        seen: set[str] = set()
+        by_source: dict[str, list[tuple[dict[str, Any], Path]]] = {}
         for record in inputs["inputs"]:
             source_id = str(record["source_id"])
-            if source_id in seen or source_id not in sources:
+            if source_id not in sources:
                 continue
-            seen.add(source_id)
-            targets.append((sources[source_id], record, Path(record["local_path"]), False))
+            by_source.setdefault(source_id, []).append(
+                (record, Path(record["local_path"]))
+            )
+        for source_id, entries in by_source.items():
+            targets.append((sources[source_id], entries, False))
 
     reports: list[dict[str, Any]] = []
-    for source, file_record, path, from_fixture in sorted(targets, key=lambda item: item[0]["id"]):
+    for source, entries, from_fixture in sorted(targets, key=lambda item: item[0]["id"]):
         reader = _fixture_rows if from_fixture else _live_rows
         try:
             report = evaluate_source_sample(
-                source, file_record, reader(path, rows), profiles=profiles
+                source, reader(entries, rows), profiles=profiles
             )
         except Exception as exc:  # noqa: BLE001 - reported per source, never fatal
             report = {

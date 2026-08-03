@@ -369,5 +369,90 @@ class FormalLanguageProofTests(unittest.TestCase):
         self.assertIsNone(evidence.get("statement_and_argument"))
 
 
+class RoleMailboxTests(unittest.TestCase):
+    """A desk address is not a person's contact details."""
+
+    def _features(self, text: str) -> dict:
+        from metis_data.quality import text_features
+
+        return text_features(text)
+
+    def test_a_publishers_support_address_is_not_personal_data(self) -> None:
+        # OpenStax prints `support@openstax.org` in every colophon, and that one
+        # address discarded a 1.59M-character textbook.
+        body = "This textbook is openly licensed. " * 40
+        text = body + "\nFor help with this book, write to support@openstax.org.\n"
+        self.assertFalse(self._features(text)["contains_personal_data"])
+
+    def test_an_individuals_address_is_still_personal_data(self) -> None:
+        body = "This textbook is openly licensed. " * 40
+        text = body + "\nWritten by a.researcher@university.edu.\n"
+        self.assertTrue(self._features(text)["contains_personal_data"])
+
+    def test_every_listed_role_mailbox_is_exempt(self) -> None:
+        from metis_data.quality import ROLE_MAILBOXES
+
+        for mailbox in ROLE_MAILBOXES:
+            with self.subTest(mailbox=mailbox):
+                text = f"Reach the desk at {mailbox}@example.org for assistance."
+                self.assertFalse(self._features(text)["contains_personal_data"])
+
+    def test_a_role_word_inside_a_personal_local_part_is_not_exempt(self) -> None:
+        # The exemption is the whole local part, not a prefix: `support.hotline`
+        # is a desk, but `supportive.person` and `jsupport` are not the literal
+        # role mailbox and must not inherit its exemption.
+        for local in ("supportive.person", "jsupport", "info.smith"):
+            with self.subTest(local=local):
+                text = f"Contact {local}@example.org about this matter."
+                self.assertTrue(self._features(text)["contains_personal_data"])
+
+
+class ShortRowLanguageEvidenceTests(unittest.TestCase):
+    """A short row is uncertain, not unmeasurable."""
+
+    def test_a_short_english_answer_is_measured_rather_than_skipped(self) -> None:
+        # `nemotron_specialized_fact_seeking` rows run 18-55 words, and the old
+        # 30-word floor returned None, which fails closed as
+        # `missing_language_probability`.
+        from metis_data.normalization_evidence import _computed_english_probability
+
+        text = (
+            "The Treaty of Westphalia was signed in 1648, and it ended the "
+            "Thirty Years War in the Holy Roman Empire."
+        )
+        result = _computed_english_probability(text)
+        self.assertIsNotNone(result)
+        self.assertGreaterEqual(result[0], 0.80)
+
+    def test_text_below_the_new_floor_is_still_unmeasurable(self) -> None:
+        from metis_data.normalization_evidence import _computed_english_probability
+
+        self.assertIsNone(_computed_english_probability("Too short to judge."))
+
+    def test_a_long_document_scores_exactly_as_before(self) -> None:
+        # At 30+ words the distinct-function-word target is still 12, so the
+        # rescaling must not move any score the old floor already produced.
+        from metis_data.normalization_evidence import _computed_english_probability
+
+        text = (
+            "This paragraph is written in ordinary English prose so that the "
+            "language detector has enough of the common function words it "
+            "relies on, and it is long enough that the sample size does not "
+            "limit the vocabulary target in any way at all here."
+        )
+        result = _computed_english_probability(text)
+        self.assertIsNotNone(result)
+        self.assertGreaterEqual(result[1]["sampled_words"], 30)
+        self.assertGreaterEqual(result[0], 0.80)
+
+    def test_short_non_english_is_not_rescued_by_the_lower_floor(self) -> None:
+        from metis_data.normalization_evidence import _computed_english_probability
+
+        text = "Der Vertrag wurde im Jahre 1648 unterzeichnet und beendete den Krieg im Reich."
+        result = _computed_english_probability(text)
+        self.assertIsNotNone(result)
+        self.assertLess(result[0], 0.80)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

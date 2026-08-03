@@ -21,6 +21,12 @@ def _prose(paragraphs: int = 6) -> str:
     )
 
 
+def _paired(rows: list[dict], file_record: dict | None = None):
+    """Rows as the readers now yield them: paired with their file record."""
+
+    return iter((file_record or {}, row) for row in rows)
+
+
 def _source(source_id: str, *, profile: str, category: str = "web", status: str = "reviewed") -> dict:
     return {
         "id": source_id,
@@ -36,7 +42,7 @@ class EvaluateSourceSampleTests(unittest.TestCase):
         rows = [{"id": f"r{n}", "text": _prose(), "language": "en", "language_score": 0.99}
                 for n in range(10)]
         report = evaluate_source_sample(
-            _source("good", profile="web_general_v1"), {}, iter(rows)
+            _source("good", profile="web_general_v1"), _paired(rows)
         )
         self.assertEqual(report["sampled"], 10)
         self.assertEqual(report["rejections"].get("missing_quality_score", 0), 0)
@@ -48,8 +54,7 @@ class EvaluateSourceSampleTests(unittest.TestCase):
                 for n in range(10)]
         report = evaluate_source_sample(
             _source("synthetic", profile="textbook_synthetic_v1", category="synthetic"),
-            {},
-            iter(rows),
+            _paired(rows),
         )
         self.assertEqual(report["accepted"], 0)
         self.assertIn("missing_source_document_id", report["rejections"])
@@ -58,10 +63,67 @@ class EvaluateSourceSampleTests(unittest.TestCase):
         rows = [{"id": "r0", "text": _prose()}]
         report = evaluate_source_sample(
             _source("unlicensed", profile="web_general_v1", status="per_record_required"),
-            {},
-            iter(rows),
+            _paired(rows),
         )
         self.assertEqual(report["rejections"], {"missing_license": 1})
+
+
+class MultiFileSamplingTests(unittest.TestCase):
+    def test_a_source_of_one_document_per_file_is_sampled_across_files(self) -> None:
+        # `openstax` ships 76 textbooks as 76 single-record files. Reading only
+        # the first file sampled one book and reported the source as `0/1`,
+        # which reads as zero-yield rather than as a sample of one.
+        from metis_data.profile_preflight import _fixture_rows
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            entries = []
+            for n in range(5):
+                path = root / f"book-{n}.jsonl"
+                path.write_text(json.dumps({"id": f"b{n}", "text": _prose()}) + "\n",
+                                encoding="utf-8")
+                entries.append(({"local_path": str(path)}, path))
+
+            drawn = list(_fixture_rows(entries, 60))
+
+            self.assertEqual(len(drawn), 5)
+            self.assertEqual(
+                [row["id"] for _, row in drawn], ["b0", "b1", "b2", "b3", "b4"]
+            )
+
+    def test_each_row_carries_the_file_record_it_came_from(self) -> None:
+        # Evidence derivation reads licence and partition facts off the file
+        # record, so a row drawn from the third file must not be handed the
+        # first file's record.
+        from metis_data.profile_preflight import _fixture_rows
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            entries = []
+            for n in range(3):
+                path = root / f"part-{n}.jsonl"
+                path.write_text(json.dumps({"id": f"r{n}", "text": _prose()}) + "\n",
+                                encoding="utf-8")
+                entries.append(({"marker": n}, path))
+
+            drawn = list(_fixture_rows(entries, 60))
+
+            self.assertEqual([record["marker"] for record, _ in drawn], [0, 1, 2])
+
+    def test_the_row_limit_still_holds_across_files(self) -> None:
+        from metis_data.profile_preflight import _fixture_rows
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            entries = []
+            for n in range(4):
+                path = root / f"part-{n}.jsonl"
+                with path.open("w", encoding="utf-8") as handle:
+                    for r in range(10):
+                        handle.write(json.dumps({"id": f"{n}-{r}", "text": _prose()}) + "\n")
+                entries.append(({}, path))
+
+            self.assertEqual(len(list(_fixture_rows(entries, 25))), 25)
 
 
 class RunProfilePreflightTests(unittest.TestCase):
