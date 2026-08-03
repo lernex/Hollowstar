@@ -47,9 +47,26 @@ sources:
     category: science
     phase_tokens: {phase_a: 4000000000, phase_b: 1000000000, phase_c: 0}
     provenance: {generated: false, transformed: false, fresh: false}
-    access: {type: huggingface, repo_id: EleutherAI/proof-pile-2, revision: 901a9273a770e9d4138c5ddd91802f9c5c6cdc4b, gated: false, allow_patterns: ['**/*.jsonl.zst']}
-    license: {status: per_record_required, expression: per-component}
-    acquisition: {driver: hf_snapshot, candidate_multiplier: 1.55, compressed_bytes_per_token: 0.65}
+    # The repo holds three corpora: algebraic-stack (code and formal proofs),
+    # arxiv (papers), open-web-math. '**/*.jsonl.zst' took all three, and the
+    # resolver filled this source with AlgebraicStack code -- agda-test,
+    # isa_proofsteps, fortran0003, jupyter-notebook0000 -- graded by a
+    # scientific-paper profile, hence 20%. It also gave proof_pile2_math the
+    # identical 482-file set: all 48 of this source's files were also that
+    # source's. open-web-math is excluded because openwebmath_unique already
+    # pins that same corpus standalone. test/ and validation/ are the
+    # publisher's held-out splits and cost only 266MB to leave behind.
+    #
+    # The licence status moves with the pattern and must not be separated from
+    # it. arXiv rows carry no per-record licence -- their meta keys are exactly
+    # {arxiv_id, language, timestamp, url, yymm} -- so under
+    # `per_record_required` stage_runner rejects every row as missing_license
+    # BEFORE the quality profile runs, measured 0/180. Today's 20% survives only
+    # because AlgebraicStack ships max_stars_repo_licenses. Re-pinning without
+    # this line is a 20% -> 0% regression.
+    access: {type: huggingface, repo_id: EleutherAI/proof-pile-2, revision: 901a9273a770e9d4138c5ddd91802f9c5c6cdc4b, gated: false, allow_patterns: ['arxiv/train/*.jsonl.zst']}
+    license: {status: reviewed, expression: arxiv-mixed-per-paper}
+    acquisition: {driver: hf_snapshot, candidate_multiplier: 2.30, compressed_bytes_per_token: 0.65}
     processing: {quality_profile: scientific_paper_v1, dedup_namespace: global_math_science, priority: 84}
 
   - id: openstax

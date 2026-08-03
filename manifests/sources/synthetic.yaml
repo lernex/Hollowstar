@@ -64,7 +64,16 @@ sources:
     category: synthetic
     phase_tokens: {phase_a: 4000000000, phase_b: 4000000000, phase_c: 0}
     provenance: {generated: true, transformed: true, fresh: false}
-    access: {type: huggingface, repo_id: HuggingFaceTB/cosmopedia-v2, revision: 3ba9d605774198c5868892d7a8deda78031a781f, gated: false, allow_patterns: ['**/*.parquet']}
+    # The repo id 307-redirects to HuggingFaceTB/smollm-corpus, which carries
+    # three configs: cosmopedia-v2, fineweb-edu-dedup and python-edu. The old
+    # '**/*.parquet' matched all 673GB of them and the resolver filled its byte
+    # target from fineweb-edu-dedup -- raw CommonCrawl web text, which is what
+    # Cosmopedia was generated FROM, not Cosmopedia. That is why this source
+    # normalized to 0/60 on missing_source_document_id: seed data has no seed.
+    # It also duplicated the separately pinned fineweb_edu source.
+    # 'cosmopedia-v2/**' matches 104 files / 122GB. Note the form: this repo's
+    # matcher is fnmatch, so 'cosmopedia-v2/**/*.parquet' matches NOTHING.
+    access: {type: huggingface, repo_id: HuggingFaceTB/cosmopedia-v2, revision: 3ba9d605774198c5868892d7a8deda78031a781f, gated: false, allow_patterns: ['cosmopedia-v2/**']}
     license: {status: reviewed, expression: apache-2.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.45, compressed_bytes_per_token: 0.75}
     processing: {quality_profile: textbook_synthetic_v1, dedup_namespace: synthetic_grounded, priority: 82}

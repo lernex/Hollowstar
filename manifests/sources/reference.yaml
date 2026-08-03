@@ -158,7 +158,41 @@ sources:
     category: reference
     phase_tokens: {phase_a: 2000000000, phase_b: 0, phase_c: 0}
     provenance: {generated: true, transformed: true, fresh: false}
-    access: {type: huggingface, repo_id: nvidia/Nemotron-Pretraining-Legal-v1, revision: 3d91d58a5c0c46fe9944300ec46719f97a385b13, gated: false, allow_patterns: ['**/*.parquet']}
+    # Five of the thirteen subsets are reformulations of tasks from benchmarks
+    # this build evaluates on -- manifests/contamination/eval-holdouts.yaml pins
+    # both nguha/legalbench and coastalcph/lex_glue, and lex_glue carries
+    # case_hold. Decontamination is not a reliable backstop for them: the policy
+    # matches on 13-grams, and these rows are Qwen3 reformulations that need
+    # share no 13-gram with the benchmark text they came from. Excluding them at
+    # the pin is the defence that actually holds.
+    #
+    # Read the payloads, not the directory names: the two largest subsets are
+    # swapped. `Case-Law-Summary/` holds the CaseHOLD task verbatim ("select the
+    # correct holding statement from the options", models_used Qwen3) and is
+    # excluded; `CaseHOLD/` holds ordinary case-law narrative ("United States v.
+    # Daniel Dee Veon...", models_used none) and is kept. Keeping the directory
+    # named CaseHOLD and dropping the one named Case-Law-Summary is correct and
+    # is the opposite of what the names suggest.
+    #
+    # Excluded: Case-Law-Summary (CaseHOLD task), LegalBench-CUAD-v2,
+    # Definition-Classification, Function-Of-Decision, Diversity-Jurisdiction
+    # -- the last four are LegalBench task names. ToSDR/ToS/eCFR-QA are
+    # question-shaped but derive from tosdr.org and the eCFR, neither of which
+    # is a pinned benchmark, so they stay.
+    access:
+      type: huggingface
+      repo_id: nvidia/Nemotron-Pretraining-Legal-v1
+      revision: 3d91d58a5c0c46fe9944300ec46719f97a385b13
+      gated: false
+      allow_patterns:
+        - 'Nemotron-Pretraining-Legal-California-Code-Of-Regulations/*.parquet'
+        - 'Nemotron-Pretraining-Legal-CaseHOLD/*.parquet'
+        - 'Nemotron-Pretraining-Legal-GlobalCit/*.parquet'
+        - 'Nemotron-Pretraining-Legal-NYCourts-Judicial-Ethics-Opinions/*.parquet'
+        - 'Nemotron-Pretraining-Legal-ToS-Clause-Understanding/*.parquet'
+        - 'Nemotron-Pretraining-Legal-ToSDR-QA/*.parquet'
+        - 'Nemotron-Pretraining-Legal-eCFR/*.parquet'
+        - 'Nemotron-Pretraining-Legal-eCFR-QA/*.parquet'
     license: {status: reviewed, expression: CC-BY-4.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.35, compressed_bytes_per_token: 0.75}
     processing: {quality_profile: legal_synthetic_v1, dedup_namespace: synthetic_legal, priority: 75}
