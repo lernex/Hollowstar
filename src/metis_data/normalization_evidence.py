@@ -644,9 +644,21 @@ def _pdf_evidence(text: str, searchable: Mapping[str, Any]) -> dict[str, Any]:
     single_token_fraction = (
         sum(len(line.split()) <= 1 for line in all_lines) / max(1, len(all_lines))
     )
+    # Reading order is a question about sequence: did the extractor emit the
+    # text in the order a reader would follow it, or interleave columns and
+    # scatter blocks? Repeated page edges answer a different question. A
+    # correctly ordered textbook repeats its running header on every page --
+    # that is what pagination is -- and with the two-page median of this corpus
+    # a single running header already puts the fraction at 0.25, so the 0.08
+    # bound was unreachable for any paginated document. It also sat here *and*
+    # in `pdf_technical_v1` as `repeated_header_footer_maximum`, so relaxing
+    # either one alone changed nothing and the redundancy hid the cause.
+    # Pagination is still judged, once, by that profile bound. What remains here
+    # is the evidence that actually speaks to ordering: mojibake and control
+    # characters, column bleed showing up as single-token lines, fragmented
+    # lines, and page offsets that parse when the row ships them.
     reading_order = bool(
         extraction_confidence >= 0.90
-        and repeated_fraction <= 0.08
         and single_token_fraction <= 0.35
         and (not line_lengths or median(line_lengths) >= 20)
         and (not page_ends or bool(offsets))

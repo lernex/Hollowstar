@@ -121,6 +121,57 @@ class NormalizationEvidenceTests(unittest.TestCase):
         )
         self.assertTrue(decision.keep, decision.reason)
 
+    def _paginated(self, pages: int = 6) -> tuple[str, list[int]]:
+        """A well-ordered document that repeats a running head on every page."""
+
+        header = "Introductory Physics for Engineers -- Chapter Four"
+        body = (
+            "The derivation proceeds from the conservation law stated above, and "
+            "each term is carried through the substitution so that the reader can "
+            "follow how the final expression is obtained from the initial one."
+        )
+        text = ""
+        ends: list[int] = []
+        for index in range(pages):
+            text += f"{header}\n{body}\nPage {index + 1} of {pages}\n"
+            ends.append(len(text))
+        return text, ends
+
+    def test_a_running_head_no_longer_fails_reading_order(self) -> None:
+        # Reading order is about sequence. A textbook that repeats its running
+        # head on every page is correctly ordered; with the old compound the
+        # repeated edges alone drove `reading_order_passed` to False.
+        from metis_data.normalization_evidence import _pdf_evidence
+
+        text, ends = self._paginated()
+        evidence = _pdf_evidence(text, {"page_ends": ends})
+
+        self.assertGreater(evidence["repeated_header_footer_fraction"], 0.08)
+        self.assertTrue(evidence["reading_order_passed"])
+
+    def test_pagination_is_still_judged_once_by_the_profile(self) -> None:
+        # The signal is not discarded, only moved: a document whose page edges
+        # are almost entirely boilerplate still exceeds the profile bound.
+        from metis_data.normalization_evidence import _pdf_evidence
+
+        text, ends = self._paginated(pages=40)
+        evidence = _pdf_evidence(text, {"page_ends": ends})
+        self.assertGreater(evidence["repeated_header_footer_fraction"], 0.35)
+
+    def test_scrambled_extraction_still_fails_reading_order(self) -> None:
+        # Column bleed shows up as single-token lines and short fragments, and
+        # those are what the check now rests on.
+        from metis_data.normalization_evidence import _pdf_evidence
+
+        scrambled = "\n".join(["word"] * 60)
+        self.assertFalse(_pdf_evidence(scrambled, {})["reading_order_passed"])
+
+    def test_mojibake_still_fails_reading_order(self) -> None:
+        from metis_data.normalization_evidence import _pdf_evidence
+
+        text = self.prose(20) + "�" * 400
+        self.assertFalse(_pdf_evidence(text, {})["reading_order_passed"])
+
     def test_pdf_evidence_is_computed_but_non_english_detector_wins(self) -> None:
         text = self.prose(45)
         valid = {
