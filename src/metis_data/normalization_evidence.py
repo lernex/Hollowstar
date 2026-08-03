@@ -66,6 +66,21 @@ _ENGLISH_LABELS = {
     "eng-latn",
     "eng_latn",
 }
+# Profiles whose content is machine syntax rather than natural language. An
+# English-confidence gate is a category error against them: a Lean proof scores
+# low because it is not prose, not because it is bad. The category == "code"
+# branch below already encodes this, but formal mathematics is filed under
+# `math`, so Lean, Coq, Isabelle, and Metamath fell through and every record was
+# rejected on `language_probability_minimum`.
+_NON_PROSE_QUALITY_PROFILES = frozenset(
+    {
+        "formal_proof_v1",
+        "repository_code_v1",
+        "fresh_repository_code_v1",
+        "executable_code_v1",
+        "verified_synthetic_code_v1",
+    }
+)
 _ENGLISH_FUNCTION_WORDS = {
     "a",
     "about",
@@ -1023,13 +1038,17 @@ def derive_normalization_evidence(
                 method="pinned_multilingual_partition_language_v1",
                 source_field=full_lid_path if full_lid else language_path,
             )
-    elif source.get("category") == "code":
+    elif source.get("category") == "code" or profile_name in _NON_PROSE_QUALITY_PROFILES:
         _set_evidence(
             metadata,
             "language_probability",
             1.0,
             method="natural_language_gate_not_applicable_to_code_v1",
-            source_field="source.category",
+            source_field=(
+                "source.category"
+                if source.get("category") == "code"
+                else "processing.quality_profile"
+            ),
         )
     elif label:
         if english_label:

@@ -15,6 +15,7 @@ from .download import run_download_task
 from .manifest import candidate_plan, dump_json, validate_manifest
 from .holdouts import prepare_holdouts
 from .handoff import verify_acquisition_handoff, write_acquisition_handoff
+from .profile_preflight import format_preflight, run_profile_preflight
 from .reporting import report, status
 from .slurm import submit_graph
 from .source_lock import _repository_commit, resolve_sources
@@ -479,6 +480,21 @@ def cmd_rehandoff(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_preflight_profiles(args: argparse.Namespace) -> int:
+    _, profile, manifest, state = _context(args.profile)
+    fixture = Path(args.fixture).expanduser() if args.fixture else None
+    payload = run_profile_preflight(
+        profile, manifest, None if fixture else state, rows=args.rows, fixture=fixture
+    )
+    if args.json:
+        _print(payload)
+    else:
+        print(format_preflight(payload))
+    # A zero-yield source fails its whole normalization task and strands the
+    # graph behind it, so this exits non-zero: it is a gate, not a report.
+    return 0 if payload["ok"] else 1
+
+
 def cmd_training_contract(args: argparse.Namespace) -> int:
     contract = Path(args.contract)
     if not contract.is_absolute():
@@ -534,6 +550,18 @@ def build_parser() -> argparse.ArgumentParser:
     handoff.add_argument("--profile", default="rhea")
     handoff.add_argument("--deep", action="store_true", help="Rehash every acquired artifact")
     handoff.set_defaults(func=cmd_verify_handoff)
+
+    preflight_profiles = subparsers.add_parser(
+        "preflight-profiles",
+        help="Sample every source and report what the normalization gate would keep",
+    )
+    preflight_profiles.add_argument("--profile", default="login2")
+    preflight_profiles.add_argument("--rows", type=int, default=60)
+    preflight_profiles.add_argument(
+        "--fixture", help="Directory of per-source JSONL samples with FIXTURE.json"
+    )
+    preflight_profiles.add_argument("--json", action="store_true")
+    preflight_profiles.set_defaults(func=cmd_preflight_profiles)
 
     rehandoff = subparsers.add_parser(
         "rehandoff",

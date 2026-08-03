@@ -17,8 +17,26 @@ SECRET_PATTERNS = (
     re.compile(r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
 )
+# A phone number is punctuated or announced; three space-separated digit groups
+# are not. The original pattern accepted a bare space between every group, so
+# "100 200 3000" in a results table, "105 220 3340 cm-1" in a spectrum, and
+# "001 002 0003" in a data column all registered as personal data. That is why
+# scientific PDFs and legal texts -- the two corpora densest in tabular numbers
+# -- lost the majority of their records to `personal_data`. Matching real
+# numbers more precisely raises recall on documents that actually carry contact
+# details and stops discarding measurements.
+PHONE_PUNCTUATED = re.compile(
+    r"(?:\+1[-. ]?)?(?:\(\d{3}\)[-. ]?|\d{3}[-.])\d{3}[-.]\d{4}\b"
+)
+# Space separation is only phone-shaped when something says so nearby.
+PHONE_ANNOUNCED = re.compile(
+    r"(?:phone|telephone|tel|fax|mobile|cell|call|contact)\b[^\d\n]{0,24}"
+    r"(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]\d{3}[-. ]\d{4}\b",
+    re.IGNORECASE,
+)
 PERSONAL_DATA_PATTERNS = (
-    re.compile(r"\b(?:\+?1[-. (]*)?(?:\d{3}[-. )]*)\d{3}[-. ]*\d{4}\b"),
+    PHONE_PUNCTUATED,
+    PHONE_ANNOUNCED,
     re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
     re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
 )
