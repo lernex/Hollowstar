@@ -20,3 +20,6 @@ containers/*.sif
 
 # Model weights are published to Hugging Face, not GitHub.
 *.safetensors
+
+# Local Claude Code session state.
+.claude/
