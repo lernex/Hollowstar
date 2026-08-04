@@ -462,8 +462,29 @@ def _computed_document_quality(text: str) -> tuple[float, dict[str, Any]]:
     }
 
 
+# `$` is a delimiter and also a currency sign, and the balance check cannot tell
+# them apart by counting. A worked problem about prices -- "the cost is $0.50
+# per pound", "sold on eBay for $153" -- carries an odd number of `$` and was
+# failing equation_integrity for having unclosed mathematics it never opened.
+# The discriminator is what follows the amount: in `$20 \times 365 = 7300$` a
+# LaTeX command or operator comes next and the `$` is opening real mathematics,
+# while in `$0.50 per pound` an ordinary word does. Only the second is dropped
+# before the delimiters are counted, and it is dropped for the balance test
+# alone -- the text itself is never rewritten.
+# `(?!\d)` forces the amount to be matched whole. Without it the engine
+# backtracks -- `$20` matches as `$2`, the test then inspects `0 \times` rather
+# than ` \times`, and real mathematics is misread as a price. It tests for a
+# digit rather than for `[\d,.]` so that a price ending a sentence, `$5.00.`,
+# is still recognised.
+_CURRENCY_AMOUNT = re.compile(
+    r"(?<!\\)\$\d[\d,]*(?:\.\d+)?(?!\d)(?!\s*[\\^_=+*/<>{}])(?!\s*\d*\s*\$)"
+)
+
+
 def _equation_integrity(text: str) -> tuple[bool, dict[str, Any]]:
-    unescaped_dollars = len(re.findall(r"(?<!\\)\$", text))
+    delimiter_text = _CURRENCY_AMOUNT.sub(" ", text)
+    currency_amounts = len(_CURRENCY_AMOUNT.findall(text))
+    unescaped_dollars = len(re.findall(r"(?<!\\)\$", delimiter_text))
     inline_open = text.count(r"\(")
     inline_close = text.count(r"\)")
     display_open = text.count(r"\[")
@@ -516,6 +537,7 @@ def _equation_integrity(text: str) -> tuple[bool, dict[str, Any]]:
         "plain_signal_count": plain_signal_count,
         "plain_relation_count": plain_relations,
         "unescaped_dollar_count": unescaped_dollars,
+        "currency_amounts_excluded": currency_amounts,
         "inline_pairs": [inline_open, inline_close],
         "display_pairs": [display_open, display_close],
         "environment_pairs_match": Counter(environments_open) == Counter(environments_close),

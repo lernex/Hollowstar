@@ -432,6 +432,54 @@ class RoleMailboxTests(unittest.TestCase):
                 self.assertTrue(self._features(text)["contains_personal_data"])
 
 
+class CurrencyIsNotADelimiterTests(unittest.TestCase):
+    """A price is not an equation somebody forgot to close."""
+
+    def _eq(self, text: str):
+        from metis_data.normalization_evidence import _equation_integrity
+
+        return _equation_integrity(text)
+
+    def test_a_price_does_not_unbalance_the_delimiters(self) -> None:
+        text = r"Buy at $25.00 each. Then $x^2 + y^2 = z^2$ holds for all integers."
+        passed, detail = self._eq(text)
+        self.assertTrue(passed)
+        self.assertEqual(detail["currency_amounts_excluded"], 1)
+
+    def test_a_price_ending_a_sentence_is_still_a_price(self) -> None:
+        text = r"It costs $5.00. Also $\frac{1}{2}$ of it remains unspent today."
+        passed, detail = self._eq(text)
+        self.assertTrue(passed)
+        self.assertEqual(detail["currency_amounts_excluded"], 1)
+
+    def test_mathematics_opening_on_a_number_is_not_a_price(self) -> None:
+        # `$20 \times 365 = 7300$` opens real mathematics on a digit. The
+        # discriminator is the LaTeX command that follows the amount.
+        text = r"We compute $20 \times 365 = 7300$ pounds per year."
+        passed, detail = self._eq(text)
+        self.assertTrue(passed)
+        self.assertEqual(detail["currency_amounts_excluded"], 0)
+
+    def test_a_genuinely_unclosed_delimiter_still_fails(self) -> None:
+        text = r"The identity $a^2 + b^2 = c^2 is stated here without closing it."
+        passed, _ = self._eq(text)
+        self.assertFalse(passed)
+
+    def test_balanced_inline_mathematics_is_unaffected(self) -> None:
+        text = r"Let $a$ and $b$ be integers with $a < b$ throughout."
+        passed, detail = self._eq(text)
+        self.assertTrue(passed)
+        self.assertEqual(detail["currency_amounts_excluded"], 0)
+
+    def test_the_text_itself_is_never_rewritten(self) -> None:
+        # The exclusion applies to the balance count only; nothing edits the
+        # document that gets trained on.
+        from metis_data.normalization_evidence import extract_training_text
+
+        row = {"text": "The cost is $5.00 per unit and $x = 1$ holds."}
+        self.assertEqual(extract_training_text(row), row["text"])
+
+
 class ContactAllowanceTests(unittest.TestCase):
     """One contact block is a document; a roster of people is a directory."""
 

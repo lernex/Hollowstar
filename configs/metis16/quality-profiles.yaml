@@ -57,7 +57,15 @@ profiles:
   # people in bulk -- a staff directory or a delegate roster -- which is the
   # object the gate is actually for.
   pdf_technical_v1: {minimum_characters: 800, ocr_confidence_minimum: 0.90, repeated_header_footer_maximum: 0.35, reading_order_check: required, personal_data_maximum_contacts: 4}
-  scientific_paper_v1: {minimum_characters: 1000, require_title_or_abstract: true, bibliography_body_ratio_maximum: 0.35}
+  # The fourth corpus to meet the same category error, after code, worked
+  # mathematics and books. A LaTeX paper repeats lines by construction: aligned
+  # equation environments restate `\\`, `&=` and `\end{align}`, and section
+  # scaffolding recurs. Measured over arXiv records the fraction runs median
+  # 0.1944, p90 0.3623, max 0.6675 -- the 0.20 default passed 51.1% of papers,
+  # and 0.45 passes 97.2% while still catching a document that is mostly
+  # repeated boilerplate. 0.45 is the allowance math_4plus_v1 already uses for
+  # the same reason.
+  scientific_paper_v1: {minimum_characters: 1000, maximum_repeated_line_fraction: 0.45, require_title_or_abstract: true, bibliography_body_ratio_maximum: 0.35}
   biomedical_paper_v1: {minimum_characters: 1000, require_open_access: true, bibliography_body_ratio_maximum: 0.35}
   # A book arrives as one record. The 2M-character default is sized for
   # documents, so a complete textbook -- OpenStax ships 5MB of text per book --
