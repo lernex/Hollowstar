@@ -121,6 +121,30 @@ class NormalizationEvidenceTests(unittest.TestCase):
         )
         self.assertTrue(decision.keep, decision.reason)
 
+    def test_megamath_probability_score_is_rescaled_to_the_gate_scale(self) -> None:
+        # MegaMath-web states math_score as a 0-1 probability while the gate is
+        # on FineMath's 0-5 scale, so a top-rated row scored 1.0 against a
+        # threshold of 3 and the corpus normalized to zero.
+        row = {"text": self.prose(6), "math_score": 0.92, "lang": "en", "lang_score": 0.99}
+        _, metadata, _ = self.derive("megamath_unique", row)
+        self.assertAlmostEqual(metadata["math_score"], 4.6)
+
+    def test_a_low_probability_megamath_row_still_fails(self) -> None:
+        # 0.44 rescales to 2.2, below the threshold of 3. The rescale must not
+        # become a way for the low cluster to pass.
+        row = {"text": self.prose(6), "math_score": 0.44, "lang": "en", "lang_score": 0.99}
+        _, metadata, decision = self.derive("megamath_unique", row)
+        self.assertAlmostEqual(metadata["math_score"], 2.2)
+        self.assertFalse(decision.keep)
+        self.assertEqual(decision.reason, "math_score_minimum")
+
+    def test_other_math_sources_keep_their_own_scale(self) -> None:
+        # The rescale is scoped to megamath_unique; a 0-5 score elsewhere is
+        # read as given.
+        row = {"text": self.prose(6), "math_score": 4.0, "lang": "en", "lang_score": 0.99}
+        _, metadata, _ = self.derive("openwebmath_unique", row)
+        self.assertAlmostEqual(metadata["math_score"], 4.0)
+
     def test_a_lean_row_without_an_extension_is_read_as_formal(self) -> None:
         # Nemotron-Math-Proofs ships lean.jsonl with no `ext` field; the row
         # declares itself with `formal_statement` and `lean_header` instead.

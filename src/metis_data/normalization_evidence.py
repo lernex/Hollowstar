@@ -1242,17 +1242,44 @@ def derive_normalization_evidence(
     if profile_name in {"math_4plus_v1", "math_score3_v1"}:
         value, path = _find(searchable, "math_score", "int_score", "score")
         score = _numeric(value)
+        # `_row_metadata` has already copied any upstream `math_score` straight
+        # into metadata, and `_set_evidence` will not overwrite a field that is
+        # already populated. So every adjustment below -- the partition floors
+        # and the MegaMath rescale alike -- is silently discarded for exactly
+        # the rows that ship a score, which are the rows the adjustment is for.
+        # `derived_score` records that this block, not the raw column, is the
+        # authority for these two profiles.
+        derived_score = False
         if source_id == "nemotron_cc_math_4plus":
             score, path = max(score or 0.0, 4.0), "access.allow_patterns"
+            derived_score = True
         elif source_id == "nemotron_cc_math_unique_3":
             score, path = max(score or 0.0, 3.0), "access.allow_patterns"
+            derived_score = True
+        elif source_id == "megamath_unique" and score is not None and 0.0 <= score <= 1.0:
+            # MegaMath-web states `math_score` as a 0-1 classifier probability,
+            # where FineMath states a 0-5 integer. `math_score_minimum: 3` is on
+            # the second scale, so a perfect MegaMath row scores 1.0 against a
+            # threshold of 3 and the corpus normalized to 0 of 60 the moment the
+            # pin moved onto that config -- 54 rejections, every one of them
+            # math_score_minimum, on rows the publisher's own classifier rated
+            # highest. This is a units mismatch, not a quality judgement.
+            #
+            # Rescaling to the gate's scale puts the bar at p >= 0.6, which
+            # falls in the empty band of the corpus's own distribution: sampled
+            # scores cluster at 0.40-0.48, then resume at 0.70-1.00 with nothing
+            # in between. The threshold lands in the gap rather than through a
+            # mode, which is the evidence that the mapping is not arbitrary.
+            score, path = score * 5.0, f"{path}:probability_rescaled_to_gate_scale"
+            derived_score = True
         equation_passed, equation_details = _equation_integrity(text)
         if score is None and source_id in {
             "openwebmath_unique",
-            # MegaMath ships no score column either. Both corpora were selected
-            # upstream for being mathematical; what the profile still needs to
-            # know is that a given row really is mathematics rather than a page
-            # that mentions it.
+            # MegaMath-web does ship a score, rescaled above; this remains the
+            # path for any of its rows that arrive without one. Both corpora
+            # were selected upstream for being mathematical; what the profile
+            # still needs to know is that a given row really is mathematics
+            # rather than a page that mentions it.
             "megamath_unique",
         }:
             # Split by signal kind rather than by count. Typeset mathematics in
@@ -1267,12 +1294,14 @@ def derive_normalization_evidence(
                 or (plain >= 8 and density >= 2.0)
             ):
                 score, path = 3.0, "computed_equation_integrity_v1"
+                derived_score = True
         _set_evidence(
             metadata,
             "math_score",
             score,
             method="upstream_or_structural_math_score_v1",
             source_field=path,
+            overwrite=derived_score,
         )
         if equation_passed:
             _set_evidence(
