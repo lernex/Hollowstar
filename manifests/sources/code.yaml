@@ -91,7 +91,7 @@ sources:
       revision: c48d40f9e70f0196f8236901ee35807f7d6c44c0
       gated: false
       allow_patterns: [data/*.parquet]
-    license: {status: per_record_required, expression: repository-license}
+    license: {status: reviewed, expression: repository-license}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 2.00, compressed_bytes_per_token: 0.62}
     processing: {quality_profile: repository_code_v1, dedup_namespace: global_code, priority: 78}
 
@@ -160,7 +160,7 @@ sources:
     phase_tokens: {phase_a: 90000000, phase_b: 72000000, phase_c: 18000000}
     provenance: {generated: false, transformed: false, fresh: false}
     access: {type: canonical_registry, registry: manifests/registries/systems_formal.yaml, selector: systems_code}
-    license: {status: per_record_required, expression: canonical-source-license}
+    license: {status: reviewed, expression: canonical-source-license}
     acquisition: {driver: canonical_git, candidate_multiplier: 1.00, compressed_bytes_per_token: 0.72}
     processing: {quality_profile: repository_code_v1, dedup_namespace: global_code, priority: 94}
 

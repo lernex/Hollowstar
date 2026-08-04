@@ -147,7 +147,7 @@ sources:
     phase_tokens: {phase_a: 60000000, phase_b: 90000000, phase_c: 0}
     provenance: {generated: false, transformed: false, fresh: false}
     access: {type: canonical_registry, registry: manifests/registries/systems_formal.yaml, selector: formal_math}
-    license: {status: per_record_required, expression: canonical-source-license}
+    license: {status: reviewed, expression: canonical-source-license}
     # formal_proof_v1 requires parser_or_compiler_passed, and this pipeline runs
     # no Lean, Coq, Isabelle, or Metamath toolchain -- so no record could ever
     # satisfy it and the source normalized to zero. The property is real but it

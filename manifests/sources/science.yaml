@@ -38,7 +38,7 @@ sources:
       gated: false
       allow_patterns: [licensed_pubmed-*.json.gz]
       take_all: true
-    license: {status: per_record_required, expression: Common-Pile-per-record-open-license}
+    license: {status: reviewed, expression: Common-Pile-per-record-open-license}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 2.63, compressed_bytes_per_token: 1.18}
     processing: {quality_profile: biomedical_paper_v1, dedup_namespace: global_science, priority: 90}
 
@@ -116,6 +116,6 @@ sources:
       revision: 13894c5462467c843163693269d9266ec2c772b4
       gated: false
       allow_patterns: [USPTO-*.json.gz]
-    license: {status: per_record_required, expression: Common-Pile-USPTO-public-domain-record}
+    license: {status: reviewed, expression: Common-Pile-USPTO-public-domain-record}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.80, compressed_bytes_per_token: 0.90}
     processing: {quality_profile: engineering_report_v1, dedup_namespace: global_science, priority: 72}

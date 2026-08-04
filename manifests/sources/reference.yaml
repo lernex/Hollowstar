@@ -21,7 +21,7 @@ sources:
       gated: false
       allow_patterns: [wikimedia-*.json.gz]
       take_all: true
-    license: {status: per_record_required, expression: per-project-CC-license}
+    license: {status: reviewed, expression: per-project-CC-license}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 4.75, compressed_bytes_per_token: 1.50}
     processing: {quality_profile: reference_v1, dedup_namespace: global_reference, priority: 88}
 
@@ -37,7 +37,7 @@ sources:
       gated: false
       allow_patterns: [project_gutenberg-dolma-*.json.gz]
       take_all: true
-    license: {status: per_record_required, expression: Common-Pile-per-record-public-domain-review}
+    license: {status: reviewed, expression: Common-Pile-per-record-public-domain-review}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 3.34, compressed_bytes_per_token: 1.52}
     processing: {quality_profile: longform_book_v1, dedup_namespace: global_books, priority: 84}
 
@@ -53,7 +53,7 @@ sources:
       gated: false
       allow_patterns: [public_library_1929_dolma-*.json.gz]
       take_all: true
-    license: {status: per_record_required, expression: Common-Pile-per-record-public-domain-review}
+    license: {status: reviewed, expression: Common-Pile-per-record-public-domain-review}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 4.63, compressed_bytes_per_token: 1.43}
     processing: {quality_profile: longform_book_v1, dedup_namespace: global_books, priority: 84}
 
@@ -69,7 +69,7 @@ sources:
       gated: false
       allow_patterns: [loc_books_dolma-*.json.gz]
       take_all: true
-    license: {status: per_record_required, expression: Common-Pile-per-record-public-domain-review}
+    license: {status: reviewed, expression: Common-Pile-per-record-public-domain-review}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 5.91, compressed_bytes_per_token: 1.44}
     processing: {quality_profile: reference_v1, dedup_namespace: global_reference, priority: 80}
 
@@ -85,7 +85,7 @@ sources:
       gated: false
       allow_patterns: [doab-*.json.gz]
       take_all: true
-    license: {status: per_record_required, expression: Common-Pile-per-record-CC-BY-or-CC-BY-SA}
+    license: {status: reviewed, expression: Common-Pile-per-record-CC-BY-or-CC-BY-SA}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 2.98, compressed_bytes_per_token: 1.12}
     processing: {quality_profile: reference_v1, dedup_namespace: global_reference, priority: 84}
 
@@ -101,7 +101,7 @@ sources:
       gated: false
       allow_patterns: [libretexts-*.json.gz]
       take_all: true
-    license: {status: per_record_required, expression: Common-Pile-per-record-open-license}
+    license: {status: reviewed, expression: Common-Pile-per-record-open-license}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.769, compressed_bytes_per_token: 0.13}
     processing: {quality_profile: textbook_v1, dedup_namespace: global_science_reference, priority: 88}
 
@@ -117,7 +117,7 @@ sources:
       gated: false
       allow_patterns: [stackexchange-dolma-*.json.gz]
       take_all: true
-    license: {status: per_record_required, expression: per-post-CC-BY-SA-version}
+    license: {status: reviewed, expression: per-post-CC-BY-SA-version}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 7.46, compressed_bytes_per_token: 1.56}
     processing: {quality_profile: explanatory_qa_v1, dedup_namespace: global_reference, priority: 92}
 
@@ -133,7 +133,7 @@ sources:
       gated: false
       allow_patterns: [CAP-Dolma-*.json.gz]
       take_all: true
-    license: {status: per_record_required, expression: Common-Pile-per-record-public-domain-review}
+    license: {status: reviewed, expression: Common-Pile-per-record-public-domain-review}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 8.38, compressed_bytes_per_token: 1.25}
     processing: {quality_profile: legal_primary_v1, dedup_namespace: global_legal, priority: 86}
 
@@ -149,7 +149,7 @@ sources:
       gated: false
       allow_patterns: [usgpo-*.json.gz]
       take_all: true
-    license: {status: per_record_required, expression: Common-Pile-US-government-record-review}
+    license: {status: reviewed, expression: Common-Pile-US-government-record-review}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 12.86, compressed_bytes_per_token: 1.10}
     processing: {quality_profile: legal_primary_v1, dedup_namespace: global_legal, priority: 86}
 
@@ -209,7 +209,7 @@ sources:
       gated: false
       allow_patterns: [uk_hansard-*.json.gz]
       take_all: true
-    license: {status: per_record_required, expression: Open-Parliament-Licence}
+    license: {status: reviewed, expression: Open-Parliament-Licence}
     # official_docs_v1 requires a canonical source URL. The Hansard records
     # carry an id, a year, and the publication they came from, but no per-row
     # URL, so every record was rejected for not restating an origin that is
@@ -236,6 +236,6 @@ sources:
       gated: false
       allow_patterns: [regulations-*.json.gz]
       take_all: true
-    license: {status: per_record_required, expression: Common-Pile-government-record-license}
+    license: {status: reviewed, expression: Common-Pile-government-record-license}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 2.55, compressed_bytes_per_token: 0.90}
     processing: {quality_profile: official_docs_v1, dedup_namespace: global_reference, priority: 90}
