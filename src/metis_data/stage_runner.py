@@ -1372,7 +1372,15 @@ def _normalize_task(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
                 f"Normalization task {task_index} contains {counts['remote_plans']} unresolved remote acquisition plan(s). "
                 "A selection plan is not training data; materialize it before submitting the build graph."
             )
-        if counts["accepted"] == 0:
+        # Zero accepted from zero inputs is an empty file, not a failed gate.
+        # Proof-Pile-2 ships genuinely empty shards -- github-MATLAB-train-0001
+        # through -0003 and github-coq-train-0001 are 13-byte zstd frames
+        # carrying no rows -- and failing on them stops the whole afterok graph
+        # over a file the publisher released empty. There is nothing to reject
+        # and nothing to accept, so the honest output is an empty one. The gate
+        # still fires whenever records were read and every one was dropped,
+        # which is the case it was written for.
+        if counts["accepted"] == 0 and counts["input"] > 0:
             raise RuntimeError(
                 f"Fail-closed: normalization task {task_index} accepted zero records "
                 f"from {counts['input']} inputs; rejection reasons={rejection_reasons}"

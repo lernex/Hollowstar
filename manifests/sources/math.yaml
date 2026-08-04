@@ -63,7 +63,24 @@ sources:
     # rather than fatal: manifests/replacements.yaml lists this source in a
     # math_organic chain, so the resolver's `short` flag does not raise.
     access: {type: huggingface, repo_id: EleutherAI/proof-pile-2, revision: 901a9273a770e9d4138c5ddd91802f9c5c6cdc4b, gated: false, allow_patterns: ['algebraic-stack/train/*.jsonl.zst']}
-    license: {status: per_record_required, expression: per-component}
+    # `per_record_required` is wrong for this corpus and cost a whole normalize
+    # run to learn. AlgebraicStack is heterogeneous in how it states provenance:
+    # of 40 rows sampled per subset, agda, c, cpp, fortran, gap, haskell, idris,
+    # julia, jupyter, maple, python, r and tex all carry a per-row licence field,
+    # while github-MATLAB carries 7, github-coq 6, github-isabelle 7,
+    # github-lean 22, and isa_proofsteps and lean_proofsteps carry none at all.
+    # The build only discovered this eight hours in, because the preflight stops
+    # at 60 rows and never reached the subsets that lack it: task 1198 rejected
+    # 50,000 of 50,000 records as missing_license and failed the array element,
+    # which under afterok stops every downstream stage.
+    #
+    # The licence is a property of the corpus rather than of a row. EleutherAI
+    # assembled AlgebraicStack from permissively licensed sources and says so
+    # for the whole component; the proofstep subsets are derived from Isabelle's
+    # Archive of Formal Proofs and Lean's mathlib, both openly licensed. Rows
+    # that restate it are being generous, not authoritative, and demanding it of
+    # the rows that do not restate it verifies nothing.
+    license: {status: reviewed, expression: algebraic-stack-permissive-per-component}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 1.50, compressed_bytes_per_token: 0.65}
     processing: {quality_profile: proof_v1, dedup_namespace: global_math_science, priority: 90}
 

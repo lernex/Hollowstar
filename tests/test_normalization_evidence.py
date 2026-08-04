@@ -373,17 +373,25 @@ class NormalizationEvidenceTests(unittest.TestCase):
         self.assertEqual(metadata["math_score"], 3.0)
 
     def test_missing_per_record_license_stays_closed(self) -> None:
-        # Pinned to a source that is still per_record_required. openwebmath is
-        # no longer one: it is corpus-licensed ODC-By-1.0, because a Common
-        # Crawl derivative has no per-document license to carry. Asserting
-        # fail-closed through a source that cannot fail closed would leave the
-        # guard untested while still passing.
+        # Chosen from the manifest rather than named, because naming it has
+        # already gone stale twice: openwebmath moved to corpus-licensed
+        # ODC-By-1.0 (a Common Crawl derivative has no per-document licence to
+        # carry), and proof_pile2_math moved to a corpus-level permissive grant
+        # after AlgebraicStack's github-* and *_proofsteps subsets turned out
+        # not to carry per-row licences at all. Asserting fail-closed through a
+        # source that cannot fail closed leaves the guard untested while still
+        # passing, so the source is resolved at run time.
+        per_record = sorted(
+            source_id
+            for source_id, source in self.sources.items()
+            if source["license"]["status"] == "per_record_required"
+        )
+        self.assertTrue(per_record, "no per_record_required source left to test the guard with")
+        source_id = per_record[0]
+
         row = self.math_row()
         row["metadata"] = {}
-        _, metadata, decision = self.derive("proof_pile2_math", row)
-        self.assertEqual(
-            self.sources["proof_pile2_math"]["license"]["status"], "per_record_required"
-        )
+        _, metadata, decision = self.derive(source_id, row)
         self.assertNotIn("license", metadata)
         # The stage-level per-record-license guard runs immediately before the
         # profile gate; a profile-only decision must not manufacture a license.
