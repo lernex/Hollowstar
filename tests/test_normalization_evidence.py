@@ -714,7 +714,7 @@ class NormalizationEvidenceTests(unittest.TestCase):
                 digest,
             )
 
-    def test_normalize_task_fails_closed_when_every_record_is_rejected(self) -> None:
+    def test_normalize_task_records_zero_yield_without_stopping_the_build(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             state = StateStore(root / "state")
@@ -748,9 +748,24 @@ class NormalizationEvidenceTests(unittest.TestCase):
                 },
                 "gates": {"fail_closed": True},
             }
-            with self.assertRaisesRegex(RuntimeError, "accepted zero records"):
-                stage_runner._normalize_task(profile, 0)
-            self.assertFalse(state.is_complete("normalize", "task-000000"))
+            # This used to raise. It stopped the build three times on a property
+            # of one file rather than a defect -- a 13-byte empty shard, an
+            # OpenStax book whose task holds exactly one document, and
+            # lean_proofsteps, where proof-step records repeat lines by
+            # construction (median repeated_line_fraction 0.795, so 4% pass
+            # proof_v1's 0.50). A failed task fails its array element, and
+            # afterok then stops all 49 downstream jobs over 12.7MB of 7.58GB.
+            #
+            # The fact is kept rather than the failure: the task completes, the
+            # report carries zero_yield with the rejection histogram, and a
+            # genuinely systematic gate error is caught where it is actually
+            # visible -- by preflight-profiles before submission, and by
+            # minimum_unique_tokens at select.
+            payload = stage_runner._normalize_task(profile, 0)
+            self.assertTrue(payload["zero_yield"])
+            self.assertEqual(payload["counts"]["accepted"], 0)
+            self.assertEqual(payload["rejection_reasons"], {"minimum_characters": 1})
+            self.assertTrue(state.is_complete("normalize", "task-000000"))
 
 
 if __name__ == "__main__":

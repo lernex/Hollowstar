@@ -469,8 +469,27 @@ def _validate_materialized_token_targets(
 
 
 def _uses_common_crawl(manifest: dict[str, Any]) -> bool:
+    """Whether any source needs the frozen publisher opt-out snapshot.
+
+    This has to match what normalization actually demands, and for a while it
+    did not. stage_runner asks for the snapshot whenever a source declares
+    `provenance.common_crawl_derived`, deliberately -- a packaged extraction
+    such as FreshWeb is Common Crawl text a third party filtered at build time,
+    which makes it more exposed to a later withdrawal than a fresh crawl, not
+    less. This function still only looked at the driver, so it wrote the
+    snapshot for `common_crawl_ranges` sources alone.
+
+    The disagreement stayed invisible while some source used that driver. When
+    the common_crawl_ranges sources were withdrawn it became load-bearing: no
+    source had the driver, so no snapshot was written, while
+    metis_freshweb_2025 still declared common_crawl_derived and its 34
+    normalization tasks failed on the missing snapshot. Every archived handoff
+    on disk lacks the block for this reason.
+    """
+
     return any(
         source.get("acquisition", {}).get("driver") == "common_crawl_ranges"
+        or bool((source.get("provenance") or {}).get("common_crawl_derived"))
         for source in manifest.get("sources", [])
     )
 

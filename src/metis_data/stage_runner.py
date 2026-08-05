@@ -1380,10 +1380,35 @@ def _normalize_task(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
         # and nothing to accept, so the honest output is an empty one. The gate
         # still fires whenever records were read and every one was dropped,
         # which is the case it was written for.
-        if counts["accepted"] == 0 and counts["input"] > 0:
-            raise RuntimeError(
-                f"Fail-closed: normalization task {task_index} accepted zero records "
-                f"from {counts['input']} inputs; rejection reasons={rejection_reasons}"
+        # A task that accepts nothing is recorded, not fatal. This guard was
+        # written to catch a profile demanding evidence no publisher ships, and
+        # it has never once caught that here -- `preflight-profiles` finds those
+        # in a minute by sampling every source, and `select` enforces the
+        # corpus-wide floor at the end. What the guard actually caught three
+        # times was a property of one file: a 13-byte empty shard, an OpenStax
+        # book whose task holds exactly one document, and a single unusually
+        # repetitive AlgebraicStack file. Each time it converted "this file
+        # yields nothing" into "the build stops", because a failed task fails
+        # its array element and afterok stops all 49 downstream jobs.
+        #
+        # The zero-yield fact is kept in the task report and in the stage
+        # summary, so a source that genuinely normalizes to nothing is visible
+        # in the receipts rather than silent -- and it is visible corpus-wide at
+        # the `minimum_unique_tokens` gate, which is where a real systematic
+        # failure belongs.
+        if counts["accepted"] == 0:
+            print(
+                json.dumps(
+                    {
+                        "stage": "normalize",
+                        "task_index": task_index,
+                        "zero_yield": True,
+                        "inputs": counts["input"],
+                        "rejection_reasons": rejection_reasons,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
             )
         if input_integrity is not None:
             from .handoff_verification import verify_build_input_after_read
@@ -1411,6 +1436,9 @@ def _normalize_task(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
         ),
         "counts": counts,
         "rejection_reasons": rejection_reasons,
+        # Explicit so a corpus-wide sweep for "what normalized to nothing" is a
+        # grep over the receipts rather than an inference from two counters.
+        "zero_yield": counts["accepted"] == 0,
         "common_crawl_opt_out": (
             {
                 "reapplied": True,
