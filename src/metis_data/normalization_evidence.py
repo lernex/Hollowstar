@@ -21,6 +21,7 @@ import json
 import math
 import re
 import unicodedata
+from functools import lru_cache
 from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
@@ -396,20 +397,48 @@ def _text_lines(text: str) -> list[str]:
     return [line.strip() for line in text.replace("\r\n", "\n").splitlines() if line.strip()]
 
 
+@lru_cache(maxsize=1 << 16)
+def _is_latin_letter(character: str) -> bool:
+    """Whether a character is an alphabetic letter in a Latin script.
+
+    `unicodedata.name` is a Unicode-database lookup, and this used to run it
+    once per character of every document -- 218,223 calls for 300 records in a
+    profile, the single most expensive line in the language detector. A corpus
+    contains billions of characters drawn from a few thousand distinct ones, so
+    the answer is memoised per character instead. ASCII settles the vast
+    majority without touching the database at all.
+    """
+
+    if not character.isalpha():
+        return False
+    if character.isascii():
+        return True
+    return "LATIN" in unicodedata.name(character, "")
+
+
 def _computed_english_probability(text: str) -> tuple[float, dict[str, Any]] | None:
-    letters = [character for character in text if character.isalpha()]
+    # Counted over distinct characters. The old form materialised a list of
+    # every letter in the document and then called `unicodedata.name` on each
+    # one; both were unbounded, while `words` below has always been truncated at
+    # 250k characters, so the most expensive loop was the only one without a
+    # limit.
+    letters = 0
+    latin_letters = 0
+    for character, occurrences in Counter(text).items():
+        if not character.isalpha():
+            continue
+        letters += occurrences
+        if _is_latin_letter(character):
+            latin_letters += occurrences
     words = [match.group(0).lower() for match in _WORD_RE.finditer(text[:250_000])]
     # A short row is uncertain, not unmeasurable. The old 100-letter/30-word
     # floor returned None for a grounded QA answer, and None fails closed, so
     # `nemotron_specialized_fact_seeking` lost 44 of 60 rows to
     # `missing_language_probability` -- rejected for being short rather than
     # for being non-English. Its rows run 18-55 words.
-    if len(letters) < 40 or len(words) < 12:
+    if letters < 40 or len(words) < 12:
         return None
-    latin_letters = sum(
-        "LATIN" in unicodedata.name(character, "") for character in letters
-    )
-    latin_fraction = latin_letters / len(letters)
+    latin_fraction = latin_letters / letters
     hits = [word for word in words if word in _ENGLISH_FUNCTION_WORDS]
     distinct_hits = len(set(hits))
     hit_fraction = len(hits) / len(words)

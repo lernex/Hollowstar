@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import Counter
 from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
@@ -143,12 +144,37 @@ def load_quality_profiles(path: str | Path | None = None) -> dict[str, Any]:
     return _load_quality_profiles_cached(resolved)
 
 
+@lru_cache(maxsize=1 << 16)
+def _character_class(character: str) -> tuple[bool, bool]:
+    """Return (is_alpha, is_symbol) for one character.
+
+    Cached because a corpus draws on a few thousand distinct characters while
+    containing billions of them, so each classification is answered once for the
+    whole build rather than once per occurrence.
+    """
+
+    return character.isalpha(), not character.isalnum() and not character.isspace()
+
+
 def text_features(text: str) -> dict[str, float | int | bool]:
     characters = len(text)
     words = WORD_RE.findall(text)
     word_count = len(words)
-    alpha = sum(character.isalpha() for character in text)
-    symbols = sum(not character.isalnum() and not character.isspace() for character in text)
+    # Counted over distinct characters rather than every character. `Counter`
+    # tallies in C; the Python-level work is then proportional to the size of
+    # the document's alphabet -- a few hundred entries -- instead of its length.
+    # The previous form ran two interpreted passes over the full text and was,
+    # with the sentence splitter and the language detector, most of the CPU cost
+    # of the two heaviest stages in the build. Results are identical: the same
+    # predicates, evaluated once per distinct character and multiplied by its
+    # count.
+    alpha = symbols = 0
+    for character, occurrences in Counter(text).items():
+        is_alpha, is_symbol = _character_class(character)
+        if is_alpha:
+            alpha += occurrences
+        if is_symbol:
+            symbols += occurrences
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     unique_lines = len(set(lines))
     return {
