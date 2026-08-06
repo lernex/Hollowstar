@@ -408,12 +408,25 @@ def _holdout_access_checks(tiny_probe: bool) -> list[Check]:
 
 
 # Stages that bucket records by hash and write each bucket through an LRU pool
-# of open handles, paired with the scheduler key that decides the bucket count.
-_BUCKET_WRITERS: tuple[tuple[str, str, str], ...] = (
+# of open handles. Where the pool size comes from differs by stage, and getting
+# that wrong makes the check itself lie: an earlier version assumed all four
+# read maximum_open_files and reported three failures against stages whose
+# pools were already correct.
+#
+# Only repeated_span takes its pool from the profile.
+_PROFILE_POOL_WRITERS: tuple[tuple[str, str, str], ...] = (
     ("repeated_span", "finder_tasks", "maximum_open_files"),
-    ("code_structural", "finder_tasks", "maximum_open_files"),
-    ("final_hash", "finder_tasks", "maximum_open_files"),
-    ("exact_dedup", "find_tasks", "maximum_open_files"),
+)
+
+# These derive it in code as max(32, bucket_count) -- see final_dedup.
+# write_final_signatures and code_dedup.write_code_signatures -- so the pool can
+# never be smaller than the bucket count and the invariant holds structurally.
+# A maximum_open_files key in one of these blocks is read by nothing, which is
+# its own trap, so say so rather than let it look effective.
+_CODE_POOL_WRITERS: tuple[tuple[str, str], ...] = (
+    ("exact_dedup", "find_tasks"),
+    ("code_structural", "finder_tasks"),
+    ("final_hash", "finder_tasks"),
 )
 
 
@@ -433,7 +446,7 @@ def _bucket_writer_pool_checks(profile: dict[str, Any]) -> list[Check]:
 
     scheduler = profile.get("scheduler", {})
     checks: list[Check] = []
-    for stage, bucket_key, pool_key in _BUCKET_WRITERS:
+    for stage, bucket_key, pool_key in _PROFILE_POOL_WRITERS:
         block = scheduler.get(stage)
         if not isinstance(block, dict) or bucket_key not in block:
             continue
@@ -441,9 +454,7 @@ def _bucket_writer_pool_checks(profile: dict[str, Any]) -> list[Check]:
         pool = int(block.get(pool_key, 32))
         name = f"writer-pool:{stage}"
         if pool >= buckets:
-            checks.append(
-                Check(name, "PASS", f"{pool} handles >= {buckets} buckets")
-            )
+            checks.append(Check(name, "PASS", f"{pool} handles >= {buckets} buckets"))
         else:
             checks.append(
                 Check(
@@ -453,6 +464,26 @@ def _bucket_writer_pool_checks(profile: dict[str, Any]) -> list[Check]:
                     f"{100 * (1 - pool / buckets):.0f}% of writes will reopen a file. "
                     f"Set scheduler.{stage}.{pool_key} to at least {buckets}.",
                 )
+            )
+    for stage, bucket_key in _CODE_POOL_WRITERS:
+        block = scheduler.get(stage)
+        if not isinstance(block, dict) or bucket_key not in block:
+            continue
+        buckets = int(block[bucket_key])
+        name = f"writer-pool:{stage}"
+        if "maximum_open_files" in block:
+            checks.append(
+                Check(
+                    name,
+                    "WARN",
+                    f"scheduler.{stage}.maximum_open_files is ignored: this stage sizes "
+                    f"its pool in code as max(32, {bucket_key}) = {max(32, buckets)}. "
+                    "Remove the key so it cannot read as effective.",
+                )
+            )
+        else:
+            checks.append(
+                Check(name, "PASS", f"pool derived in code: max(32, {buckets}) >= {buckets} buckets")
             )
     return checks
 
