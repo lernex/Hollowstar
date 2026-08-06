@@ -194,6 +194,25 @@ _PROVENANCE_KEYS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Gates that record an attestation or set verification strictness, and cannot
+# change a single byte any stage produces. license_review_complete is the one
+# that matters: it is flipped to true *after* reading the licence ledger, and
+# the ledger is produced by the build. Binding it meant the act of approving a
+# corpus invalidated the corpus -- the reviewer's signature discarded every
+# stage it was signing off. The gates that do shape data stay bound, including
+# minimum_unique_tokens and maximum_generated_share, which decide what select
+# emits, and fail_closed, which decides which rows survive at all.
+_ATTESTATION_ONLY_GATES = frozenset(
+    {
+        "license_review_complete",
+        "require_repository_commit_match",
+        "require_clean_repository",
+        "require_deep_handoff_verification",
+        "allow_relocated_lustre_root",
+        "retain_stage_inputs",
+    }
+)
+
 # Scheduler keys that change how work is divided or buffered but cannot change
 # what the work produces. Everything else in the scheduler block stays bound,
 # including finder_tasks and bucket counts, which decide how records shard and
@@ -274,7 +293,11 @@ def _stage_execution_contract(
             "state_artifacts": state_artifacts,
             "stage_code_sha256": stage_code_sha256(stage),
             "scheduler": _output_relevant_scheduler(profile.get("scheduler", {})),
-            "gates": profile.get("gates", {}),
+            "gates": {
+                key: value
+                for key, value in profile.get("gates", {}).items()
+                if key not in _ATTESTATION_ONLY_GATES
+            },
         }
     )
 
