@@ -4381,10 +4381,29 @@ def _run_task_group(
             for row in results
         ],
     }
+    # Trust the filesystem over the bookkeeping. Everything above is in-process
+    # accounting: a worker reports ok, the parent counts it, the count decides
+    # the exit code. Every link there is a place a task can be lost without
+    # anyone lying -- a swallowed exception, a requeued attempt whose log is the
+    # one an operator reads, a future refactor that returns early. Slurm's
+    # afterok only sees the exit code, so a stage that drops tasks and exits 0
+    # advances the graph over a corpus with holes in it, and nothing downstream
+    # re-checks. Re-stat the markers instead: a task counts as done when its
+    # completion marker exists on disk, not when it says so.
+    missing = [
+        index for index in indices if not state.is_complete(stage, f"task-{index:06d}")
+    ]
+    summary["missing_markers"] = len(missing)
     print(json.dumps(summary, indent=2, sort_keys=True))
     for row in failures:
         print(f"FAIL task-{row['task_index']:06d} {row['error']}", file=sys.stderr)
-    return 1 if failures else 0
+    if missing:
+        print(
+            f"FAIL stage {stage}: {len(missing)} of {len(indices)} tasks left no completion "
+            f"marker: {[f'task-{index:06d}' for index in missing[:8]]}",
+            file=sys.stderr,
+        )
+    return 1 if failures or missing else 0
 
 
 def main(argv: list[str] | None = None) -> int:
