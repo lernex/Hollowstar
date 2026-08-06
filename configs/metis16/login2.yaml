@@ -13,9 +13,19 @@ operator:
 acquisition:
   mode: screen_foreground
   session_name: metis16-acquisition
-  # login2 is an interactive/service host, so keep the outer and per-source
-  # concurrency deliberately modest. Each materializer is restartable.
-  max_workers: 4
+  # login2 is an interactive/service host, so per-source concurrency stays
+  # modest and every materializer is restartable. The outer width, though, was
+  # set for a host we guessed at rather than the one we have: login2 reports
+  # 384 cores at load 0.80, and the supervisor was one process using half of
+  # one core. Downloads go through hf_hub_download a file at a time, so this
+  # number *is* the number of concurrent transfers -- at 4 the host pulled
+  # 126 MB/s, about 31 MB/s per stream, which is one HTTP stream's worth and
+  # not a link limit. These threads block on network, not CPU, so 24 of them
+  # still leaves the node effectively idle for its interactive users.
+  #
+  # Not in the execution contract: the contract hashes scheduler and gates, so
+  # retuning this is resumable and costs no completed stage work.
+  max_workers: 24
   maximum_task_attempts: 4
   retry_initial_seconds: 15
   retry_maximum_seconds: 60
