@@ -222,7 +222,18 @@ scheduler:
   cleanup_release_workspace: {tasks_per_job: 1, time: '12:00:00'}
 
   exact_dedup: {tasks: 2000, find_tasks: 256}
-  repeated_span: {finder_tasks: 64, sentence_count: 3, minimum_span_words: 24, minimum_remaining_words: 50, minimum_remaining_sentences: 3, maximum_open_files: 32, external_sort_chunk_records: 250000, external_sort_max_open_runs: 64, semantic_dedup: false}
+  # maximum_open_files must be >= finder_tasks or the writer thrashes. Span
+  # signatures are bucketed by `hash % finder_tasks`, so the bucket for each
+  # signature is effectively random; with 64 buckets and a 32-handle LRU pool
+  # roughly every second write evicted a handle and reopened another file. On
+  # Lustre an open and a close are metadata round trips, and this corpus emits
+  # about 6.4 billion signatures, so the stage spent its time in the metadata
+  # server rather than on the data. Measured effect before the fix:
+  # span_prefilter_signature reached 1,190 of 1,862 tasks in 11.5 hours at
+  # 10-32% CPU, against a compute cost of a few minutes.
+  # 96 leaves headroom above the 64 buckets; each task is its own process, so
+  # this is 96 descriptors per process, not per node.
+  repeated_span: {finder_tasks: 64, sentence_count: 3, minimum_span_words: 24, minimum_remaining_words: 50, minimum_remaining_sentences: 3, maximum_open_files: 96, external_sort_chunk_records: 250000, external_sort_max_open_runs: 64, semantic_dedup: false}
   minhash: {tasks: 2000, workers: 400, num_buckets: 20, hashes_per_bucket: 10, n_grams: 5, target_similarity_operating_region: 0.82}
   # sqlite_cache_mb is per task, and minhash_priority_candidates and _finalize
   # each run 72 tasks on one node, so this is multiplied by 72 against 501GB of

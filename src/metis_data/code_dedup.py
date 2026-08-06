@@ -225,10 +225,19 @@ def write_code_signatures(
     handles: OrderedDict[int, BinaryIO] = OrderedDict()
     bucket_counts: dict[int, int] = {}
 
+    # The pool must hold at least one handle per bucket. Buckets are assigned by
+    # `digest % finder_workers`, so the target is effectively random per record;
+    # a pool smaller than the bucket count evicts and reopens on roughly every
+    # write, and on Lustre each of those is a metadata round trip. The same
+    # mismatch in the span writer -- 64 buckets against a 32-handle pool -- held
+    # that stage at 10-32% CPU for 11.5 hours. Each task is its own process, so
+    # this is `maximum_open` descriptors per process.
+    maximum_open = max(32, finder_workers)
+
     def write(bucket: int, row: tuple[Any, ...]) -> None:
         handle = handles.pop(bucket, None)
         if handle is None:
-            if len(handles) >= 32:
+            if len(handles) >= maximum_open:
                 _, oldest = handles.popitem(last=False)
                 oldest.close()
             handle = (stage / f"{bucket:04d}.sig").open("ab")

@@ -73,7 +73,12 @@ def write_final_signatures(
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".sha256-rank-{rank:06d}-", dir=output_root))
-    pool = _FilePool(stage)
+    # Sized to the bucket count, not left at the default. Buckets are assigned
+    # by `digest % finder_workers`, so a pool smaller than the bucket count
+    # evicts and reopens a file on roughly every write, and each of those is a
+    # Lustre metadata round trip. The same 64-bucket/32-handle mismatch in the
+    # span writer held that stage at 10-32% CPU for 11.5 hours.
+    pool = _FilePool(stage, maximum_open=max(32, finder_workers))
     documents_seen = 0
     try:
         for document_index, document in enumerate(documents):
