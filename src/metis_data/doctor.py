@@ -407,6 +407,56 @@ def _holdout_access_checks(tiny_probe: bool) -> list[Check]:
     return checks
 
 
+# Stages that bucket records by hash and write each bucket through an LRU pool
+# of open handles, paired with the scheduler key that decides the bucket count.
+_BUCKET_WRITERS: tuple[tuple[str, str, str], ...] = (
+    ("repeated_span", "finder_tasks", "maximum_open_files"),
+    ("code_structural", "finder_tasks", "maximum_open_files"),
+    ("final_hash", "finder_tasks", "maximum_open_files"),
+    ("exact_dedup", "find_tasks", "maximum_open_files"),
+)
+
+
+def _bucket_writer_pool_checks(profile: dict[str, Any]) -> list[Check]:
+    """A handle pool smaller than its bucket count thrashes, and only that.
+
+    The bucket for a record is a hash, so under an LRU of K handles over N
+    buckets the steady-state miss rate is 1 - K/N, and every miss is an open and
+    a close. Measured on Portage's Lustre at K=32, N=64: 49.8% of writes missed,
+    1.18 ms per open-and-close, 1,706 records/second against 479,779 with the
+    pool sized to the buckets. The stage still finished, and still produced
+    correct output, which is why this went unnoticed for 11.5 hours.
+
+    Nothing else in the profile says these two numbers are related, so nothing
+    else would catch them drifting apart.
+    """
+
+    scheduler = profile.get("scheduler", {})
+    checks: list[Check] = []
+    for stage, bucket_key, pool_key in _BUCKET_WRITERS:
+        block = scheduler.get(stage)
+        if not isinstance(block, dict) or bucket_key not in block:
+            continue
+        buckets = int(block[bucket_key])
+        pool = int(block.get(pool_key, 32))
+        name = f"writer-pool:{stage}"
+        if pool >= buckets:
+            checks.append(
+                Check(name, "PASS", f"{pool} handles >= {buckets} buckets")
+            )
+        else:
+            checks.append(
+                Check(
+                    name,
+                    "FAIL",
+                    f"{pool} handles for {buckets} buckets: about "
+                    f"{100 * (1 - pool / buckets):.0f}% of writes will reopen a file. "
+                    f"Set scheduler.{stage}.{pool_key} to at least {buckets}.",
+                )
+            )
+    return checks
+
+
 def run_doctor(
     profile: dict[str, Any], *, tiny_probe: bool = False, role: str = "all"
 ) -> dict[str, Any]:
@@ -414,6 +464,8 @@ def run_doctor(
     compute_checks = role in {"all", "compute"}
     acquisition_checks = role in {"all", "acquisition"}
     checks.extend(_operator_role_checks(profile, role))
+    if compute_checks:
+        checks.extend(_bucket_writer_pool_checks(profile))
     validation = validate_manifest(profile.get("manifest"))
     checks.append(
         Check(
