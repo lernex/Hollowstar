@@ -295,6 +295,11 @@ gates:
   allow_relocated_lustre_root: true
   require_repository_commit_match: true
   require_clean_repository: true
+  # Keep raw/ and the download caches after normalize verifies them. The handoff
+  # verifier re-checks every acquisition output on submit and on resume, so
+  # retiring them turns any interruption after cleanup_raw into a full
+  # re-download. Portage reports 4.7 PB free against a 1.37 TB input set.
+  retain_stage_inputs: true
   require_contamination_index: true
   require_license_ledger: true
   license_review_complete: false

@@ -930,7 +930,16 @@ def _cleanup_filter_intermediate(
         pending["pending_sha256"] = _json_sha256(pending)
         state.write("cleanup", "pending", f"{name}.json", payload=pending)
         _validate_content_receipt(profile, content, require_live_content=True)
-    deletions = [_safe_retire_path(root, Path(path)) for path in spec["delete"]]
+    # Retiring an intermediate is irreversible, and one of those intermediates
+    # is the acquisition output that verify_acquisition_handoff re-checks on
+    # every submit and every resume. Deleting it therefore does not just free
+    # space, it ends the build's ability to be restarted at all: the graph can
+    # only ever run forward from that point, and any interruption strands it
+    # behind a re-download. Operators with room to spare keep the inputs.
+    if profile.get("gates", {}).get("retain_stage_inputs"):
+        deletions: list[dict[str, Any]] = []
+    else:
+        deletions = [_safe_retire_path(root, Path(path)) for path in spec["delete"]]
     content["retained"] = False
     payload: dict[str, Any] = {
         "schema": "metis.verified-cleanup/v1",
