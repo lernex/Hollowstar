@@ -149,8 +149,21 @@ def _iter_repo_files(
     repo_id: str,
     revision: str,
     patterns: Iterable[str],
+    deny_patterns: Iterable[str] = (),
 ) -> list[dict[str, Any]]:
+    """List the repository files an allow-list selects, minus a deny-list.
+
+    Allow-patterns alone cannot express "everything under data/ except the
+    directories ending in _removed". fnmatch has no negation, and enumerating
+    the alternative means naming FineWeb-2's nineteen hundred language
+    directories. Without a deny-list, `data/**` on that repository pulls
+    `deu_Latn_removed/` -- the documents the publisher's own filters rejected,
+    shipped for transparency -- and `arb_Arab/test/`, straight into a corpus
+    where they are labelled training_records.
+    """
+
     pattern_list = tuple(str(pattern) for pattern in patterns)
+    deny_list = tuple(str(pattern) for pattern in deny_patterns)
     files_by_path: dict[str, dict[str, Any]] = {}
     for tree_root in _repo_tree_roots(pattern_list):
         try:
@@ -175,6 +188,8 @@ def _iter_repo_files(
             for item in tree:
                 path = getattr(item, "path", "")
                 if not path or not matches_any(path, pattern_list):
+                    continue
+                if deny_list and matches_any(path, deny_list):
                     continue
                 size = int(getattr(item, "size", 0) or 0)
                 if size <= 0:
@@ -398,6 +413,7 @@ def resolve_sources(manifest: dict[str, Any], profile: dict[str, Any], state: St
                     repo_id,
                     revision,
                     access.get("allow_patterns", ["**/*.parquet", "**/*.jsonl*"]),
+                    access.get("deny_patterns", ()),
                 )
                 selected, short = _select_files(
                     files,

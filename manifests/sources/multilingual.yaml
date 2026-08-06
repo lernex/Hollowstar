@@ -14,7 +14,13 @@ sources:
     category: multilingual
     phase_tokens: {phase_a: 3000000000, phase_b: 0, phase_c: 0}
     provenance: {generated: false, transformed: false, fresh: false}
-    access: {type: huggingface, repo_id: HuggingFaceFW/fineweb-2, revision: af9c13333eb981300149d5ca60a8e9d659b276b9, gated: false, allow_patterns: [data/**]}
+    # FineWeb-2 ships its rejects next to its corpus: <lang>_removed/ holds the
+    # documents its own filters threw out, carrying filter_reason and
+    # wordlist_ratio columns the kept data does not have. data/** takes them,
+    # and the resolver labels them training_records like everything else. The
+    # test splits go for the same reason -- an evaluation split is the last
+    # thing that belongs in a pretraining corpus.
+    access: {type: huggingface, repo_id: HuggingFaceFW/fineweb-2, revision: af9c13333eb981300149d5ca60a8e9d659b276b9, gated: false, allow_patterns: [data/**], deny_patterns: [data/*_removed/**, data/*/test/**, data/*/validation/**, data/*/dev/**]}
     license: {status: reviewed, expression: ODC-By-1.0}
     acquisition: {driver: hf_snapshot, candidate_multiplier: 6.78, compressed_bytes_per_token: 0.72}
     processing: {quality_profile: multilingual_native_v1, dedup_namespace: global_multilingual, priority: 85}
