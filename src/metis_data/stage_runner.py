@@ -4381,29 +4381,26 @@ def _run_task_group(
             for row in results
         ],
     }
-    # Trust the filesystem over the bookkeeping. Everything above is in-process
-    # accounting: a worker reports ok, the parent counts it, the count decides
-    # the exit code. Every link there is a place a task can be lost without
-    # anyone lying -- a swallowed exception, a requeued attempt whose log is the
-    # one an operator reads, a future refactor that returns early. Slurm's
-    # afterok only sees the exit code, so a stage that drops tasks and exits 0
-    # advances the graph over a corpus with holes in it, and nothing downstream
-    # re-checks. Re-stat the markers instead: a task counts as done when its
-    # completion marker exists on disk, not when it says so.
-    missing = [
-        index for index in indices if not state.is_complete(stage, f"task-{index:06d}")
-    ]
-    summary["missing_markers"] = len(missing)
+    # A marker-existence check belongs here in principle -- the exit code is
+    # otherwise pure in-process accounting, and afterok believes it. One was
+    # tried and reverted, because it assumed every stage names its completion
+    # marker task-<index:06d>. They do not. handoff_signature writes
+    # task-<index:08d>-<digest>.json and download writes
+    # download-<index:06d>-<digest>.json, and is_complete is an exact filename
+    # match, so the check declared 3,280 finished tasks missing and failed an
+    # array that had done all of its work. The graph then sat behind
+    # DependencyNeverSatisfied.
+    #
+    # The same blind spot already exists above, in `pending`: stages whose
+    # markers carry a digest never look complete, so they re-run instead of
+    # resuming. That is wasteful and harmless. Turning it into a hard failure
+    # was neither. Any future attempt needs one canonical completion key per
+    # stage first -- ask the state store what a task's marker is called rather
+    # than guess, and only then make the exit code depend on the answer.
     print(json.dumps(summary, indent=2, sort_keys=True))
     for row in failures:
         print(f"FAIL task-{row['task_index']:06d} {row['error']}", file=sys.stderr)
-    if missing:
-        print(
-            f"FAIL stage {stage}: {len(missing)} of {len(indices)} tasks left no completion "
-            f"marker: {[f'task-{index:06d}' for index in missing[:8]]}",
-            file=sys.stderr,
-        )
-    return 1 if failures or missing else 0
+    return 1 if failures else 0
 
 
 def main(argv: list[str] | None = None) -> int:
