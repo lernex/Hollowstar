@@ -695,6 +695,48 @@ that returns `ok` and writes nothing now fails the element and names the tasks.
 counters anywhere a scheduler makes a branching decision on it. The counter and
 the artifact agree right up until the moment it matters.
 
+### 10c-postscript. The fix was worse than the bug, and why
+
+The marker check above was written, shipped, and reverted within a day, because
+on the first real submission it failed a stage that had done all of its work:
+
+```
+FAIL stage handoff_signature: 16 of 16 tasks left no completion marker
+```
+
+against a stage holding **3,280 completion markers**. Completion markers are not
+named uniformly, and `StateStore.is_complete` is an exact filename match:
+
+```
+handoff_signature   task-00000000-117b1cffc8bb3828.json   8 digits + digest
+download            download-000000-d5b1bb2fd544f305.json stage-prefixed
+holdouts            task-000000.json                      plain 6 digits
+```
+
+The check looked up `task-<index:06d>` and could never find the first two forms.
+The whole 37-stage graph then sat on `DependencyNeverSatisfied`.
+
+The same wrong assumption was already present, one line above, in the `pending`
+computation that decides which tasks to skip — so stages whose markers carry a
+digest have always re-run instead of resuming. Wasteful, harmless, and years
+old. Promoting it to an exit code made it fatal.
+
+Three things worth keeping:
+
+- **A safety check is production code.** This one was reasoned about carefully
+  and tested against a synthetic state store that used the naming the check
+  assumed. The test confirmed the check's own premise instead of the codebase's
+  behaviour, which is the easiest test to write and the least useful.
+- **Weight the evidence for the bug you are defending against.** This defended
+  against 10c, which the section above had already downgraded to "probably a
+  requeue artifact." Defending hard against a bug that likely does not exist,
+  with a mechanism that can fail closed, is a bad trade.
+- **Before asserting on a convention, verify the codebase actually guarantees
+  it.** `ls` on one completion directory would have shown the digest suffix in
+  seconds. Any future attempt needs one canonical completion key per stage —
+  ask the state store what a task's marker is called rather than guess its
+  shape.
+
 ## 10d. Task granularity is one file, and files are not the same size
 
 Input files range from 13 bytes to 29.53GB. Task granularity is one file, so the
