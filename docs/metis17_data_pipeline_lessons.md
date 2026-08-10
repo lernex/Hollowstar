@@ -824,6 +824,43 @@ quality profiles, the gates that actually filter, and the input identities;
 leave licence text, labels and scheduler tuning out. At 1 T that mistake costs
 an afternoon. At 30 T it costs days per typo.
 
+## 11a. Measured stage rates from the rebuilt 1.6 run
+
+Wall times from completion-marker timestamps on the 2.41 TB rebuild, 3,274
+tasks per full-corpus stage, array throttle 112, 128-node parry partition.
+These are the numbers to extrapolate from for 30 T.
+
+| stage | tasks | wall | rate |
+|---|---|---|---|
+| normalize | 3,274 | 4.1 h | 13.4/min |
+| exact_signature | 3,274 | 15 min | 216.1/min |
+| exact_find | 256 | 101 s | 152.1/min |
+| exact_filter | 3,274 | 26 min | 124.5/min |
+| span_prefilter_signature | 3,274 | 54 min | 60.2/min |
+| span_prefilter_find | 64 | 7 min | 9.1/min |
+| span_signature | 3,274 | 53 min | 62.3/min |
+| span_find | 64 | 2 min | 31.0/min |
+| span_filter | 3,274 | 112 min | 29.3/min |
+| minhash_signature | 3,274 | 2.1 h | 25.6/min |
+
+**Span dedup, all five stages: 3.8 hours.** Before the file-pool fix, stage one
+alone ran 11 h 31 m and reached 64% of a corpus 1.76x smaller.
+
+The stage-level speedup on span_prefilter_signature is **35x** (1.72 -> 60.2
+tasks/min), of which about 1.6x is the throttle raise, leaving roughly **22x**
+for the pool fix. The isolated writer benchmark in 1d measured **281x**. Both
+numbers are correct and they measure different things: the benchmark timed the
+writer alone, and the stage also reads inputs and computes signatures, which the
+pool size cannot touch. When quoting a micro-benchmark, say what fraction of the
+stage it covers, or it will be read as a stage-level promise.
+
+**Retention cost:** raw 2.3 TB + normalized 1.4 TB + eligible 3.0 TB + dedup
+3.9 TB = 10.6 TB live, against 4.7 PB free. Keeping every intermediate is what
+makes a code fix cost a rehandoff instead of a re-download, and at 1.6 scale it
+is free. At 30 T it is roughly 130 TB, still cheap against re-fetching.
+
+---
+
 ## 11. Numbers from this build, for calibration
 
 | | start | end |
