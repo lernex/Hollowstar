@@ -168,19 +168,19 @@ scheduler:
 
   # Whole-node single job; the benchmark index is held in memory.
   decontam_index: {tasks_per_job: 1, time: '24:00:00'}
-  decontam_filter: {tasks_per_job: 40, time: '18:00:00', max_concurrent: 32}
+  decontam_filter: {tasks_per_job: 40, time: '72:00:00', max_concurrent: 32}
 
-  final_hash_signature: {tasks_per_job: 80, time: '12:00:00', max_concurrent: 32}
-  final_hash_find: {tasks_per_job: 32, time: '12:00:00', max_concurrent: 16}
-  final_hash_filter: {tasks_per_job: 80, time: '12:00:00', max_concurrent: 32}
+  final_hash_signature: {tasks_per_job: 80, time: '36:00:00', max_concurrent: 32}
+  final_hash_find: {tasks_per_job: 32, time: '36:00:00', max_concurrent: 16}
+  final_hash_filter: {tasks_per_job: 80, time: '36:00:00', max_concurrent: 32}
 
   # The stratified tokenizer sample is now three stages instead of one serial
   # pass over the whole eligible corpus: a counting scan, a cheap apportionment
   # reducer, then a write pass where each shard emits only its planned slice.
   # Per-source byte targets are identical to the serial version.
-  tokenizer_sample_scan: {tasks_per_job: 64, time: '12:00:00', max_concurrent: 32}
+  tokenizer_sample_scan: {tasks_per_job: 64, time: '24:00:00', max_concurrent: 32}
   tokenizer_sample_plan: {tasks_per_job: 1, time: '02:00:00'}
-  tokenizer_sample: {tasks_per_job: 48, time: '12:00:00', max_concurrent: 32}
+  tokenizer_sample: {tasks_per_job: 48, time: '24:00:00', max_concurrent: 32}
   # Serial and the single largest memory risk in the build. The HF BPE trainer
   # holds its word-count table in RAM; measure peak RSS on a subsample before
   # committing the long job. This is the one stage that wants many threads in
@@ -191,7 +191,7 @@ scheduler:
   token_count: {tasks_per_job: 48, time: '36:00:00', max_concurrent: 32}
 
   context_select: {tasks_per_job: 1, time: '72:00:00'}
-  context_prepare: {tasks_per_job: 1, time: '12:00:00'}
+  context_prepare: {tasks_per_job: 1, time: '24:00:00'}
   context_pack: {tasks_per_job: 16, time: '24:00:00', max_concurrent: 12}
   context_verify: {tasks_per_job: 1, time: '72:00:00'}
 
