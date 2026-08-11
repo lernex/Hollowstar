@@ -179,9 +179,9 @@ storage:
     tokenizer: tokenizer
     token_counts: token-counts
     selected: selected
-    release: releases/metis-1.6-data-r1
-    state: state/metis-1.6-data-r1
-    logs: logs/metis-1.6-data-r1
+    release: releases/metis-1.6-data-r2
+    state: state/metis-1.6-data-r2
+    logs: logs/metis-1.6-data-r2
 
 # Download batching remains here for source-lock compatibility. No job from
 # this profile is submitted to Slurm.

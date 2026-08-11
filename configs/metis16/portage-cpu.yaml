@@ -53,10 +53,10 @@ storage:
     tokenizer: tokenizer
     token_counts: token-counts
     selected: selected
-    context_release: releases/metis-1.6-context-extension-r1
-    release: releases/metis-1.6-data-r1
-    state: state/metis-1.6-data-r1
-    logs: logs/metis-1.6-data-r1
+    context_release: releases/metis-1.6-context-extension-r2
+    release: releases/metis-1.6-data-r2
+    state: state/metis-1.6-data-r2
+    logs: logs/metis-1.6-data-r2
 
 scheduler:
   mode: slurm

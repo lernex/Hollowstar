@@ -1,5 +1,5 @@
 schema: metis.data-manifest/v1
-release: metis-1.6-data-r1
+release: metis-1.6-data-r2
 status: production_recipe
 description: >-
   Metis-1.6 pretraining exposures. Every token allocation is measured after
