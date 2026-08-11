@@ -11,9 +11,9 @@ policy:
   short_ngram_size: 8
   minimum_short_matching_ngrams: 2
   code_ngram_size: 12
-  minimum_code_matching_ngrams: 2
+  minimum_code_matching_ngrams: 8
   code_skeleton_ngram_size: 16
-  minimum_code_skeleton_matching_ngrams: 2
+  minimum_code_skeleton_matching_ngrams: 12
   maximum_shingle_rows: 32
   explicit_genealogy_match: true
   remove_entire_document: true
