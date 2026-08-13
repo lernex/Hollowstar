@@ -97,6 +97,42 @@ caught this in review: **"after this runs, what does `resume` check?"**
 
 ---
 
+### 0a. The source lock was not the only over-binding
+
+Section 0 fixed the source lock: stage identity became a fingerprint of the
+modules a stage runs, so unrelated commits stopped invalidating finished work.
+That paid off repeatedly during the 1.6 rebuild -- walltime raises, array
+throttle changes and a reverted commit all cost nothing, and one of those raises
+(decontam_filter 18h to 72h) is the only reason two 14-hour shards were not
+killed mid-flight.
+
+It did not help with the change that mattered most.
+
+The decontamination policy lives in `manifests/contamination/eval-holdouts.yaml`
+and is hashed into the evaluation holdout bundle. The bundle is immutable within
+a data release. So changing a *matching threshold* -- a number that cannot alter
+which benchmarks are withheld, only how overlap is detected -- required cutting
+metis-1.6-data-r2 and rebuilding every stage from normalize. Three guards
+enforced it in sequence, and each was right to: decontam_index refused the
+mismatched policy hash, prepare_holdouts refused to rebuild in place, and
+rehandoff refused to re-attest changed acquisition data.
+
+The binding conflates two different things: *what is held out* (the benchmark
+inventory, which must be immutable within a release) and *how overlap is
+detected* (thresholds, which are tuning). The first deserves the guard. The
+second does not, and paying a full rebuild to retune a threshold is what makes
+operators guess at values instead of measuring them.
+
+**For 1.7:** split the holdout bundle's identity. Hash the benchmark inventory
+and the extracted fragments into the release, since changing those changes what
+the model is allowed to see. Keep detection thresholds beside them as tunable
+policy, versioned and recorded in the release manifest but not part of the
+bundle's immutability. Then a threshold sweep costs a decontam re-run rather
+than a corpus rebuild -- which is the difference between measuring the right
+value and guessing at it twice.
+
+---
+
 ## 1. The single biggest performance defect: YAML parsed once per record
 
 **Measured: 82% of normalize CPU time, 5.6x speedup available.**
