@@ -2014,6 +2014,7 @@ def _datatrove_stage(profile: dict[str, Any], stage: str, task_index: int) -> di
             ),
             maximum_shingle_rows=int(policy["maximum_shingle_rows"]),
             match_fraction=float(tuning.get("match_fraction", 0.0)),
+            contiguous_run_minimum=int(tuning.get("contiguous_run_minimum", 0)),
         )
         save_contamination_index(index, contamination / "index.json")
     elif stage == "decontam_filter":

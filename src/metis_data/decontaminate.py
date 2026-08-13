@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from collections.abc import Mapping
-from typing import Any, Iterable, Iterator
+from typing import Sequence, Any, Iterable, Iterator
 
 from .dedup import canonical_text
 from .code_dedup import code_tokens
@@ -185,6 +185,60 @@ def ngram_hashes(text: str, size: int = 13) -> set[int]:
     }
 
 
+def ordered_ngram_hashes(text: str, size: int = 13) -> list[int]:
+    """Same n-grams as ngram_hashes, in document order.
+
+    ngram_hashes returns a set, which is all a count-based test needs and which
+    throws away the one thing a contiguity test requires: where each n-gram sat.
+    Copied text is a continuous span; coincidence is scattered. Without position
+    the two are indistinguishable, so a document with forty incidental matches
+    looks exactly like one containing a copied benchmark answer.
+    """
+
+    words = WORD_RE.findall(canonical_text(text))
+    if len(words) < size:
+        return []
+    return [
+        int.from_bytes(
+            hashlib.blake2b(" ".join(words[index : index + size]).encode(), digest_size=8).digest(),
+            "little",
+        )
+        for index in range(len(words) - size + 1)
+    ]
+
+
+def longest_contiguous_run(
+    postings: Mapping[int, frozenset[bytes]],
+    ordered: Sequence[int],
+) -> int:
+    """Longest run of consecutive n-grams all matching one evaluation row.
+
+    This is the signal current decontamination pipelines actually threshold on:
+    find a match, extend it in both directions, and measure how far the overlap
+    runs unbroken. A run of eight 13-grams is roughly twenty consecutive words
+    reproduced from a single benchmark item, which does not happen by accident.
+    Scattered agreement, however much of it there is, never builds a run.
+
+    One pass, carrying the active run length per evaluation row.
+    """
+
+    best = 0
+    active: dict[bytes, int] = {}
+    for shingle in ordered:
+        groups = postings.get(shingle) or ()
+        if not groups:
+            active = {}
+            continue
+        extended: dict[bytes, int] = {}
+        for group in groups:
+            length = active.get(group, 0) + 1
+            extended[group] = length
+            if length > best:
+                best = length
+        active = extended
+    return best
+
+
 def code_ngram_hashes(text: str, size: int = 12) -> set[int]:
     tokens = code_tokens(text)
     if len(tokens) < size:
@@ -346,6 +400,9 @@ class ContaminationIndex:
     # detected is tuning, and binding the two together meant retuning a
     # threshold cost a full corpus rebuild. See docs 0a.
     match_fraction: float = 0.0
+    # Length of an unbroken run of matching n-grams that alone marks a document
+    # contaminated, regardless of how few matches it has in total. 0 disables.
+    contiguous_run_minimum: int = 0
     suppressed_shingles: Mapping[str, int] = field(default_factory=dict)
 
     @property
@@ -379,6 +436,7 @@ class ContaminationIndex:
         minimum_code_skeleton_matching_ngrams: int = 2,
         maximum_shingle_rows: int = 32,
         match_fraction: float = 0.0,
+        contiguous_run_minimum: int = 0,
     ) -> "ContaminationIndex":
         if maximum_shingle_rows < 1:
             raise ValueError("maximum_shingle_rows must be positive")
@@ -443,6 +501,7 @@ class ContaminationIndex:
             minimum_code_skeleton_matching_ngrams,
             maximum_shingle_rows,
             match_fraction,
+            contiguous_run_minimum,
             {
                 "ngrams": suppressed_ngrams,
                 "short_ngrams": suppressed_short,
@@ -455,6 +514,10 @@ class ContaminationIndex:
         normalized = canonical_text(text)
         if hashlib.sha256(normalized.encode()).hexdigest() in self.exact:
             return "benchmark_exact"
+        if self.contiguous_run_minimum > 0 and longest_contiguous_run(
+            self.ngram_postings, ordered_ngram_hashes(normalized, self.ngram_size)
+        ) >= self.contiguous_run_minimum:
+            return "benchmark_contiguous_run"
         if _matches_one_holdout_group(
             self.ngram_postings,
             ngram_hashes(normalized, self.ngram_size),

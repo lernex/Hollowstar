@@ -333,3 +333,12 @@ decontamination:
   minimum_code_matching_ngrams: 16
   minimum_code_skeleton_matching_ngrams: 32
   match_fraction: 0.002
+  # An unbroken run of this many matching 13-grams marks a document
+  # contaminated on its own, however few matches it has in total. This is the
+  # signal current pipelines threshold on: find an overlap, extend it both ways,
+  # measure how far it runs unbroken. Eight 13-grams is roughly twenty
+  # consecutive words reproduced from one benchmark item, which does not happen
+  # by accident -- verified against a synthetic copy (run=14) versus scattered
+  # fragments of the same passage (run=1). Counting alone cannot tell those
+  # apart. 0 disables.
+  contiguous_run_minimum: 8

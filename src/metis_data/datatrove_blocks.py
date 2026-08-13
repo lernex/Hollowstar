@@ -18,6 +18,7 @@ import numpy as np
 
 from .config import load_yaml, repository_root
 from .decontaminate import (
+    ordered_ngram_hashes,
     required_matches,
     ContaminationIndex,
     benchmark_genealogy_match,
@@ -62,6 +63,11 @@ CONTAMINATION_POLICY_FIELDS = (
     "code_skeleton_ngram_size",
     "minimum_code_skeleton_matching_ngrams",
     "maximum_shingle_rows",
+    # Detection tuning must round-trip. The disk index defaults these to 0 when
+    # absent, so omitting them here would let decontam_index build with the
+    # configured values and decontam_filter silently run without them.
+    "match_fraction",
+    "contiguous_run_minimum",
 )
 
 
@@ -2312,6 +2318,36 @@ def _matching_one_group(values: np.ndarray, candidates: set[int], minimum: int) 
     return False
 
 
+def _longest_run_ndarray(values: np.ndarray, ordered: list[int]) -> int:
+    """Longest unbroken run of matching n-grams sharing one evaluation row.
+
+    The sorted-ndarray twin of decontaminate.longest_contiguous_run. Copied text
+    forms a continuous span; incidental agreement never does, however much of it
+    accumulates. Carries the active run length per row in a single pass.
+    """
+
+    hashes = values["hash"]
+    groups_col = values["group"]
+    best = 0
+    active: dict[bytes, int] = {}
+    for shingle in ordered:
+        value = np.uint64(shingle)
+        left = int(np.searchsorted(hashes, value, side="left"))
+        right = int(np.searchsorted(hashes, value, side="right"))
+        if left == right:
+            active = {}
+            continue
+        extended: dict[bytes, int] = {}
+        for raw_group in groups_col[left:right]:
+            group = bytes(raw_group)
+            length = active.get(group, 0) + 1
+            extended[group] = length
+            if length > best:
+                best = length
+        active = extended
+    return best
+
+
 @dataclass(frozen=True)
 class DiskContaminationIndex:
     exact: np.ndarray
@@ -2328,12 +2364,19 @@ class DiskContaminationIndex:
     code_skeleton_ngram_size: int
     minimum_code_skeleton_matching_ngrams: int
     maximum_shingle_rows: int
+    match_fraction: float = 0.0
+    contiguous_run_minimum: int = 0
 
     def reason(self, text: str) -> str | None:
         normalized = canonical_text(text)
         digest = np.bytes_(hashlib.sha256(normalized.encode()).hexdigest().encode("ascii"))
         if _sorted_contains(self.exact, digest):
             return "benchmark_exact"
+        run_minimum = int(getattr(self, "contiguous_run_minimum", 0) or 0)
+        if run_minimum > 0 and _longest_run_ndarray(
+            self.ngram_postings, ordered_ngram_hashes(normalized, self.ngram_size)
+        ) >= run_minimum:
+            return "benchmark_contiguous_run"
         if _matching_one_group(
             self.ngram_postings,
             ngram_hashes(normalized, self.ngram_size),
@@ -2603,6 +2646,8 @@ def load_contamination_index(
             payload["minimum_code_skeleton_matching_ngrams"]
         ),
         maximum_shingle_rows=int(payload["maximum_shingle_rows"]),
+        match_fraction=float(payload.get("match_fraction", 0.0)),
+        contiguous_run_minimum=int(payload.get("contiguous_run_minimum", 0)),
     )
 
 
