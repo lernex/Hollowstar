@@ -133,6 +133,46 @@ value and guessing at it twice.
 
 ---
 
+### 0b. The dominant failure mode: configured, and silently inert
+
+Four times in one build, a setting was configured correctly, persisted
+correctly, and had no effect, with nothing failing to say so.
+
+| where | what happened |
+|---|---|
+| `eval-holdouts.yaml` | thresholds pinned to the holdout bundle; editing them changed nothing until the bundle was rebuilt |
+| disk contamination index | `save`/`load` did not round-trip the tuning, so `decontam_index` built with it and `decontam_filter` ran without it |
+| `_policy_contract` | cast every field through `int()`, flooring `match_fraction` 0.002 to 0 while still recording the field as present |
+| monitor error probe | grepped a log path the running supervisor had stopped writing, reporting `errors=0` for hours from a stale file |
+
+Add to those the audit that read `repo_path` when the field was named `path`
+and reported a confident zero suspect files, and the marker check that looked
+up `task-<index:06d>` when the stage wrote `task-<index:08d>-<digest>.json`.
+
+The shape is always the same: **the absence of a signal is read as the absence
+of a problem.** A zero, a default, a missing key, an empty grep. None of them
+can distinguish "nothing is wrong" from "nothing was measured", and every one
+of them defaults to the reassuring reading.
+
+**What to do about it in 1.7:**
+
+- **Make defaults loud.** A tuning value that falls back to zero should log the
+  fallback, or refuse. `getattr(self, "match_fraction", 0.0)` is a silent
+  revert to old behaviour dressed as a safe default.
+- **Round-trip anything that crosses a process boundary, and assert it.** The
+  index knew its own thresholds; nothing checked that the reader saw them.
+- **Verify a probe can produce a non-zero before trusting its zero.** Every
+  audit above would have been caught by testing it against a case that must
+  fail. The habit is cheap: measure something you know is broken first.
+- **Prefer failing to defaulting** anywhere a value changes what the data
+  becomes. A missing threshold should stop a build, not quietly restore the
+  behaviour someone was trying to change.
+
+The pipeline's fail-closed gates are good at catching *wrong* values. Nothing
+in it catches a *value that never arrived*, and that is the more common defect.
+
+---
+
 ## 1. The single biggest performance defect: YAML parsed once per record
 
 **Measured: 82% of normalize CPU time, 5.6x speedup available.**
