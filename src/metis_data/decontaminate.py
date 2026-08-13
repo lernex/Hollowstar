@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -285,18 +286,40 @@ def _freeze_postings(
     return retained, suppressed
 
 
+def required_matches(minimum: int, total_ngrams: int, fraction: float = 0.0) -> int:
+    """Scale the match threshold with the document, not against it.
+
+    A fixed count is the wrong shape for this test. A document of n n-grams gets
+    n chances to collide with the evaluation set, so a constant threshold makes
+    a 400 KB source file far likelier to trip than a 3 KB one -- which is
+    exactly the bias measured on the 1.6 corpus, where decontamination kept
+    49.9% of documents but only 21.4% of characters. Current practice is
+    proportional: discard when a share of the document's own n-grams matches,
+    rather than when some absolute number does.
+
+    The floor still applies, so short documents cannot be cleared by arithmetic.
+    fraction=0.0 reproduces the old absolute behaviour exactly.
+    """
+
+    if fraction <= 0.0:
+        return minimum
+    return max(minimum, math.ceil(fraction * total_ngrams))
+
+
 def _matches_one_holdout_group(
     postings: Mapping[int, frozenset[bytes]],
     candidates: set[int],
     minimum: int,
+    fraction: float = 0.0,
 ) -> bool:
     """Require all threshold matches to belong to one evaluation row."""
 
+    threshold = required_matches(minimum, len(candidates), fraction)
     group_counts: dict[bytes, int] = {}
     for candidate in candidates:
         for group in postings.get(candidate, ()):
             count = group_counts.get(group, 0) + 1
-            if count >= minimum:
+            if count >= threshold:
                 return True
             group_counts[group] = count
     return False
@@ -318,6 +341,11 @@ class ContaminationIndex:
     code_skeleton_ngram_size: int = 16
     minimum_code_skeleton_matching_ngrams: int = 2
     maximum_shingle_rows: int = 32
+    # Detection tuning, deliberately not part of the holdout bundle's identity.
+    # What is withheld from training is release-immutable; how overlap is
+    # detected is tuning, and binding the two together meant retuning a
+    # threshold cost a full corpus rebuild. See docs 0a.
+    match_fraction: float = 0.0
     suppressed_shingles: Mapping[str, int] = field(default_factory=dict)
 
     @property
@@ -350,6 +378,7 @@ class ContaminationIndex:
         code_skeleton_ngram_size: int = 16,
         minimum_code_skeleton_matching_ngrams: int = 2,
         maximum_shingle_rows: int = 32,
+        match_fraction: float = 0.0,
     ) -> "ContaminationIndex":
         if maximum_shingle_rows < 1:
             raise ValueError("maximum_shingle_rows must be positive")
@@ -413,6 +442,7 @@ class ContaminationIndex:
             code_skeleton_ngram_size,
             minimum_code_skeleton_matching_ngrams,
             maximum_shingle_rows,
+            match_fraction,
             {
                 "ngrams": suppressed_ngrams,
                 "short_ngrams": suppressed_short,
@@ -429,6 +459,7 @@ class ContaminationIndex:
             self.ngram_postings,
             ngram_hashes(normalized, self.ngram_size),
             self.minimum_matching_ngrams,
+            self.match_fraction,
         ):
             return "benchmark_ngram"
         if looks_like_code(text):
@@ -436,18 +467,21 @@ class ContaminationIndex:
                 self.code_ngram_postings,
                 code_ngram_hashes(text, self.code_ngram_size),
                 self.minimum_code_matching_ngrams,
+                self.match_fraction,
             ):
                 return "benchmark_code_ngram"
             if _matches_one_holdout_group(
                 self.code_skeleton_ngram_postings,
                 code_skeleton_ngram_hashes(text, self.code_skeleton_ngram_size),
                 self.minimum_code_skeleton_matching_ngrams,
+                self.match_fraction,
             ):
                 return "benchmark_code_skeleton_ngram"
         if _matches_one_holdout_group(
             self.short_ngram_postings,
             ngram_hashes(normalized, self.short_ngram_size),
             self.minimum_short_matching_ngrams,
+            self.match_fraction,
         ):
             return "benchmark_short_ngram"
         return None

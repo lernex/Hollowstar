@@ -18,6 +18,7 @@ import numpy as np
 
 from .config import load_yaml, repository_root
 from .decontaminate import (
+    required_matches,
     ContaminationIndex,
     benchmark_genealogy_match,
     code_ngram_hashes,
@@ -2336,26 +2337,34 @@ class DiskContaminationIndex:
         if _matching_one_group(
             self.ngram_postings,
             ngram_hashes(normalized, self.ngram_size),
-            self.minimum_matching_ngrams,
+            required_matches(self.minimum_matching_ngrams,
+                             len(ngram_hashes(normalized, self.ngram_size)),
+                             getattr(self, "match_fraction", 0.0)),
         ):
             return "benchmark_ngram"
         if looks_like_code(text):
             if _matching_one_group(
                 self.code_ngram_postings,
                 code_ngram_hashes(text, self.code_ngram_size),
-                self.minimum_code_matching_ngrams,
+                required_matches(self.minimum_code_matching_ngrams,
+                                 len(code_ngram_hashes(text, self.code_ngram_size)),
+                                 getattr(self, "match_fraction", 0.0)),
             ):
                 return "benchmark_code_ngram"
             if _matching_one_group(
                 self.code_skeleton_ngram_postings,
                 code_skeleton_ngram_hashes(text, self.code_skeleton_ngram_size),
-                self.minimum_code_skeleton_matching_ngrams,
+                required_matches(self.minimum_code_skeleton_matching_ngrams,
+                                 len(code_skeleton_ngram_hashes(text, self.code_skeleton_ngram_size)),
+                                 getattr(self, "match_fraction", 0.0)),
             ):
                 return "benchmark_code_skeleton_ngram"
         if _matching_one_group(
             self.short_ngram_postings,
             ngram_hashes(normalized, self.short_ngram_size),
-            self.minimum_short_matching_ngrams,
+            required_matches(self.minimum_short_matching_ngrams,
+                             len(ngram_hashes(normalized, self.short_ngram_size)),
+                             getattr(self, "match_fraction", 0.0)),
         ):
             return "benchmark_short_ngram"
         return None

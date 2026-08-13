@@ -306,3 +306,30 @@ gates:
   require_final_tokenizer_counts: true
   maximum_generated_share: 0.15
   minimum_unique_tokens: 950000000000
+
+# Decontamination detection tuning. Deliberately NOT in
+# manifests/contamination/eval-holdouts.yaml: that file is hashed into the
+# evaluation holdout bundle, which is immutable within a data release, so a
+# threshold edit there costs a new release and a rebuild from normalize. What a
+# release withholds from training must be immutable; how overlap is *detected*
+# is tuning. Splitting them is docs 0a.
+#
+# Measured on the 1.6 corpus. At the shipped defaults decontamination kept
+# 49.9% of documents but only 21.4% of characters, because the rule counted an
+# absolute number of matching n-grams anywhere in a document: a 400 KB file got
+# far more chances to collide than a 3 KB one. 76% of removals came from the
+# code-skeleton rule, whose 16-token skeletons are a loop and a branch.
+#
+# match_fraction scales the bar with the document, which is what current
+# practice does -- proportional overlap rather than a fixed count. Sweeping it
+# against the built index over 720 sampled documents:
+#     0.000 -> 86.6% chars kept    0.002 -> 94.6%    0.008 -> 97.0%
+# and no document matching 128+ n-grams against a single evaluation row
+# survived at any setting. 0.002 sits mid-curve rather than on the flat top,
+# where the rule stops removing much of anything.
+decontamination:
+  minimum_matching_ngrams: 2
+  minimum_short_matching_ngrams: 4
+  minimum_code_matching_ngrams: 16
+  minimum_code_skeleton_matching_ngrams: 32
+  match_fraction: 0.002

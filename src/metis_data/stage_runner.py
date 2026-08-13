@@ -293,6 +293,12 @@ def _stage_execution_contract(
             "state_artifacts": state_artifacts,
             "stage_code_sha256": stage_code_sha256(stage),
             "scheduler": _output_relevant_scheduler(profile.get("scheduler", {})),
+            # Detection tuning lives outside the holdout bundle so it can be
+            # retuned without a new release, which means the contract is the
+            # only thing that can force a re-run when it changes. Leaving it
+            # out would let a retuned threshold be silently ignored by stages
+            # that already hold completion markers.
+            "decontamination": profile.get("decontamination", {}),
             "gates": {
                 key: value
                 for key, value in profile.get("gates", {}).items()
@@ -1978,6 +1984,22 @@ def _datatrove_stage(profile: dict[str, Any], stage: str, task_index: int) -> di
         from .decontaminate import ContaminationIndex
 
         policy = load_yaml(repository_root() / "manifests" / "contamination" / "eval-holdouts.yaml")["policy"]
+        # Detection tuning is not part of what a release withholds. The holdout
+        # bundle pins this file, so editing a threshold in it invalidates the
+        # bundle and forces a whole new data release -- which is what made
+        # retuning cost a corpus rebuild rather than a decontam re-run. The
+        # benchmark inventory stays pinned there; the numbers that decide how
+        # overlap is *detected* are overridable from the profile, which the
+        # execution contract already covers. See docs 0a.
+        tuning = dict(profile.get("decontamination") or {})
+        for key in (
+            "minimum_matching_ngrams",
+            "minimum_short_matching_ngrams",
+            "minimum_code_matching_ngrams",
+            "minimum_code_skeleton_matching_ngrams",
+        ):
+            if key in tuning:
+                policy = {**policy, key: int(tuning[key])}
         index = ContaminationIndex.build(
             _iter_rows(holdouts),
             ngram_size=int(policy["ngram_size"]),
@@ -1991,6 +2013,7 @@ def _datatrove_stage(profile: dict[str, Any], stage: str, task_index: int) -> di
                 policy["minimum_code_skeleton_matching_ngrams"]
             ),
             maximum_shingle_rows=int(policy["maximum_shingle_rows"]),
+            match_fraction=float(tuning.get("match_fraction", 0.0)),
         )
         save_contamination_index(index, contamination / "index.json")
     elif stage == "decontam_filter":
