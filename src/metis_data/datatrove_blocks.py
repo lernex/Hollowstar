@@ -53,22 +53,31 @@ CONTAMINATION_ARRAY_NAMES = (
     "code_ngram_postings",
     "code_skeleton_ngram_postings",
 )
-CONTAMINATION_POLICY_FIELDS = (
+# Fields that define the index's *structure*. An index built at one n-gram size
+# cannot be read at another, so these must match the pinned policy exactly.
+CONTAMINATION_STRUCTURE_FIELDS = (
     "ngram_size",
-    "minimum_matching_ngrams",
     "short_ngram_size",
-    "minimum_short_matching_ngrams",
     "code_ngram_size",
-    "minimum_code_matching_ngrams",
     "code_skeleton_ngram_size",
-    "minimum_code_skeleton_matching_ngrams",
     "maximum_shingle_rows",
-    # Detection tuning must round-trip. The disk index defaults these to 0 when
-    # absent, so omitting them here would let decontam_index build with the
-    # configured values and decontam_filter silently run without them.
+)
+# Fields that only decide how a lookup is *judged*. These are profile-sourced
+# tuning (see docs 0a) and are bound by the execution contract rather than by
+# the holdout bundle, so an index may legitimately carry values the pinned
+# policy file does not. They still round-trip through the index manifest: the
+# disk index defaults them to zero when absent, so omitting them would let
+# decontam_index build with the configured values and decontam_filter silently
+# run without them.
+CONTAMINATION_TUNING_FIELDS = (
+    "minimum_matching_ngrams",
+    "minimum_short_matching_ngrams",
+    "minimum_code_matching_ngrams",
+    "minimum_code_skeleton_matching_ngrams",
     "match_fraction",
     "contiguous_run_minimum",
 )
+CONTAMINATION_POLICY_FIELDS = CONTAMINATION_STRUCTURE_FIELDS + CONTAMINATION_TUNING_FIELDS
 
 
 def build_regex_word_tokenizer() -> Any:
@@ -2068,18 +2077,22 @@ def _find_registry_for_save(
     )
 
 
-def _policy_contract(value: Any) -> dict[str, int]:
-    return {
-        field: int(getattr(value, field))
-        for field in CONTAMINATION_POLICY_FIELDS
-    }
+def _policy_contract(value: Any) -> dict[str, Any]:
+    # match_fraction is a fraction, not a count. int() would floor 0.002 to 0
+    # and disable length normalisation while the manifest still recorded the
+    # field as present -- configured, persisted, and inert.
+    contract: dict[str, Any] = {}
+    for field in CONTAMINATION_POLICY_FIELDS:
+        raw = getattr(value, field, 0)
+        contract[field] = float(raw) if isinstance(raw, float) else int(raw)
+    return contract
 
 
 def _validate_policy_contract(
     policy: Mapping[str, Any],
     expected: Mapping[str, Any],
 ) -> None:
-    for field in CONTAMINATION_POLICY_FIELDS:
+    for field in CONTAMINATION_STRUCTURE_FIELDS:
         if field not in policy:
             raise RuntimeError(
                 f"Pinned benchmark decontamination policy is missing {field}"
