@@ -20,8 +20,15 @@ data is older than the frontier.
 
 **When you research, it must be recent and it must be frontier.**
 
-- Prefer the **last 6-12 months**. Prefer the current and previous year.
-  Anything older than ~2 years is suspect and must be justified explicitly.
+- **Last 6-12 months means 2026, or very late 2025. Nothing earlier.** This is a
+  hard floor, not a preference. A 2024 paper is not "recent" here, and neither
+  is early 2025.
+- The **only** exception is work that is genuinely foundational *and* has
+  demonstrably not moved in years. Assume this is not the case: in data
+  curation, tokenization, and training recipes essentially everything has
+  changed. If you invoke this exception you must say explicitly why the
+  technique has not been superseded, and cite something recent confirming it is
+  still current practice. "It is widely cited" is not that citation.
 - Cite **primary sources**: technical reports, model cards, dataset papers,
   official lab blogs. Not blog-summaries-of-blogs, not tutorials, not Stack
   Overflow, not a model's own recollection.
