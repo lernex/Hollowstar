@@ -9,7 +9,7 @@ import sqlite3
 import struct
 import tempfile
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Iterator
@@ -2315,14 +2315,51 @@ def _sorted_contains(values: np.ndarray, value: Any) -> bool:
     return position < len(values) and bool(values[position] == value)
 
 
-def _matching_one_group(values: np.ndarray, candidates: set[int], minimum: int) -> bool:
-    group_counts: dict[bytes, int] = {}
+def _as_uint64(shingles: Sequence[int] | set[int]) -> np.ndarray:
+    if isinstance(shingles, np.ndarray):
+        return shingles.astype(np.uint64, copy=False)
+    return np.fromiter(shingles, dtype=np.uint64, count=len(shingles))
+
+
+def _probe_postings(
+    values: np.ndarray, shingles: Sequence[int] | set[int]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Locate a batch of shingles in one sorted postings array.
+
+    Three things make this the whole ball game for stage throughput:
+
+    * One vectorised ``np.searchsorted`` per side replaces two scalar calls per
+      shingle, so NumPy dispatch is paid twice instead of once per n-gram.
+    * The probe is sorted and de-duplicated first. The postings arrays hold tens
+      of millions of rows, so an unordered probe misses to DRAM on nearly every
+      level of every binary search; walking them in order keeps the upper levels
+      of the search in cache and is worth roughly 4x on its own.
+    * A document whose shingles miss the index entirely -- the overwhelming
+      majority -- is rejected without touching the group column at all.
+
+    Returns ``(unique, left, right)`` over the sorted-unique shingles, or
+    ``None`` when nothing can match.
+    """
+
+    if len(values) == 0 or not len(shingles):
+        return None
+    unique = np.unique(_as_uint64(shingles))
     hashes = values["hash"]
-    for candidate in candidates:
-        value = np.uint64(candidate)
-        left = int(np.searchsorted(hashes, value, side="left"))
-        right = int(np.searchsorted(hashes, value, side="right"))
-        for raw_group in values["group"][left:right]:
+    left = np.searchsorted(hashes, unique, side="left")
+    right = np.searchsorted(hashes, unique, side="right")
+    if not np.any(right > left):
+        return None
+    return unique, left, right
+
+
+def _one_group_reaches(
+    groups_col: np.ndarray, left: np.ndarray, right: np.ndarray, minimum: int
+) -> bool:
+    """Whether any single evaluation row accounts for ``minimum`` matches."""
+
+    group_counts: dict[bytes, int] = {}
+    for position in np.flatnonzero(right > left):
+        for raw_group in groups_col[left[position] : right[position]]:
             group = bytes(raw_group)
             count = group_counts.get(group, 0) + 1
             if count >= minimum:
@@ -2331,27 +2368,58 @@ def _matching_one_group(values: np.ndarray, candidates: set[int], minimum: int) 
     return False
 
 
-def _longest_run_ndarray(values: np.ndarray, ordered: list[int]) -> int:
+def _matching_one_group(values: np.ndarray, candidates: set[int], minimum: int) -> bool:
+    probed = _probe_postings(values, candidates)
+    if probed is None:
+        return False
+    _unique, left, right = probed
+    return _one_group_reaches(values["group"], left, right, minimum)
+
+
+def _ordered_bounds(
+    values: np.ndarray, ordered: Sequence[int]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    """Probe once, return bounds both in document order and over unique shingles.
+
+    ``reason`` tests the same 13-grams against the same postings array twice:
+    once for the contiguous-run threshold, which needs document order, and once
+    for the count threshold, which needs the distinct set. Probing a 70M-row
+    array twice for one answer is pure waste, so the single probe here serves
+    both callers.
+    """
+
+    if len(values) == 0 or not len(ordered):
+        return None
+    probe = _as_uint64(ordered)
+    unique, inverse = np.unique(probe, return_inverse=True)
+    inverse = np.reshape(inverse, -1)
+    hashes = values["hash"]
+    left = np.searchsorted(hashes, unique, side="left")
+    right = np.searchsorted(hashes, unique, side="right")
+    if not np.any(right > left):
+        return None
+    return unique, left, right, inverse
+
+
+def _run_from_bounds(groups_col: np.ndarray, left: np.ndarray, right: np.ndarray) -> int:
     """Longest unbroken run of matching n-grams sharing one evaluation row.
 
     The sorted-ndarray twin of decontaminate.longest_contiguous_run. Copied text
     forms a continuous span; incidental agreement never does, however much of it
-    accumulates. Carries the active run length per row in a single pass.
+    accumulates. Carries the active run length per row in a single pass, so the
+    bounds passed in must be in document order, not sorted-unique order.
     """
 
-    hashes = values["hash"]
-    groups_col = values["group"]
     best = 0
     active: dict[bytes, int] = {}
-    for shingle in ordered:
-        value = np.uint64(shingle)
-        left = int(np.searchsorted(hashes, value, side="left"))
-        right = int(np.searchsorted(hashes, value, side="right"))
-        if left == right:
+    for position in range(left.size):
+        start = int(left[position])
+        stop = int(right[position])
+        if start == stop:
             active = {}
             continue
         extended: dict[bytes, int] = {}
-        for raw_group in groups_col[left:right]:
+        for raw_group in groups_col[start:stop]:
             group = bytes(raw_group)
             length = active.get(group, 0) + 1
             extended[group] = length
@@ -2386,41 +2454,50 @@ class DiskContaminationIndex:
         if _sorted_contains(self.exact, digest):
             return "benchmark_exact"
         run_minimum = int(getattr(self, "contiguous_run_minimum", 0) or 0)
-        if run_minimum > 0 and _longest_run_ndarray(
-            self.ngram_postings, ordered_ngram_hashes(normalized, self.ngram_size)
-        ) >= run_minimum:
-            return "benchmark_contiguous_run"
-        if _matching_one_group(
-            self.ngram_postings,
-            ngram_hashes(normalized, self.ngram_size),
-            required_matches(self.minimum_matching_ngrams,
-                             len(ngram_hashes(normalized, self.ngram_size)),
-                             getattr(self, "match_fraction", 0.0)),
-        ):
-            return "benchmark_ngram"
+        fraction = getattr(self, "match_fraction", 0.0)
+        # Hash each family once. Every set below was previously built twice --
+        # once for the candidate argument and once inside required_matches for
+        # its length -- which doubled the tokenise-and-hash cost of the stage.
+        ordered = ordered_ngram_hashes(normalized, self.ngram_size)
+        # One probe of the 13-gram postings serves both thresholds below.
+        probed = _ordered_bounds(self.ngram_postings, ordered)
+        if probed is not None:
+            unique, left, right, inverse = probed
+            groups_col = self.ngram_postings["group"]
+            if run_minimum > 0 and _run_from_bounds(
+                groups_col, left[inverse], right[inverse]
+            ) >= run_minimum:
+                return "benchmark_contiguous_run"
+            # unique is exactly ngram_hashes(normalized, self.ngram_size).
+            if _one_group_reaches(
+                groups_col,
+                left,
+                right,
+                required_matches(self.minimum_matching_ngrams, len(unique), fraction),
+            ):
+                return "benchmark_ngram"
         if looks_like_code(text):
+            code_ngrams = code_ngram_hashes(text, self.code_ngram_size)
             if _matching_one_group(
                 self.code_ngram_postings,
-                code_ngram_hashes(text, self.code_ngram_size),
-                required_matches(self.minimum_code_matching_ngrams,
-                                 len(code_ngram_hashes(text, self.code_ngram_size)),
-                                 getattr(self, "match_fraction", 0.0)),
+                code_ngrams,
+                required_matches(self.minimum_code_matching_ngrams, len(code_ngrams), fraction),
             ):
                 return "benchmark_code_ngram"
+            skeleton_ngrams = code_skeleton_ngram_hashes(text, self.code_skeleton_ngram_size)
             if _matching_one_group(
                 self.code_skeleton_ngram_postings,
-                code_skeleton_ngram_hashes(text, self.code_skeleton_ngram_size),
-                required_matches(self.minimum_code_skeleton_matching_ngrams,
-                                 len(code_skeleton_ngram_hashes(text, self.code_skeleton_ngram_size)),
-                                 getattr(self, "match_fraction", 0.0)),
+                skeleton_ngrams,
+                required_matches(
+                    self.minimum_code_skeleton_matching_ngrams, len(skeleton_ngrams), fraction
+                ),
             ):
                 return "benchmark_code_skeleton_ngram"
+        short_ngrams = ngram_hashes(normalized, self.short_ngram_size)
         if _matching_one_group(
             self.short_ngram_postings,
-            ngram_hashes(normalized, self.short_ngram_size),
-            required_matches(self.minimum_short_matching_ngrams,
-                             len(ngram_hashes(normalized, self.short_ngram_size)),
-                             getattr(self, "match_fraction", 0.0)),
+            short_ngrams,
+            required_matches(self.minimum_short_matching_ngrams, len(short_ngrams), fraction),
         ):
             return "benchmark_short_ngram"
         return None
