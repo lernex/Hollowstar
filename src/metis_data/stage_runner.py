@@ -1414,7 +1414,14 @@ def _normalize_task(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
                         assert source is not None
                         profile_name = source["processing"]["quality_profile"]
                         source_priority = int(source["processing"].get("priority", 1))
+                        # A split input owns a disjoint slice of its container's
+                        # records. Parts are interleaved rather than blocked so
+                        # no part has to know where the others stop.
+                        part_index = int(file_record.get("part_index", 0))
+                        part_count = max(1, int(file_record.get("part_count", 1)))
                         for row_index, row in enumerate(_iter_rows(Path(file_record["local_path"]))):
+                            if part_count > 1 and row_index % part_count != part_index:
+                                continue
                             counts["input"] += 1
                             text = _text_from_row(row)
                             if not text:
@@ -4329,6 +4336,39 @@ def _run_task_worker(payload: tuple[dict[str, Any], str, int]) -> dict[str, Any]
     }
 
 
+def _task_indices(
+    *, first_index: int, task_count: int, task_limit: int, task_stride: int
+) -> list[int]:
+    """Global task indices owned by one array entry.
+
+    Two layouts. A contiguous block is the historical one and stays the default,
+    so an array that was sized and submitted under it keeps exactly the
+    partition it was submitted for.
+
+    Striding exists because shard size correlates with shard index: sources are
+    laid out in contiguous runs, so an oversized source produces a run of
+    oversized shards. A contiguous block hands one array entry every shard in
+    that run while its neighbours get none -- on the 1.6 corpus the ten largest
+    shards, 6.9GB each against a 0.2GB median, all landed in two array entries
+    and held the stage up for a day and a half. Striding deals the same indices
+    round-robin instead, so a run of large shards is spread one per entry.
+
+    Both layouts cover ``[first_index, task_limit)`` exactly once across the
+    whole array, which is what makes the choice safe to change between runs.
+    """
+
+    if task_stride > 0:
+        if task_limit <= 0:
+            raise ValueError("task_limit is required when task_stride is set")
+        return list(range(first_index, task_limit, task_stride))
+    indices = list(range(first_index, first_index + task_count))
+    if task_limit > 0:
+        # The final group of a chunk is normally partial, and must never reach
+        # into the index range owned by another submission.
+        indices = [index for index in indices if index < task_limit]
+    return indices
+
+
 def _run_task_group(
     profile: dict[str, Any],
     stage: str,
@@ -4337,12 +4377,14 @@ def _run_task_group(
     task_count: int,
     task_limit: int,
     workers: int,
+    task_stride: int = 0,
 ) -> int:
-    indices = list(range(first_index, first_index + task_count))
-    if task_limit > 0:
-        # The final group of a chunk is normally partial, and must never reach
-        # into the index range owned by another submission.
-        indices = [index for index in indices if index < task_limit]
+    indices = _task_indices(
+        first_index=first_index,
+        task_count=task_count,
+        task_limit=task_limit,
+        task_stride=task_stride,
+    )
     _, state = _paths(profile)
     pending = [
         index for index in indices if not state.is_complete(stage, f"task-{index:06d}")
@@ -4445,6 +4487,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Exclusive upper bound on global task index for this submission",
     )
     parser.add_argument(
+        "--task-stride",
+        type=int,
+        default=0,
+        help=(
+            "Deal global indices round-robin with this stride instead of in a "
+            "contiguous block; 0 keeps the contiguous layout"
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=0,
@@ -4452,7 +4503,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     _, profile = load_profile(args.profile)
-    if args.task_count <= 1:
+    if args.task_count <= 1 and args.task_stride <= 0:
         try:
             payload = run_stage(profile, args.stage, args.task_index)
             print(json.dumps(payload, indent=2, sort_keys=True))
@@ -4468,6 +4519,7 @@ def main(argv: list[str] | None = None) -> int:
             task_count=args.task_count,
             task_limit=args.task_limit,
             workers=args.workers,
+            task_stride=args.task_stride,
         )
     except Exception as exc:
         print(f"FAIL {type(exc).__name__}: {exc}", file=sys.stderr)

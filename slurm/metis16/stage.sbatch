@@ -40,11 +40,26 @@ if (( TASKS_PER_JOB < 1 )); then
   exit 2
 fi
 
-# One array entry owns TASKS_PER_JOB consecutive global indices. METIS_TASK_LIMIT
-# is the exclusive upper bound of this submission's chunk, so a trailing partial
-# group can never reach into the range owned by another submission.
+# One array entry owns TASKS_PER_JOB global indices. METIS_TASK_LIMIT is the
+# exclusive upper bound of this submission's chunk, so a trailing partial group
+# can never reach into the range owned by another submission.
+#
+# METIS_TASK_STRIDE selects the layout. Unset or zero keeps the contiguous
+# block, which is what every already-submitted array was sized for. When set it
+# is the number of array entries in this chunk, and the entry deals its indices
+# round-robin from its own base so that a run of oversized shards is spread one
+# per entry rather than piled onto one.
+TASK_STRIDE="${METIS_TASK_STRIDE:-0}"
+if [[ ! "$TASK_STRIDE" =~ ^[0-9]+$ ]]; then
+  echo "METIS_TASK_STRIDE must be a non-negative integer" >&2
+  exit 2
+fi
 GROUP_INDEX="${SLURM_ARRAY_TASK_ID:-0}"
-TASK_INDEX="$(( TASK_OFFSET + GROUP_INDEX * TASKS_PER_JOB ))"
+if (( TASK_STRIDE > 0 )); then
+  TASK_INDEX="$(( TASK_OFFSET + GROUP_INDEX ))"
+else
+  TASK_INDEX="$(( TASK_OFFSET + GROUP_INDEX * TASKS_PER_JOB ))"
+fi
 
 if (( TASKS_PER_JOB > 1 )); then
   # Every in-node task is its own single-threaded process. Without these, each
@@ -70,4 +85,5 @@ exec "$PYTHON" -m metis_data.stage_runner \
   --stage "${METIS_STAGE:?METIS_STAGE is required}" \
   --task-index "$TASK_INDEX" \
   --task-count "$TASKS_PER_JOB" \
-  --task-limit "$TASK_LIMIT"
+  --task-limit "$TASK_LIMIT" \
+  --task-stride "$TASK_STRIDE"

@@ -43,6 +43,18 @@ storage:
   normalized_format: jsonl.zst
   final_token_dtype: uint16
   final_shard_tokens: 1000000000
+  # Largest acquired file one normalize task may be handed, in bytes. One file
+  # becomes one task and therefore one shard for the whole build, and nothing
+  # inside a shard is parallel, so a stage cannot finish before its single
+  # largest file does. On this release the ten largest files are 6.9GB against a
+  # 0.2GB median and held decontamination up for a day and a half after the rest
+  # of the corpus was finished; 1_000_000_000 would have split them seven ways.
+  #
+  # Left at 0 (disabled) deliberately. build.inputs.json is frozen per release
+  # and re-derived on every submission, so raising this mid-release makes the
+  # frozen-input comparison fail and blocks resubmission. Set it on the next
+  # release, before the first submission.
+  maximum_input_bytes: 0
   directories:
     cache: cache
     raw: raw

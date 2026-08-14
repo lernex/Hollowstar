@@ -101,6 +101,7 @@ def submit_stage(
     task_offset: int = 0,
     tasks_per_job: int = 1,
     task_limit: int = 0,
+    task_stride: int = 0,
     dry_run: bool = False,
 ) -> SubmittedJob:
     scheduler = profile["scheduler"]
@@ -174,7 +175,8 @@ def submit_stage(
             f",METIS_PROFILE={profile_path},METIS_STAGE={stage}"
             f",METIS_TASK_OFFSET={int(task_offset)}"
             f",METIS_TASKS_PER_JOB={int(tasks_per_job)}"
-            f",METIS_TASK_LIMIT={int(task_limit)}",
+            f",METIS_TASK_LIMIT={int(task_limit)}"
+            f",METIS_TASK_STRIDE={int(task_stride)}",
             str(script),
         ]
     )
@@ -235,6 +237,10 @@ def _submit_array_chunks(
 ) -> list[SubmittedJob]:
     maximum_array_size = int(profile["scheduler"].get("max_array_size", 1000))
     tasks_per_job = stage_tasks_per_job(profile, stage)
+    # Shard size correlates with shard index, so a contiguous block can hand one
+    # array entry an entire run of oversized shards. Striding deals them
+    # round-robin instead. Both layouts cover the chunk exactly once.
+    stride_enabled = bool(profile["scheduler"].get("stride_task_assignment", True))
     chunks = _contiguous_chunks(global_indices, maximum_array_size, tasks_per_job)
     jobs: list[SubmittedJob] = []
     for chunk_number, chunk in enumerate(chunks):
@@ -251,6 +257,7 @@ def _submit_array_chunks(
             task_offset=chunk.start,
             tasks_per_job=tasks_per_job,
             task_limit=chunk.stop,
+            task_stride=entries if stride_enabled else 0,
             dry_run=dry_run,
         )
         if dry_run and len(chunks) > 1:

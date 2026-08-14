@@ -15,9 +15,50 @@ INDEX_ROLES = {"source_index", "metadata_index", "retrieval_index"}
 def _stable_id(record: dict[str, Any]) -> str:
     value = "\0".join(
         str(record.get(key, ""))
-        for key in ("source_id", "kind", "local_path", "sha256", "revision", "repo_path")
+        for key in (
+            "source_id",
+            "kind",
+            "local_path",
+            "sha256",
+            "revision",
+            "repo_path",
+            "part_index",
+            "part_count",
+        )
     )
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _split_oversized(records: list[dict[str, Any]], maximum_bytes: int) -> list[dict[str, Any]]:
+    """Bound how much of the corpus any one task can be handed.
+
+    One acquired file becomes one task and therefore one shard for the whole
+    build, so a stage cannot finish before its largest single file does. Nothing
+    inside a shard is parallel. On the 1.6 corpus the ten largest files were
+    6.9GB against a 0.2GB median, and decontamination sat on them for a day and
+    a half after the rest of the corpus was done.
+
+    Splitting is by record position, not by byte offset: a member of a gzip
+    stream cannot be seeked to, and a document must never be divided. Part p of
+    n keeps the records where ``index % n == p``, so the parts are disjoint,
+    together cover every record exactly once, and need no pre-scan to determine
+    where to cut. Each part re-reads the container and discards the records it
+    does not own, which costs a decompression pass -- around ninety seconds
+    against the tens of hours the imbalance costs.
+    """
+
+    if maximum_bytes <= 0:
+        return records
+    output: list[dict[str, Any]] = []
+    for record in records:
+        size = int(record.get("size") or 0)
+        parts = -(-size // maximum_bytes) if size > maximum_bytes else 1
+        if parts <= 1:
+            output.append({**record, "part_index": 0, "part_count": 1})
+            continue
+        for part_index in range(parts):
+            output.append({**record, "part_index": part_index, "part_count": parts})
+    return output
 
 
 def _expanded_records(record: dict[str, Any]) -> list[dict[str, Any]]:
@@ -92,18 +133,34 @@ def prepare_build_inputs(profile: dict[str, Any], state: StateStore) -> dict[str
                     "size": size,
                     "sha256": digest,
                 }
-                canonical["input_id"] = _stable_id(canonical)
                 inputs.append(canonical)
-    inputs.sort(key=lambda row: (str(row.get("source_id")), str(row.get("relative_path")), row["input_id"]))
+    # Split before identity is assigned: a part is its own task, so it needs its
+    # own input_id.
+    maximum_input_bytes = int(
+        profile.get("storage", {}).get("maximum_input_bytes", 0)
+    )
+    inputs = _split_oversized(inputs, maximum_input_bytes)
+    for canonical in inputs:
+        canonical["input_id"] = _stable_id(canonical)
+    inputs.sort(
+        key=lambda row: (
+            str(row.get("source_id")),
+            str(row.get("relative_path")),
+            int(row.get("part_index", 0)),
+            row["input_id"],
+        )
+    )
     if not inputs:
         raise RuntimeError("Acquisition contains no training-record files")
-    seen_paths: set[str] = set()
+    seen_paths: set[tuple[str, int]] = set()
     seen_ids: set[str] = set()
     for record in inputs:
-        local_path = str(record["local_path"])
+        # A split file legitimately appears once per part, so the path alone is
+        # no longer the identity; the part is.
+        local_path = (str(record["local_path"]), int(record.get("part_index", 0)))
         input_id = str(record["input_id"])
         if local_path in seen_paths:
-            raise RuntimeError(f"Acquisition contains a duplicate training-record path: {local_path}")
+            raise RuntimeError(f"Acquisition contains a duplicate training-record path: {local_path[0]}")
         if input_id in seen_ids:
             raise RuntimeError(f"Acquisition contains a duplicate training input ID: {input_id}")
         seen_paths.add(local_path)
@@ -131,7 +188,10 @@ def prepare_build_inputs(profile: dict[str, Any], state: StateStore) -> dict[str
         "release": lock.get("release"),
         "inputs": inputs,
         "input_count": len(inputs),
-        "input_bytes": sum(int(item["size"]) for item in inputs),
+        "input_bytes": sum(
+            int(item["size"])
+            for item in {str(row["local_path"]): row for row in inputs}.values()
+        ),
         "files_by_source": by_source,
         "expected_sources": sorted(expected_sources),
     }
