@@ -89,3 +89,59 @@ class OversizedInputSplitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StableIdCompatibilityTests(unittest.TestCase):
+    """An unsplit input must hash exactly as it did before splitting existed.
+
+    build.inputs.json is frozen per release and re-derived on every submission,
+    so an identity that shifts for an unrelated reason does not fail loudly at
+    the point of the change -- it fails at the next resume, as "frozen
+    build.inputs.json differs from current acquisition", pointing at the
+    acquisition rather than at the code that moved.
+    """
+
+    RECORD = {
+        "source_id": "pes2o",
+        "kind": "materialized_jsonl",
+        "local_path": "/lus/lustre1/vollmerc/metis-1.6/raw/pes2o/02034.jsonl.gz",
+        "sha256": "d34db33f",
+        "revision": "r1",
+        "repo_path": "02034.jsonl.gz",
+    }
+
+    def _legacy(self, record):
+        import hashlib
+
+        value = "\0".join(
+            str(record.get(key, ""))
+            for key in ("source_id", "kind", "local_path", "sha256", "revision", "repo_path")
+        )
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    def test_unsplit_identity_is_unchanged(self) -> None:
+        from metis_data.build_inputs import _stable_id
+
+        self.assertEqual(_stable_id(self.RECORD), self._legacy(self.RECORD))
+
+    def test_part_one_of_one_is_also_unchanged(self) -> None:
+        from metis_data.build_inputs import _stable_id
+
+        record = {**self.RECORD, "part_index": 0, "part_count": 1}
+        self.assertEqual(_stable_id(record), self._legacy(self.RECORD))
+
+    def test_split_parts_get_distinct_identities(self) -> None:
+        from metis_data.build_inputs import _stable_id
+
+        ids = {
+            _stable_id({**self.RECORD, "part_index": i, "part_count": 7})
+            for i in range(7)
+        }
+        self.assertEqual(len(ids), 7)
+        self.assertNotIn(self._legacy(self.RECORD), ids)
+
+    def test_disabled_cap_produces_byte_identical_records(self) -> None:
+        from metis_data.build_inputs import _split_oversized
+
+        records = [dict(self.RECORD, size=6_860_000_000)]
+        self.assertEqual(_split_oversized(records, 0), records)

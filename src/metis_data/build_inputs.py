@@ -13,19 +13,13 @@ INDEX_ROLES = {"source_index", "metadata_index", "retrieval_index"}
 
 
 def _stable_id(record: dict[str, Any]) -> str:
-    value = "\0".join(
-        str(record.get(key, ""))
-        for key in (
-            "source_id",
-            "kind",
-            "local_path",
-            "sha256",
-            "revision",
-            "repo_path",
-            "part_index",
-            "part_count",
-        )
-    )
+    keys = ["source_id", "kind", "local_path", "sha256", "revision", "repo_path"]
+    # Only a split input is identified by its part. An unsplit one has to hash
+    # exactly as it did before splitting existed, or every frozen
+    # build.inputs.json in flight stops matching the acquisition it describes.
+    if int(record.get("part_count", 1) or 1) > 1:
+        keys += ["part_index", "part_count"]
+    value = "\0".join(str(record.get(key, "")) for key in keys)
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
