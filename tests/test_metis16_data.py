@@ -141,7 +141,12 @@ class ManifestTests(unittest.TestCase):
             for source in manifest["sources"]
             if source["provenance"].get("generated") or source["provenance"].get("transformed")
         )
-        self.assertEqual(generated_or_transformed, 93_000_000_000)
+        # Was pinned at 93B, a figure from the 1T schedule that no longer
+        # exists. The number moves whenever the mixture is refit, so pinning it
+        # only forces a lockstep edit; the release gate is the share, which the
+        # validator rejects above 15% and asks for review above 12%.
+        share = generated_or_transformed / int(schedule["target_tokens"])
+        self.assertLessEqual(share, 0.15)
 
     def test_phase_c_contains_no_generated_sources(self) -> None:
         manifest = load_manifest()
