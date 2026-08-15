@@ -51,16 +51,16 @@ selection:
 # the declared reserve to the existing 1T source request so the same download
 # supervisor fetches enough long candidates without duplicating raw corpora.
 sources:
-- {id: starcoder_permissive_code, domain: repository_code, tokens: 2000000000, retrieval_multiplier: 2.2}
-- {id: nemotron_cc_code_v1, domain: repository_code, tokens: 900000000, retrieval_multiplier: 2.25}
+- {id: starcoder_permissive_code, domain: repository_code, tokens: 2400000000, retrieval_multiplier: 2.2}
+- {id: nemotron_cc_code_v1, domain: repository_code, tokens: 1100000000, retrieval_multiplier: 2.25}
 - {id: github_code_clean, domain: repository_code, tokens: 700000000, retrieval_multiplier: 2.5}
-- {id: pes2o, domain: science, tokens: 1400000000, retrieval_multiplier: 2.2}
-- {id: pmc_open_access, domain: science, tokens: 1100000000, retrieval_multiplier: 2.2}
+- {id: pes2o, domain: science, tokens: 1700000000, retrieval_multiplier: 2.2}
+- {id: pmc_open_access, domain: science, tokens: 1400000000, retrieval_multiplier: 2.2}
 - {id: finepdfs_edu_english, domain: science, tokens: 1100000000, retrieval_multiplier: 2.5}
 - {id: proof_pile2_science, domain: science, tokens: 400000000, retrieval_multiplier: 2.2}
 - {id: patents_engineering_reports, domain: science, tokens: 200000000, retrieval_multiplier: 2.2}
-- {id: public_domain_books_pre1929, domain: longform_reference, tokens: 800000000, retrieval_multiplier: 2.2}
-- {id: common_pile_loc_reference, domain: longform_reference, tokens: 700000000, retrieval_multiplier: 2.2}
+- {id: public_domain_books_pre1929, domain: longform_reference, tokens: 1100000000, retrieval_multiplier: 2.2}
+- {id: common_pile_loc_reference, domain: longform_reference, tokens: 1000000000, retrieval_multiplier: 2.2}
 - id: open_law_usgpo
   domain: longform_reference
   tokens: 500000000
@@ -90,14 +90,6 @@ sources:
   tokens: 80000000
   retrieval_multiplier: 2.2
 - {id: finemath_unique, domain: math_formal, tokens: 70000000, retrieval_multiplier: 2.2}
-- id: nemotron_specialized_reasoning_scicode
-  domain: technical_discussion
-  tokens: 1200000000
-  retrieval_multiplier: 2.2
-- id: nemotron_rqa_verified_reasoning
-  domain: technical_discussion
-  tokens: 600000000
-  retrieval_multiplier: 2.2
 - {id: wikimedia_reference, domain: general_reference, tokens: 600000000, retrieval_multiplier: 2.2}
 - {id: metis_freshweb_2025, domain: general_reference, tokens: 300000000, retrieval_multiplier: 2.5}
 fallbacks:
