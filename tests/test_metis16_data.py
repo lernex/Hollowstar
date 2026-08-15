@@ -47,9 +47,10 @@ from metis_data.local_download import (
     _supervisor_lock,
 )
 from metis_data.manifest import (
-    FRESHNESS_LAYER_TOKENS,
+    MINIMUM_FRESHNESS_SHARE,
     load_manifest,
     matches_any,
+    total_phase_tokens,
     validate_manifest,
 )
 from metis_data.packing import pack_release
@@ -87,13 +88,23 @@ class ManifestTests(unittest.TestCase):
             manifest["schedule"]["phases"]["phase_b"]["replay_tokens"],
             0,
         )
-        # Was 90B across four buckets. Three were withdrawn because every fresh
-        # source used the common_crawl_ranges driver, which this generation's
-        # acquisition host cannot run; general web survives on FineWeb's
-        # packaged extraction. Pinned to the validator constant so the number
-        # can only move by editing manifest.py deliberately.
+        # Was 90B across four buckets, then pinned to a constant. Both are the
+        # wrong shape: the layer is as large as the fresh sources actually
+        # supply, so a constant only forces the declaration and the sources to
+        # be edited in lockstep. Pin the two invariants the validator enforces
+        # instead -- the declaration matches its sources, and the layer is a
+        # meaningful share rather than a rounding error.
+        fresh_tokens = sum(
+            total_phase_tokens(source)
+            for source in manifest["sources"]
+            if source.get("provenance", {}).get("fresh")
+        )
         self.assertEqual(
-            manifest["freshness_layer"]["target_tokens"], FRESHNESS_LAYER_TOKENS
+            manifest["freshness_layer"]["target_tokens"], fresh_tokens
+        )
+        self.assertGreaterEqual(
+            fresh_tokens,
+            MINIMUM_FRESHNESS_SHARE * manifest["schedule"]["total_tokens"],
         )
         self.assertEqual(manifest["tokenizer"]["vocabulary_size_including_special_tokens"], 65_536)
         source_ids = [source["id"] for source in manifest["sources"]]
