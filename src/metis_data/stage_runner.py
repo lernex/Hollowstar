@@ -485,12 +485,41 @@ def _require_inventory_file(root: Path, record: dict[str, Any], label: str) -> P
     return candidate
 
 
+def _filter_chain_drift_allowed(profile: dict[str, Any]) -> bool:
+    """Whether a recorded execution-contract mismatch may be accepted.
+
+    The contract binds a stage to the code and policy that produced its output,
+    so a mismatch normally means the code changed and the stage did not re-run.
+    That is a real hazard and the default stays fail-closed.
+
+    It is not the only cause. ``COMMON_MODULES`` covers ``stage_runner.py``
+    whole, so editing any stage's implementation moves every stage's hash --
+    including stages the edit cannot reach. The contract cannot tell those two
+    cases apart; an operator who has read the diff can. This is the stage-level
+    equivalent of ``rehandoff``, which exists for exactly this shape of problem
+    one layer up, and like it the assertion is recorded in the release rather
+    than merely permitted.
+    """
+
+    gates = profile.get("gates", {})
+    if not bool(gates.get("allow_filter_chain_contract_drift", False)):
+        return False
+    if not str(gates.get("filter_chain_contract_drift_reason", "")).strip():
+        raise RuntimeError(
+            "gates.allow_filter_chain_contract_drift requires "
+            "gates.filter_chain_contract_drift_reason stating what changed and "
+            "why the filtering stages' outputs are unaffected"
+        )
+    return True
+
+
 def _completion_inventory(
     state: StateStore,
     stage: str,
     expected_tasks: int,
     *,
     expected_execution_contract_sha256: str,
+    allow_contract_drift: bool = False,
 ) -> dict[str, Any]:
     folder = state.path("completed", stage)
     paths = sorted(folder.glob("task-*.json")) if folder.is_dir() else []
@@ -503,24 +532,37 @@ def _completion_inventory(
             f"unexpected={sorted(actual_names - expected_names)[:8]}"
         )
     rows = []
+    observed_contracts: set[str] = set()
     for path in paths:
         try:
             marker = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Filtering stage completion marker is unreadable: {path}") from exc
-        if marker.get("execution_contract_sha256") != expected_execution_contract_sha256:
-            raise RuntimeError(
-                f"Filtering stage {stage} completion belongs to stale inputs or policy: {path.name}"
-            )
+        observed = str(marker.get("execution_contract_sha256") or "")
+        if observed != expected_execution_contract_sha256:
+            observed_contracts.add(observed)
+            if not allow_contract_drift:
+                raise RuntimeError(
+                    f"Filtering stage {stage} completion belongs to stale inputs or policy: {path.name}"
+                )
         rows.append(
             {"task": path.name, "size": path.stat().st_size, "sha256": sha256_file(path)}
         )
-    return {
+    receipt = {
         "stage": stage,
         "tasks": expected_tasks,
         "execution_contract_sha256": expected_execution_contract_sha256,
         "marker_manifest_sha256": _json_sha256(rows),
     }
+    if observed_contracts:
+        # The drift is part of the receipt, not a footnote to it. A release that
+        # was accepted over a contract mismatch has to say so, and say which
+        # contract the work was actually done under.
+        receipt["contract_drift"] = {
+            "accepted": True,
+            "observed_execution_contract_sha256": sorted(observed_contracts),
+        }
+    return receipt
 
 
 def _hash_files(files: list[Path], workers: int) -> dict[Path, str]:
@@ -812,6 +854,7 @@ def _write_filter_chain_receipt(
                         expected_execution_contract_sha256=_stage_execution_contract(
                             profile, state, stage
                         ),
+                        allow_contract_drift=_filter_chain_drift_allowed(profile),
                     )
                     for stage, count in completions
                 ],
@@ -832,6 +875,20 @@ def _write_filter_chain_receipt(
             root / directories["contamination"]
         ),
     }
+    drifted = sorted(
+        stage["stage"]
+        for entry in stages
+        for stage in entry["completions"]
+        if stage.get("contract_drift")
+    )
+    if drifted:
+        payload["contract_drift"] = {
+            "accepted": True,
+            "stages": drifted,
+            "reason": str(
+                profile.get("gates", {}).get("filter_chain_contract_drift_reason", "")
+            ),
+        }
     payload["filter_chain_sha256"] = _json_sha256(payload)
     atomic_json(destination, payload)
     return payload
@@ -1021,6 +1078,7 @@ def _cleanup_filter_intermediate(
             expected_execution_contract_sha256=_stage_execution_contract(
                 profile, state, stage
             ),
+            allow_contract_drift=_filter_chain_drift_allowed(profile),
         )
         for stage, count in spec["completions"]
     ]
@@ -2249,8 +2307,16 @@ def _tokenizer_sample_plan(profile: dict[str, Any]) -> dict[str, Any]:
         holders = availability.get(source_id, {})
         total_available = sum(holders.values())
         if total_available < wanted:
+            # Take everything the source has and record the gap. A stratified
+            # sample is a tokenizer training set, not a release quota: a source
+            # that under-delivers costs coverage in proportion to what it is
+            # missing, and nothing else. Failing outright on any shortfall meant
+            # a source 1.2GB short of a 160GB sample -- 0.77% -- could not be
+            # sampled at all. The bound below is what keeps that a tolerance
+            # rather than a silent abandonment of the stratification.
             short[source_id] = wanted - total_available
-            continue
+            wanted = total_available
+        remaining = wanted
         # Fill the largest holders first rather than spreading the target
         # proportionally. A shard emits whole documents, so any shard given a
         # partial quota overshoots it by up to one document. Consuming holders
@@ -2258,7 +2324,6 @@ def _tokenizer_sample_plan(profile: dict[str, Any]) -> dict[str, Any]:
         # reproduces the serial sampler's single bounded overshoot per source
         # instead of one per shard. Ties break on task index, so the plan is
         # deterministic for a given scan.
-        remaining = wanted
         ordered = sorted(
             (task for task in holders if holders[task] > 0),
             key=lambda task: (-holders[task], int(task)),
@@ -2273,9 +2338,15 @@ def _tokenizer_sample_plan(profile: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError(
                 f"Tokenizer sample apportionment could not place {remaining:,} bytes for {source_id}"
             )
-    if short:
+    shortfall = sum(short.values())
+    tolerance = float(
+        profile.get("gates", {}).get("tokenizer_sample_shortfall_tolerance", 0.0)
+    )
+    if short and shortfall > tolerance * target:
         raise RuntimeError(
-            f"Tokenizer sample exhausted before its stratified source targets: {short}"
+            "Tokenizer sample exhausted before its stratified source targets by "
+            f"{shortfall:,} bytes ({shortfall / target:.2%} of the sample), which "
+            f"exceeds gates.tokenizer_sample_shortfall_tolerance={tolerance:.2%}: {short}"
         )
 
     plan = {
@@ -2285,6 +2356,14 @@ def _tokenizer_sample_plan(profile: dict[str, Any]) -> dict[str, Any]:
         "target_bytes": target,
         "category_targets": category_targets,
         "source_targets": source_targets,
+        # What the sample actually reaches, and where it falls short. Recorded
+        # rather than inferred, so a thin source is visible in the release
+        # instead of being something a reader has to rediscover.
+        "planned_bytes": sum(
+            sum(sources.values()) for sources in quotas.values()
+        ),
+        "source_shortfall_bytes": short,
+        "shortfall_bytes": shortfall,
         "task_quotas": quotas,
     }
     plan["plan_sha256"] = _json_sha256({k: v for k, v in plan.items() if k != "created_at"})
@@ -2293,6 +2372,9 @@ def _tokenizer_sample_plan(profile: dict[str, Any]) -> dict[str, Any]:
         "stage": "tokenizer_sample_plan",
         "world_size": total_tasks,
         "target_bytes": target,
+        "planned_bytes": plan["planned_bytes"],
+        "shortfall_bytes": shortfall,
+        "source_shortfall_bytes": short,
         "shards_with_quota": len(quotas),
         "plan_sha256": plan["plan_sha256"],
     }
