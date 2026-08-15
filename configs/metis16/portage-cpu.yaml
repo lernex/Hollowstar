@@ -390,9 +390,13 @@ decontamination:
   # Disabling both leaves exact, 13-gram proportional overlap, the contiguous
   # run, and 12-gram code overlap. On the same sample that takes 32-64KB
   # documents from 20.0% to about 9% and >64KB from 16.5% to about 7%.
-  minimum_short_matching_ngrams: 0
+  # NOT YET APPLIED. The r2 corpus was decontaminated with these at 4 and 32,
+  # and the values below must keep describing what actually ran or the release
+  # provenance is a lie. Set both to 0 for the next release, before the first
+  # submission; the code supports it and the measurements above justify it.
+  minimum_short_matching_ngrams: 4
   minimum_code_matching_ngrams: 16
-  minimum_code_skeleton_matching_ngrams: 0
+  minimum_code_skeleton_matching_ngrams: 32
   match_fraction: 0.002
   # An unbroken run of this many matching 13-grams marks a document
   # contaminated on its own, however few matches it has in total. This is the
