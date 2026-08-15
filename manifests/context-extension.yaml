@@ -98,27 +98,75 @@ fallbacks:
   generated_donor_forbidden: true
   groups:
   - id: repository_code
-    members: [starcoder_permissive_code, github_code_clean, nemotron_cc_code_v1]
-    donor_order: [starcoder_permissive_code, nemotron_cc_code_v1, github_code_clean]
+    members:
+    - starcoder_permissive_code
+    - nemotron_cc_code_v1
+    - github_code_clean
+    donor_order:
+    - starcoder_permissive_code
+    - nemotron_cc_code_v1
+    - github_code_clean
   - id: science
-    members: [finepdfs_edu_english, pes2o, pmc_open_access, proof_pile2_science, openstax, patents_engineering_reports]
-    donor_order: [finepdfs_edu_english, pes2o, pmc_open_access, proof_pile2_science, openstax, patents_engineering_reports]
+    members:
+    - pes2o
+    - pmc_open_access
+    - finepdfs_edu_english
+    - proof_pile2_science
+    - patents_engineering_reports
+    donor_order:
+    - pes2o
+    - pmc_open_access
+    - finepdfs_edu_english
+    - proof_pile2_science
+    - patents_engineering_reports
   - id: longform_reference
-    members: [public_domain_books_gutenberg, public_domain_books_pre1929, common_pile_doab_reference, common_pile_libretexts_reference, common_pile_loc_reference, open_law_caselaw, metis_govreference_uk_hansard, metis_govreference_regulations]
-    donor_order: [common_pile_doab_reference, common_pile_libretexts_reference, public_domain_books_gutenberg, public_domain_books_pre1929, common_pile_loc_reference, open_law_caselaw, metis_govreference_uk_hansard, metis_govreference_regulations]
+    members:
+    - public_domain_books_pre1929
+    - common_pile_loc_reference
+    - open_law_usgpo
+    - metis_govreference_uk_hansard
+    - common_pile_doab_reference
+    - open_law_caselaw
+    donor_order:
+    - public_domain_books_pre1929
+    - common_pile_loc_reference
+    - open_law_usgpo
+    - metis_govreference_uk_hansard
+    - common_pile_doab_reference
+    - open_law_caselaw
   - id: educational_web
-    members: [fineweb_edu, nemotron_cc_v21_organic, essential_web]
-    donor_order: [fineweb_edu, nemotron_cc_v21_organic, essential_web]
+    members:
+    - nemotron_cc_v2_organic
+    - dclm_baseline
+    - nemotron_cc_v21_organic
+    - fineweb_edu
+    - essential_web
+    donor_order:
+    - nemotron_cc_v2_organic
+    - dclm_baseline
+    - nemotron_cc_v21_organic
+    - fineweb_edu
+    - essential_web
   - id: math_formal
-    members: [nemotron_cc_math_4plus, proof_pile2_math, finemath_unique, formal_theorem_corpora]
-    donor_order: [nemotron_cc_math_4plus, proof_pile2_math, finemath_unique, formal_theorem_corpora]
-  - id: technical_discussion
-    members: [roots_stackexchange]
-    donor_order: [roots_stackexchange]
+    members:
+    - nemotron_cc_math_4plus
+    - nemotron_cc_math_unique_3
+    - proof_pile2_math
+    - openwebmath_unique
+    - finemath_unique
+    donor_order:
+    - nemotron_cc_math_4plus
+    - nemotron_cc_math_unique_3
+    - proof_pile2_math
+    - finemath_unique
+    - openwebmath_unique
   - id: general_reference
-    members: [finewiki, wikimedia_reference, metis_freshweb_2025]
-    donor_order: [finewiki, wikimedia_reference, metis_freshweb_2025]
-
+    members:
+    - wikimedia_reference
+    - metis_freshweb_2025
+    donor_order:
+    - wikimedia_reference
+    - metis_freshweb_2025
 gate_policy:
   schema: metis.context-gate-policy/v1
   checkpoints: [6000000000, 12000000000, 18000000000]
