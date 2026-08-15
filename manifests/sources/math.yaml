@@ -2,7 +2,7 @@ sources:
 - id: nemotron_cc_math_4plus
   label: Nemotron-CC-Math 4plus
   category: math
-  phase_tokens: {phase_a: 13461047604, phase_b: 11778416654, phase_c: 4278537331}
+  phase_tokens: {phase_a: 13461047604, phase_b: 11778416654, phase_c: 4287459884}
   provenance: {generated: false, transformed: false, fresh: false}
   access:
     type: huggingface
@@ -17,7 +17,7 @@ sources:
 - id: nemotron_cc_math_unique_3
   label: Unique Nemotron-CC-Math score-3 explanations
   category: math
-  phase_tokens: {phase_a: 10162794616, phase_b: 8892445289, phase_c: 3230201498}
+  phase_tokens: {phase_a: 10162794616, phase_b: 8892445289, phase_c: 3236937829}
   provenance: {generated: false, transformed: false, fresh: false}
   access:
     type: huggingface
@@ -32,7 +32,7 @@ sources:
 - id: nemotron_math_proofs
   label: Nemotron Math Proofs natural-language and Lean proofs
   category: math
-  phase_tokens: {phase_a: 52691039, phase_b: 46104659, phase_c: 16747625}
+  phase_tokens: {phase_a: 52691039, phase_b: 46104659, phase_c: 0}
   provenance: {generated: true, transformed: true, fresh: false}
     # This immutable release contains data/lean.jsonl; no Parquet payload exists.
   access: {type: huggingface, repo_id: nvidia/Nemotron-Math-Proofs-v1, revision: 97229c590831adfe96202f5cd071d444d535bf91, gated: false, allow_patterns: ['data/*.jsonl']}
@@ -43,7 +43,7 @@ sources:
 - id: proof_pile2_math
   label: Proof-Pile-2 mathematical subset
   category: math
-  phase_tokens: {phase_a: 318776129, phase_b: 278929113, phase_c: 101321651}
+  phase_tokens: {phase_a: 318776129, phase_b: 278929113, phase_c: 101532949}
   provenance: {generated: false, transformed: false, fresh: false}
     # Disjoint from proof_pile2_science by construction: that source takes
     # arxiv/train, this one takes algebraic-stack/train. Under the old shared
@@ -87,7 +87,7 @@ sources:
 - id: finemath_unique
   label: FineMath unique high-quality math
   category: math
-  phase_tokens: {phase_a: 747431866, phase_b: 654002882, phase_c: 237568073}
+  phase_tokens: {phase_a: 747431866, phase_b: 654002882, phase_c: 238063502}
   provenance: {generated: false, transformed: false, fresh: false}
     # Four configs, and the 4plus tiers are nested subsets of the 3plus ones --
     # confirmed against the data rather than the card: every int_score>=4 row in
@@ -105,7 +105,7 @@ sources:
 - id: megamath_unique
   label: MegaMath unique mathematical material
   category: math
-  phase_tokens: {phase_a: 191831936, phase_b: 167852944, phase_c: 60972973}
+  phase_tokens: {phase_a: 191831936, phase_b: 167852944, phase_c: 61100127}
   provenance: {generated: false, transformed: false, fresh: false}
     # Redirects to IFM/MegaMath, six configs. This profile is math PROSE
     # (equation_integrity required, math_score >= 3), and the manifest declares
@@ -128,7 +128,7 @@ sources:
 - id: openwebmath_unique
   label: OpenWebMath equation-rich web text
   category: math
-  phase_tokens: {phase_a: 362643084, phase_b: 317312699, phase_c: 115264578}
+  phase_tokens: {phase_a: 362643084, phase_b: 317312699, phase_c: 115504953}
   provenance: {generated: false, transformed: false, fresh: false}
     # Only `data/` and `imgs/` exist here; scoping to data/ keeps the resolver
     # from listing the image tree. Behaviour is unchanged -- imgs holds no
@@ -144,7 +144,7 @@ sources:
 - id: formal_theorem_corpora
   label: Lean, Isabelle AFP, Coq, and Metamath corpora
   category: math
-  phase_tokens: {phase_a: 21848204, phase_b: 19117179, phase_c: 6944359}
+  phase_tokens: {phase_a: 21848204, phase_b: 19117179, phase_c: 6958844}
   provenance: {generated: false, transformed: false, fresh: false}
   access: {type: canonical_registry, registry: manifests/registries/systems_formal.yaml, selector: formal_math}
   license: {status: reviewed, expression: canonical-source-license}

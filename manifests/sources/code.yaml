@@ -20,7 +20,7 @@ sources:
 - id: starcoder_permissive_code
   label: StarCoderData permissive repository code across 88 languages
   category: code
-  phase_tokens: {phase_a: 53715642107, phase_b: 32826225733, phase_c: 8181810036}
+  phase_tokens: {phase_a: 53715642107, phase_b: 32826225733, phase_c: 8552282610}
   provenance: {generated: false, transformed: false, fresh: false}
   access:
     type: huggingface
@@ -57,7 +57,7 @@ sources:
 - id: github_code_clean
   label: CodeParrot cleaned GitHub source files
   category: code
-  phase_tokens: {phase_a: 7131283551, phase_b: 4358006614, phase_c: 1086216324}
+  phase_tokens: {phase_a: 7131283551, phase_b: 4358006614, phase_c: 1135400227}
   provenance: {generated: false, transformed: false, fresh: false}
   access:
     type: huggingface
@@ -72,7 +72,7 @@ sources:
 - id: nemotron_cc_code_v1
   label: Nemotron-CC-Code tutorials, docs, snippets, and code-text interleaving
   category: code
-  phase_tokens: {phase_a: 14867749888, phase_b: 9085847153, phase_c: 2264612326}
+  phase_tokens: {phase_a: 14867749888, phase_b: 9085847153, phase_c: 2367154031}
   provenance: {generated: false, transformed: false, fresh: false}
   access:
     type: huggingface
@@ -131,7 +131,7 @@ sources:
 - id: metis_systems_formal
   label: CUDA, Triton, SQL, shell, build systems, Lean, and Coq
   category: code
-  phase_tokens: {phase_a: 103635744, phase_b: 63332954, phase_c: 15785494}
+  phase_tokens: {phase_a: 103635744, phase_b: 63332954, phase_c: 16500264}
   provenance: {generated: false, transformed: false, fresh: false}
   access: {type: canonical_registry, registry: manifests/registries/systems_formal.yaml, selector: systems_code}
   license: {status: reviewed, expression: canonical-source-license}
@@ -141,7 +141,7 @@ sources:
 - id: verified_synthetic_code
   label: NVIDIA verified synthetic code review, repair, rewrite, QA, and transpilation
   category: code
-  phase_tokens: {phase_a: 3433055138, phase_b: 2097978140, phase_c: 522912952}
+  phase_tokens: {phase_a: 3433055138, phase_b: 2097978140, phase_c: 0}
   provenance: {generated: true, transformed: true, fresh: false}
   access:
     type: huggingface

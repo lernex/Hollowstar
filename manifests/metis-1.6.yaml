@@ -81,9 +81,9 @@ categories:
 # buckets is a 1.7 task and needs a host with egress from compute nodes.
 freshness_layer:
   embedded_in_target: true
-  target_tokens: 35000000000
+  target_tokens: 34183188748
   buckets:
-    general_web: 35000000000
+    general_web: 34183188748
 
 selection:
   seed: 16062026
