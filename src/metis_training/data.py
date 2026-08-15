@@ -23,17 +23,24 @@ PHASE_DIRECTORIES = {
     "phase_b": "phase-b",
     "phase_c": "phase-c",
 }
+# Mirrors manifests/metis-1.6.yaml. Training checks the release against these
+# independently of the data pipeline, which is worth keeping -- but it means
+# the schedule exists in two places and they must be refitted together. These
+# were 700B/250B/50B against a 1T plan; token_count measured 849.5B available,
+# so the mix was rebuilt at 90% of each category's real supply. See
+# docs/metis17_data_pipeline_lessons.md §18: for 1.7 these should be read from
+# the release descriptor, not restated here.
 PHASE_STARTS = {
     "phase_a": 0,
-    "phase_b": 700_000_000_000,
-    "phase_c": 950_000_000_000,
+    "phase_b": 554_849_376_946,
+    "phase_c": 764_518_018_395,
 }
 PHASE_TOKENS = {
-    "phase_a": 700_000_000_000,
-    "phase_b": 250_000_000_000,
-    "phase_c": 50_000_000_000,
+    "phase_a": 554_849_376_946,
+    "phase_b": 209_668_641_449,
+    "phase_c": 40_237_790_440,
 }
-TOTAL_TOKENS = 1_000_000_000_000
+TOTAL_TOKENS = 804_755_808_835
 
 
 @dataclass(frozen=True)

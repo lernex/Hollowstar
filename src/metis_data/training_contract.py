@@ -17,11 +17,24 @@ PHASE_DIRECTORIES = {
     "phase_b": "phase-b",
     "phase_c": "phase-c",
 }
-PHASE_TOKENS = {
-    "phase_a": 700_000_000_000,
-    "phase_b": 250_000_000_000,
-    "phase_c": 50_000_000_000,
-}
+
+
+def phase_tokens_from_manifest(manifest: dict[str, Any]) -> dict[str, int]:
+    """The per-phase totals the release must hit, taken from the manifest.
+
+    Was a module constant pinned to 700B/250B/50B. That made the schedule a
+    property of the validator rather than of the release being validated, so
+    refitting the mix to measured supply -- which is the normal outcome of
+    acquiring less than planned -- failed here, at verify, after the entire
+    corpus had been built. The manifest is the single source of truth and
+    validate_manifest already checks it is internally consistent.
+    """
+
+    phases = manifest["schedule"]["phases"]
+    return {
+        phase: int(phases[phase]["unique_tokens"]) + int(phases[phase]["replay_tokens"])
+        for phase in PHASE_DIRECTORIES
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -170,14 +183,14 @@ def validate_training_release(
         or release.get("token_endianness") != "little"
     ):
         raise RuntimeError("Release is not explicitly little-endian uint16")
-    if (
-        int(release.get("target_tokens", 0))
-        != int(contract.get("total_train_tokens", 0))
-        or int(release.get("target_tokens", 0)) != 1_000_000_000_000
+    if int(release.get("target_tokens", 0)) != int(
+        contract.get("total_train_tokens", 0)
     ):
-        raise RuntimeError("Training contract and release token targets differ from exact 1T")
-    if release.get("phase_tokens") != PHASE_TOKENS:
-        raise RuntimeError("Release phase schedule is not exactly 700B/250B/50B")
+        raise RuntimeError(
+            "Training contract and release token targets differ: "
+            f"release {int(release.get('target_tokens', 0)):,} against contract "
+            f"{int(contract.get('total_train_tokens', 0)):,}"
+        )
     _validate_continued_pretraining(contract)
     if not release.get("verification", {}).get("ok"):
         raise RuntimeError("Training refuses an unverified data release")
@@ -255,22 +268,36 @@ def validate_training_release(
         != release.get("shard_manifest_sha256")
     ):
         raise RuntimeError("Verification and release provenance hashes disagree")
-    selection_contract = verification.get("selection_contract", {})
-    if (
-        int(selection_contract.get("unique_tokens", -1)) != 950_000_000_000
-        or int(selection_contract.get("replay_tokens", -1)) != 50_000_000_000
-        or int(verification.get("packed_unique_tokens", -1)) != 950_000_000_000
-        or int(verification.get("packed_replay_tokens", -1)) != 50_000_000_000
-    ):
-        raise RuntimeError("Verified release is not exactly 950B unique plus 50B replay")
 
     released_manifest = validate_manifest(manifest_path).require_valid()
+    schedule = released_manifest["schedule"]
+    expected_phase_tokens = phase_tokens_from_manifest(released_manifest)
+    if release.get("phase_tokens") != expected_phase_tokens:
+        raise RuntimeError(
+            "Release phase schedule does not match the bundled manifest: "
+            f"{release.get('phase_tokens')} against {expected_phase_tokens}"
+        )
+    selection_contract = verification.get("selection_contract", {})
+    expected_unique = int(schedule["unique_target_tokens"])
+    expected_replay = int(schedule["replay_target_tokens"])
+    if (
+        int(selection_contract.get("unique_tokens", -1)) != expected_unique
+        or int(selection_contract.get("replay_tokens", -1)) != expected_replay
+        or int(verification.get("packed_unique_tokens", -1)) != expected_unique
+        or int(verification.get("packed_replay_tokens", -1)) != expected_replay
+    ):
+        raise RuntimeError(
+            "Verified release does not match the manifest schedule: expected "
+            f"{expected_unique:,} unique plus {expected_replay:,} replay, found "
+            f"{int(selection_contract.get('unique_tokens', -1)):,} selected and "
+            f"{int(verification.get('packed_unique_tokens', -1)):,} packed unique"
+        )
+
     if (
         released_manifest.get("release") != release.get("release")
         or _manifest_contract_sha256(released_manifest)
         != release.get("manifest_contract_sha256")
-        or int(released_manifest["schedule"]["target_tokens"])
-        != int(release["target_tokens"])
+        or int(schedule["target_tokens"]) != int(release["target_tokens"])
         or verification.get("source_phase_tokens")
         != {
             source["id"]: {
@@ -472,8 +499,11 @@ def validate_training_release(
         listed_indices[phase].add(index)
         listed_phase_indices[phase].add(phase_index)
         phase_row_tokens[phase] += tokens
-    if phase_row_tokens != PHASE_TOKENS:
-        raise RuntimeError("Shard manifest token totals do not match 700B/250B/50B")
+    if phase_row_tokens != expected_phase_tokens:
+        raise RuntimeError(
+            "Shard manifest token totals do not match the manifest schedule: "
+            f"{dict(phase_row_tokens)} against {expected_phase_tokens}"
+        )
 
     phases = contract.get("phases", [])
     if [phase.get("id") for phase in phases] != list(PHASE_DIRECTORIES):
@@ -486,7 +516,7 @@ def validate_training_release(
             raise RuntimeError(f"Training phase directory is not canonical for {phase_id}")
         start = int(phase["start_token"])
         end = int(phase["end_token_exclusive"])
-        expected = PHASE_TOKENS[phase_id]
+        expected = expected_phase_tokens[phase_id]
         if start != expected_cursor or end - start != expected:
             raise RuntimeError(f"Training phase boundary mismatch for {phase_id}")
         phase_root = (root / PHASE_DIRECTORIES[phase_id]).resolve()
