@@ -77,15 +77,40 @@ class ManifestTests(unittest.TestCase):
         result = validate_manifest()
         self.assertTrue(result.ok, result.errors)
         manifest = result.manifest
-        self.assertEqual(manifest["schedule"]["target_tokens"], 1_000_000_000_000)
-        self.assertEqual(manifest["schedule"]["unique_target_tokens"], 950_000_000_000)
-        self.assertEqual(manifest["schedule"]["replay_target_tokens"], 50_000_000_000)
+        # Refitted from measured supply. The 1T/950B/50B plan was aspirational:
+        # token_count measured 849.5B available, so the schedule was rebuilt at
+        # 90% of what each category actually has. These are pinned so the mix
+        # cannot drift by accident, but they are a release-specific fact, not a
+        # law -- refitting the mix is expected to move them deliberately.
+        schedule = manifest["schedule"]
+        self.assertEqual(schedule["target_tokens"], 804_755_808_835)
+        self.assertEqual(schedule["unique_target_tokens"], 764_518_018_395)
+        self.assertEqual(schedule["replay_target_tokens"], 40_237_790_440)
+        # The relationships hold through any refit and are what actually matter.
         self.assertEqual(
-            manifest["schedule"]["phases"]["phase_b"]["unique_tokens"],
-            250_000_000_000,
+            schedule["unique_target_tokens"] + schedule["replay_target_tokens"],
+            schedule["target_tokens"],
         )
         self.assertEqual(
-            manifest["schedule"]["phases"]["phase_b"]["replay_tokens"],
+            sum(
+                int(phase["unique_tokens"])
+                for phase in schedule["phases"].values()
+            ),
+            schedule["unique_target_tokens"],
+        )
+        self.assertEqual(
+            sum(
+                int(phase["replay_tokens"])
+                for phase in schedule["phases"].values()
+            ),
+            schedule["replay_target_tokens"],
+        )
+        self.assertEqual(
+            schedule["phases"]["phase_b"]["unique_tokens"],
+            209_668_641_449,
+        )
+        self.assertEqual(
+            schedule["phases"]["phase_b"]["replay_tokens"],
             0,
         )
         # Was 90B across four buckets, then pinned to a constant. Both are the
@@ -239,7 +264,7 @@ class ManifestTests(unittest.TestCase):
                 "gate_index": 0,
                 "gate_target_tokens": CONTEXT_GATES[0],
                 "lane": "natural_long",
-                "source_id": "finewiki",
+                "source_id": "metis_freshweb_2025",
                 "domain": "general_reference",
                 "tokens": 100,
             }
