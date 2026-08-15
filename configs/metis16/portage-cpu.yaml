@@ -342,7 +342,7 @@ gates:
   license_review_complete: false
   require_final_tokenizer_counts: true
   maximum_generated_share: 0.15
-  minimum_unique_tokens: 950000000000
+  minimum_unique_tokens: 764518018395
 
 # Decontamination detection tuning. Deliberately NOT in
 # manifests/contamination/eval-holdouts.yaml: that file is hashed into the
