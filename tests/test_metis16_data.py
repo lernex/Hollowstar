@@ -130,7 +130,7 @@ class ManifestTests(unittest.TestCase):
         )
         self.assertGreaterEqual(
             fresh_tokens,
-            MINIMUM_FRESHNESS_SHARE * manifest["schedule"]["total_tokens"],
+            MINIMUM_FRESHNESS_SHARE * manifest["schedule"]["target_tokens"],
         )
         self.assertEqual(manifest["tokenizer"]["vocabulary_size_including_special_tokens"], 65_536)
         source_ids = [source["id"] for source in manifest["sources"]]
