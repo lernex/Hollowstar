@@ -953,3 +953,181 @@ and treat it as a submission gate rather than a late one.**
 Remaining gaps at submission, for reference: `finepdfs_edu_english` 10.3 B,
 `nemotron_cc_v2_organic` 4.5 B (the only source that genuinely needs more data
 rather than better gates), `megamath_unique` 3.7 B, `nemotron_math_proofs` 2.5 B.
+
+---
+
+## 12. Shard size is the stage makespan, and shard index predicts shard size
+
+Added 2026-08-14, from the `metis-1.6-data-r2` decontamination stall.
+
+`decontam_filter` finished 80 of its 82 array entries and then sat for a further
+day and a half on the remaining two. Nothing was wrong with them. One acquired
+file becomes one build input, becomes one task, becomes one shard, and **nothing
+inside a shard is parallel**, so a stage cannot finish before its single largest
+file does.
+
+Measured on the r2 eligible corpus:
+
+| | compressed bytes |
+|---|---|
+| median shard | 0.20 GB |
+| p90 | 1.31 GB |
+| p99 | 2.29 GB |
+| **largest ten** | **6.83 - 6.86 GB** |
+
+The ten largest are all `s2orc/train`: full academic papers, ~28 KB per document
+against a corpus mean nearer 3 KB. They are 34x the median.
+
+Two separate defects made that fatal rather than merely slow.
+
+**Shards were sized by document count, not bytes.** A source whose documents are
+ten times longer produces files ten times larger. `materializers.py` already has
+`repository_output_shard_bytes`, but `acquisition.mode: external_complete` means
+the file sizes are whatever the upstream handed over, and nothing re-cut them.
+
+**Adjacent shards are correlated, and task assignment was contiguous.** Build
+inputs sort by `(source_id, relative_path)`, so one source occupies a contiguous
+run of indices. `_run_task_group` handed each array entry
+`range(first, first + tasks_per_job)`, so all ten giants landed in **two** array
+entries. Byte load per entry: max 71.9 GB against a mean of 18.6 GB, **3.87x**.
+
+Both are fixed in the code and **both are off for 1.6**:
+
+- `_task_indices` takes a `task_stride`. Striding deals indices round-robin, so a
+  run of large shards spreads one per entry: measured **3.87x -> 1.30x**. Ships
+  disabled because an array already submitted was sized for the contiguous
+  layout.
+- `maximum_input_bytes` splits an oversized input across several tasks, by record
+  position (`index % n == p`) rather than byte offset, because a gzip member
+  cannot be seeked into and a document must never be divided. Ships at `0`
+  because `build.inputs.json` is frozen per release and re-derived on every
+  submission, so raising it mid-release makes the frozen-input comparison fail
+  and blocks resubmission.
+
+**For 1.7: set `maximum_input_bytes` to about 1 GB and leave
+`stride_task_assignment` on, both before the first submission.** On the r2
+corpus that turns the ten 6.9 GB shards into seventy ~1 GB tasks and takes
+`decontam_filter` from a 40.7 h makespan to roughly throughput-bound. Splitting
+costs one extra decompression pass per part, about ninety seconds, against the
+tens of hours the imbalance costs.
+
+This is the same lesson as §10d, which recorded that task granularity is one file
+and files differ in size. §10d observed it. This is what it cost.
+
+---
+
+## 13. The execution contract was too coarse to retune anything
+
+`_stage_execution_contract` deliberately binds detection tuning, so that a
+retuned threshold cannot be silently ignored by a stage already holding a
+completion marker. The comment above it says tuning lives outside the holdout
+bundle "so it can be retuned without a new release".
+
+It could not. The tuning went into **every** stage's contract. Measured against
+the real profile, changing one decontamination threshold invalidated all eleven
+stages checked, including `normalize`, `exact_filter`, `span_filter`,
+`minhash_filter` and `code_filter` -- stages that never read the tuning and whose
+output it cannot possibly change. An invalidated contract makes a stage delete
+its output and re-run, so "retune without a new release" actually meant a rebuild
+from raw: **82.7 h of critical path, of which decontamination was 40.7 h.**
+
+Now bound only to `decontam_index`, `decontam_filter` and `cleanup_decontam`.
+
+The same coarseness exists one level up and is **not** fixed. `COMMON_MODULES` in
+`stage_code.py` contains `stage_runner.py` and `slurm.py`, so any edit to either
+changes every stage's code hash. During this session a scheduling change --
+which cannot alter any stage's output -- invalidated the completed
+decontamination and failed `cleanup_decontam` with *"completion belongs to stale
+inputs or policy"*. The rollback was to the previous commit; the fix would be
+splitting `stage_runner.py` per stage, which §0 of this document already names.
+
+**For 1.7: treat any edit to `stage_runner.py` or `slurm.py` as a full
+invalidation, and do not deploy one mid-build.** Deploy by commit and pull, check
+`stage_code_sha256` for an affected stage before and after, and if it moves,
+do not ship it until the build is finished.
+
+---
+
+## 14. Decontamination's length bias, and two rules that are not decontamination
+
+Recorded after §8, which noted that reformulations defeat n-gram matching. The
+opposite failure is also present: rules that fire on documents nobody copied.
+
+r2 decontamination kept **97.2% of documents but only 92.0% of their bytes**. The
+documents it removed averaged **three times the length** of the ones it kept.
+Drop rate against document size, over 4,800 sampled documents scored with the
+real index:
+
+| size | drop rate | dominant reason |
+|---|---|---|
+| <1 KB | 0.97% | short_ngram |
+| 1-2 KB | 4.57% | short_ngram |
+| 4-8 KB | 7.13% | short_ngram |
+| 8-16 KB | 12.32% | short_ngram |
+| 16-32 KB | 9.52% | code_skeleton |
+| 32-64 KB | **20.00%** | contiguous_run, code_skeleton |
+| >64 KB | **16.54%** | code_skeleton, contiguous_run |
+
+A corpus that has to supply an 18 B-token long-context extension, with
+`minimum_long_document_tokens: 8192`, cannot be biased against its own longest
+documents.
+
+Corpus-wide removals, 29.3 M documents in total:
+
+| rule | removed | share |
+|---|---|---|
+| short_ngram (8-gram, min 4) | 13.5 M | 46% |
+| ngram (13-gram, proportional) | 6.7 M | 23% |
+| contiguous_run (8 x 13-gram) | 4.0 M | 13% |
+| code_skeleton (16-gram, min 32) | 3.3 M | 11% |
+| code_ngram (12-gram, min 16) | 1.9 M | 6% |
+| **exact** | **117** | 0.0004% |
+
+Current open practice is 13-gram overlap against the evaluation set. That is the
+`ngram` family, and it stays. The two largest contributors are not that:
+
+- **short_ngram at 8 tokens is below the standard.** Eight words is ordinary
+  phrasing. Because `reason()` tests it last, every one of those 13.5 M documents
+  had already passed every 13-gram test -- they are removals *beyond* the
+  standard, and there are 115,000 of them for every document exact match caught.
+- **code_skeleton erases identifiers and literals**, so it matches structure
+  rather than copying. Two unrelated files that loop and branch alike collide,
+  and long files collide most, which is why it dominates above 16 KB. Raising its
+  threshold to 32 helped and did not change the shape.
+
+Both are now disabled by `0`, which builds no postings and is never consulted.
+`minimum_matching_ngrams` has no such switch: the 13-gram rule is the
+decontamination contract and a release may not silently ship without it. On the
+same sample, disabling both takes 32-64 KB documents from 20.0% to about 9% and
+>64 KB from 16.5% to about 7%.
+
+**For 1.7: ship with short_ngram and code_skeleton off, and re-measure the
+drop-rate-by-size table before accepting the corpus.** The table, not the
+headline retention percentage, is what shows this class of defect -- 97.2%
+retention looks fine and hides a 20% loss at the sizes that matter most.
+
+---
+
+## 15. An open disagreement about the r2 token budget
+
+§11 records r1 finishing at **973.7 B usable tokens** against the 950 B gate, a
++23.7 B margin, from a projection of candidate x measured yield.
+
+A direct measurement of r2 disagrees. Post-decontamination text is 3.245 TB over
+the 2,989 shards that had logged statistics, extrapolating to **3.503 TB** for
+all 3,227. Bytes per token was measured, not assumed: a 65,536-vocab byte-level
+BPE trained on a stratified sample of the r2 corpus and evaluated on held-out
+shards gives **3.817 bytes/token**, which puts the whole corpus at about
+**918 B tokens** -- below the 950 B unique target, before `final_hash` removes
+anything.
+
+Neither number should be trusted yet. The projection is a projection. The
+measurement extrapolates over the 238 shards without statistics, and its
+tokenizer saw 50 MB where the real one sees 160 GB -- a better-trained tokenizer
+compresses harder, raises bytes/token, and *lowers* the token count, so the
+measurement is if anything optimistic.
+
+`token_count` settles it and is cheap. **For 1.7: run it, and do not treat the
+submission-time projection as the answer.** The gate that matters fires at
+`select`, stage 33 of 37; a two-hour measurement immediately after
+`final_hash_filter` is worth more than a projection at submission.
