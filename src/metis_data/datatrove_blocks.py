@@ -2477,29 +2477,40 @@ class DiskContaminationIndex:
             ):
                 return "benchmark_ngram"
         if looks_like_code(text):
-            code_ngrams = code_ngram_hashes(text, self.code_ngram_size)
+            if self.minimum_code_matching_ngrams > 0:
+                code_ngrams = code_ngram_hashes(text, self.code_ngram_size)
+                if _matching_one_group(
+                    self.code_ngram_postings,
+                    code_ngrams,
+                    required_matches(
+                        self.minimum_code_matching_ngrams, len(code_ngrams), fraction
+                    ),
+                ):
+                    return "benchmark_code_ngram"
+            if self.minimum_code_skeleton_matching_ngrams > 0:
+                skeleton_ngrams = code_skeleton_ngram_hashes(
+                    text, self.code_skeleton_ngram_size
+                )
+                if _matching_one_group(
+                    self.code_skeleton_ngram_postings,
+                    skeleton_ngrams,
+                    required_matches(
+                        self.minimum_code_skeleton_matching_ngrams,
+                        len(skeleton_ngrams),
+                        fraction,
+                    ),
+                ):
+                    return "benchmark_code_skeleton_ngram"
+        if self.minimum_short_matching_ngrams > 0:
+            short_ngrams = ngram_hashes(normalized, self.short_ngram_size)
             if _matching_one_group(
-                self.code_ngram_postings,
-                code_ngrams,
-                required_matches(self.minimum_code_matching_ngrams, len(code_ngrams), fraction),
-            ):
-                return "benchmark_code_ngram"
-            skeleton_ngrams = code_skeleton_ngram_hashes(text, self.code_skeleton_ngram_size)
-            if _matching_one_group(
-                self.code_skeleton_ngram_postings,
-                skeleton_ngrams,
+                self.short_ngram_postings,
+                short_ngrams,
                 required_matches(
-                    self.minimum_code_skeleton_matching_ngrams, len(skeleton_ngrams), fraction
+                    self.minimum_short_matching_ngrams, len(short_ngrams), fraction
                 ),
             ):
-                return "benchmark_code_skeleton_ngram"
-        short_ngrams = ngram_hashes(normalized, self.short_ngram_size)
-        if _matching_one_group(
-            self.short_ngram_postings,
-            short_ngrams,
-            required_matches(self.minimum_short_matching_ngrams, len(short_ngrams), fraction),
-        ):
-            return "benchmark_short_ngram"
+                return "benchmark_short_ngram"
         return None
 
 

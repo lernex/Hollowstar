@@ -257,6 +257,11 @@ def _output_relevant_scheduler(scheduler: Any) -> Any:
     return scheduler
 
 
+_DECONTAMINATION_TUNED_STAGES = frozenset(
+    {"decontam_index", "decontam_filter", "cleanup_decontam"}
+)
+
+
 def _stage_execution_contract(
     profile: dict[str, Any], state: StateStore, stage: str
 ) -> str:
@@ -298,7 +303,17 @@ def _stage_execution_contract(
             # only thing that can force a re-run when it changes. Leaving it
             # out would let a retuned threshold be silently ignored by stages
             # that already hold completion markers.
-            "decontamination": profile.get("decontamination", {}),
+            #
+            # Bound to the stages that actually read it. Binding it to every
+            # stage made the escape hatch useless: raising a threshold
+            # invalidated normalize, exact, span, minhash and code as well, so
+            # "retune without a new release" meant rebuilding the entire corpus
+            # from raw. Tuning cannot change what a dedup stage emits.
+            "decontamination": (
+                profile.get("decontamination", {})
+                if stage in _DECONTAMINATION_TUNED_STAGES
+                else {}
+            ),
             "gates": {
                 key: value
                 for key, value in profile.get("gates", {}).items()

@@ -440,8 +440,17 @@ class ContaminationIndex:
     ) -> "ContaminationIndex":
         if maximum_shingle_rows < 1:
             raise ValueError("maximum_shingle_rows must be positive")
+        # 0 disables a detection family outright: no postings are built for it
+        # and reason() never consults it. The families are not equally
+        # justified -- an 8-gram is eight ordinary words, and a code skeleton
+        # with identifiers and literals erased matches structure rather than
+        # copying -- so being able to switch one off is tuning, not surgery.
+        # minimum_matching_ngrams has no such switch: the 13-gram rule is the
+        # decontamination contract, and a release may not silently ship without
+        # it.
+        if minimum_matching_ngrams < 1:
+            raise ValueError("minimum_matching_ngrams must be positive")
         for name, value in (
-            ("minimum_matching_ngrams", minimum_matching_ngrams),
             ("minimum_short_matching_ngrams", minimum_short_matching_ngrams),
             ("minimum_code_matching_ngrams", minimum_code_matching_ngrams),
             (
@@ -449,8 +458,8 @@ class ContaminationIndex:
                 minimum_code_skeleton_matching_ngrams,
             ),
         ):
-            if value < 1:
-                raise ValueError(f"{name} must be positive")
+            if value < 0:
+                raise ValueError(f"{name} must be zero (disabled) or positive")
         exact: set[str] = set()
         ngrams: dict[int, set[bytes]] = defaultdict(set)
         short_ngrams: dict[int, set[bytes]] = defaultdict(set)
@@ -464,15 +473,18 @@ class ContaminationIndex:
             exact.add(hashlib.sha256(normalized.encode()).hexdigest())
             for shingle in ngram_hashes(normalized, ngram_size):
                 ngrams[shingle].add(group)
-            for shingle in ngram_hashes(normalized, short_ngram_size):
-                short_ngrams[shingle].add(group)
+            if minimum_short_matching_ngrams > 0:
+                for shingle in ngram_hashes(normalized, short_ngram_size):
+                    short_ngrams[shingle].add(group)
             if looks_like_code(text):
-                for shingle in code_ngram_hashes(text, code_ngram_size):
-                    code_ngrams[shingle].add(group)
-                for shingle in code_skeleton_ngram_hashes(
-                    text, code_skeleton_ngram_size
-                ):
-                    code_skeleton_ngrams[shingle].add(group)
+                if minimum_code_matching_ngrams > 0:
+                    for shingle in code_ngram_hashes(text, code_ngram_size):
+                        code_ngrams[shingle].add(group)
+                if minimum_code_skeleton_matching_ngrams > 0:
+                    for shingle in code_skeleton_ngram_hashes(
+                        text, code_skeleton_ngram_size
+                    ):
+                        code_skeleton_ngrams[shingle].add(group)
         frozen_ngrams, suppressed_ngrams = _freeze_postings(
             ngrams, maximum_shingle_rows=maximum_shingle_rows
         )
@@ -526,21 +538,24 @@ class ContaminationIndex:
         ):
             return "benchmark_ngram"
         if looks_like_code(text):
-            if _matches_one_holdout_group(
+            if self.minimum_code_matching_ngrams > 0 and _matches_one_holdout_group(
                 self.code_ngram_postings,
                 code_ngram_hashes(text, self.code_ngram_size),
                 self.minimum_code_matching_ngrams,
                 self.match_fraction,
             ):
                 return "benchmark_code_ngram"
-            if _matches_one_holdout_group(
-                self.code_skeleton_ngram_postings,
-                code_skeleton_ngram_hashes(text, self.code_skeleton_ngram_size),
-                self.minimum_code_skeleton_matching_ngrams,
-                self.match_fraction,
+            if (
+                self.minimum_code_skeleton_matching_ngrams > 0
+                and _matches_one_holdout_group(
+                    self.code_skeleton_ngram_postings,
+                    code_skeleton_ngram_hashes(text, self.code_skeleton_ngram_size),
+                    self.minimum_code_skeleton_matching_ngrams,
+                    self.match_fraction,
+                )
             ):
                 return "benchmark_code_skeleton_ngram"
-        if _matches_one_holdout_group(
+        if self.minimum_short_matching_ngrams > 0 and _matches_one_holdout_group(
             self.short_ngram_postings,
             ngram_hashes(normalized, self.short_ngram_size),
             self.minimum_short_matching_ngrams,

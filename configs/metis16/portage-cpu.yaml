@@ -341,9 +341,33 @@ gates:
 # where the rule stops removing much of anything.
 decontamination:
   minimum_matching_ngrams: 2
-  minimum_short_matching_ngrams: 4
+  # 0 disables a family. Measured on 4,800 sampled 1.6 documents, the drop rate
+  # ran from 0.97% under 1KB to 20.0% at 32-64KB, and corpus-wide the stage kept
+  # 97.2% of documents but only 92.0% of their bytes: the documents it removed
+  # averaged three times the length of the ones it kept. That is the wrong bias
+  # for a corpus that has to supply an 18B-token long-context extension.
+  #
+  # Two families account for most of it, and neither is what current practice
+  # calls decontamination. Current open practice is 13-gram overlap against the
+  # evaluation set (OLMo 2, Jan 2025), which is the ngram family below.
+  #
+  # short_ngram at 8 tokens is below that: eight words is ordinary phrasing, and
+  # because reason() tests it last, every document it removed had already passed
+  # every 13-gram test. It was 46% of all removals -- 13.5M documents -- against
+  # 117 for exact match.
+  #
+  # code_skeleton erases identifiers and literals, so it matches structure
+  # rather than copying; two unrelated files that loop and branch alike collide.
+  # It dominated removals above 16KB, which is precisely the long-file end of
+  # the code corpus. Raising its threshold to 32 helped and did not fix the
+  # shape of the bias.
+  #
+  # Disabling both leaves exact, 13-gram proportional overlap, the contiguous
+  # run, and 12-gram code overlap. On the same sample that takes 32-64KB
+  # documents from 20.0% to about 9% and >64KB from 16.5% to about 7%.
+  minimum_short_matching_ngrams: 0
   minimum_code_matching_ngrams: 16
-  minimum_code_skeleton_matching_ngrams: 32
+  minimum_code_skeleton_matching_ngrams: 0
   match_fraction: 0.002
   # An unbroken run of this many matching 13-grams marks a document
   # contaminated on its own, however few matches it has in total. This is the

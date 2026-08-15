@@ -224,3 +224,87 @@ class DiskIndexMatchesReferenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DisabledFamilyTests(unittest.TestCase):
+    """A disabled family must be inert, not merely cheap.
+
+    Disabling is a tuning decision that changes which documents reach training,
+    so it has to be exact: no postings built, no reason ever returned, and the
+    two reason() implementations still agreeing document for document.
+    """
+
+    def _pair(self, holdouts, **tuning):
+        settings = {
+            "ngram_size": 5,
+            "minimum_matching_ngrams": 2,
+            "short_ngram_size": 3,
+            "minimum_short_matching_ngrams": 2,
+            "code_ngram_size": 4,
+            "minimum_code_matching_ngrams": 3,
+            "code_skeleton_ngram_size": 5,
+            "minimum_code_skeleton_matching_ngrams": 3,
+            "contiguous_run_minimum": 0,
+            "match_fraction": 0.0,
+        }
+        settings.update(tuning)
+        memory = ContaminationIndex.build(holdouts, **settings)
+        return memory, _to_disk_index(memory)
+
+    def test_disabled_short_family_builds_no_postings(self) -> None:
+        holdouts = [" ".join(WORDS[:20])]
+        _memory, _disk = self._pair(holdouts)
+        off_memory, off_disk = self._pair(holdouts, minimum_short_matching_ngrams=0)
+        self.assertEqual(len(off_memory.short_ngram_postings), 0)
+        self.assertEqual(len(off_disk.short_ngram_postings), 0)
+
+    def test_disabled_family_never_fires_and_twins_agree(self) -> None:
+        rng = random.Random(4242)
+        holdouts = [
+            " ".join(rng.choice(WORDS) for _ in range(rng.randrange(6, 30)))
+            for _ in range(20)
+        ]
+        holdouts.append(CODE_HOLDOUT)
+        memory, disk = self._pair(
+            holdouts,
+            minimum_short_matching_ngrams=0,
+            minimum_code_skeleton_matching_ngrams=0,
+        )
+        documents = holdouts + [
+            " ".join(rng.choice(WORDS) for _ in range(rng.randrange(0, 60)))
+            for _ in range(120)
+        ] + [CODE_HOLDOUT.replace("total", "acc"), "", "alpha bravo"]
+        for document in documents:
+            reason = disk.reason(document)
+            self.assertNotIn(reason, {"benchmark_short_ngram", "benchmark_code_skeleton_ngram"})
+            self.assertEqual(memory.reason(document), reason)
+
+    def test_disabling_only_ever_retains_more(self) -> None:
+        """Turning a family off must never start dropping something new."""
+
+        rng = random.Random(99)
+        holdouts = [
+            " ".join(rng.choice(WORDS) for _ in range(rng.randrange(6, 30)))
+            for _ in range(20)
+        ]
+        on_memory, _ = self._pair(holdouts)
+        off_memory, _ = self._pair(holdouts, minimum_short_matching_ngrams=0)
+        documents = holdouts + [
+            " ".join(rng.choice(WORDS) for _ in range(rng.randrange(0, 60)))
+            for _ in range(150)
+        ]
+        for document in documents:
+            if off_memory.reason(document) is not None:
+                self.assertIsNotNone(on_memory.reason(document))
+
+    def test_the_thirteen_gram_rule_cannot_be_disabled(self) -> None:
+        """The 13-gram rule is the contract; a release may not ship without it."""
+
+        with self.assertRaises(ValueError):
+            ContaminationIndex.build([" ".join(WORDS[:20])], minimum_matching_ngrams=0)
+
+    def test_negative_thresholds_are_still_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            ContaminationIndex.build(
+                [" ".join(WORDS[:20])], minimum_short_matching_ngrams=-1
+            )
