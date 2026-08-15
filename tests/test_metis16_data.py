@@ -28,6 +28,7 @@ from metis_data.config import load_profile, load_yaml, validate_storage_root
 from metis_data.context_extension import (
     allocate_context_replacements,
     build_context_pack_plan,
+    build_context_selection,
     context_evaluation_domain_targets,
     context_lane_quota_rows,
     structural_evidence,
@@ -256,6 +257,107 @@ class ManifestTests(unittest.TestCase):
                     int(task["active_tokens"]),
                     expected_tokens,
                 )
+
+    def _plan_without_domain(self, domain: str) -> dict:
+        """A valid plan that differs from the manifest by one dropped domain.
+
+        This is the shape of the change that stranded a persisted pack plan:
+        the domain goes, its budget is absorbed elsewhere, and the release
+        name does not move.
+        """
+
+        plan = copy.deepcopy(load_manifest()["context_extension_plan"])
+        freed = sum(
+            int(row["tokens"])
+            for row in plan["sources"]
+            if row["domain"] == domain
+        )
+        plan["sources"] = [
+            dict(row) for row in plan["sources"] if row["domain"] != domain
+        ]
+        plan["fallbacks"]["groups"] = [
+            group
+            for group in plan["fallbacks"]["groups"]
+            if group["id"] != domain
+        ]
+        plan["sources"][0]["tokens"] = int(plan["sources"][0]["tokens"]) + freed
+        validate_context_plan(plan)
+        return plan
+
+    def test_context_selection_rejects_a_pack_plan_from_another_plan(
+        self,
+    ) -> None:
+        plan = load_manifest()["context_extension_plan"]
+        drifted = self._plan_without_domain("general_reference")
+        stale_pack_plan = build_context_pack_plan(drifted)
+        # The budget still reconciles, which is exactly why a total-token check
+        # cannot see this: the tokens are misrouted between domains, not lost.
+        self.assertEqual(
+            sum(int(task["active_tokens"]) for task in stale_pack_plan["tasks"]),
+            sum(
+                int(row["tokens"]) for row in context_lane_quota_rows(plan)
+            ),
+        )
+        scanned = []
+
+        class _Records:
+            def __iter__(self) -> object:
+                scanned.append(1)
+                return iter(())
+
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(RuntimeError) as caught:
+                build_context_selection(
+                    _Records(),
+                    plan=plan,
+                    pack_plan=stale_pack_plan,
+                    output_root=Path(directory),
+                    token_count_contract_sha256="0" * 64,
+                    tokenizer_contract={},
+                )
+        message = str(caught.exception)
+        self.assertIn("does not match the context plan", message)
+        self.assertIn("general_reference", message)
+        # The point of the guard is that it fires before the measurement pass,
+        # not four hours into it.
+        self.assertEqual(scanned, [])
+
+    def test_persisted_pack_plan_is_pinned_to_the_plan_it_came_from(
+        self,
+    ) -> None:
+        plan = load_manifest()["context_extension_plan"]
+        with tempfile.TemporaryDirectory() as directory:
+            output_root = Path(directory)
+            created = stage_runner._load_or_create_context_pack_plan(
+                output_root, plan
+            )
+            path = output_root / "PACK_PLAN.json"
+            self.assertTrue(path.is_file())
+            reloaded = stage_runner._load_or_create_context_pack_plan(
+                output_root, plan
+            )
+            self.assertEqual(reloaded["plan_sha256"], created["plan_sha256"])
+            self.assertEqual(
+                reloaded["created_at"],
+                created["created_at"],
+                "an unchanged plan must not rewrite the sealed pack plan",
+            )
+
+            drifted = self._plan_without_domain("general_reference")
+            self.assertEqual(drifted["release"], plan["release"])
+            with self.assertRaises(RuntimeError) as caught:
+                stage_runner._load_or_create_context_pack_plan(
+                    output_root, drifted
+                )
+            self.assertIn(
+                "does not describe the current context-extension plan",
+                str(caught.exception),
+            )
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8")),
+                created,
+                "a rejected load must not overwrite the persisted plan",
+            )
 
     def test_context_fallbacks_never_cross_domains(self) -> None:
         plan = load_manifest()["context_extension_plan"]

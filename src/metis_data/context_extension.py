@@ -701,6 +701,50 @@ def _task_routers(
     return dict(result)
 
 
+def _route_key(row: Mapping[str, Any]) -> tuple[int, str, str]:
+    lane = str(row["lane"])
+    domain = (
+        str(row.get("domain") or "") if lane == "dependency_constructed" else ""
+    )
+    return (int(row["gate_index"]), lane, domain)
+
+
+def _reconcile_routes(
+    plan: Mapping[str, Any],
+    pack_plan: Mapping[str, Any],
+) -> None:
+    """Pin pack-task capacity to the quota the selection will route into it.
+
+    Both sides are pure functions of the plan, so they can only disagree when
+    the pack plan was built from a different one. They then disagree per route
+    while still summing to the same budget, which is why no total catches it:
+    the shortfall surfaces only when one route overruns, a full measurement and
+    materialization pass later.
+    """
+
+    capacity: dict[tuple[int, str, str], int] = defaultdict(int)
+    for row in pack_plan["tasks"]:
+        capacity[_route_key(row)] += int(row["active_tokens"])
+    demand: dict[tuple[int, str, str], int] = defaultdict(int)
+    for row in context_lane_quota_rows(plan):
+        demand[_route_key(row)] += int(row["tokens"])
+    mismatched: dict[str, dict[str, int]] = {}
+    for gate_index, lane, domain in sorted(set(capacity) | set(demand)):
+        key = (gate_index, lane, domain)
+        held = int(capacity.get(key, 0))
+        needed = int(demand.get(key, 0))
+        if held != needed:
+            mismatched[f"{gate_index}:{lane}:{domain or 'all'}"] = {
+                "pack_task_tokens": held,
+                "quota_tokens": needed,
+            }
+    if mismatched:
+        raise RuntimeError(
+            "context pack plan does not match the context plan it must route: "
+            + json.dumps(mismatched, sort_keys=True)
+        )
+
+
 def _route_fragment(
     routers: dict[tuple[int, str, str], deque[dict[str, Any]]],
     writers: _ZstdWriters,
@@ -767,6 +811,7 @@ def build_context_selection(
     validate_context_plan(plan)
     if pack_plan.get("schema") != CONTEXT_PACK_PLAN_SCHEMA:
         raise ValueError("context selection requires a valid pack plan")
+    _reconcile_routes(plan, pack_plan)
     if iter(records) is records:
         raise ValueError("context selection records must be restartable")
     source_domains = {

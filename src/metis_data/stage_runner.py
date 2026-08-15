@@ -2835,6 +2835,30 @@ def _load_or_create_context_pack_plan(
             or int(payload.get("pack_tasks", -1)) != 96
         ):
             raise RuntimeError("persisted context PACK_PLAN.json is stale or corrupt")
+        # Self-consistency proves the file was not corrupted. It proves nothing
+        # about the plan the file was derived from still being the plan on
+        # disk, and the release name does not change when a domain is dropped.
+        # Every task here is a pure function of that plan -- which domain a
+        # dependency-constructed task is bound to, how many tokens it may hold
+        # -- so rebuild and compare, the way the token-count contract is pinned
+        # to its inputs. Drifting silently costs a full selection pass before
+        # the routing quota notices, which is how it was found.
+        rebuilt = build_context_pack_plan(plan)
+        rebuilt["created_at"] = payload.get("created_at")
+        rebuilt["plan_sha256"] = _json_sha256(
+            {
+                key: value
+                for key, value in rebuilt.items()
+                if key != "plan_sha256"
+            }
+        )
+        if rebuilt != payload:
+            raise RuntimeError(
+                "persisted context PACK_PLAN.json does not describe the "
+                "current context-extension plan; the plan changed after the "
+                f"pack plan was written. Remove {path} to rebuild it, but "
+                "only before selection has run against the old one"
+            )
         return payload
     output_root.mkdir(parents=True, exist_ok=True)
     payload = build_context_pack_plan(plan)
