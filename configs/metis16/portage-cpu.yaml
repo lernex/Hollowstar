@@ -320,11 +320,19 @@ gates:
   # cleanup receipts, which passed under the correct contract.
   allow_filter_chain_contract_drift: true
   filter_chain_contract_drift_reason: >-
-    Tokenizer sample plan tolerance added after the filtering stages completed.
-    The change is confined to _tokenizer_sample_plan and _completion_inventory;
-    no filtering stage calls either, and every filter cleanup receipt verified
-    its stage under the contract in force when it ran. Retire this once the
-    stage-module split lands and the contract can distinguish the two cases.
+    Three changes landed after the filtering stages completed, none of which a
+    filtering stage can reach. The tokenizer sample plan tolerance is confined
+    to _tokenizer_sample_plan and _completion_inventory. The token-count shard
+    decode moved to orjson and binary reads, which is confined to _iter_rows
+    and changes parse speed, not parsed values. The schedule gates in
+    _require_metis16_schedule_contract and _validate_selection_contract stopped
+    asserting the aspirational 1T literal and now check the manifest is
+    internally consistent, which only select and its validators call. All three
+    move every stage's hash because stage_runner.py is in COMMON_MODULES, not
+    because any filtering output differs: every filter cleanup receipt
+    independently hash-verified its stage under the contract in force when it
+    ran. Retire this once the stage-module split lands and the contract can
+    distinguish the two cases.
   # Disabled for the r2 build only, deliberately and with the evidence recorded.
   #
   # The handoff binds the manifest into the download plan's identity, so

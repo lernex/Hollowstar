@@ -33,7 +33,7 @@ from tokenizers import Tokenizer
 
 from .config import load_profile, load_yaml, repository_root
 from .download import run_download_task
-from .manifest import validate_manifest
+from .manifest import PHASES, validate_manifest
 from .quality import evaluate_quality, priority_score
 from .stage_code import stage_code_sha256
 from .state import StateStore, atomic_json, utc_now
@@ -3394,47 +3394,69 @@ def _integer_tree(value: Any) -> Any:
 
 
 def _require_metis16_schedule_contract(manifest: dict[str, Any]) -> None:
+    """Check the schedule is internally consistent, not that it is the old plan.
+
+    Pinned 1T / 950B unique / 50B replay and the exact 700B/250B/50B phase
+    boundaries. Those were the plan, not a property of the corpus: token_count
+    measured 849.5B available, so the mix was refitted to 90% of each
+    category's real supply and every one of these literals became false. They
+    run in ``select``, so a refit would fail after the corpus is built.
+
+    What must hold is what the phases and the headline totals say about each
+    other -- the boundaries are cumulative, the split sums, and no source
+    carries a negative quota. Those are true of any schedule, including one
+    refitted mid-release, and they are the properties the selection actually
+    depends on.
+    """
+
     schedule = manifest.get("schedule", {})
     phases = schedule.get("phases", {})
-    expected_starts = {
-        "phase_a": 0,
-        "phase_b": 700_000_000_000,
-        "phase_c": 950_000_000_000,
-    }
-    expected_targets = {
-        "phase_a": 700_000_000_000,
-        "phase_b": 250_000_000_000,
-        "phase_c": 50_000_000_000,
-    }
-    if int(schedule.get("target_tokens", -1)) != 1_000_000_000_000:
-        raise RuntimeError("Metis-1.6 schedule is not exactly 1T")
-    if (
-        int(schedule.get("unique_target_tokens", -1)) != 950_000_000_000
-        or int(schedule.get("replay_target_tokens", -1)) != 50_000_000_000
-    ):
-        raise RuntimeError("Metis-1.6 schedule is not exactly 950B unique/50B replay")
+    target = int(schedule.get("target_tokens", -1))
+    declared_unique = int(schedule.get("unique_target_tokens", -1))
+    declared_replay = int(schedule.get("replay_target_tokens", -1))
+    if target <= 0 or declared_unique < 0 or declared_replay < 0:
+        raise RuntimeError("Schedule totals are missing or negative")
+    if declared_unique + declared_replay != target:
+        raise RuntimeError(
+            f"Schedule unique {declared_unique:,} plus replay {declared_replay:,} "
+            f"does not equal target {target:,}"
+        )
     unique_sum = 0
     replay_sum = 0
-    for phase, target in expected_targets.items():
+    cursor = 0
+    for phase in PHASES:
         payload = phases.get(phase, {})
         unique = int(payload.get("unique_tokens", -1))
         replay = int(payload.get("replay_tokens", -1))
-        if (
-            int(payload.get("start_token", -1)) != expected_starts[phase]
-            or int(payload.get("target_tokens", -1)) != target
-            or unique < 0
-            or replay < 0
-            or unique + replay != target
-        ):
+        phase_target = int(payload.get("target_tokens", -1))
+        if unique < 0 or replay < 0 or phase_target < 0:
             raise RuntimeError(f"Metis-1.6 {phase} schedule contract is invalid")
+        if unique + replay != phase_target:
+            raise RuntimeError(
+                f"{phase} unique {unique:,} plus replay {replay:,} does not equal "
+                f"its target {phase_target:,}"
+            )
+        if int(payload.get("start_token", -1)) != cursor:
+            raise RuntimeError(
+                f"{phase} starts at {payload.get('start_token')}, not where the "
+                f"previous phase ends ({cursor:,})"
+            )
+        cursor += phase_target
         unique_sum += unique
         replay_sum += replay
-    if unique_sum != 950_000_000_000 or replay_sum != 50_000_000_000:
-        raise RuntimeError("Per-phase unique/replay sums do not equal 950B/50B")
+    if cursor != target:
+        raise RuntimeError(
+            f"Phase targets sum to {cursor:,} against a {target:,} schedule"
+        )
+    if unique_sum != declared_unique or replay_sum != declared_replay:
+        raise RuntimeError(
+            f"Per-phase sums ({unique_sum:,} unique, {replay_sum:,} replay) do not "
+            f"match the declared {declared_unique:,}/{declared_replay:,}"
+        )
     for source in manifest.get("sources", []):
         if any(
             int(source.get("phase_tokens", {}).get(phase, 0)) < 0
-            for phase in expected_targets
+            for phase in PHASES
         ):
             raise RuntimeError(f"Source {source.get('id')} has a negative phase quota")
 
@@ -3478,14 +3500,17 @@ def _validate_selection_contract(
     if (
         unique_tokens != declared_unique
         or replay_tokens != declared_replay
-        or declared_unique != 950_000_000_000
-        or declared_replay != 50_000_000_000
     ):
         raise RuntimeError(
-            "Manifest/derived unique-replay contract is not exactly 950B/50B"
+            f"Manifest declares {declared_unique:,} unique and {declared_replay:,} "
+            f"replay, but the per-source quotas derive {unique_tokens:,} and "
+            f"{replay_tokens:,}"
         )
     if unique_tokens + replay_tokens != target_tokens:
-        raise RuntimeError("Unique plus replay selection does not equal the 1T exposure schedule")
+        raise RuntimeError(
+            f"Unique plus replay selection is {unique_tokens + replay_tokens:,} "
+            f"against a {target_tokens:,} exposure schedule"
+        )
     if (
         int(selection.get("unique_tokens", -1)) != unique_tokens
         or int(selection.get("replay_tokens", -1)) != replay_tokens
