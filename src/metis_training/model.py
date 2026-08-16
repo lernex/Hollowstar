@@ -381,6 +381,12 @@ class CurriculumState:
     # is what makes them the sharpest test of whether the learned allocation
     # does anything at all.
     random_policy_seed: int = 0
+    # Optimizer step, folded into the random controls' seed. The draws have to
+    # be a pure function of (seed, step, layer, pass) rather than a running
+    # generator: pass-level activation recompute replays the forward, and a
+    # generator that advanced during the first forward would hand the backward
+    # a different coalition than the one whose loss it is differentiating.
+    random_policy_step: int = 0
 
     @classmethod
     def from_value(
@@ -2377,30 +2383,38 @@ class AdaptiveDroplessMoE(nn.Module):
         self,
         curriculum: CurriculumState,
         device: torch.device,
+        pass_index: int,
     ) -> torch.Generator | None:
-        """Per-layer deterministic stream for the random-policy controls.
+        """Per-layer, per-pass, per-step deterministic stream for the controls.
 
-        Seeding by layer keeps the control reproducible across restarts without
-        making every layer draw the same widths, which would turn a per-token
-        random policy into a per-token constant.
+        Seeded fresh on every call rather than cached and advanced. A cached
+        generator makes the draw depend on how many times it has been called,
+        and pass-level activation recompute calls it a second time for the same
+        pass: the backward would then differentiate a coalition the forward
+        never chose. Seeding by layer and pass keeps the control from
+        collapsing to one constant width per token, and by step from freezing
+        into the same draw for the whole run.
         """
 
         if not curriculum.random_policy_seed:
             return None
-        cached = getattr(self, "_random_policy_generator_cache", None)
-        if cached is not None and cached.device == device:
-            return cached
         generator = torch.Generator(device=device)
         generator.manual_seed(
-            int(curriculum.random_policy_seed) + 1_000_003 * (self.layer_idx + 1)
+            (
+                int(curriculum.random_policy_seed)
+                + 1_000_003 * (self.layer_idx + 1)
+                + 10_000_019 * int(pass_index)
+                + 100_003 * int(curriculum.random_policy_step)
+            )
+            % (2**63 - 1)
         )
-        self._random_policy_generator_cache = generator
         return generator
 
     def _choose_k(
         self,
         logits: Tensor,
         curriculum: CurriculumState,
+        pass_index: int = 0,
     ) -> tuple[Tensor, Tensor, Tensor]:
         choices = torch.arange(
             self.config.min_routed_k,
@@ -2427,7 +2441,9 @@ class AdaptiveDroplessMoE(nn.Module):
                 weights.expand(logits[..., 0].numel(), -1),
                 num_samples=1,
                 replacement=True,
-                generator=self._random_policy_generator(curriculum, logits.device),
+                generator=self._random_policy_generator(
+                    curriculum, logits.device, pass_index
+                ),
             ).squeeze(-1)
             chosen = flat.view(logits.shape[:-1]) + self.config.min_routed_k
             expected = torch.full_like(expected, float(target))
@@ -2934,7 +2950,9 @@ class AdaptiveDroplessMoE(nn.Module):
             k_logits
             + token_difficulty.detach().unsqueeze(-1) * centered_choices
         )
-        chosen_k, expected_k, _k_probabilities = self._choose_k(k_logits, curriculum)
+        chosen_k, expected_k, _k_probabilities = self._choose_k(
+            k_logits, curriculum, pass_index
+        )
         # ``pass_index`` is zero-based: the first pass through the shared stack
         # is 0, so pass one stores and every later pass reuses.
         frozen = (
@@ -4204,15 +4222,22 @@ class Metis16ForCausalLM(nn.Module):
         self,
         curriculum: CurriculumState,
         device: torch.device,
+        pass_index: int,
     ) -> torch.Generator | None:
+        # Seeded per call for the same reason as _random_policy_generator: a
+        # cached generator does not replay under activation recompute.
         if not curriculum.random_policy_seed:
             return None
-        cached = getattr(self, "_random_depth_generator_cache", None)
-        if cached is not None and cached.device == device:
-            return cached
         generator = torch.Generator(device=device)
-        generator.manual_seed(int(curriculum.random_policy_seed) + 7_919)
-        self._random_depth_generator_cache = generator
+        generator.manual_seed(
+            (
+                int(curriculum.random_policy_seed)
+                + 7_919
+                + 10_000_019 * int(pass_index)
+                + 100_003 * int(curriculum.random_policy_step)
+            )
+            % (2**63 - 1)
+        )
         return generator
 
     def _continuation_decision(
@@ -4254,7 +4279,9 @@ class Metis16ForCausalLM(nn.Module):
                 probability.shape,
                 device=probability.device,
                 dtype=torch.float32,
-                generator=self._random_depth_generator(curriculum, probability.device),
+                generator=self._random_depth_generator(
+                    curriculum, probability.device, pass_index
+                ),
             )
             decision = draws < continue_probability
         elif self.training and curriculum.stochastic_routing:

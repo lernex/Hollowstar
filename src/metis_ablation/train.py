@@ -22,7 +22,7 @@ import math
 import os
 import time
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -575,8 +575,12 @@ def _train_row_inner(
                     if collect_analysis and accumulation_index == 0
                     else nullcontext()
                 )
+                # The random controls draw from (seed, step, layer, pass), so
+                # the step has to reach the model; without it every step of a
+                # random row would draw the identical coalition.
+                step_curriculum = replace(curriculum, random_policy_step=step)
                 forward_kwargs = dict(
-                    curriculum=curriculum,
+                    curriculum=step_curriculum,
                     attention_mask=batch.attention_mask,
                     document_ids=batch.document_ids,
                     reset_mask=batch.reset_mask,

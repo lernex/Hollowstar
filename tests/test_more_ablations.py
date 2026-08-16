@@ -1126,3 +1126,69 @@ def test_every_release_inventory_attribute_the_tree_names_exists():
         if not hasattr(ReleaseInventory, attribute)
     ]
     assert not missing, missing
+
+
+def test_random_controls_draw_identically_when_the_pass_is_replayed():
+    """Pass-level recompute runs each pass twice; both must route the same.
+
+    The controls used a cached torch.Generator, which advances on every call.
+    torch.utils.checkpoint restores the default RNG but not user-created
+    generators, so the recomputed forward drew fresh randomness and the
+    backward differentiated a coalition the forward never chose. On rows 12 and
+    13 that is not a crash, it is a control that measures nothing -- which is
+    the one thing those rows exist to rule out.
+    """
+
+    import torch
+    from types import SimpleNamespace
+
+    from metis_training.model import (
+        AdaptiveDroplessMoE,
+        CurriculumState,
+        Metis16ForCausalLM,
+    )
+
+    device = torch.device("cpu")
+    curriculum = CurriculumState(random_policy_seed=4_242, random_policy_step=7)
+
+    def draw(fn, owner, state, pass_index):
+        generator = fn(owner, state, device, pass_index)
+        assert generator is not None
+        return torch.rand(16, generator=generator, device=device)
+
+    for fn, owner in (
+        (AdaptiveDroplessMoE._random_policy_generator, SimpleNamespace(layer_idx=3)),
+        (Metis16ForCausalLM._random_depth_generator, SimpleNamespace()),
+    ):
+        first = draw(fn, owner, curriculum, 1)
+        replayed = draw(fn, owner, curriculum, 1)
+        torch.testing.assert_close(first, replayed)
+
+        # ... while still moving with the step and the pass, or the control
+        # would spend the whole run on one frozen coalition.
+        later_step = draw(
+            fn, owner, replace(curriculum, random_policy_step=8), 1
+        )
+        later_pass = draw(fn, owner, curriculum, 2)
+        assert not torch.allclose(first, later_step)
+        assert not torch.allclose(first, later_pass)
+
+
+def test_random_policy_draws_differ_across_layers():
+    """Otherwise a per-token random width becomes a per-token constant."""
+
+    import torch
+    from types import SimpleNamespace
+
+    from metis_training.model import AdaptiveDroplessMoE, CurriculumState
+
+    device = torch.device("cpu")
+    curriculum = CurriculumState(random_policy_seed=4_242, random_policy_step=7)
+    draws = []
+    for layer_idx in (0, 1, 2):
+        generator = AdaptiveDroplessMoE._random_policy_generator(
+            SimpleNamespace(layer_idx=layer_idx), curriculum, device, 0
+        )
+        draws.append(torch.rand(16, generator=generator, device=device))
+    assert not torch.allclose(draws[0], draws[1])
+    assert not torch.allclose(draws[1], draws[2])
