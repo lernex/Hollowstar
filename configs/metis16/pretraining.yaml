@@ -5,7 +5,7 @@ require_verified_release: true
 token_dtype: uint16
 tokenizer_vocabulary_size: 65536
 sequence_length: 4096
-total_train_tokens: 1000000000000
+total_train_tokens: 804755808835
 token_counter: globally_emitted_non_padding_tokens
 resume_state:
   require_global_token_cursor: true
@@ -13,19 +13,24 @@ resume_state:
   require_shard_order_seed: true
   require_shard_and_offset: true
 phases:
+  # These boundaries are the manifest's schedule, not the 1T plan. The corpus
+  # measured 849.5B tokens against a 1T ask, so the schedule was refit to
+  # 804.8B on 2026-08-15 and metis_training/data.py was moved with it. This
+  # file is the third copy of the same numbers and was left behind, which would
+  # have had training ask for phases the release does not contain.
   - id: phase_a
     start_token: 0
-    end_token_exclusive: 700000000000
+    end_token_exclusive: 554849376946
     data_directory: phase-a
     learning_rate_segment: warmup_then_broad_cosine
   - id: phase_b
-    start_token: 700000000000
-    end_token_exclusive: 950000000000
+    start_token: 554849376946
+    end_token_exclusive: 764518018395
     data_directory: phase-b
     learning_rate_segment: capability_intensification
   - id: phase_c
-    start_token: 950000000000
-    end_token_exclusive: 1000000000000
+    start_token: 764518018395
+    end_token_exclusive: 804755808835
     data_directory: phase-c
     learning_rate_segment: final_decay_cooldown
 ordering:

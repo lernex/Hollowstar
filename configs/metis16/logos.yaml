@@ -43,9 +43,15 @@ target_mean_routed_k: 4.0
 # contract within hours of each other and the fabric therefore carries a
 # constant load for the whole campaign.
 topology:
-  world_size: 352
+  # 10 replicas, not 11: eight of Portage's 128 nodes are held back for other
+  # users, and a world size must stay a multiple of expert_parallel_size, so
+  # the reduction is one whole replica. It comes out of logos because praxis
+  # cannot give one up -- at 128 ranks praxis was the laggard and the two
+  # families finished 43 hours apart, which is what the fifth praxis replica
+  # exists to prevent. See configs/metis16/portage-training.yaml.
+  world_size: 320
   expert_parallel_size: 32
-  expert_replica_count: 11
+  expert_replica_count: 10
 
 max_passes: 5
 target_mean_passes: 2.0

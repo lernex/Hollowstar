@@ -37,6 +37,21 @@ training:
   output_subdirectory: runs
 
 families:
+  # Portage is 128 nodes of 4 APUs and the two families used all of it, which
+  # left nothing for anyone else and no room to lose a node without resizing a
+  # family mid-campaign. Eight nodes are now held back, and a world size must
+  # stay a multiple of expert_parallel_size, so the reduction is one whole
+  # expert replica rather than a few ranks.
+  #
+  # It comes out of logos, not praxis. Praxis at 128 ranks was the laggard and
+  # the two families finished 43 hours apart; the fifth praxis replica exists
+  # to close that gap, so spending it would recreate a pathology this config
+  # was written to fix. Logos loses 9.1% of its accelerators instead, which
+  # moves the whole campaign by roughly the same fraction.
+  #
+  # If bringup measures praxis finishing well ahead of logos, the replica
+  # belongs back on logos and praxis should drop to 4. No throughput has been
+  # taken on gfx942 yet, so that ordering is inferred, not measured.
   praxis:
     manifest: configs/metis16/praxis.yaml
     nodes: 40
@@ -46,11 +61,11 @@ families:
     expert_replicas: 5
   logos:
     manifest: configs/metis16/logos.yaml
-    nodes: 88
-    world_size: 352
+    nodes: 80
+    world_size: 320
     relative_node: 40
     expert_parallel_size: 32
-    expert_replicas: 11
+    expert_replicas: 10
 
 bringup:
   stages:

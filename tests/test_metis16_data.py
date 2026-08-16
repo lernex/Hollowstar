@@ -161,10 +161,71 @@ class ManifestTests(unittest.TestCase):
 
     def test_pretraining_phase_boundaries_are_token_based(self) -> None:
         contract = Path(__file__).resolve().parents[1] / "configs" / "metis16" / "pretraining.yaml"
+        schedule = load_manifest()["schedule"]
+        phase_a = int(schedule["phases"]["phase_a"]["target_tokens"])
+        phase_b = phase_a + int(schedule["phases"]["phase_b"]["target_tokens"])
+        # Boundaries follow the manifest rather than the 1T plan, so assert the
+        # relationship rather than restating the numbers a fourth time.
         self.assertEqual(phase_for_token(contract, 0), "phase_a")
-        self.assertEqual(phase_for_token(contract, 699_999_999_999), "phase_a")
-        self.assertEqual(phase_for_token(contract, 700_000_000_000), "phase_b")
-        self.assertEqual(phase_for_token(contract, 950_000_000_000), "phase_c")
+        self.assertEqual(phase_for_token(contract, phase_a - 1), "phase_a")
+        self.assertEqual(phase_for_token(contract, phase_a), "phase_b")
+        self.assertEqual(phase_for_token(contract, phase_b - 1), "phase_b")
+        self.assertEqual(phase_for_token(contract, phase_b), "phase_c")
+
+    def test_pretraining_contract_matches_the_manifest_schedule(self) -> None:
+        contract = load_yaml(
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "metis16"
+            / "pretraining.yaml"
+        )
+        schedule = load_manifest()["schedule"]
+        self.assertEqual(
+            int(contract["total_train_tokens"]),
+            int(schedule["target_tokens"]),
+            "the training contract is a third copy of the schedule and drifted",
+        )
+        cursor = 0
+        for phase in contract["phases"]:
+            declared = int(schedule["phases"][phase["id"]]["target_tokens"])
+            self.assertEqual(int(phase["start_token"]), cursor)
+            self.assertEqual(int(phase["end_token_exclusive"]), cursor + declared)
+            cursor += declared
+        self.assertEqual(cursor, int(schedule["target_tokens"]))
+
+    def test_portage_training_leaves_headroom_and_valid_world_sizes(self) -> None:
+        profile = load_yaml(
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "metis16"
+            / "portage-training.yaml"
+        )
+        site = profile["site"]
+        families = profile["families"]
+        used = sum(int(row["nodes"]) for row in families.values())
+        self.assertLessEqual(
+            used,
+            int(site["nodes"]) - 8,
+            "eight nodes are held back for other users of the cluster",
+        )
+        offset = 0
+        for name in ("praxis", "logos"):
+            row = families[name]
+            nodes = int(row["nodes"])
+            world = int(row["world_size"])
+            parallel = int(row["expert_parallel_size"])
+            self.assertEqual(world, nodes * int(site["accelerators_per_node"]))
+            self.assertEqual(world, parallel * int(row["expert_replicas"]))
+            self.assertEqual(int(row["relative_node"]), offset, f"{name} overlaps")
+            offset += nodes
+            manifest = load_yaml(
+                Path(__file__).resolve().parents[1] / row["manifest"]
+            )
+            self.assertEqual(int(manifest["topology"]["world_size"]), world)
+            self.assertEqual(
+                int(manifest["topology"]["expert_replica_count"]),
+                int(row["expert_replicas"]),
+            )
 
     def test_hugging_face_double_star_patterns_include_repository_root(self) -> None:
         self.assertTrue(matches_any("data.parquet", ["**/*.parquet"]))
