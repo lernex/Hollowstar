@@ -102,14 +102,17 @@ precision:
   reduction_dtype: float32
   fp8_roles:
     [mamba_in_projection, mamba_out_projection, attention_qkv_projection,
-     attention_out_projection, attention_pass_lora_down, attention_pass_lora_up,
-     expert_gate_up_projection, expert_down_projection, latent_down_projection,
+     attention_out_projection, expert_gate_up_projection, expert_down_projection, latent_down_projection,
      latent_up_projection, memory_state_write_projection,
      memory_metadata_write_projection, memory_query_projection,
      memory_key_projection, memory_value_projection, memory_output_projection,
      memory_route_projection, mhc_controller, ngram_projection, lm_head]
   bf16_roles:
-    [embedding, ngram_table, residual_stream, mamba_state, normalization, gate, collective]
+    # attention_pass_lora_* contract over attention_pass_lora_rank (8), which is
+    # narrower than the multiple of 16 Transformer Engine can contract an FP8
+    # GEMM over. At rank 8 there is nothing to win by trying.
+    [embedding, ngram_table, residual_stream, mamba_state, normalization, gate, collective,
+     attention_pass_lora_down, attention_pass_lora_up]
   fp32_roles:
     [master_weight, optimizer_state, router_logits, sinkhorn,
      memory_attention_logits, loss_accumulation, mamba_sensitive]

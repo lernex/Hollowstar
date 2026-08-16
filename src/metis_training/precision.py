@@ -28,6 +28,9 @@ from .precision_plan import (
 
 
 _DYNAMIC_ROW_LINEAR_TYPES: dict[type[nn.Module], type[nn.Module]] = {}
+# Transformer Engine contracts over the input's last dimension and requires it
+# to be a multiple of sixteen; the row padding above covers the leading dims.
+_FP8_CONTRACTION_MULTIPLE = 16
 
 
 @dataclass
@@ -380,6 +383,18 @@ class PrecisionPolicy:
         if self.is_fp8_role(role):
             if self._te is None:
                 raise RuntimeError("FP8 role requested without Transformer Engine")
+            # TE contracts over the input's last dimension and requires it to be
+            # a multiple of sixteen. A role declared FP8 at a width that cannot
+            # be executed is a manifest error, and the cheap place to find it is
+            # here -- at construction, on one rank -- rather than in the first
+            # forward of an allocated multi-node job.
+            if in_features % _FP8_CONTRACTION_MULTIPLE:
+                raise RuntimeError(
+                    f"Linear role {role!r} is declared FP8 but contracts over "
+                    f"{in_features} features; Transformer Engine requires a "
+                    f"multiple of {_FP8_CONTRACTION_MULTIPLE}. Declare the role "
+                    "in bf16_roles instead."
+                )
             linear_type = _dynamic_row_linear_type(self._te.Linear)
             return linear_type(in_features, out_features, bias=bias, **kwargs)
         return nn.Linear(in_features, out_features, bias=bias, **kwargs)

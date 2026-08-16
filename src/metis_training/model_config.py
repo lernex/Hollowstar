@@ -67,8 +67,6 @@ class PrecisionConfig:
         "mamba_out_projection",
         "attention_qkv_projection",
         "attention_out_projection",
-        "attention_pass_lora_down",
-        "attention_pass_lora_up",
         "expert_gate_up_projection",
         "expert_down_projection",
         "latent_down_projection",
@@ -92,6 +90,12 @@ class PrecisionConfig:
         "normalization",
         "gate",
         "collective",
+        # The per-pass attention LoRA contracts over attention_pass_lora_rank,
+        # which is 8 in every family. Transformer Engine cannot execute an FP8
+        # GEMM that narrow, and at rank 8 against d_model there is nothing to
+        # win by trying: it is a rounding error in both FLOPs and parameters.
+        "attention_pass_lora_down",
+        "attention_pass_lora_up",
     )
     fp32_roles: tuple[str, ...] = (
         "master_weight",

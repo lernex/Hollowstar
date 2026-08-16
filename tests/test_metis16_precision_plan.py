@@ -301,7 +301,7 @@ class PrecisionRolePlanTests(unittest.TestCase):
             role for role, dtype in role_map.items() if dtype == "bf16"
         )
         self.assertIsInstance(
-            policy.linear(4, 3, role=fp8_role),
+            policy.linear(16, 3, role=fp8_role),
             MarkerLinear,
         )
         self.assertIsInstance(
@@ -407,3 +407,39 @@ class PrecisionRolePlanTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Fp8ContractionWidthTests(unittest.TestCase):
+    """A role may only be declared FP8 at a width TE can actually contract."""
+
+    def test_pass_lora_is_not_declared_fp8_while_its_rank_is_too_narrow(self) -> None:
+        """attention_pass_lora_rank is 8 in every family; FP8 needs 16.
+
+        Declaring it FP8 anyway cost a seven-node allocation: the model builds,
+        the FP8 policy validates, and the first forward raises out of TE with a
+        shape complaint that names no role. The rank and the role list have to
+        agree, so assert they do rather than assert the current values.
+        """
+
+        from metis_training.model_config import load_family_config
+        from metis_training.precision import _FP8_CONTRACTION_MULTIPLE
+
+        from metis_ablation.specs import spec_by_name
+
+        configs = [load_family_config(family=name) for name in ("praxis", "logos")]
+        configs.append(spec_by_name("more-core").model_config(
+            mhc_backend="torch_reference",
+            mamba_backend="torch_reference",
+            attention_backend="torch_reference",
+        ))
+
+        for config in configs:
+            rank = config.attention_pass_lora_rank
+            if rank % _FP8_CONTRACTION_MULTIPLE == 0:
+                continue
+            for role in ("attention_pass_lora_down", "attention_pass_lora_up"):
+                self.assertNotIn(
+                    role,
+                    config.precision.fp8_roles,
+                    f"{role} is FP8 but contracts over rank {rank}",
+                )
