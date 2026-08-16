@@ -690,7 +690,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--buffer-gib", type=float, default=2.0)
     args = parser.parse_args(argv)
 
-    profile = load_profile(Path(args.profile))
+    _, profile = load_profile(Path(args.profile))
     (
         output_root,
         shard_paths,

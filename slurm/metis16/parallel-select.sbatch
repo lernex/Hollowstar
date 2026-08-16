@@ -45,7 +45,7 @@ PLAN_ROOT="$("$PYTHON" - "$PROFILE" <<'PY'
 import sys
 from pathlib import Path
 from metis_data.config import load_profile
-profile = load_profile(Path(sys.argv[1]))
+_, profile = load_profile(Path(sys.argv[1]))
 storage = profile["storage"]
 print(Path(storage["lustre_root"]) / storage["directories"]["selected"] / "plan")
 PY
