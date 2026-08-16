@@ -4079,7 +4079,10 @@ def _verify_shard_payload(
 
 
 def _verify_selection_context(
-    profile: dict[str, Any], state: StateStore
+    profile: dict[str, Any],
+    state: StateStore,
+    *,
+    validate_all_schedule: bool = True,
 ) -> dict[str, Any]:
     root = Path(profile["storage"]["lustre_root"])
     manifest = _manifest(profile)
@@ -4090,6 +4093,7 @@ def _verify_selection_context(
         state,
         selection,
         deep_token_count_validation=not bool(state.read("cleanup", "selection_inputs.json")),
+        validate_all_schedule=validate_all_schedule,
     )
     selection_contract = _validate_selection_contract(profile, manifest, selection)
     tokenizer_contract = selection_artifacts["tokenizer_contract"]
@@ -4115,7 +4119,15 @@ def _verify_selection_context(
 
 def _verify_shard(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
     _root, state = _paths(profile)
-    context = _verify_selection_context(profile, state)
+    # One task verifies one shard. Re-hashing the whole 1.2TB schedule inside
+    # each of 806 of them is 967TB of reads for an answer the aggregate verify
+    # establishes once, and which cleanup_selection_inputs has already sealed a
+    # content receipt over. The shard this task owns is still bound byte-exactly
+    # through shard["sha256"], and SELECTION.json's shard list is still covered
+    # by schedule_manifest_sha256, which is checked either way. `pack` already
+    # scopes its validation this way; this stage was simply never given the
+    # same treatment.
+    context = _verify_selection_context(profile, state, validate_all_schedule=False)
     shards = context["selection"]["shards"]
     if task_index >= len(shards):
         # pack_tasks is derived from the manifest schedule and may round above
