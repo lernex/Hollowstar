@@ -427,7 +427,7 @@ def _train_row_inner(
     if not synthetic:
         if release_root is None:
             raise ValueError("A real run requires --release-root")
-        inventory = ReleaseInventory.load(Path(release_root))
+        inventory = ReleaseInventory.from_release_root(Path(release_root))
         stream = DeterministicReleaseStream(
             inventory,
             sequence_length=config.sequence_length,

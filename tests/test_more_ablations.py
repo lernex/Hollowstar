@@ -1089,3 +1089,32 @@ def test_telemetry_carries_the_paper_axes(tiny_proxy, tmp_path: Path):
         assert key in record, key
     for key in ("mean_depth", "mean_routed_k", "expert_entropy_ratio"):
         assert key in record["telemetry"], key
+
+
+def test_every_release_inventory_attribute_the_tree_names_exists():
+    """A misspelled loader survives every test that passes ``--synthetic``.
+
+    ``metis_ablation.train`` called ``ReleaseInventory.load`` where the class
+    only defines ``from_release_root``.  Nothing caught it, because the only
+    path the suite exercises is the synthetic one, and the real branch is the
+    first thing a 28-rank job does after it has paid for its allocation.
+    """
+
+    import re
+
+    from metis_training.data import ReleaseInventory
+
+    root = Path(__file__).resolve().parent.parent / "src"
+    pattern = re.compile(r"\bReleaseInventory\.([A-Za-z_][A-Za-z0-9_]*)")
+    seen: set[tuple[str, str]] = set()
+    for path in root.rglob("*.py"):
+        for attribute in pattern.findall(path.read_text(encoding="utf-8")):
+            seen.add((str(path.relative_to(root)), attribute))
+
+    assert seen, "no ReleaseInventory usages found; the guard has gone stale"
+    missing = [
+        f"{where} names ReleaseInventory.{attribute}"
+        for where, attribute in sorted(seen)
+        if not hasattr(ReleaseInventory, attribute)
+    ]
+    assert not missing, missing
