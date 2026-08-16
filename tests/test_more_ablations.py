@@ -1192,3 +1192,77 @@ def test_random_policy_draws_differ_across_layers():
         draws.append(torch.rand(16, generator=generator, device=device))
     assert not torch.allclose(draws[0], draws[1])
     assert not torch.allclose(draws[1], draws[2])
+
+
+def test_recompute_replay_keeps_the_expert_assignment_shape():
+    """A replayed pass must route where the forward routed, not where it would.
+
+    Router logits are not bitwise reproducible across the two executions of a
+    pass-level recompute -- reductions over atomics reassociate -- so tokens
+    near a top-k tie land differently. That changes the number of assignments
+    and therefore the shape of the packed expert input, and
+    torch.utils.checkpoint rejects the replay. The tape fixes the identities;
+    this asserts that a second call with *perturbed* logits still produces the
+    forward's assignment, which is a strictly harder condition than the tiny
+    perturbations the hardware actually produces.
+    """
+
+    from metis_training.model import RoutingReplayTape
+    from metis_training.model_config import Metis16Config
+
+    config = Metis16Config.tiny_for_tests()
+    torch.manual_seed(16_062_026)
+
+    tape = RoutingReplayTape()
+    top_indices = torch.tensor([[[0, 2, 1], [3, 1, 0]]])
+    chosen_k = torch.tensor([[2, 1]])
+    tape.record(0, 0, top_indices, chosen_k)
+
+    # The replay of the same pass and layer gets the recorded identities.
+    replayed = tape.lookup(0, 0)
+    assert replayed is not None
+    torch.testing.assert_close(replayed[0], top_indices)
+    torch.testing.assert_close(replayed[1], chosen_k)
+
+    # Write-once: a second record for the same pass and layer -- which is what
+    # the replay itself would do -- must not overwrite the forward's decision.
+    tape.record(0, 0, torch.zeros_like(top_indices), torch.zeros_like(chosen_k))
+    again = tape.lookup(0, 0)
+    assert again is not None
+    torch.testing.assert_close(again[0], top_indices)
+    torch.testing.assert_close(again[1], chosen_k)
+
+    # Different passes and layers are independent; taping them together would
+    # freeze the pathway axis by accident and silently turn every row into
+    # row 6.
+    assert tape.lookup(1, 0) is None
+    assert tape.lookup(0, 1) is None
+
+    tape.clear()
+    assert tape.lookup(0, 0) is None
+
+
+def test_replay_tape_exists_only_where_a_pass_is_actually_replayed():
+    """No tape without pass recompute: it would be memory held for nothing."""
+
+    from metis_training.model import CurriculumState, Metis16ForCausalLM
+    from metis_training.model_config import Metis16Config
+
+    config = Metis16Config.tiny_for_tests()
+    assert config.activation_recompute_policy == "none"
+    model = Metis16ForCausalLM(config)
+    model.train()
+    input_ids = torch.zeros((1, 8), dtype=torch.long)
+    curriculum = CurriculumState(fixed_routed_k=config.max_routed_k)
+    model(input_ids, curriculum=curriculum)
+    assert model._routing_replay_tape is None
+
+    model.set_activation_recompute_policy("pass")
+    model(input_ids, curriculum=curriculum)
+    assert model._routing_replay_tape is not None
+
+    # Inference replays nothing, so it should not tape either.
+    model.eval()
+    with torch.no_grad():
+        model(input_ids, curriculum=curriculum)
+    assert model._routing_replay_tape is None

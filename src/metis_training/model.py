@@ -2107,6 +2107,54 @@ class SwiGLUExpert(nn.Module):
                     reset()
 
 
+class RoutingReplayTape:
+    """Discrete expert selections, recorded per pass and replayed on recompute.
+
+    Pass-level activation recompute runs each pass a second time during the
+    backward. The expert selection is a top-k over router logits, and the logits
+    are not bitwise reproducible -- reductions over atomics reassociate between
+    the two executions. A handful of tokens near a tie then land on a different
+    expert, which changes the number of assignments and therefore the *shape* of
+    the packed expert input. torch.utils.checkpoint compares the replay against
+    what the forward saved and rejects the mismatch.
+
+    Rejecting it is the good outcome. Without that check the backward would
+    differentiate a coalition the forward never routed, quietly, for the whole
+    run.
+
+    Only integer identity is taped: which experts, and how many. The blend
+    weights are recomputed from the replayed pass's own logits, because they
+    carry the gradient the router learns from. The discrete choice carries none.
+    """
+
+    __slots__ = ("_selections",)
+
+    def __init__(self) -> None:
+        self._selections: dict[tuple[int, int], tuple[Tensor, Tensor]] = {}
+
+    def record(
+        self,
+        pass_index: int,
+        layer_index: int,
+        top_indices: Tensor,
+        chosen_k: Tensor,
+    ) -> None:
+        # A (pass, layer) pair is visited exactly once per forward, so a key
+        # that is already present means this execution is the replay.
+        self._selections.setdefault(
+            (int(pass_index), int(layer_index)),
+            (top_indices.detach(), chosen_k.detach()),
+        )
+
+    def lookup(
+        self, pass_index: int, layer_index: int
+    ) -> tuple[Tensor, Tensor] | None:
+        return self._selections.get((int(pass_index), int(layer_index)))
+
+    def clear(self) -> None:
+        self._selections.clear()
+
+
 class PathwayCache:
     """Pass-one expert identities, addressed in the full token layout.
 
@@ -2213,8 +2261,9 @@ class DenseFFN(nn.Module):
         curriculum: CurriculumState,
         pass_index: int = 0,
         pathway_cache: "PathwayCache | None" = None,
+        replay_tape: "RoutingReplayTape | None" = None,
     ) -> tuple[Tensor, RouteState]:
-        del route_features, curriculum, pass_index, pathway_cache
+        del route_features, curriculum, pass_index, pathway_cache, replay_tape
         latent = self.latent_down(hidden_states)
         activated = self.ffn(latent) * active_mask.unsqueeze(-1).to(latent.dtype)
         output = self.latent_up(activated)
@@ -2921,6 +2970,7 @@ class AdaptiveDroplessMoE(nn.Module):
         curriculum: CurriculumState,
         pass_index: int = 0,
         pathway_cache: "PathwayCache | None" = None,
+        replay_tape: "RoutingReplayTape | None" = None,
     ) -> tuple[Tensor, RouteState]:
         batch, seq_len, _ = hidden_states.shape
         latent = self.latent_down(hidden_states)
@@ -2960,6 +3010,17 @@ class AdaptiveDroplessMoE(nn.Module):
             if pathway_cache is not None and pass_index > 0
             else None
         )
+        # A taped selection means this execution is an activation-recompute
+        # replay of a pass that already ran. Reuse its identities so the packed
+        # assignment has the shape the forward saved; the router logits are not
+        # bitwise reproducible and a tie that lands differently would change it.
+        replayed = (
+            replay_tape.lookup(pass_index, self.layer_idx)
+            if replay_tape is not None and frozen is None
+            else None
+        )
+        if replayed is not None:
+            frozen = replayed
         if frozen is None:
             top_indices, top_weights, selected = self._select_experts(
                 expert_logits,
@@ -2968,12 +3029,16 @@ class AdaptiveDroplessMoE(nn.Module):
             )
             if pathway_cache is not None and pass_index == 0:
                 pathway_cache.store(self.layer_idx, top_indices, chosen_k)
+            if replay_tape is not None:
+                replay_tape.record(pass_index, self.layer_idx, top_indices, chosen_k)
         else:
             # Pathway-frozen control: reuse pass 1's expert identity and width,
             # but recompute the combination weights from this pass's logits.
             # Caching the weights themselves would thread a gradient path from
             # pass r back into pass 1's router across a checkpoint boundary; the
             # axis under test is *which* experts, not how they are blended.
+            # A recompute replay takes the same route for the same reason: the
+            # identity is fixed, the blend is differentiated.
             cached_indices, cached_k = frozen
             top_indices = cached_indices
             chosen_k = cached_k
@@ -3776,6 +3841,7 @@ class Metis16Block(nn.Module):
         pass_embedding: Tensor,
         curriculum: CurriculumState,
         pathway_cache: "PathwayCache | None" = None,
+        replay_tape: "RoutingReplayTape | None" = None,
         context_parallel: "ContextParallelPassState | None" = None,
     ) -> tuple[Tensor, RouteState]:
         mixer_input, mixer_residual = self.mixer_connection.read(streams, pass_embedding)
@@ -3804,6 +3870,7 @@ class Metis16Block(nn.Module):
             curriculum=curriculum,
             pass_index=pass_index,
             pathway_cache=pathway_cache,
+            replay_tape=replay_tape,
         )
         streams = self.moe_connection.write(
             moe_residual,
@@ -3981,6 +4048,7 @@ class Metis16ForCausalLM(nn.Module):
             config.context_parallel_size,
         )
         self._pathway_cache: PathwayCache | None = None
+        self._routing_replay_tape: RoutingReplayTape | None = None
         self.analysis_telemetry_enabled = False
         for layer in self.layers:
             layer.moe.collective_timer = self.collective_timer
@@ -4427,6 +4495,7 @@ class Metis16ForCausalLM(nn.Module):
             pass_embedding=pass_embedding,
             curriculum=curriculum,
             pathway_cache=self._pathway_cache,
+            replay_tape=self._routing_replay_tape,
             context_parallel=context_parallel,
         )
         return (streams, *_route_state_to_flat(route_state))
@@ -4857,6 +4926,20 @@ class Metis16ForCausalLM(nn.Module):
         curriculum_state.validate(self.config)
         self._pathway_cache = (
             PathwayCache() if curriculum_state.pathway_mode == "frozen" else None
+        )
+        # Only pass-level recompute replays a pass, and only training runs it.
+        # Everywhere else the tape would be pure overhead, so it is not built.
+        # Rebuilding it per forward is what bounds its lifetime: it has to
+        # outlive the backward that replays these passes, and must not outlive
+        # the next micro-batch, whose routing is unrelated.
+        self._routing_replay_tape = (
+            RoutingReplayTape()
+            if (
+                self.training
+                and torch.is_grad_enabled()
+                and self.activation_recompute_policy == "pass"
+            )
+            else None
         )
         effective_passes = max_passes or curriculum_state.max_passes or self.config.max_passes
         if not 1 <= effective_passes <= self.config.max_passes:
