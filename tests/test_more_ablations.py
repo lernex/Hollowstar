@@ -700,7 +700,8 @@ def test_every_task_in_a_launcher_gets_its_own_rank_and_apu(tmp_path: Path):
         stub.chmod(0o755)
 
     runtime = tmp_path / "runtime.sh"
-    runtime.write_text("# no-op runtime for the test\n")
+    sourced = tmp_path / "sourced.txt"
+    runtime.write_text(f'echo "${{SLURM_PROCID:-unset}}" >> {sourced}\n')
 
     script = tmp_path / "row.sbatch"
     script.write_text(body)
@@ -718,6 +719,13 @@ def test_every_task_in_a_launcher_gets_its_own_rank_and_apu(tmp_path: Path):
 
     seen = [line.split() for line in recorded.read_text().split("\n") if line.strip()]
     assert seen == [["0", "0"], ["1", "1"], ["2", "2"], ["3", "3"]], seen
+
+    # The runtime derives per-rank scratch paths from SLURM_PROCID, so it has to
+    # be sourced inside the step, once per task, not once in the batch shell.
+    activations = [
+        line.strip() for line in sourced.read_text().split("\n") if line.strip()
+    ]
+    assert activations == ["0", "1", "2", "3"], activations
 
 
 def test_launchers_do_not_request_a_gpu_gres(tmp_path: Path):
