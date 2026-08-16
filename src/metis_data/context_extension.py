@@ -877,327 +877,6 @@ def _measure(records: Any) -> Any:
     return lambda rows, **kwargs: measure_context_availability(rows, **kwargs)
 
 
-def context_assignment_lists(
-    allocation: Mapping[str, Any],
-) -> dict[str, list[dict[str, Any]]]:
-    """The per-source draw order, as a plain list the workers can carry."""
-
-    result: dict[str, list[dict[str, Any]]] = {}
-    for source_id, rows in allocation["assignments_by_actual_source"].items():
-        result[str(source_id)] = [dict(row) for row in rows]
-    return result
-
-
-def _advance_queue(
-    rows: Sequence[Mapping[str, Any]],
-    consumed: int,
-) -> deque[dict[str, Any]]:
-    """Position a source's queue as if `consumed` tokens were already drawn."""
-
-    queue: deque[dict[str, Any]] = deque()
-    left = int(consumed)
-    for raw in rows:
-        row = dict(raw)
-        tokens = int(row["tokens"])
-        if left >= tokens:
-            left -= tokens
-            continue
-        row["remaining"] = tokens - left
-        left = 0
-        queue.append(row)
-    if left:
-        raise RuntimeError("assignment prefix exceeds the queue it advances")
-    return queue
-
-
-def _advance_routers(
-    pack_plan: Mapping[str, Any],
-    routed_before: Mapping[tuple[int, str, str], int],
-) -> dict[tuple[int, str, str], deque[dict[str, Any]]]:
-    routers = _task_routers(pack_plan)
-    for key, queue in routers.items():
-        left = int(routed_before.get(key, 0))
-        while left and queue:
-            task = queue[0]
-            take = min(left, int(task["remaining"]))
-            task["remaining"] = int(task["remaining"]) - take
-            left -= take
-            if int(task["remaining"]) == 0:
-                queue.popleft()
-        if left:
-            raise RuntimeError(
-                "routed prefix exceeds the pack-task quota it advances"
-            )
-    return routers
-
-
-def _routed_before(
-    lists: Mapping[str, Sequence[Mapping[str, Any]]],
-    consumed: Mapping[str, int],
-) -> dict[tuple[int, str, str], int]:
-    """Attribute an already-drawn prefix to the routes it went into."""
-
-    routed: dict[tuple[int, str, str], int] = defaultdict(int)
-    for source_id, rows in lists.items():
-        left = int(consumed.get(source_id, 0))
-        for row in rows:
-            if not left:
-                break
-            take = min(left, int(row["tokens"]))
-            routed[_route_key(row)] += take
-            left -= take
-    return dict(routed)
-
-
-def context_partition_state(
-    *,
-    long_lists: Mapping[str, Sequence[Mapping[str, Any]]],
-    short_lists: Mapping[str, Sequence[Mapping[str, Any]]],
-    long_eligible_before: Mapping[str, int],
-    total_before: Mapping[str, int],
-) -> dict[str, Any]:
-    """Where every queue and route stands before a group of shards is read.
-
-    Selection draws in stream order, which is what made it serial. The draw is
-    not arbitrary though: a source's long queue takes whole long-eligible
-    documents until its assignments run out, and its short queue takes whatever
-    the long queue left. So the position of both queues after any prefix of the
-    stream is a function of two running totals for that source -- long-eligible
-    tokens and all tokens -- and nothing else. Those totals come from the
-    measurement pass, which already visits every shard. A worker can therefore
-    start in the middle of the stream and draw exactly what the serial run
-    would have drawn there.
-    """
-
-    long_consumed: dict[str, int] = {}
-    short_consumed: dict[str, int] = {}
-    for source_id in set(long_lists) | set(short_lists):
-        long_capacity = sum(
-            int(row["tokens"]) for row in long_lists.get(source_id, ())
-        )
-        short_capacity = sum(
-            int(row["tokens"]) for row in short_lists.get(source_id, ())
-        )
-        drawn_long = min(
-            long_capacity, int(long_eligible_before.get(source_id, 0))
-        )
-        drawn_short = min(
-            short_capacity,
-            max(0, int(total_before.get(source_id, 0)) - drawn_long),
-        )
-        long_consumed[source_id] = drawn_long
-        short_consumed[source_id] = drawn_short
-    routed = defaultdict(int)
-    for key, value in _routed_before(long_lists, long_consumed).items():
-        routed[key] += value
-    for key, value in _routed_before(short_lists, short_consumed).items():
-        routed[key] += value
-    return {
-        "long_consumed": long_consumed,
-        "short_consumed": short_consumed,
-        "routed_before": dict(routed),
-    }
-
-
-class _EvaluationSink:
-    """Cuts evaluation slices as the serial pass did, writing immediately."""
-
-    def __init__(
-        self,
-        writer: Any,
-        *,
-        records: int,
-        context: int,
-        targets: Mapping[str, int],
-    ) -> None:
-        self.writer = writer
-        self.records = int(records)
-        self.context = int(context)
-        self.targets = {str(k): int(v) for k, v in targets.items()}
-        self.selected = 0
-        self.tokens = 0
-        self.sources: dict[str, int] = defaultdict(int)
-        self.domains: dict[str, int] = defaultdict(int)
-
-    def wants(self, domain: str) -> bool:
-        return self.selected < self.records and self.domains[domain] < int(
-            self.targets.get(domain, 0)
-        )
-
-    def full(self) -> bool:
-        return self.selected >= self.records
-
-    def offer(
-        self,
-        record: Mapping[str, Any],
-        *,
-        domain: str,
-        source_id: str,
-        cursor: int,
-        shard: int,
-        ordinal: int,
-    ) -> None:
-        self.writer.write(
-            {
-                **dict(record),
-                "context_domain": domain,
-                "token_start": cursor,
-                "token_count": self.context,
-                "evaluation_only": True,
-            }
-        )
-        self.selected += 1
-        self.tokens += self.context
-        self.sources[source_id] += 1
-        self.domains[domain] += 1
-
-
-class _EvaluationCandidates:
-    """Records where a slice could be cut, for a later global decision.
-
-    A worker cannot know how many slices earlier shards already took, so it
-    offers positions rather than deciding. It never needs to offer a domain
-    more than that domain's whole target, which bounds this to a few hundred
-    small tuples per worker and keeps the documents themselves out of it.
-    """
-
-    def __init__(self, *, context: int, targets: Mapping[str, int]) -> None:
-        self.context = int(context)
-        self.targets = {str(k): int(v) for k, v in targets.items()}
-        self.found: list[tuple[str, str, int, int, int]] = []
-        self.counts: dict[str, int] = defaultdict(int)
-
-    def wants(self, domain: str) -> bool:
-        return self.counts[domain] < int(self.targets.get(domain, 0))
-
-    def full(self) -> bool:
-        return all(
-            self.counts[domain] >= target
-            for domain, target in self.targets.items()
-        )
-
-    def offer(
-        self,
-        record: Mapping[str, Any],
-        *,
-        domain: str,
-        source_id: str,
-        cursor: int,
-        shard: int,
-        ordinal: int,
-    ) -> None:
-        self.found.append((domain, source_id, int(shard), int(ordinal), int(cursor)))
-        self.counts[domain] += 1
-
-
-def materialize_context_rows(
-    rows: Iterable[Mapping[str, Any]],
-    *,
-    source_ids: set[str],
-    source_domains: Mapping[str, str],
-    minimum_long: int,
-    minimum_score: int,
-    long_queues: Mapping[str, deque[dict[str, Any]]],
-    short_queues: Mapping[str, deque[dict[str, Any]]],
-    routers: dict[tuple[int, str, str], deque[dict[str, Any]]],
-    writers: Any,
-    evaluation: Any,
-    shard_of: Any = None,
-) -> dict[str, Any]:
-    """Place documents into pack tasks, from wherever the queues now stand.
-
-    The serial pass and every parallel worker run this same function; only the
-    starting state differs. Keeping one copy is deliberate -- the divergent
-    twin is the failure this repository keeps paying for.
-    """
-
-    selected_tokens = 0
-    selected_documents: set[tuple[str, str]] = set()
-    license_tokens: dict[str, dict[str, int]] = defaultdict(
-        lambda: defaultdict(int)
-    )
-    outstanding = sum(
-        int(row["remaining"]) for queue in long_queues.values() for row in queue
-    ) + sum(
-        int(row["remaining"]) for queue in short_queues.values() for row in queue
-    )
-    ordinal = -1
-    shard = 0
-    for raw in rows:
-        ordinal += 1
-        if shard_of is not None:
-            shard, ordinal = shard_of(ordinal)
-        source_id = str(raw.get("source_id") or "")
-        if source_id not in source_ids:
-            continue
-        record = dict(raw)
-        tokens = int(record.get("token_count", 0))
-        if tokens <= 0:
-            continue
-        domain = source_domains[source_id]
-        evidence = record.get("context_structure")
-        long_eligible = bool(
-            tokens >= minimum_long
-            and isinstance(evidence, Mapping)
-            and int(evidence.get("score", -1)) >= minimum_score
-        )
-        cursor = 0
-        for queues in (long_queues if long_eligible else None, short_queues):
-            if queues is None or cursor == tokens:
-                continue
-            queue = queues.get(source_id)
-            if not queue:
-                continue
-            for assignment, take in _consume_assignment(queue, tokens - cursor):
-                _route_fragment(
-                    routers,
-                    writers,
-                    assignment=assignment,
-                    record=record,
-                    token_start=cursor,
-                    token_count=take,
-                )
-                cursor += take
-                selected_tokens += take
-                outstanding -= take
-                selected_documents.add((source_id, str(record.get("doc_id"))))
-                expression = str(record.get("license") or "")
-                if not expression:
-                    raise RuntimeError(
-                        f"context selection has no license for {source_id}"
-                    )
-                license_tokens[source_id][expression] += take
-                if cursor == tokens:
-                    break
-            if cursor == tokens:
-                break        # Evaluation slices never overlap a training slice. Requiring one
-        # contiguous deploy-length span per record makes the full-vs-4K NLL
-        # comparison a real long-range measurement.
-        if (
-            long_eligible
-            and tokens - cursor >= evaluation.context
-            and evaluation.wants(domain)
-        ):
-            evaluation.offer(
-                record,
-                domain=domain,
-                source_id=source_id,
-                cursor=cursor,
-                shard=shard,
-                ordinal=ordinal,
-            )
-        if not outstanding and evaluation.full():
-            break
-    return {
-        "selected_tokens": selected_tokens,
-        "selected_documents": selected_documents,
-        "license_tokens": {
-            source: dict(expressions)
-            for source, expressions in license_tokens.items()
-        },
-    }
-
-
 def build_context_selection(
     records: Iterable[Mapping[str, Any]],
     *,
@@ -1286,31 +965,106 @@ def build_context_selection(
     evaluation_domains: dict[str, int] = defaultdict(int)
     try:
         with _AtomicZstdRows(evaluation_path) as evaluation_writer:
-            sink = _EvaluationSink(
-                evaluation_writer,
-                records=evaluation_records,
-                context=evaluation_context,
-                targets=evaluation_domain_targets,
-            )
-            placed = materialize_context_rows(
-                records,
-                source_ids=source_ids,
-                source_domains=source_domains,
-                minimum_long=minimum_long,
-                minimum_score=minimum_score,
-                long_queues=long_queues,
-                short_queues=short_queues,
-                routers=routers,
-                writers=writers,
-                evaluation=sink,
-            )
-            selected_tokens = int(placed["selected_tokens"])
-            selected_documents = placed["selected_documents"]
-            license_tokens = placed["license_tokens"]
-            evaluation_selected = sink.selected
-            evaluation_tokens = sink.tokens
-            evaluation_sources = sink.sources
-            evaluation_domains = sink.domains
+            for raw in records:
+                source_id = str(raw.get("source_id") or "")
+                if source_id not in source_ids:
+                    continue
+                record = dict(raw)
+                tokens = int(record.get("token_count", 0))
+                if tokens <= 0:
+                    continue
+                domain = source_domains[source_id]
+                evidence = record.get("context_structure")
+                long_eligible = bool(
+                    tokens >= minimum_long
+                    and isinstance(evidence, Mapping)
+                    and int(evidence.get("score", -1)) >= minimum_score
+                )
+                cursor = 0
+                if long_eligible:
+                    queue = long_queues.get(source_id, deque())
+                    for assignment, take in _consume_assignment(queue, tokens):
+                        _route_fragment(
+                            routers,
+                            writers,
+                            assignment=assignment,
+                            record=record,
+                            token_start=cursor,
+                            token_count=take,
+                        )
+                        cursor += take
+                        selected_tokens += take
+                        selected_documents.add(
+                            (source_id, str(record.get("doc_id")))
+                        )
+                        expression = str(record.get("license") or "")
+                        if not expression:
+                            raise RuntimeError(
+                                f"context selection has no license for {source_id}"
+                            )
+                        license_tokens[source_id][expression] += take
+                        if cursor == tokens:
+                            break
+                if cursor < tokens:
+                    queue = short_queues.get(source_id, deque())
+                    for assignment, take in _consume_assignment(
+                        queue, tokens - cursor
+                    ):
+                        _route_fragment(
+                            routers,
+                            writers,
+                            assignment=assignment,
+                            record=record,
+                            token_start=cursor,
+                            token_count=take,
+                        )
+                        cursor += take
+                        selected_tokens += take
+                        selected_documents.add(
+                            (source_id, str(record.get("doc_id")))
+                        )
+                        expression = str(record.get("license") or "")
+                        if not expression:
+                            raise RuntimeError(
+                                f"context selection has no license for {source_id}"
+                            )
+                        license_tokens[source_id][expression] += take
+                        if cursor == tokens:
+                            break
+                # Evaluation slices never overlap a training slice. Requiring
+                # one contiguous deploy-length span per record makes the
+                # full-vs-4K NLL comparison a real long-range measurement.
+                if (
+                    evaluation_selected < evaluation_records
+                    and long_eligible
+                    and tokens - cursor >= evaluation_context
+                    and evaluation_domains[domain]
+                    < int(evaluation_domain_targets[domain])
+                ):
+                    evaluation_writer.write(
+                        {
+                            **record,
+                            "context_domain": domain,
+                            "token_start": cursor,
+                            "token_count": evaluation_context,
+                            "evaluation_only": True,
+                        }
+                    )
+                    evaluation_selected += 1
+                    evaluation_tokens += evaluation_context
+                    evaluation_sources[source_id] += 1
+                    evaluation_domains[domain] += 1
+                # Every assignment is spoken for and every evaluation slice is
+                # cut, so the rest of the stream cannot change the release:
+                # each queue is empty, so routing takes nothing, and the
+                # evaluation gate is closed. The quotas are 18B against 849B of
+                # supply, so this is most of the corpus. Stopping here is what
+                # the loop would do anyway, only without reading it.
+                if (
+                    selected_tokens == CONTEXT_TOKEN_BUDGET
+                    and evaluation_selected == evaluation_records
+                ):
+                    break
     finally:
         writers.close()
 
