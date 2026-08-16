@@ -741,19 +741,43 @@ def _scaling_specs() -> tuple[AblationSpec, ...]:
 # A second seed is insurance against one lucky headline result, not a different
 # model design.  Only the three rows the abstract quotes need it.
 
-_SEEDED_ROWS = ("dense-param-matched", "more-core", "more-rm")
+_SEEDED_ROWS = (
+    "dense-param-matched",
+    "more-core",
+    "more-rm",
+    # The pathway axis rests on a single comparison, rows 5 and 6, and it is the
+    # one place the campaign has no corroborating row. Those two are also where
+    # an effect is most likely to be small: they are exactly iso-FLOP and differ
+    # only in whether experts are rechosen per pass. A one-seed difference there
+    # cannot be distinguished from initialisation noise, so both get a paired
+    # repeat. The architecture comparisons above have large effects; this one
+    # may not.
+    "loop-fixed",
+    "loop-pathway-frozen",
+)
 SECOND_SEED = 27_182_818
+
+# Sequences per global batch are fixed campaign-wide, so apus x micro x accum
+# must come to 448 for every row. dense-param-matched keeps the wide allocation
+# because it is by far the most expensive row -- 12.96 GF/tok against 7.30 --
+# and it is the one that would run out of wall clock first at low MFU. The rest
+# take half of it, which keeps the wave inside the campaign's APU budget.
+# micro_batch follows each row's wave-1 choice: more-rm carries depth memory and
+# was given the smaller micro batch there.
+_SEED_ALLOCATION: dict[str, tuple[int, int, int]] = {
+    "dense-param-matched": (112, 1, 4),
+    "more-core": (56, 4, 2),
+    "more-rm": (56, 2, 4),
+    "loop-fixed": (56, 4, 2),
+    "loop-pathway-frozen": (56, 4, 2),
+}
 
 
 def _seed_specs() -> tuple[AblationSpec, ...]:
     specs: list[AblationSpec] = []
     for offset, name in enumerate(_SEEDED_ROWS):
         base = spec_by_name(name, ladder=ABLATION_LADDER)
-        # Seeds run alone in their own wave, so each row can take a wider
-        # allocation than it had in wave 1 while keeping 448 sequences.
-        apus, micro, accum = (
-            (112, 1, 4) if base.ffn_mode == "dense" else (112, 2, 2)
-        )
+        apus, micro, accum = _SEED_ALLOCATION[name]
         specs.append(
             AblationSpec(
                 index=40 + offset,

@@ -81,7 +81,11 @@ def row_cost(spec: AblationSpec, *, budget_tokens: int) -> dict[str, Any]:
         "planned_mean_depth": depth,
         "planned_mean_k": width,
         "stored_parameters": audit.stored_total,
-        "active_parameters_per_pass": audit.active_per_pass_mean,
+        # At the row's own k and depth, not the config's defaults. The k=8
+        # control fixes k outside the config, so its audited mean is four
+        # experts a layer short of what it actually runs.
+        "active_parameters_per_pass": config.active_parameters_per_pass(width),
+        "active_parameters_per_token": config.active_parameters_per_pass(width) * depth,
         "gflops_per_token": per_token / 1e9,
         "total_exaflops": per_token * budget_tokens / 1e18,
         "iso_flop": spec.iso_flop,
@@ -344,16 +348,20 @@ def _format_plan(payload: dict[str, Any]) -> str:
         f"{payload['optimizer_steps']:,} optimizer steps of "
         f"{payload['global_batch_tokens']:,} tokens, identical for every row",
         "",
-        f"{'#':>2}  {'row':<24} {'APU':>4} {'nd':>3} {'GF/tok':>7} "
-        f"{'EFLOP':>7} {'h@5%':>6} {'h@10%':>6} {'h@15%':>6}",
+        f"{'#':>2}  {'row':<24} {'APU':>4} {'nd':>3} {'stored':>9} "
+        f"{'act/tok':>9} {'GF/tok':>7} {'EFLOP':>7} "
+        f"{'h@5%':>6} {'h@10%':>6} {'h@15%':>6}  iso",
     ]
     for row in payload["rows"]:
         lines.append(
             f"{row['index']:2d}  {row['row']:<24} {row['apus']:4d} "
-            f"{int(row['nodes']):3d} {row['gflops_per_token']:7.2f} "
+            f"{int(row['nodes']):3d} {row['stored_parameters'] / 1e6:8.1f}M "
+            f"{row['active_parameters_per_token'] / 1e6:8.1f}M "
+            f"{row['gflops_per_token']:7.2f} "
             f"{row['total_exaflops']:7.1f} "
             f"{row['hours_at_mfu']['5%']:6.1f} {row['hours_at_mfu']['10%']:6.1f} "
-            f"{row['hours_at_mfu']['15%']:6.1f}"
+            f"{row['hours_at_mfu']['15%']:6.1f}  "
+            f"{'yes' if row['iso_flop'] else 'NO '}"
         )
     allocation = payload["allocation"]
     lines += [
@@ -361,6 +369,9 @@ def _format_plan(payload: dict[str, Any]) -> str:
         f"{allocation['rows']} rows, {allocation['allocated_apus']} APUs allocated, "
         f"{allocation['spare_apus']} spare",
         f"campaign total {payload['campaign_exaflops']:,.1f} EFLOP",
+        "iso = does this row execute the reference FLOPs per token. Rows marked"
+        " NO are deliberately off-budget and must be reported against FLOPs,"
+        " not against steps or tokens.",
         "wall clock (longest row, all rows concurrent): "
         + ", ".join(f"{k} MFU -> {v} h" for k, v in payload["wall_clock_hours"].items()),
     ]

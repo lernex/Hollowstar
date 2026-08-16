@@ -831,6 +831,27 @@ class Metis16Config:
             return 1.0
         return _math.log(float(self.n_routed_experts))
 
+    def active_parameters_per_pass(self, routed_k: float) -> float:
+        """Active parameters for one pass at a given routed-k.
+
+        ``logical_parameter_audit`` reports min, mean and max at the config's
+        own ``min``/``target_mean``/``max`` routed-k. A row that fixes k
+        elsewhere -- the k=8 MoE control, say -- is neither of those, and
+        reporting its mean would understate it by four experts a layer while
+        its FLOPs, which are computed from the row's actual k, say otherwise.
+        The count is linear in k by construction, so interpolate rather than
+        keep a second copy of the expert arithmetic.
+        """
+
+        audit = self.logical_parameter_audit()
+        span = self.max_routed_k - self.min_routed_k
+        if span <= 0:
+            return float(audit.active_per_pass_mean)
+        slope = (audit.active_per_pass_max - audit.active_per_pass_min) / span
+        return float(
+            audit.active_per_pass_min + (float(routed_k) - self.min_routed_k) * slope
+        )
+
     def logical_parameter_audit(self) -> ParameterAudit:
         """Return exact logical counts for the modules implemented in model.py."""
 

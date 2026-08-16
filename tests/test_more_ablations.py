@@ -208,8 +208,14 @@ def _sampler(budget=50_000_000_000):
 def test_sampler_preserves_release_phase_proportions():
     sampler = _sampler()
     fractions = [plan.sampled_fraction for plan in sampler.plans]
+    # The property being tested is that every phase is thinned by the *same*
+    # fraction, so the ablation corpus keeps the release's phase mix. The value
+    # of that fraction is budget over corpus, and the corpus moved from the
+    # aspirational 1T to the 804.8B that was actually built; pinning 0.05 here
+    # tested the old corpus size rather than the sampler.
+    expected = sampler.budget_tokens / sum(PHASE_TOKENS.values())
     for fraction in fractions:
-        assert pytest.approx(fraction, abs=1e-4) == 0.05
+        assert pytest.approx(fraction, abs=1e-4) == expected
     assert sampler.dropped_tokens() >= 0
     assert sampler.sampled_tokens <= sampler.budget_tokens
 
