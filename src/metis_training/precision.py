@@ -112,8 +112,17 @@ def _dynamic_row_linear_type(base: type[nn.Module]) -> type[nn.Module]:
         metis_dynamic_row_multiple = 16
 
         def forward(self, values: torch.Tensor, *args: Any, **kwargs: Any) -> Any:
-            if values.ndim < 2:
-                raise RuntimeError("Transformer Engine Linear input must be at least 2D")
+            # ``nn.Linear`` accepts a bare feature vector and returns one, and
+            # this class stands in for it under FP8, so it has to accept the
+            # same ranks. The mHC controller is the case that matters: its
+            # pass embedding is per pass, not per token, so it arrives 1D. The
+            # flatten below already handles that correctly -- reshape(-1, D)
+            # makes it a single row -- and rejecting it only made the FP8 and
+            # BF16 paths disagree about what is a legal input.
+            if values.ndim < 1:
+                raise RuntimeError(
+                    "Transformer Engine Linear input must have a feature dimension"
+                )
             leading = values.shape[:-1]
             flattened = values.reshape(-1, values.shape[-1])
             row_count = int(flattened.shape[0])

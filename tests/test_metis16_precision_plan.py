@@ -109,6 +109,34 @@ class PrecisionRolePlanTests(unittest.TestCase):
                 torch.testing.assert_close(padded.weight.grad, reference.weight.grad)
                 torch.testing.assert_close(padded.bias.grad, reference.bias.grad)
 
+    def test_dynamic_row_linear_accepts_every_rank_nn_linear_does(self) -> None:
+        """The FP8 stand-in must accept the same input ranks as ``nn.Linear``.
+
+        It rejected 1D outright, which ``nn.Linear`` accepts.  The mHC
+        controller feeds it a pass embedding -- one vector per pass, not per
+        token -- so every FP8 row died in the first forward while every BF16
+        row ran, and no test noticed because the suite never builds the FP8
+        path.
+        """
+
+        linear_type = _dynamic_row_linear_type(torch.nn.Linear)
+        shapes = ((16,), (4, 16), (2, 3, 16), (0, 16))
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                padded = linear_type(16, 32, bias=True)
+                reference = torch.nn.Linear(16, 32, bias=True)
+                reference.load_state_dict(padded.state_dict())
+                values = torch.randn(*shape, requires_grad=True)
+                reference_values = values.detach().clone().requires_grad_(True)
+
+                observed = padded(values)
+                expected = reference(reference_values)
+                self.assertEqual(observed.shape, expected.shape)
+                torch.testing.assert_close(observed, expected)
+                observed.square().sum().backward()
+                expected.square().sum().backward()
+                torch.testing.assert_close(values.grad, reference_values.grad)
+
     def test_delayed_scaling_recipe_supports_legacy_and_modern_te_signatures(
         self,
     ) -> None:
