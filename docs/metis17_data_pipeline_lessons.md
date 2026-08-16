@@ -1131,3 +1131,175 @@ measurement is if anything optimistic.
 submission-time projection as the answer.** The gate that matters fires at
 `select`, stage 33 of 37; a two-hour measurement immediately after
 `final_hash_filter` is worth more than a projection at submission.
+
+---
+
+## 16. Selection is the stage that does not scale (2026-08-15)
+
+Everything below was measured on 2026-08-15 during the 1.6 `context_select`
+rebuild, on Portage: login2 (384 cores) and compute node parrypeak077 (192
+cores, 512 GB). The corpus is 849.5 B tokens over 3,274 token-count shards,
+1.2 TB compressed.
+
+1.7 is 30 T tokens, roughly **35x**. Every number here should be read
+multiplied by 35 before deciding it is tolerable.
+
+### 16a. The wide stages fan out; the reducers run on one core
+
+`--workers` fans array stages across tasks: `context_pack` is 96 tasks over 6
+nodes, `pack` is 805 over 32. But every single-task stage -- `context_select`,
+`context_prepare`, `context_verify`, `select`, `verify`, `release` -- is one
+Python process on one core of an **exclusive 192-core node**.
+
+While `context_select` ran, `sinfo` showed **124 of 128 nodes idle** and the
+owning node at 97.8% of one core. That is one core of about 24,576.
+
+**For 1.7: no stage may stream the corpus through a single process.** Every
+reducer works on per-shard aggregates, and the aggregate is the unit shipped
+between processes, never the document.
+
+### 16b. Selection rewrote the corpus instead of indexing it
+
+Token-count rows carry the full document `text` -- one sampled row held 443,530
+characters. `select` emits `{**record}` for 804.8 B of the 849.5 B tokens, so
+the stage **re-compresses about 3.85 TB of JSON to record which documents it
+chose**. Decompressed, the corpus is ~4.07 TB (3,274 shards x ~1.24 GB).
+
+At level 5/6 on one core that is roughly **twenty hours**, longer than reading
+the same bytes. At 30 T it is ~150 TB copied for no information gain.
+
+**For 1.7: selection emits an index, not a copy.** `(shard_id, offset, length,
+quota_source)` is gigabytes; `pack` reads the original shards. This deletes the
+cost rather than parallelising it.
+
+### 16c. JSON + zstd is the wrong bulk interchange format
+
+Sixty `py-spy dump` samples of the live materialization pass:
+
+| frames | share |
+|---|---|
+| `_iter_rows` + `_loads` (zstd + JSON decode) | **~82%** |
+| selection logic proper | ~15% |
+
+The measurement pass decodes 443 KB documents to add up two integers. Disk read
+was 33 MB/s against 97.8% CPU: not I/O bound, not Lustre, purely decode.
+
+**For 1.7: columnar storage with column projection** (Parquet/Arrow). The
+availability pass needs `source_id`, `token_count`, `score` -- about 0.1% of the
+bytes it currently reads. This is the largest constant-factor win available and
+it compounds with every other change here.
+
+### 16d. Tokenize once, store token ids
+
+`token_count` tokenizes the corpus, stores text, and `pack` tokenizes it again.
+Text is parsed, decompressed and re-tokenized repeatedly.
+
+**For 1.7: persist uint16 token ids** (65,536 vocab = 2 bytes/token) in
+memmapped arrays with an offset index. Downstream stages then do no JSON
+parsing, no decompression, and no re-tokenization.
+
+### 16e. Exact per-source quotas force a near-full scan
+
+The 18 B context budget is not one pool. It is **234 quotas** (3 gates x 3 lanes
+x 26 sources), each fillable only from its own source or a same-domain donor.
+The scan depth is set by the scarcest source, not the total:
+
+| source | long needed | long available | needs |
+|---|---|---|---|
+| metis_freshweb_2025 | 270,000,000 | 232,634,030 | **116.1%** |
+| fineweb_edu | 270,000,000 | 384,984,683 | 70.1% |
+| openwebmath_unique | 71,999,999 | 113,070,428 | 63.7% |
+
+In aggregate only **14.4%** of long supply is needed (16.2 B of 112.5 B), which
+makes an early exit look easy. It is not: `metis_freshweb_2025` needs more long
+tokens than it has, so every qualifying document of that source must be found
+and the stage reads essentially to the end. Its scarcity is structural rather
+than an acquisition failure -- it holds 36.07 B tokens, but only 0.6% of them
+are >=8192 tokens with structural score >=3, because web pages are short.
+
+**For 1.7: bounded-tolerance quotas (+/-1%) rather than exact ones**, so
+selection can stop when it is within tolerance instead of chasing the last
+token of the thinnest source.
+
+### 16f. Frozen inputs were re-hashed, per task
+
+`_token_count_contract` rebuilt itself on every context stage, SHA-256ing all
+1.4 TB of `eligible/final` **and** re-verifying the 1.2 TB of token-count
+outputs: 2.6 TB before a single row was read. `_context_token_count_contract`
+is called by `context_select`, `context_prepare`, `context_verify`, and
+`context_pack` **once per task** -- 96 of them. About 109 hours of hashing to
+re-derive digests of a corpus frozen since `token_count`.
+
+**For 1.7: cache every expensive derived aggregate against a digest of its
+inputs.** Size and nanosecond mtime is enough to reuse a digest; anything that
+differs on either is re-read. The rebuild is still worth keeping -- it is what
+catches changed inputs -- but it must not re-read the bytes.
+
+### 16g. Parallelism that was free, and one that was fake
+
+Three measurements, same day:
+
+| work | serial | parallel | where |
+|---|---|---|---|
+| SHA-256 of cold shards | 531 MB/s | **7.0-7.8 GB/s** (32 threads) | login2 |
+| availability measurement | 156 MB/s | **2,968 MB/s** (48 procs, 19x) | parrypeak077 |
+| zstd level 6 write | 69.6 MB/s | **1,020.9 MB/s** (32 threads) | parrypeak077 |
+
+`hashlib` and `zstd` release the GIL, so threads are genuinely parallel for
+both. Threaded zstd frames are the same size at every setting (287 MB measured
+across threads=0..64), so the ratio is unchanged; only the core count moves.
+
+The fake one is worth recording. The first parallel measurement attempt looked
+like 3.7x, and the cause was `chunksize=8` in `pool.map`: 40 shards became 5
+units of work and 43 of 48 workers idled. **Per-item granularity, when each
+item is seconds of work.** The same mistake at 30 T would look like a hardware
+limit.
+
+**For 1.7: default to using the whole node.** Thread count follows who owns it
+-- a single-task stage takes up to 32, a stage running 16-24 tasks per node
+takes none, or the allocation is oversubscribed by an order of magnitude.
+
+### 16h. A generator that settled after it yielded
+
+`context_select` had **never once completed**, across every attempt in two
+days. Each died with `context selection exceeded its pack-task routing quota`,
+the last of them 3 h 50 m in.
+
+`_consume_assignment` yielded the amount drawn and subtracted it *after*
+resumption. Its caller breaks as soon as a document is placed:
+
+```python
+for assignment, take in _consume_assignment(queue, tokens):
+    ...
+    if cursor == tokens:
+        break        # generator never resumed; the debit never happens
+```
+
+For any document the head assignment could cover alone -- the common case --
+the tokens were written into a pack task and stayed on the books as available.
+The next document spent the same assignment again.
+
+Nothing caught it because every total agreed: the allocation summed to 18 B,
+the pack plan summed to 18 B, and an offline reconciliation matched on all 27
+routes. Only the *consumption* double-spent, and only a pack task running out
+of room could see it -- hours downstream of the arithmetic that caused it.
+
+**For 1.7, two rules.** Settle state before yielding it, so abandoning a
+generator leaves the ledger true; a partially-consumed generator is a normal
+control flow, not an edge case. And when a quota is enforced, enforce it
+against the *draw*, not only against the plan -- both totals were right the
+whole time.
+
+### 16i. The cost that actually loses nights is restart, not runtime
+
+The pattern that burned this build: a four-hour stage dies, and the next
+attempt redoes the four hours before reaching the point of failure. Twice on
+2026-08-15 the measurement pass was re-earned for nothing.
+
+Caching availability against a digest of the shards and thresholds it read
+turned the third attempt's first two phases from ~4.3 hours into ~11 minutes.
+
+**For 1.7: every phase boundary inside a long stage writes a checkpoint keyed
+by its inputs.** A stage that fails at 80% should resume at 80%. This matters
+more than any single speedup in this section, because a 30 T stage that cannot
+resume cannot be operated at all.
