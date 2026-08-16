@@ -115,6 +115,68 @@ def _donor_manifest() -> dict:
 class PartitionTests(unittest.TestCase):
     """A partition that quietly drops a task index verifies perfectly."""
 
+    def test_pack_task_count_matches_the_shards_the_writer_builds(self) -> None:
+        """The launcher's task count and the writer's shard list must agree.
+
+        These are two expressions of the same rule in two modules, and they
+        agree on any schedule whose phases divide evenly -- which is every
+        schedule anyone writes by hand, and none of the real ones.
+        """
+
+        from metis_data.selection import ScheduleWriter, schedule_shard_count
+
+        # Each case is (schedule, shard_tokens). They stay small enough to
+        # actually build, except the r2 one, which is the case that matters and
+        # is only ever counted, never constructed at 1e9 shards of 1 token.
+        cases = [
+            # 1.6 r2: 806 shards, but the grand total rounds to 805.
+            (
+                {
+                    "phase_a": 554_849_376_946,
+                    "phase_b": 209_668_641_449,
+                    "phase_c": 40_237_790_440,
+                },
+                1_000_000_000,
+            ),
+            # Every phase an exact multiple: the case where the old rule agreed.
+            ({"phase_a": 3_000, "phase_b": 2_000, "phase_c": 1_000}, 1_000),
+            # Every phase a bare remainder: three shards from three tokens.
+            ({"phase_a": 1, "phase_b": 1, "phase_c": 1}, 1_000),
+            # Remainders that sum past a whole shard in two different ways.
+            ({"phase_a": 1_001, "phase_b": 1_001, "phase_c": 1_001}, 1_000),
+            ({"phase_a": 25, "phase_b": 13, "phase_c": 9}, 7),
+            ({"phase_a": 0, "phase_b": 5, "phase_c": 0}, 2),
+        ]
+        for targets, shard_tokens in cases:
+            schedule = {
+                "phases": {
+                    phase: {"target_tokens": value}
+                    for phase, value in targets.items()
+                }
+            }
+            counted = schedule_shard_count(schedule, shard_tokens)
+            with tempfile.TemporaryDirectory() as raw:
+                writer = ScheduleWriter(Path(raw), targets, shard_tokens, reset=False)
+                built = sum(len(shards) for shards in writer.shards.values())
+            self.assertEqual(counted, built, (targets, shard_tokens))
+
+    def test_the_r2_schedule_needs_806_not_805_pack_tasks(self) -> None:
+        from metis_data.selection import schedule_shard_count
+
+        schedule = {
+            "phases": {
+                "phase_a": {"target_tokens": 554_849_376_946},
+                "phase_b": {"target_tokens": 209_668_641_449},
+                "phase_c": {"target_tokens": 40_237_790_440},
+            }
+        }
+        total = sum(
+            int(row["target_tokens"]) for row in schedule["phases"].values()
+        )
+        rounded_total = (total + 1_000_000_000 - 1) // 1_000_000_000
+        self.assertEqual(rounded_total, 805)
+        self.assertEqual(schedule_shard_count(schedule, 1_000_000_000), 806)
+
     def test_stripe_covers_every_index_exactly_once(self) -> None:
         for count in (1, 7, 64, 3274):
             for tasks in (1, 3, 8, 97):

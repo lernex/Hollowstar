@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .config import repository_root
-from .manifest import load_manifest
+from .manifest import PHASES, load_manifest
+from .selection import schedule_shard_count
 from .state import StateStore, utc_now
 from .build_inputs import prepare_build_inputs
 
@@ -402,7 +403,7 @@ def submit_graph(
         manifest_path = Path(profile["manifest"])
         if not manifest_path.is_absolute():
             manifest_path = repository_root() / manifest_path
-        target = int(load_manifest(manifest_path)["schedule"]["target_tokens"])
+        schedule = load_manifest(manifest_path)["schedule"]
         shard_tokens = int(profile["storage"].get("final_shard_tokens", 1_000_000_000))
         counts = {
             "normalize_tasks": normalize_tasks,
@@ -413,7 +414,7 @@ def submit_graph(
             "code_buckets": code_buckets,
             "final_hash_buckets": final_hash_buckets,
             "context_pack_tasks": 96,
-            "pack_tasks": (target + shard_tokens - 1) // shard_tokens,
+            "pack_tasks": schedule_shard_count(schedule, shard_tokens),
         }
         for stage, count_key in BUILD_GRAPH:
             if count_key:

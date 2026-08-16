@@ -233,6 +233,28 @@ class _RowSink:
         self.pool.close()
 
 
+def schedule_shard_count(schedule: Mapping[str, Any], shard_tokens: int) -> int:
+    """How many shards ``ScheduleWriter`` will build for this schedule.
+
+    The schedule is sharded per phase, so every phase rounds its own remainder
+    up to a whole shard. Rounding the grand total instead is short by one task
+    whenever the per-phase remainders sum past a shard, which is the ordinary
+    case: 1.6's r2 schedule is 806 shards but its total rounds to 805, so the
+    last phase_c shard was selected, materialised, hashed and listed in
+    SELECTION.json, and then never handed to a pack task. Nothing downstream
+    disagreed, because every shard that *was* packed verified perfectly.
+
+    The launcher and the writer must therefore derive the count from the same
+    rule rather than from two expressions that happen to agree on round inputs.
+    """
+
+    phases = schedule["phases"]
+    return sum(
+        (int(phases[phase]["target_tokens"]) + shard_tokens - 1) // shard_tokens
+        for phase in PHASES
+    )
+
+
 @dataclass
 class ScheduleShard:
     phase: str
