@@ -36,7 +36,7 @@ from .download import run_download_task
 from .manifest import PHASES, validate_manifest
 from .quality import evaluate_quality, priority_score
 from .stage_code import stage_code_sha256
-from .state import StateStore, atomic_json, utc_now
+from .state import StateStore, atomic_json, utc_now, zstd_bulk_compressor
 from .tokenizer import train_tokenizer, validate_tokenizer
 from .selection import build_selection, hamilton_apportion, replay_quotas, unique_quotas
 from .replacement import allocate_replacements
@@ -1582,7 +1582,7 @@ def _normalize_task(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
     temporary_output.unlink(missing_ok=True)
     try:
         with temporary_output.open("wb") as raw:
-            with zstd.ZstdCompressor(level=6).stream_writer(raw) as compressed:
+            with zstd_bulk_compressor(6).stream_writer(raw) as compressed:
                 with io.TextIOWrapper(compressed, encoding="utf-8") as handle:
                     if file_record.get("kind") == "remote_source_plan":
                         counts["remote_plans"] += 1
@@ -2512,7 +2512,7 @@ def _tokenizer_sample(profile: dict[str, Any], task_index: int) -> dict[str, Any
         # trainer's input set is a complete, gap-free sequence.
         temporary_output.unlink(missing_ok=True)
         with temporary_output.open("wb") as raw:
-            with zstd.ZstdCompressor(level=6).stream_writer(raw):
+            with zstd_bulk_compressor(6).stream_writer(raw):
                 pass
         os.replace(temporary_output, output)
         payload = {
@@ -2530,7 +2530,7 @@ def _tokenizer_sample(profile: dict[str, Any], task_index: int) -> dict[str, Any
     total = 0
     temporary_output.unlink(missing_ok=True)
     with temporary_output.open("wb") as raw:
-        with zstd.ZstdCompressor(level=6).stream_writer(raw) as compressed:
+        with zstd_bulk_compressor(6).stream_writer(raw) as compressed:
             with io.TextIOWrapper(compressed, encoding="utf-8") as handle:
                 for path in assigned:
                     if all(written[source] >= quota[source] for source in quota):
@@ -2701,7 +2701,7 @@ def _token_count(profile: dict[str, Any], task_index: int) -> dict[str, Any]:
     temporary_output.unlink(missing_ok=True)
     try:
         with temporary_output.open("wb") as raw:
-            with zstd.ZstdCompressor(level=6).stream_writer(raw) as compressed:
+            with zstd_bulk_compressor(6).stream_writer(raw) as compressed:
                 with io.TextIOWrapper(compressed, encoding="utf-8") as handle:
                     for path in assigned:
                         for row in _iter_rows(path):

@@ -32,7 +32,7 @@ from .repository_license import (
     DEFAULT_REPOSITORY_LICENSE_ALLOWLIST,
     classify_repository_archive,
 )
-from .state import ScratchBackedDatabase, atomic_json, utc_now
+from .state import ScratchBackedDatabase, atomic_json, utc_now, zstd_bulk_compressor
 
 
 SUPPORTED_MATERIALIZER_DRIVERS = {
@@ -203,7 +203,7 @@ class _ShardWriter:
     def _open(self) -> None:
         path = self.temporary_root / f"{self.unit_id}-{self._part:05d}.jsonl.zst"
         self._raw = path.open("wb")
-        self._compressed = zstd.ZstdCompressor(level=6).stream_writer(self._raw)
+        self._compressed = zstd_bulk_compressor(6).stream_writer(self._raw)
         self._text = io.TextIOWrapper(self._compressed, encoding="utf-8")
         self._part_records = 0
         self._part_text_bytes = 0

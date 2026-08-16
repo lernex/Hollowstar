@@ -35,7 +35,7 @@ from .context_manifest import (
     context_quota_rows,
     validate_context_plan,
 )
-from .state import atomic_json, utc_now
+from .state import atomic_json, utc_now, zstd_bulk_compressor
 
 
 CONTEXT_SELECTION_SCHEMA = "metis.context-selection/v1"
@@ -594,7 +594,7 @@ class _ZstdWriters:
             path.unlink(missing_ok=True)
             raw = path.open("wb")
             handle = io.TextIOWrapper(
-                zstd.ZstdCompressor(level=6).stream_writer(raw, closefd=True),
+                zstd_bulk_compressor(6).stream_writer(raw, closefd=True),
                 encoding="utf-8",
             )
             self.handles[task_index] = handle
@@ -618,7 +618,7 @@ class _AtomicZstdRows:
         self.temporary.unlink(missing_ok=True)
         raw = self.temporary.open("wb")
         self.handle = io.TextIOWrapper(
-            zstd.ZstdCompressor(level=6).stream_writer(raw, closefd=True),
+            zstd_bulk_compressor(6).stream_writer(raw, closefd=True),
             encoding="utf-8",
         )
         return self

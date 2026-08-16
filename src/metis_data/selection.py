@@ -12,7 +12,7 @@ import zstandard as zstd
 
 from .manifest import PHASES
 from .replacement import allocate_replacements
-from .state import atomic_json, utc_now
+from .state import atomic_json, utc_now, zstd_bulk_compressor
 
 
 def _sha256_file(path: Path) -> str:
@@ -88,7 +88,7 @@ class _AppendPool:
         handle = self.handles.pop(path, None)
         if handle is None:
             raw = path.open("ab")
-            compressed = zstd.ZstdCompressor(level=5).stream_writer(raw, closefd=True)
+            compressed = zstd_bulk_compressor(5).stream_writer(raw, closefd=True)
             handle = io.TextIOWrapper(compressed, encoding="utf-8")
         self.handles[path] = handle
         handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")

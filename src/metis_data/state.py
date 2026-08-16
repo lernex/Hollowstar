@@ -32,6 +32,38 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+def zstd_writer_threads() -> int:
+    """Worker threads for bulk zstd writes, sized to what the task owns.
+
+    A stage that owns its node should compress with it. Measured on a Portage
+    compute node over 872MB of real selection rows at level 6: 69.6 MB/s
+    single-threaded, 563 at 8 threads, 836 at 16, 1,021 at 32, and the output
+    is byte-for-byte the same size at every setting. select rewrites roughly
+    3.8TB of corpus text, so this is the difference between about twenty hours
+    and about one.
+
+    A stage that shares its node with fifteen or twenty-three siblings must not.
+    Those stages are already parallel across tasks, and giving each of them a
+    thread pool would oversubscribe the allocation by an order of magnitude --
+    the same reason the launcher pins OMP_NUM_THREADS for them.
+    """
+
+    override = os.environ.get("METIS_ZSTD_THREADS")
+    if override:
+        return max(0, int(override))
+    if int(os.environ.get("METIS_TASKS_PER_JOB", "1") or 1) > 1:
+        return 0
+    return min(32, os.cpu_count() or 0)
+
+
+def zstd_bulk_compressor(level: int) -> Any:
+    """A compressor for stage output large enough that its speed matters."""
+
+    import zstandard as zstd
+
+    return zstd.ZstdCompressor(level=level, threads=zstd_writer_threads())
+
+
 class ScratchBackedDatabase:
     """A SQLite database that may be worked on node-local disk.
 

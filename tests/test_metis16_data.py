@@ -70,7 +70,7 @@ from metis_data.datatrove_blocks import (
 )
 from metis_data.slurm import BUILD_GRAPH, _indices_expression, _submit_array_chunks
 from metis_data import stage_runner
-from metis_data.state import StateStore
+from metis_data.state import StateStore, zstd_writer_threads
 
 from tests.contamination_fixtures import write_contamination_inputs
 
@@ -1822,6 +1822,51 @@ class ParallelCpuBuildTests(unittest.TestCase):
                 failing["index"] = -1
                 self.assertEqual(group(40, 8, 48)[0], 0)
                 self.assertTrue(state.is_complete("normalize", "task-000042"))
+
+
+class ZstdWriterThreadsTests(unittest.TestCase):
+    """Compression threads must follow who owns the node."""
+
+    def test_a_task_that_owns_the_node_uses_it(self) -> None:
+        with mock.patch.dict(os.environ, {"METIS_TASKS_PER_JOB": "1"}, clear=False):
+            os.environ.pop("METIS_ZSTD_THREADS", None)
+            self.assertGreater(zstd_writer_threads(), 1)
+            self.assertLessEqual(zstd_writer_threads(), 32)
+
+    def test_a_task_sharing_the_node_stays_single_threaded(self) -> None:
+        # context_pack runs 16 of these per node and pack runs 24. Handing each
+        # one a pool would oversubscribe the allocation by an order of
+        # magnitude, which is why the launcher pins the other thread knobs too.
+        with mock.patch.dict(os.environ, {"METIS_TASKS_PER_JOB": "16"}, clear=False):
+            os.environ.pop("METIS_ZSTD_THREADS", None)
+            self.assertEqual(zstd_writer_threads(), 0)
+
+    def test_an_explicit_override_wins_either_way(self) -> None:
+        for tasks in ("1", "24"):
+            with mock.patch.dict(
+                os.environ,
+                {"METIS_TASKS_PER_JOB": tasks, "METIS_ZSTD_THREADS": "6"},
+                clear=False,
+            ):
+                self.assertEqual(zstd_writer_threads(), 6)
+
+    def test_threading_does_not_change_what_was_written(self) -> None:
+        import zstandard as zstd
+
+        payload = b"".join(
+            json.dumps({"doc": index, "text": "long-range " * 400}).encode() + b"\n"
+            for index in range(2_000)
+        )
+        plain = zstd.ZstdCompressor(level=6, threads=0).compress(payload)
+        threaded = zstd.ZstdCompressor(level=6, threads=8).compress(payload)
+        self.assertEqual(
+            zstd.ZstdDecompressor().decompress(threaded, max_output_size=len(payload) * 2),
+            payload,
+        )
+        self.assertEqual(
+            zstd.ZstdDecompressor().decompress(plain, max_output_size=len(payload) * 2),
+            payload,
+        )
 
 
 class ContextAssignmentConsumptionTests(unittest.TestCase):
