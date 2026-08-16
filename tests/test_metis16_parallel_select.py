@@ -402,6 +402,46 @@ class ScheduleDigestTests(unittest.TestCase):
 
         self.assertEqual(_verify_schedule_digests([]), [])
 
+    def test_release_digest_check_stays_fail_closed_in_a_pool(self) -> None:
+        """Validating the release re-hashes ~2TB; it must still catch one bad byte."""
+
+        from metis_data.training_contract import _verify_digests
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            rows: list[tuple[Path, str]] = []
+            for index in range(6):
+                path = root / f"shard-{index:05d}.bin"
+                data = bytes((index + 3) % 251 for _ in range(2048)) * (index + 1)
+                path.write_bytes(data)
+                rows.append((path, hashlib.sha256(data).hexdigest()))
+            self.assertTrue(all(ok for _, ok in _verify_digests(rows)))
+            self.assertEqual(_verify_digests([]), [])
+
+            tampered = list(rows)
+            tampered[4] = (rows[4][0], "0" * 64)
+            self.assertEqual(
+                [ok for _, ok in _verify_digests(tampered)],
+                [True, True, True, True, False, True],
+            )
+            # Order is preserved so the caller still raises on the first
+            # mismatch in manifest order, not on whichever thread finished last.
+            self.assertEqual([path for path, _ in _verify_digests(rows)],
+                             [path for path, _ in rows])
+
+            previous = os.environ.get("METIS_TASKS_PER_JOB")
+            os.environ["METIS_TASKS_PER_JOB"] = "34"
+            try:
+                self.assertEqual(
+                    [ok for _, ok in _verify_digests(tampered)],
+                    [True, True, True, True, False, True],
+                )
+            finally:
+                if previous is None:
+                    os.environ.pop("METIS_TASKS_PER_JOB", None)
+                else:
+                    os.environ["METIS_TASKS_PER_JOB"] = previous
+
 
 class ReleaseManifestPointerTests(unittest.TestCase):
     """A released manifest has to be loadable from the release."""

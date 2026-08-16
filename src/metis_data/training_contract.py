@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +45,32 @@ def _sha256(path: Path) -> str:
         while chunk := handle.read(8 * 1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _verify_digests(rows: list[tuple[Path, str]]) -> list[tuple[Path, bool]]:
+    """Check many independent digests with the node rather than one core.
+
+    Validating the release re-hashes every shard binary and index: 806 shards
+    and about 2TB. Measured on Portage from the running stage, one stream did
+    289 MB/s, which is an hour and a half of a 192-core node with the rest of
+    the build waiting on it. hashlib releases the GIL around each buffer, so
+    threads are enough and nothing needs pickling; the caller still raises on
+    the first mismatch in manifest order, so the failure is identical.
+    """
+
+    if not rows:
+        return []
+    if int(os.environ.get("METIS_TASKS_PER_JOB", "1") or 1) > 1:
+        return [(path, _sha256(path) == expected) for path, expected in rows]
+    workers = max(1, min(32, len(rows), os.cpu_count() or 1))
+    if workers == 1:
+        return [(path, _sha256(path) == expected) for path, expected in rows]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        digests = list(pool.map(lambda row: _sha256(row[0]), rows))
+    return [
+        (path, digest == expected)
+        for (path, expected), digest in zip(rows, digests)
+    ]
 
 
 def _tree_sha256(root: Path) -> str:
@@ -460,6 +488,7 @@ def validate_training_release(
         phase: set() for phase in PHASE_DIRECTORIES
     }
     phase_row_tokens = {phase: 0 for phase in PHASE_DIRECTORIES}
+    pending_digests: list[tuple[Path, str]] = []
     for row in shard_rows:
         phase = str(row.get("phase", ""))
         if phase not in PHASE_DIRECTORIES:
@@ -483,12 +512,10 @@ def validate_training_release(
         ):
             raise RuntimeError(f"Shard filenames do not match phase index {phase_index}")
         tokens = int(row["tokens"])
-        if (
-            binary.stat().st_size != tokens * 2
-            or _sha256(binary) != row["binary_sha256"]
-            or _sha256(index) != row["index_sha256"]
-        ):
+        if binary.stat().st_size != tokens * 2:
             raise RuntimeError(f"Shard or index hash mismatch: {binary}")
+        pending_digests.append((binary, str(row["binary_sha256"])))
+        pending_digests.append((index, str(row["index_sha256"])))
         if binary in listed_binaries[phase] or index in listed_indices[phase]:
             raise RuntimeError(f"Duplicate shard artifact in manifest: {binary}")
         if phase_index in listed_phase_indices[phase]:
@@ -499,6 +526,9 @@ def validate_training_release(
         listed_indices[phase].add(index)
         listed_phase_indices[phase].add(phase_index)
         phase_row_tokens[phase] += tokens
+    for path, matched in _verify_digests(pending_digests):
+        if not matched:
+            raise RuntimeError(f"Shard or index hash mismatch: {path}")
     if phase_row_tokens != expected_phase_tokens:
         raise RuntimeError(
             "Shard manifest token totals do not match the manifest schedule: "
