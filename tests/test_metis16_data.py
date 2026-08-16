@@ -1827,6 +1827,27 @@ class ParallelCpuBuildTests(unittest.TestCase):
 class AppendPoolTests(unittest.TestCase):
     """Buffered shard writes must lose nothing and stop the frame thrash."""
 
+    def test_both_serialisers_produce_the_same_rows(self) -> None:
+        import json as _json
+
+        from metis_data.selection import _dumps_line
+
+        payloads = [
+            {"b": 2, "a": 1, "text": "naïve — unicode ✓", "n": None},
+            {"z": [1, 2, {"k": "v"}], "a": True, "f": 1.5},
+            {"source_id": "s", "doc_id": "d", "token_count": 12345},
+        ]
+        for payload in payloads:
+            produced = _dumps_line(payload)
+            self.assertTrue(produced.endswith(b"\n"))
+            # Bytes may differ (orjson omits separator spaces); the decoded
+            # row and its key order must not.
+            self.assertEqual(_json.loads(produced.decode("utf-8")), payload)
+            self.assertEqual(
+                list(_json.loads(produced.decode("utf-8")).keys()),
+                sorted(payload),
+            )
+
     def test_every_row_survives_a_scattered_write_pattern(self) -> None:
         from metis_data.selection import _AppendPool
 

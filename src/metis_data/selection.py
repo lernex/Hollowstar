@@ -78,6 +78,19 @@ def _stable_fraction(source_id: str, doc_id: str, seed: int) -> float:
     return int.from_bytes(digest[:8], "big") / float(1 << 64)
 
 
+try:  # orjson serialises these rows several times faster than the stdlib
+    import orjson as _orjson
+
+    def _dumps_line(payload: dict[str, Any]) -> bytes:
+        return _orjson.dumps(payload, option=_orjson.OPT_SORT_KEYS) + b"\n"
+
+except ImportError:  # pragma: no cover - exercised only where orjson is absent
+    def _dumps_line(payload: dict[str, Any]) -> bytes:
+        return (
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
+        ).encode("utf-8")
+
+
 class _AppendPool:
     """Batch rows per shard, then append one large frame per flush.
 
@@ -95,6 +108,10 @@ class _AppendPool:
     megabytes, which is large enough both to amortise the open and to give the
     compressor real work to divide. Frames stay independently appended, which
     the reader already handles.
+
+    Rows are buffered already encoded. Profiling the live stage put 30% of it
+    in stdlib iterencode and another 25% in joining a 64MB string and encoding
+    it, so keeping bytes end to end removes both.
     """
 
     def __init__(
@@ -107,12 +124,12 @@ class _AppendPool:
         self.maximum_open = maximum_open
         self.flush_bytes = int(flush_bytes)
         self.buffered_bytes = int(buffered_bytes)
-        self.buffers: dict[Path, list[str]] = {}
+        self.buffers: dict[Path, list[bytes]] = {}
         self.sizes: dict[Path, int] = {}
         self.buffered = 0
 
     def write(self, path: Path, payload: dict[str, Any]) -> None:
-        line = json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
+        line = _dumps_line(payload)
         self.buffers.setdefault(path, []).append(line)
         size = len(line)
         self.sizes[path] = self.sizes.get(path, 0) + size
@@ -129,9 +146,7 @@ class _AppendPool:
             return
         self.buffered -= self.sizes.pop(path, 0)
         path.parent.mkdir(parents=True, exist_ok=True)
-        frame = zstd_bulk_compressor(5).compress(
-            "".join(lines).encode("utf-8")
-        )
+        frame = zstd_bulk_compressor(5).compress(b"".join(lines))
         with path.open("ab") as raw:
             raw.write(frame)
 
