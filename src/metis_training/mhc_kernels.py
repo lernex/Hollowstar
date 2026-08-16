@@ -166,6 +166,13 @@ def mhc_masked_write_reference(
 
 if triton is not None:
 
+    # Triton 3.x refuses to close over a plain module global inside @jit: a
+    # kernel may only read globals that are tl.constexpr. _N_STREAMS stays an
+    # int because the host-side shape checks and stride arithmetic below index
+    # tuples with it; this mirrors it into the form the kernels can read.
+    # test_mhc_stream_constant_mirrors_agree pins the two together.
+    _N_STREAMS_TL = tl.constexpr(_N_STREAMS)
+
     @triton.jit
     def _mhc_read_mix_forward_kernel(
         streams_ptr,
@@ -180,7 +187,7 @@ if triton is not None:
         block = tl.program_id(1)
         offsets = block * BLOCK_D + tl.arange(0, BLOCK_D)
         mask = offsets < hidden_size
-        base = token * _N_STREAMS * hidden_size + offsets
+        base = token * _N_STREAMS_TL * hidden_size + offsets
         x0 = tl.load(streams_ptr + base, mask=mask, other=0.0).to(tl.float32)
         x1 = tl.load(
             streams_ptr + base + hidden_size, mask=mask, other=0.0
@@ -223,7 +230,7 @@ if triton is not None:
         y1 = m10 * x0 + m11 * x1 + m12 * x2 + m13 * x3
         y2 = m20 * x0 + m21 * x1 + m22 * x2 + m23 * x3
         y3 = m30 * x0 + m31 * x1 + m32 * x2 + m33 * x3
-        mixed_base = token * _N_STREAMS * hidden_size + offsets
+        mixed_base = token * _N_STREAMS_TL * hidden_size + offsets
         tl.store(mixed_ptr + mixed_base, y0, mask=mask)
         tl.store(mixed_ptr + mixed_base + hidden_size, y1, mask=mask)
         tl.store(mixed_ptr + mixed_base + 2 * hidden_size, y2, mask=mask)
@@ -247,7 +254,7 @@ if triton is not None:
         block = tl.program_id(1)
         offsets = block * BLOCK_D + tl.arange(0, BLOCK_D)
         mask = offsets < hidden_size
-        stream_base = token * _N_STREAMS * hidden_size + offsets
+        stream_base = token * _N_STREAMS_TL * hidden_size + offsets
         source_base = token * hidden_size + offsets
         x0 = tl.load(streams_ptr + stream_base, mask=mask, other=0.0).to(
             tl.float32
@@ -354,7 +361,7 @@ if triton is not None:
         block = tl.program_id(1)
         offsets = block * BLOCK_D + tl.arange(0, BLOCK_D)
         mask = offsets < hidden_size
-        stream_base = token * _N_STREAMS * hidden_size + offsets
+        stream_base = token * _N_STREAMS_TL * hidden_size + offsets
         update_base = token * hidden_size + offsets
         active = tl.load(active_ptr + token)
         update = tl.load(update_ptr + update_base, mask=mask, other=0.0).to(
@@ -431,7 +438,7 @@ if triton is not None:
         block = tl.program_id(1)
         offsets = block * BLOCK_D + tl.arange(0, BLOCK_D)
         mask = offsets < hidden_size
-        stream_base = token * _N_STREAMS * hidden_size + offsets
+        stream_base = token * _N_STREAMS_TL * hidden_size + offsets
         update_base = token * hidden_size + offsets
         active = tl.load(active_ptr + token)
         active_f = active.to(tl.float32)

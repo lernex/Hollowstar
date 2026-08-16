@@ -199,3 +199,23 @@ def test_actual_triton_rocm_kernel_matches_exact_family_widths() -> None:
         token_count=7,
     )
     validate_mhc_canary_report(report, configs=configs)
+
+
+def test_mhc_stream_constant_mirrors_agree() -> None:
+    """The kernels read a constexpr mirror of ``_N_STREAMS``; pin them together.
+
+    Triton refuses to let a ``@jit`` kernel read a plain module global, so the
+    stream count exists twice: an int for host-side shape checks and stride
+    arithmetic, and a ``tl.constexpr`` the kernels index with. Two constants
+    for one quantity is exactly the shape that drifts, and the failure would be
+    silent -- the kernels would read the wrong stride and return plausible
+    numbers rather than raising.
+    """
+
+    import metis_training.mhc_kernels as kernels
+
+    if kernels.triton is None:
+        pytest.skip("Triton is not installed in this runtime")
+
+    mirror = kernels._N_STREAMS_TL
+    assert int(getattr(mirror, "value", mirror)) == kernels._N_STREAMS
