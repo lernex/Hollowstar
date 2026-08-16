@@ -6,8 +6,7 @@
 #SBATCH --job-name=more-more-core-xxs
 #SBATCH --nodes=7
 #SBATCH --ntasks-per-node=4
-#SBATCH --gpus-per-task=1
-#SBATCH --cpus-per-task=6
+#SBATCH --cpus-per-task=48
 #SBATCH --time=36:00:00
 #SBATCH --output=${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-core-xxs/slurm-%j.out
 #SBATCH --error=${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-core-xxs/slurm-%j.err
@@ -28,14 +27,34 @@ export PYTHONPATH="${METIS_REPO:?set METIS_REPO}/src:${PYTHONPATH:-}"
 export NCCL_ALGO=Ring
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
+# The ROCm stack is not on the default path on Portage, and a login shell that
+# happens to have the right venv activated is not a reproducible launch. The
+# activation script is named explicitly so the job records which runtime it ran
+# against; see docs/papers/more/ablation_campaign.md.
+source "${METIS_ABLATION_RUNTIME:?set METIS_ABLATION_RUNTIME to the runtime activation script}"
+
 mkdir -p "${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-core-xxs"
 
-srun --kill-on-bad-exit=1 python -m metis_ablation.train \
-  --row more-core-xxs \
-  --output "${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations" \
-  --release-root "${METIS_RELEASE_ROOT:?set METIS_RELEASE_ROOT}" \
+# Resolved in the batch shell so that an output root written as a shell
+# expression expands once, here, rather than inside the single-quoted step body.
+export METIS_ABLATION_OUTPUT="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations"
+export METIS_ABLATION_RELEASE="${METIS_RELEASE_ROOT:?set METIS_RELEASE_ROOT}"
+
+# Portage's parry partition defines no GPU gres, so the four MI300A APUs are
+# addressed by local task id rather than requested from Slurm. RANK and
+# LOCAL_RANK have to be resolved inside the step, because SLURM_PROCID only
+# exists per task -- exporting them from the batch shell would launch every
+# task as rank 0 against APU 0.
+srun --kill-on-bad-exit=1 bash -c '
+export RANK="$SLURM_PROCID"
+export LOCAL_RANK="$SLURM_LOCALID"
+exec python -m metis_ablation.train \
+  --row '"'"'more-core-xxs'"'"' \
+  --output "$METIS_ABLATION_OUTPUT" \
+  --release-root "$METIS_ABLATION_RELEASE" \
   --budget-tokens 50000000000 \
   --seed 16062026 \
   --checkpoint-every 5000 \
   --analysis-every 1000 \
   --telemetry-every 10
+'
