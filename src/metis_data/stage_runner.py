@@ -3289,6 +3289,39 @@ def _context_verify(profile: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _schedule_shard_digest(row: tuple[str, int, str]) -> tuple[str, bool]:
+    path_value, size, expected = row
+    path = Path(path_value)
+    if not path.is_file() or path.stat().st_size != size:
+        return path_value, False
+    return path_value, sha256_file(path) == expected
+
+
+def _verify_schedule_digests(
+    rows: list[tuple[str, int, str]],
+) -> list[tuple[str, bool]]:
+    """Hash the schedule with the node rather than one core of it.
+
+    The 1.6 schedule is 1.2TB across 806 shards. Verifying it in a single
+    stream ran at 316 MB/s and held the whole build behind a dependency for
+    about an hour on a 192-core node -- the same shape of problem as selection
+    itself, in the stage that checks selection. Each shard is an independent
+    digest, so this is a pool over shards and the comparison per shard is
+    unchanged. A stage that already shares its node with sibling tasks keeps a
+    single worker, for the reason the zstd writer pool does.
+    """
+
+    if not rows:
+        return []
+    if int(os.environ.get("METIS_TASKS_PER_JOB", "1") or 1) > 1:
+        return [_schedule_shard_digest(row) for row in rows]
+    workers = max(1, min(32, len(rows), os.cpu_count() or 1))
+    if workers == 1:
+        return [_schedule_shard_digest(row) for row in rows]
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(_schedule_shard_digest, rows, chunksize=1))
+
+
 def _validate_selection_artifacts(
     profile: dict[str, Any],
     state: StateStore,
@@ -3341,6 +3374,7 @@ def _validate_selection_artifacts(
                 )
     schedule_contract = []
     seen_global: set[int] = set()
+    pending_digests: list[tuple[str, int, str]] = []
     for shard in selection.get("shards", []):
         global_index = int(shard.get("global_index", -1))
         if global_index in seen_global:
@@ -3352,12 +3386,9 @@ def _validate_selection_artifacts(
         except ValueError as exc:
             raise RuntimeError(f"Selection schedule path escapes its root: {path}") from exc
         if validate_all_schedule:
-            if (
-                not path.is_file()
-                or path.stat().st_size != int(shard.get("size", -1))
-                or sha256_file(path) != shard.get("sha256")
-            ):
-                raise RuntimeError(f"Selection schedule shard changed: {path}")
+            pending_digests.append(
+                (str(path), int(shard.get("size", -1)), str(shard.get("sha256")))
+            )
         schedule_contract.append(
             {
                 key: shard[key]
@@ -3373,6 +3404,9 @@ def _validate_selection_artifacts(
         )
     if seen_global != set(range(len(seen_global))):
         raise RuntimeError("Selection global shard indices are not contiguous")
+    for path_value, matched in _verify_schedule_digests(pending_digests):
+        if not matched:
+            raise RuntimeError(f"Selection schedule shard changed: {path_value}")
     if selection.get("schedule_manifest_sha256") != _json_sha256(schedule_contract):
         raise RuntimeError("Selection schedule manifest hash is invalid")
     return {

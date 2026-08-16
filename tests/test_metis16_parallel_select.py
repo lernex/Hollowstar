@@ -9,8 +9,10 @@ isolation.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -270,6 +272,73 @@ class ParallelSelectionEquivalenceTests(unittest.TestCase):
                     else:
                         self.assertIsNone(row["replacement_for_source_id"])
             self.assertGreater(replaced, 0, "the donor fixture replaced nothing")
+
+
+class ScheduleDigestTests(unittest.TestCase):
+    """The schedule check must stay fail-closed now that it runs in a pool."""
+
+    def _rows(self, root: Path, count: int = 5) -> list[tuple[str, int, str]]:
+        rows = []
+        for index in range(count):
+            path = root / f"shard-{index:05d}.jsonl.zst"
+            data = bytes((index + 7) % 251 for _ in range(4096)) * (index + 1)
+            path.write_bytes(data)
+            rows.append((str(path), len(data), hashlib.sha256(data).hexdigest()))
+        return rows
+
+    def test_matching_shards_pass_and_tampered_shards_do_not(self) -> None:
+        from metis_data.stage_runner import _verify_schedule_digests
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            rows = self._rows(root)
+            self.assertTrue(all(ok for _, ok in _verify_schedule_digests(rows)))
+
+            wrong_digest = list(rows)
+            wrong_digest[2] = (rows[2][0], rows[2][1], "0" * 64)
+            self.assertEqual(
+                [ok for _, ok in _verify_schedule_digests(wrong_digest)],
+                [True, True, False, True, True],
+            )
+
+            wrong_size = list(rows)
+            wrong_size[1] = (rows[1][0], rows[1][1] + 1, rows[1][2])
+            self.assertEqual(
+                [ok for _, ok in _verify_schedule_digests(wrong_size)],
+                [True, False, True, True, True],
+            )
+
+            absent = list(rows)
+            absent[0] = (str(root / "gone.jsonl.zst"), 10, "a" * 64)
+            self.assertEqual(
+                [ok for _, ok in _verify_schedule_digests(absent)],
+                [False, True, True, True, True],
+            )
+
+    def test_a_task_sharing_its_node_hashes_serially(self) -> None:
+        from metis_data.stage_runner import _verify_schedule_digests
+
+        with tempfile.TemporaryDirectory() as raw:
+            rows = self._rows(Path(raw))
+            tampered = list(rows)
+            tampered[3] = (rows[3][0], rows[3][1], "f" * 64)
+            previous = os.environ.get("METIS_TASKS_PER_JOB")
+            os.environ["METIS_TASKS_PER_JOB"] = "34"
+            try:
+                self.assertEqual(
+                    [ok for _, ok in _verify_schedule_digests(tampered)],
+                    [True, True, True, False, True],
+                )
+            finally:
+                if previous is None:
+                    os.environ.pop("METIS_TASKS_PER_JOB", None)
+                else:
+                    os.environ["METIS_TASKS_PER_JOB"] = previous
+
+    def test_an_empty_schedule_is_not_a_pool(self) -> None:
+        from metis_data.stage_runner import _verify_schedule_digests
+
+        self.assertEqual(_verify_schedule_digests([]), [])
 
 
 if __name__ == "__main__":
