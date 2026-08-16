@@ -79,27 +79,68 @@ def _stable_fraction(source_id: str, doc_id: str, seed: int) -> float:
 
 
 class _AppendPool:
-    def __init__(self, maximum_open: int = 32) -> None:
+    """Batch rows per shard, then append one large frame per flush.
+
+    Selection routes each record to a shard by hash, so consecutive records
+    land on essentially unrelated shards out of several hundred. Holding a
+    compressor open per shard and evicting the oldest -- 48 handles against
+    555 live shards in phase_a alone -- meant almost every write opened a
+    file, built a compressor, wrote one line, and later closed it. That is the
+    file-pool thrash already recorded for span dedup in the 1.7 lessons, and
+    it has a second cost here: a frame holding a few rows never reaches the
+    job size zstd needs to use more than one core, so the threaded compressor
+    sat idle at 0.97 cores while 191 were free.
+
+    Buffering instead means a flush is one compress() call over tens of
+    megabytes, which is large enough both to amortise the open and to give the
+    compressor real work to divide. Frames stay independently appended, which
+    the reader already handles.
+    """
+
+    def __init__(
+        self,
+        maximum_open: int = 32,
+        *,
+        flush_bytes: int = 64 * 1024 * 1024,
+        buffered_bytes: int = 6 * 1024 * 1024 * 1024,
+    ) -> None:
         self.maximum_open = maximum_open
-        self.handles: OrderedDict[Path, io.TextIOWrapper] = OrderedDict()
+        self.flush_bytes = int(flush_bytes)
+        self.buffered_bytes = int(buffered_bytes)
+        self.buffers: dict[Path, list[str]] = {}
+        self.sizes: dict[Path, int] = {}
+        self.buffered = 0
 
     def write(self, path: Path, payload: dict[str, Any]) -> None:
+        line = json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
+        self.buffers.setdefault(path, []).append(line)
+        size = len(line)
+        self.sizes[path] = self.sizes.get(path, 0) + size
+        self.buffered += size
+        if self.sizes[path] >= self.flush_bytes:
+            self._flush(path)
+        elif self.buffered >= self.buffered_bytes:
+            self._flush(max(self.sizes, key=lambda key: self.sizes[key]))
+
+    def _flush(self, path: Path) -> None:
+        lines = self.buffers.pop(path, None)
+        if not lines:
+            self.sizes.pop(path, None)
+            return
+        self.buffered -= self.sizes.pop(path, 0)
         path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self.handles.pop(path, None)
-        if handle is None:
-            raw = path.open("ab")
-            compressed = zstd_bulk_compressor(5).stream_writer(raw, closefd=True)
-            handle = io.TextIOWrapper(compressed, encoding="utf-8")
-        self.handles[path] = handle
-        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
-        if len(self.handles) > self.maximum_open:
-            _, oldest = self.handles.popitem(last=False)
-            oldest.close()
+        frame = zstd_bulk_compressor(5).compress(
+            "".join(lines).encode("utf-8")
+        )
+        with path.open("ab") as raw:
+            raw.write(frame)
 
     def close(self) -> None:
-        for handle in self.handles.values():
-            handle.close()
-        self.handles.clear()
+        for path in sorted(self.buffers, key=lambda value: str(value)):
+            self._flush(path)
+        self.buffers.clear()
+        self.sizes.clear()
+        self.buffered = 0
 
 
 @dataclass

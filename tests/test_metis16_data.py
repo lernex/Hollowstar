@@ -1824,6 +1824,49 @@ class ParallelCpuBuildTests(unittest.TestCase):
                 self.assertTrue(state.is_complete("normalize", "task-000042"))
 
 
+class AppendPoolTests(unittest.TestCase):
+    """Buffered shard writes must lose nothing and stop the frame thrash."""
+
+    def test_every_row_survives_a_scattered_write_pattern(self) -> None:
+        from metis_data.selection import _AppendPool
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = [root / f"shard-{index:03d}.jsonl.zst" for index in range(40)]
+            pool = _AppendPool(maximum_open=4, flush_bytes=2048, buffered_bytes=8192)
+            expected: dict[Path, list[dict]] = {path: [] for path in paths}
+            # Hash-scattered, exactly the access pattern that thrashed: far
+            # more live shards than any pool could hold open.
+            for index in range(4_000):
+                path = paths[(index * 7919) % len(paths)]
+                row = {"i": index, "text": "x" * (index % 50)}
+                expected[path].append(row)
+                pool.write(path, row)
+            pool.close()
+
+            total = 0
+            for path, rows in expected.items():
+                if not rows:
+                    continue
+                read = list(stage_runner._iter_rows(path))
+                self.assertEqual(read, rows, f"{path.name} lost or reordered rows")
+                total += len(read)
+            self.assertEqual(total, 4_000)
+
+    def test_a_flush_emits_one_frame_not_one_per_row(self) -> None:
+        from metis_data.selection import _AppendPool
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "shard.jsonl.zst"
+            pool = _AppendPool(flush_bytes=1 << 30, buffered_bytes=1 << 30)
+            for index in range(500):
+                pool.write(path, {"i": index})
+            pool.close()
+            magic = path.read_bytes().count(b"\x28\xb5\x2f\xfd")
+            self.assertEqual(magic, 1, "buffered rows must land in one frame")
+            self.assertEqual(len(list(stage_runner._iter_rows(path))), 500)
+
+
 class ZstdWriterThreadsTests(unittest.TestCase):
     """Compression threads must follow who owns the node."""
 
