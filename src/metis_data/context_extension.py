@@ -666,16 +666,30 @@ def _consume_assignment(
     queue: deque[dict[str, Any]],
     available: int,
 ) -> Iterator[tuple[dict[str, Any], int]]:
+    """Draw from the front of a source's queue, settling before handing over.
+
+    The caller stops as soon as a document is fully placed, which for any
+    document an assignment can cover on its own happens on the first item. A
+    generator that books the withdrawal after its yield is never resumed on
+    that path, so the tokens were written to a pack task and still counted as
+    available here: the assignment was then spent again by the next document,
+    and again, until some route overran its pack-task quota and the stage died
+    hours in with nothing to say about why. Settle first, yield second, so
+    abandoning this generator at any point leaves the ledger true.
+    """
+
     remaining = available
     while queue and remaining:
         assignment = queue[0]
         take = min(remaining, int(assignment["remaining"]))
-        if take:
-            yield assignment, take
-            remaining -= take
-            assignment["remaining"] = int(assignment["remaining"]) - take
+        if not take:
+            queue.popleft()
+            continue
+        remaining -= take
+        assignment["remaining"] = int(assignment["remaining"]) - take
         if int(assignment["remaining"]) == 0:
             queue.popleft()
+        yield assignment, take
 
 
 def _task_routers(
@@ -1040,6 +1054,17 @@ def build_context_selection(
                     evaluation_tokens += evaluation_context
                     evaluation_sources[source_id] += 1
                     evaluation_domains[domain] += 1
+                # Every assignment is spoken for and every evaluation slice is
+                # cut, so the rest of the stream cannot change the release:
+                # each queue is empty, so routing takes nothing, and the
+                # evaluation gate is closed. The quotas are 18B against 849B of
+                # supply, so this is most of the corpus. Stopping here is what
+                # the loop would do anyway, only without reading it.
+                if (
+                    selected_tokens == CONTEXT_TOKEN_BUDGET
+                    and evaluation_selected == evaluation_records
+                ):
+                    break
     finally:
         writers.close()
 

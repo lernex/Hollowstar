@@ -29,6 +29,7 @@ from metis_data.context_extension import (
     allocate_context_replacements,
     build_context_pack_plan,
     build_context_selection,
+    _consume_assignment as context_consume_assignment,
     measure_context_availability,
     context_evaluation_domain_targets,
     context_lane_quota_rows,
@@ -1821,6 +1822,53 @@ class ParallelCpuBuildTests(unittest.TestCase):
                 failing["index"] = -1
                 self.assertEqual(group(40, 8, 48)[0], 0)
                 self.assertTrue(state.is_complete("normalize", "task-000042"))
+
+
+class ContextAssignmentConsumptionTests(unittest.TestCase):
+    """Selection's ledger must be true even when the caller stops early."""
+
+    def _queue(self, *amounts: int):
+        from collections import deque
+
+        return deque({"id": i, "remaining": a} for i, a in enumerate(amounts))
+
+    def test_stopping_at_the_first_draw_still_books_it(self) -> None:
+        queue = self._queue(1000)
+        # This is exactly what build_context_selection does: take what the
+        # document needs and break the moment the document is placed.
+        for _assignment, take in context_consume_assignment(queue, 400):
+            self.assertEqual(take, 400)
+            break
+        self.assertEqual(
+            queue[0]["remaining"],
+            600,
+            "an abandoned generator must not leave the tokens available again",
+        )
+
+    def test_repeated_early_stops_cannot_overdraw(self) -> None:
+        queue = self._queue(1000)
+        drawn = 0
+        # Ten documents of 100 tokens each, every one of them breaking after
+        # its first draw. The queue holds exactly 1000, so a ledger that does
+        # not settle would hand out 1000 and still believe it had 1000.
+        for _ in range(20):
+            for _assignment, take in context_consume_assignment(queue, 100):
+                drawn += take
+                break
+        self.assertEqual(drawn, 1000)
+        self.assertEqual(sum(row["remaining"] for row in queue), 0)
+
+    def test_full_drain_matches_the_queue_exactly(self) -> None:
+        queue = self._queue(300, 250, 450)
+        drawn = [take for _assignment, take in context_consume_assignment(queue, 1000)]
+        self.assertEqual(sum(drawn), 1000)
+        self.assertEqual(len(queue), 0)
+
+    def test_exhausted_head_is_discarded_not_spun_on(self) -> None:
+        queue = self._queue(0, 0, 120)
+        drawn = [take for _assignment, take in context_consume_assignment(queue, 500)]
+        self.assertEqual(drawn, [120])
+        self.assertEqual(len(queue), 0)
 
 
 class ContextAvailabilityMeasurementTests(unittest.TestCase):
