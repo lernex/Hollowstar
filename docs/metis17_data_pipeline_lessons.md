@@ -1303,3 +1303,184 @@ turned the third attempt's first two phases from ~4.3 hours into ~11 minutes.
 by its inputs.** A stage that fails at 80% should resume at 80%. This matters
 more than any single speedup in this section, because a 30 T stage that cannot
 resume cannot be operated at all.
+
+---
+
+## 17. The r2 select rebuild, and four more single-core stages behind it (2026-08-16)
+
+§16 said selection does not scale. This is what it cost to make it scale on the
+r2 build, and the three stages behind it that had the same disease. Every number
+here came off the running job.
+
+### 17a. Selection: the decisions are ordered, the bytes are not
+
+`metis16-select` had been running 58 minutes and was 7.2% done: 99.8 GB of a
+1.378 TB schedule, 29 MB/s of compressed output, **12.3 hours remaining**.
+
+`py-spy record` against the live PID, not a reasoned guess:
+
+| | |
+|---|---|
+| `_iter_rows` (zstd input) | 23.9% |
+| `orjson.dumps` | 18.8% |
+| `orjson.loads` | 18.5% |
+| `b"".join` of output buffers | 13.7% |
+| zstd compress | 3.4% (already 32 threads) |
+
+One process at 150% CPU on a 192-core node, moving 3.95 TB of corpus text, with
+**124 idle nodes** in the partition. Compression was already threaded and was
+never the problem; the GIL was.
+
+The split that fixes it: a document is selected because of exactly how many
+tokens every document before it consumed, so the **routing** must see the corpus
+once, in one order, on one core. The **bytes** have no ordering constraint at
+all. So:
+
+| phase | work | parallel | measured |
+|---|---|---|---|
+| `extract` | read 1.27 TB of token-count shards, keep source, token count, 3 hashes | 16 nodes | **50 s** |
+| `plan` | the routing decisions, text-free | no | 72 min |
+| `materialise` | write the rows through the same row builder | 256 workers | 470 s |
+| `concat` | append fragments (zstd frames concatenate, so a byte copy) | 16 nodes | 181 s |
+
+**85 minutes total, against 12.3 hours remaining on the serial run.** The
+sizing was measured before any of it was written: 96 workers on one idle node
+ran the whole read-parse-hash-serialise-compress path at 1.65 GB/s in and
+1.64 GB/s out, i.e. a full corpus pass in 771 s.
+
+Two properties made this safe to do to a sealed pipeline. `plan` re-runs the
+**same `build_selection`** through a recording sink rather than a second
+implementation of the rules, so a plan cannot disagree with the serial path
+about what belongs where. And fragments are named after the emission bucket
+(main, then fallback by source, then replay by source and exposure), so sorting
+file names reproduces the exact order the routing loop emitted rows in.
+
+### 17b. The plan phase is the floor, and the floor is a billion Python iterations
+
+72 of the 85 minutes were `plan`: 1,047,469,393 documents through one Python
+loop. Its profile is flat — 13.9% building the placement arrays, 6.5% yielding
+rows, ~15% spread across `consume`, ~5% picking a shard. There is no hot spot to
+remove, only interpreter overhead to avoid.
+
+Its rate swung between **40k and 791k rows/s** depending on whether a shard's
+sources still had unfilled quota — a satisfied source is skipped almost free.
+
+**For 1.7:** the routing is expressible as prefix sums and `searchsorted` over
+per-source arrays; the only genuinely sequential part is the shard fill
+cascade, and that is replaceable by a hash-ordered capacity cut that is exact by
+construction. That turns 72 minutes into single-digit minutes. Do it before
+30 T, where this loop is a full day.
+
+### 17c. The corpus is tokenized twice, and the first pass throws the answer away
+
+```python
+# stage_runner.py, token_count
+token_count = len( <tokenizer encode of the document> )
+...
+{"doc_id": doc_id, "text": text, "token_count": token_count, ...}
+```
+
+`token_count` encodes every document, takes `len()`, **discards the IDs**, and
+stores the text plus one integer. `pack` then encodes the entire corpus a second
+time to emit the uint16 shards. On r2 that second encode is the single longest
+stage after select.
+
+Storing the IDs would cost ~1.7 TB against the 1.27 TB of text already stored —
+the same order of magnitude — and would turn `pack` from a re-tokenization into
+a concatenation. It would also let selection plan against ID counts directly.
+
+**For 1.7: persist the token IDs from the counting pass.** This is the largest
+single unit of wasted compute in the build.
+
+### 17d. A per-shard task must validate its shard, not the set
+
+`_verify_shard` built its selection context with the default
+`validate_all_schedule=True`, so each of **806** per-shard tasks byte-verified
+**all 806** schedule shards before checking the one it owned: 1.2 TB per task,
+~967 TB across the stage. `_pack` had always passed `validate_all_schedule=False`
+and `_release` scopes on whether inputs were retired; `verify_shard` was the one
+per-shard stage that never got the same treatment.
+
+It was caught by reading the stage before it ran, not by watching it hang — and
+it would have presented as a stage that appears to stall, never as a failure.
+
+**Rule: a per-shard task verifies its own shard; the aggregate verifies the
+set.** The binding stays exact either way, because the shard list those hashes
+are read from is covered by `schedule_manifest_sha256` on every path.
+
+### 17e. A fail-closed check that reads terabytes still has to use the node
+
+`_validate_selection_artifacts` hashed all 806 schedule shards in an inline
+serial loop. Measured from `/proc/<pid>/io` on the running stage: **223 GB in
+11m46s = 316 MB/s**, about an hour of a 192-core node doing one core of work,
+with `pack`, `verify`, and `release` all sitting behind it on `afterok`.
+
+The irony is that `_hash_files(files, workers)` already existed and was already
+used by the content-receipt writer in the same stage. The parallel helper was
+there; the inline loop simply never called it.
+
+**Rule: any stage-level scan of the release is a pool.** Where a stage shares a
+node with sibling tasks, it keeps one worker — the same reason the zstd writer
+pool is sized that way.
+
+### 17f. Measure in the unit the work is done in
+
+`plan` progress looked like a death spiral: 2.73 shards/s, then 1.28, then 0.28.
+It read exactly like GC pressure at 22 GB RSS, and nearly justified killing a
+correct run 40% of the way through.
+
+It was not. Input shards are not the same size:
+
+| shards | rows | per shard |
+|---|---|---|
+| 0–802 | 79,720,635 | 99,402 |
+| 802–1264 | 101,791,358 | 220,328 |
+| 1264–1489 | 112,557,026 | 500,253 |
+
+Five times larger. In rows/s the rate was flat-to-oscillating, and the run was
+healthy. §12 already says shard index predicts shard size; this is the same fact
+arriving as a **false performance alarm** instead of a makespan problem.
+
+**Rule: normalise progress by work — rows, bytes, tokens — never by task count.**
+A count-based progress bar over uneven tasks will eventually argue for killing a
+healthy job.
+
+### 17g. A differential test is only as strong as the fixture's ability to differ
+
+The parallel selection is pinned to the serial one by decompressing every shard
+from both and comparing rows. Four mutations were applied to check the test
+could actually fail:
+
+| mutation | first fixture | after |
+|---|---|---|
+| materialise partition strided, not contiguous | **caught** | caught |
+| replay shard seed computed with `replay=False` | *survived* | caught |
+| `replacement_for_source_id` always `None` | *survived* | caught |
+| quota source read from the record, not the plan | *survived* | caught |
+
+Two survived for the same class of reason: `phase_c` had exactly **one** shard,
+so the replay seed could not change any placement, and no source was short, so
+no row was ever a replacement. The fixture could not express the bug. Shrinking
+`shard_tokens` to give every phase several shards, and adding a donor group so
+replacements actually occur, made all four fail.
+
+**Rule: mutate the implementation and confirm the test fails, then check the
+fixture can express each property at all.** A test that passes every mutation is
+decoration, and a fixture with one shard per phase silently disables an entire
+class of assertion.
+
+### 17h. `tasks_per_job` decides both node utilisation and the straggler tail
+
+`pack` ran as 34 array jobs × 24 concurrent tasks — **24 of 192 cores per node,
+12.5%**. Two of the 34 got nodes ~33 minutes after the rest, so 47 of 806 shards
+were held by 2 jobs while 32 nodes sat finished, adding ~28 minutes to a stage
+that was otherwise done.
+
+Redistributing the stragglers would not have helped, and the reason is worth
+keeping: each job ran its 24 shards *concurrently* in ~37 minutes, so ~37 minutes
+is the cost of **one** shard single-threaded. Spreading fully-parallel work
+across more nodes buys nothing. Only fewer, fatter jobs do.
+
+**For 1.7: size `tasks_per_job` to the node, not to a round number.** Eight jobs
+of ~101 tasks would use ~53% of each node and have a third the tail, because
+there are fewer jobs to schedule late.
