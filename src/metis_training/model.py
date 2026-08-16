@@ -2593,6 +2593,31 @@ class AdaptiveDroplessMoE(nn.Module):
         active_hidden = flat_latent.index_select(0, active_positions)
         return output.index_copy(0, active_positions, self.shared_expert(active_hidden))
 
+    def _select_expert_indices(
+        self,
+        expert_logits: Tensor,
+        active_mask: Tensor,
+    ) -> Tensor:
+        """Rank experts under the balance bias, without building a graph.
+
+        The ranking is deliberately non-differentiable -- the balance bias is
+        advanced by the aux-loss-free controller, not by gradient -- so nothing
+        here needs to be recorded for the backward. Saying so with no_grad is
+        load-bearing under pass-level activation recompute: a replayed pass
+        reuses the taped identities and never runs this, so if the original
+        forward saved tensors here the two executions would save different
+        numbers of them and torch.utils.checkpoint would reject the replay.
+        """
+
+        del active_mask
+        with torch.no_grad():
+            selection_scores = expert_logits.detach() + self.selection_bias.view(1, 1, -1)
+            return torch.topk(
+                selection_scores,
+                k=self.config.max_routed_k,
+                dim=-1,
+            ).indices
+
     def _select_experts(
         self,
         expert_logits: Tensor,
@@ -2601,25 +2626,12 @@ class AdaptiveDroplessMoE(nn.Module):
     ) -> tuple[Tensor, Tensor, Tensor]:
         """Select with the balance bias, but combine with unbiased affinities."""
 
-        selection_scores = expert_logits + self.selection_bias.view(1, 1, -1)
-        top_indices = torch.topk(
-            selection_scores,
-            k=self.config.max_routed_k,
-            dim=-1,
-        ).indices
-        top_logits = expert_logits.gather(-1, top_indices)
-        slot_ids = torch.arange(
-            self.config.max_routed_k,
-            device=expert_logits.device,
-        )
-        selected = slot_ids.view(1, 1, -1) < chosen_k.unsqueeze(-1)
-        selected = selected & active_mask.unsqueeze(-1)
-        masked_logits = top_logits.masked_fill(~selected, float("-inf"))
-        top_weights = torch.softmax(masked_logits, dim=-1)
-        top_weights = torch.where(
-            selected,
-            top_weights,
-            torch.zeros_like(top_weights),
+        top_indices = self._select_expert_indices(expert_logits, active_mask)
+        top_weights, selected = self._recombine_frozen_experts(
+            expert_logits,
+            top_indices,
+            chosen_k,
+            active_mask,
         )
         return top_indices, top_weights, selected
 
@@ -3019,36 +3031,34 @@ class AdaptiveDroplessMoE(nn.Module):
             if replay_tape is not None and frozen is None
             else None
         )
-        if replayed is not None:
-            frozen = replayed
-        if frozen is None:
-            top_indices, top_weights, selected = self._select_experts(
-                expert_logits,
-                chosen_k,
-                active_mask,
-            )
+        identity = frozen if frozen is not None else replayed
+        if identity is None:
+            top_indices = self._select_expert_indices(expert_logits, active_mask)
             if pathway_cache is not None and pass_index == 0:
                 pathway_cache.store(self.layer_idx, top_indices, chosen_k)
             if replay_tape is not None:
                 replay_tape.record(pass_index, self.layer_idx, top_indices, chosen_k)
         else:
-            # Pathway-frozen control: reuse pass 1's expert identity and width,
-            # but recompute the combination weights from this pass's logits.
-            # Caching the weights themselves would thread a gradient path from
-            # pass r back into pass 1's router across a checkpoint boundary; the
-            # axis under test is *which* experts, not how they are blended.
-            # A recompute replay takes the same route for the same reason: the
-            # identity is fixed, the blend is differentiated.
-            cached_indices, cached_k = frozen
-            top_indices = cached_indices
+            # Reuse a decided identity, but recompute the combination weights
+            # from this pass's own logits. Caching the weights would thread a
+            # gradient path from pass r back into pass one's router across a
+            # checkpoint boundary; the axis under test is *which* experts, not
+            # how they are blended.
+            top_indices, cached_k = identity
             chosen_k = cached_k
-            expected_k = expected_k.detach() * 0.0 + cached_k.to(expected_k.dtype)
-            top_weights, selected = self._recombine_frozen_experts(
-                expert_logits,
-                top_indices,
-                chosen_k,
-                active_mask,
-            )
+            if frozen is not None:
+                # Pathway-frozen control: pass one decided the width too, so the
+                # k-budget term follows it. A recompute replay must *not* do
+                # this -- it is re-executing a pass whose expected_k already has
+                # a graph, and rewriting it here would make the replay save a
+                # different number of tensors than the forward it replays.
+                expected_k = expected_k.detach() * 0.0 + cached_k.to(expected_k.dtype)
+        top_weights, selected = self._recombine_frozen_experts(
+            expert_logits,
+            top_indices,
+            chosen_k,
+            active_mask,
+        )
         if self.capture_selection:
             self._analysis_last_selection = (
                 top_indices[..., 0].detach(),
