@@ -72,7 +72,6 @@ class PrecisionConfig:
         "latent_down_projection",
         "latent_up_projection",
         "memory_state_write_projection",
-        "memory_metadata_write_projection",
         "memory_query_projection",
         "memory_key_projection",
         "memory_value_projection",
@@ -96,6 +95,11 @@ class PrecisionConfig:
         # win by trying: it is a rounding error in both FLOPs and parameters.
         "attention_pass_lora_down",
         "attention_pass_lora_up",
+        # memory_metadata_write contracts over route_feature_dim + 4. The +4 is
+        # metadata carried beside the route features, and it puts the width 4
+        # past a multiple of 16 for every power-of-two route width, so this role
+        # cannot be FP8 while that +4 is there.
+        "memory_metadata_write_projection",
     )
     fp32_roles: tuple[str, ...] = (
         "master_weight",

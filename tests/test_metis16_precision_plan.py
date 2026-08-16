@@ -410,36 +410,101 @@ if __name__ == "__main__":
 
 
 class Fp8ContractionWidthTests(unittest.TestCase):
-    """A role may only be declared FP8 at a width TE can actually contract."""
+    """Every role declared FP8 must contract over a width TE can execute."""
 
-    def test_pass_lora_is_not_declared_fp8_while_its_rank_is_too_narrow(self) -> None:
-        """attention_pass_lora_rank is 8 in every family; FP8 needs 16.
+    def _fp8_contraction_widths(self, config) -> dict[str, set[int]]:
+        """Build the model and record the width of every FP8 projection.
 
-        Declaring it FP8 anyway cost a seven-node allocation: the model builds,
-        the FP8 policy validates, and the first forward raises out of TE with a
-        shape complaint that names no role. The rank and the role list have to
-        agree, so assert they do rather than assert the current values.
+        The policy is stubbed rather than driven through Transformer Engine so
+        this runs on a CPU box with no TE and no GPU; what is under test is the
+        manifest's role declarations against the geometry, which is the part
+        that was wrong.
+        """
+
+        import torch
+
+        from metis_training import precision as precision_module
+        from metis_training.model import Metis16ForCausalLM
+
+        widths: dict[str, set[int]] = {}
+        real_linear = precision_module.PrecisionPolicy.linear
+        real_is_fp8 = precision_module.PrecisionPolicy.is_fp8_role
+
+        def declared_fp8(self, role):
+            lowered = role.lower()
+            return any(
+                token in lowered or lowered in token
+                for token in self.config.fp8_roles
+            )
+
+        def spy(self, in_features, out_features, bias=True, *, role, **kwargs):
+            if declared_fp8(self, role):
+                widths.setdefault(role, set()).add(in_features)
+            kwargs.pop("device", None)
+            kwargs.pop("dtype", None)
+            return torch.nn.Linear(in_features, out_features, bias=bias, **kwargs)
+
+        precision_module.PrecisionPolicy.linear = spy
+        precision_module.PrecisionPolicy.is_fp8_role = declared_fp8
+        try:
+            policy = precision_module.PrecisionPolicy(
+                config.precision,
+                requested_profile="bf16",
+                device=torch.device("cpu"),
+                production=False,
+            )
+            with torch.device("meta"):
+                Metis16ForCausalLM(config, precision_policy=policy)
+        finally:
+            precision_module.PrecisionPolicy.linear = real_linear
+            precision_module.PrecisionPolicy.is_fp8_role = real_is_fp8
+        return widths
+
+    def test_no_fp8_projection_contracts_over_an_unexecutable_width(self) -> None:
+        """Walk the proxy model rather than spot-checking known roles.
+
+        Two roles were declared FP8 at widths TE cannot contract:
+        attention_pass_lora_* at rank 8, and memory_metadata_write at
+        route_feature_dim + 4 = 260. Each was found by losing a seven-node
+        allocation to it, one per launch, because a manifest can only be wrong
+        about a width the geometry supplies. So this asks the model.
+        """
+
+        from metis_training.precision import _FP8_CONTRACTION_MULTIPLE
+
+        from metis_ablation.specs import spec_by_name
+
+        config = spec_by_name("more-core").model_config(
+            mhc_backend="torch_reference",
+            mamba_backend="torch_reference",
+            attention_backend="torch_reference",
+        )
+        widths = self._fp8_contraction_widths(config)
+        self.assertTrue(widths, "no FP8 projections were recorded")
+        offenders = {
+            role: sorted(seen)
+            for role, seen in widths.items()
+            if any(width % _FP8_CONTRACTION_MULTIPLE for width in seen)
+        }
+        self.assertEqual(offenders, {}, f"FP8 roles at unexecutable widths: {offenders}")
+
+    def test_families_agree_with_the_proxy_on_the_config_derived_widths(self) -> None:
+        """praxis and logos share the geometry that made the proxy illegal.
+
+        They cannot be built here -- production manifests demand the fused
+        Triton mHC backend -- so check the two widths that come from config
+        arithmetic rather than from a module.
         """
 
         from metis_training.model_config import load_family_config
         from metis_training.precision import _FP8_CONTRACTION_MULTIPLE
 
-        from metis_ablation.specs import spec_by_name
-
-        configs = [load_family_config(family=name) for name in ("praxis", "logos")]
-        configs.append(spec_by_name("more-core").model_config(
-            mhc_backend="torch_reference",
-            mamba_backend="torch_reference",
-            attention_backend="torch_reference",
-        ))
-
-        for config in configs:
-            rank = config.attention_pass_lora_rank
-            if rank % _FP8_CONTRACTION_MULTIPLE == 0:
-                continue
-            for role in ("attention_pass_lora_down", "attention_pass_lora_up"):
-                self.assertNotIn(
-                    role,
-                    config.precision.fp8_roles,
-                    f"{role} is FP8 but contracts over rank {rank}",
-                )
+        for family in ("praxis", "logos"):
+            config = load_family_config(family=family)
+            roles = config.precision.fp8_roles
+            with self.subTest(family=family):
+                if config.attention_pass_lora_rank % _FP8_CONTRACTION_MULTIPLE:
+                    self.assertNotIn("attention_pass_lora_down", roles)
+                    self.assertNotIn("attention_pass_lora_up", roles)
+                if (config.route_feature_dim + 4) % _FP8_CONTRACTION_MULTIPLE:
+                    self.assertNotIn("memory_metadata_write_projection", roles)
