@@ -163,8 +163,7 @@ _SBATCH_TEMPLATE = """#!/bin/bash
 #SBATCH --job-name=more-{row}
 #SBATCH --nodes={nodes}
 #SBATCH --ntasks-per-node=4
-#SBATCH --gpus-per-task=1
-#SBATCH --cpus-per-task=6
+#SBATCH --cpus-per-task={cpus_per_task}
 #SBATCH --time={time_limit}
 #SBATCH --output={output_root}/{row}/slurm-%j.out
 #SBATCH --error={output_root}/{row}/slurm-%j.err
@@ -185,17 +184,37 @@ export PYTHONPATH="{repo_root}/src:${{PYTHONPATH:-}}"
 export NCCL_ALGO=Ring
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
+# The ROCm stack is not on the default path on Portage, and a login shell that
+# happens to have the right venv activated is not a reproducible launch. The
+# activation script is named explicitly so the job records which runtime it ran
+# against; see docs/papers/more/ablation_campaign.md.
+source "${{METIS_ABLATION_RUNTIME:?set METIS_ABLATION_RUNTIME to the runtime activation script}}"
+
 mkdir -p "{output_root}/{row}"
 
-srun --kill-on-bad-exit=1 python -m metis_ablation.train \\
-  --row {row} \\
-  --output "{output_root}" \\
-  --release-root "{release_root}" \\
+# Resolved in the batch shell so that an output root written as a shell
+# expression expands once, here, rather than inside the single-quoted step body.
+export METIS_ABLATION_OUTPUT="{output_root}"
+export METIS_ABLATION_RELEASE="{release_root}"
+
+# Portage's parry partition defines no GPU gres, so the four MI300A APUs are
+# addressed by local task id rather than requested from Slurm. RANK and
+# LOCAL_RANK have to be resolved inside the step, because SLURM_PROCID only
+# exists per task -- exporting them from the batch shell would launch every
+# task as rank 0 against APU 0.
+srun --kill-on-bad-exit=1 bash -c '
+export RANK="$SLURM_PROCID"
+export LOCAL_RANK="$SLURM_LOCALID"
+exec python -m metis_ablation.train \\
+  --row '"'"'{row}'"'"' \\
+  --output "$METIS_ABLATION_OUTPUT" \\
+  --release-root "$METIS_ABLATION_RELEASE" \\
   --budget-tokens {budget_tokens} \\
   --seed {seed} \\
   --checkpoint-every {checkpoint_every} \\
   --analysis-every {analysis_every} \\
   --telemetry-every {telemetry_every}
+'
 """
 
 
@@ -213,6 +232,7 @@ def emit_slurm(
     analysis_every: int = 1_000,
     telemetry_every: int = 10,
     base_port: int = 29_500,
+    cpus_per_task: int = 48,
 ) -> list[Path]:
     specs = _wave_specs(wave)
     validate_allocation(specs)
@@ -241,6 +261,7 @@ def emit_slurm(
             repo_root=repo_root,
             master_port=base_port + spec.index,
             global_batch_tokens=GLOBAL_BATCH_TOKENS,
+            cpus_per_task=cpus_per_task,
         )
         path = destination / f"{spec.index:02d}-{spec.name}.sbatch"
         path.write_text(body, encoding="utf-8")
@@ -283,6 +304,7 @@ def emit_sweep(
     seed: int = 16_062_026,
     time_limit: str = "04:00:00",
     base_port: int = 29_700,
+    cpus_per_task: int = 48,
 ) -> list[Path]:
     """Emit the archetype learning-rate sweep as its own small wave."""
 
@@ -312,6 +334,7 @@ def emit_sweep(
                 repo_root=repo_root,
                 master_port=port,
                 global_batch_tokens=GLOBAL_BATCH_TOKENS,
+                cpus_per_task=cpus_per_task,
             )
             body = body.replace(
                 "  --telemetry-every 10",

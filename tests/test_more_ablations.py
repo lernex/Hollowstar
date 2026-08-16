@@ -657,6 +657,102 @@ def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
     assert "export WORLD_SIZE=28" in body
 
 
+def test_every_task_in_a_launcher_gets_its_own_rank_and_apu(tmp_path: Path):
+    """The step body, not the batch shell, must resolve RANK and LOCAL_RANK.
+
+    Exporting them from the batch shell is the failure this pins: SLURM_PROCID
+    only exists per task, so a batch-shell export launches every task as rank 0
+    against APU 0.  Both forms pass a string match for "RANK", so the launcher
+    is executed here with a stub ``srun`` that fans out four tasks and a stub
+    ``python`` that records what each one actually saw.
+    """
+
+    import subprocess
+
+    from metis_ablation.campaign import emit_slurm
+
+    emit_slurm(
+        tmp_path,
+        wave="1",
+        repo_root="/repo",
+        output_root=str(tmp_path / "out"),
+        release_root="/release",
+    )
+    body = (tmp_path / "wave1" / "10-more-core.sbatch").read_text()
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    recorded = tmp_path / "ranks.txt"
+    (bin_dir / "scontrol").write_text("#!/bin/bash\necho node0\n")
+    (bin_dir / "srun").write_text(
+        "#!/bin/bash\n"
+        # Drop srun's own flags; what remains is `bash -c <step body>`.
+        "while [[ \"$1\" == -* ]]; do shift; done\n"
+        "for i in 0 1 2 3; do\n"
+        f"  SLURM_PROCID=$i SLURM_LOCALID=$i \"$@\" || exit 1\n"
+        "done\n"
+    )
+    (bin_dir / "python").write_text(
+        "#!/bin/bash\n"
+        f"echo \"${{RANK:-unset}} ${{LOCAL_RANK:-unset}}\" >> {recorded}\n"
+    )
+    for stub in bin_dir.iterdir():
+        stub.chmod(0o755)
+
+    runtime = tmp_path / "runtime.sh"
+    runtime.write_text("# no-op runtime for the test\n")
+
+    script = tmp_path / "row.sbatch"
+    script.write_text(body)
+    result = subprocess.run(
+        ["bash", str(script)],
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "METIS_ABLATION_RUNTIME": str(runtime),
+            "SLURM_JOB_NODELIST": "node[0-6]",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    seen = [line.split() for line in recorded.read_text().split("\n") if line.strip()]
+    assert seen == [["0", "0"], ["1", "1"], ["2", "2"], ["3", "3"]], seen
+
+
+def test_launchers_do_not_request_a_gpu_gres(tmp_path: Path):
+    """Portage's parry partition defines no GPU gres; asking for one is fatal.
+
+    ``sbatch --gpus-per-task=1`` is rejected outright there ("Invalid generic
+    resource (gres) specification"), so the four MI300A APUs on a node are
+    addressed by local task id instead.
+    """
+
+    from metis_ablation.campaign import emit_slurm, emit_sweep
+
+    written = emit_slurm(
+        tmp_path,
+        wave="1",
+        repo_root="/repo",
+        output_root="/out",
+        release_root="/release",
+    )
+    written += emit_sweep(
+        tmp_path,
+        repo_root="/repo",
+        output_root="/out",
+        release_root="/release",
+    )
+    for path in written:
+        if path.suffix != ".sbatch":
+            continue
+        body = path.read_text()
+        assert "--gpus-per-task" not in body, path.name
+        assert "--gres" not in body, path.name
+        # Four tasks per node is what maps a task onto an APU.
+        assert "#SBATCH --ntasks-per-node=4" in body, path.name
+
+
 def test_sweep_covers_every_archetype_at_every_rate(tmp_path: Path):
     from metis_ablation.campaign import (
         SWEEP_ARCHETYPES,
