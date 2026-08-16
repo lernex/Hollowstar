@@ -403,5 +403,56 @@ class ScheduleDigestTests(unittest.TestCase):
         self.assertEqual(_verify_schedule_digests([]), [])
 
 
+class ReleaseManifestPointerTests(unittest.TestCase):
+    """A released manifest has to be loadable from the release."""
+
+    def test_every_pointer_the_loader_resolves_is_copied_by_release(self) -> None:
+        """The release copies siblings the manifest names; miss one and the
+        released manifest resolves against a directory that lacks it.
+
+        `context_extension_plan_file` was added beside `replacement_policy_file`
+        and only the latter was copied, so the release stage failed reading its
+        own output after every other stage had already succeeded.
+        """
+
+        import re
+
+        from metis_data.stage_runner import _MANIFEST_POINTER_FILES
+
+        source = (
+            Path(__file__).resolve().parents[1] / "src" / "metis_data" / "manifest.py"
+        ).read_text(encoding="utf-8")
+        resolved = set(re.findall(r'manifest\.get\("(\w+_file)"\)', source))
+        copied = {key for key, _ in _MANIFEST_POINTER_FILES}
+        self.assertTrue(
+            resolved,
+            "no *_file pointer keys found in manifest.py; the pattern moved",
+        )
+        self.assertEqual(
+            resolved - copied,
+            set(),
+            "manifest.py resolves a sibling file the release does not copy",
+        )
+
+    def test_the_real_manifest_names_files_that_exist(self) -> None:
+        from metis_data.config import repository_root
+        from metis_data.manifest import load_manifest
+        from metis_data.stage_runner import _MANIFEST_POINTER_FILES
+
+        manifests = repository_root() / "manifests"
+        manifest = load_manifest(manifests / "metis-1.6.yaml")
+        named = 0
+        for key, _released_name in _MANIFEST_POINTER_FILES:
+            pointer = manifest.get(key)
+            if not pointer:
+                continue
+            named += 1
+            self.assertTrue(
+                (manifests / str(pointer)).is_file(),
+                f"{key} names a file that is not in the repository: {pointer}",
+            )
+        self.assertGreater(named, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

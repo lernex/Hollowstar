@@ -227,6 +227,14 @@ _ATTESTATION_ONLY_GATES = frozenset(
     }
 )
 
+# Manifest keys naming a sibling file that load_manifest resolves relative to
+# the manifest's own directory. A release copies the manifest, so it must copy
+# these beside it or the released manifest cannot be loaded from the release.
+_MANIFEST_POINTER_FILES = (
+    ("replacement_policy_file", "replacements.yaml"),
+    ("context_extension_plan_file", "context-extension.yaml"),
+)
+
 # Scheduler keys that change how work is divided or buffered but cannot change
 # what the work produces. Everything else in the scheduler block stays bound,
 # including finder_tasks and bucket counts, which decide how records shard and
@@ -4527,16 +4535,22 @@ def _release(profile: dict[str, Any]) -> dict[str, Any]:
         shutil.copy2(source, release_tokenizer / name)
     shutil.copy2(Path(manifest["_path"]), release_manifests / "metis-1.6.yaml")
     manifest_repository = repository_root() / "manifests"
-    replacement_policy_file = manifest.get("replacement_policy_file")
-    if replacement_policy_file or manifest.get("replacement_policy"):
-        replacement_policy_path = manifest_repository / str(
-            replacement_policy_file or "replacements.yaml"
-        )
-        if not replacement_policy_path.is_file():
+    # load_manifest resolves every one of these relative to the manifest's own
+    # directory, so a release that copies the manifest without them produces a
+    # manifest that cannot be re-loaded from the release. Driven off the keys
+    # rather than written out once each: the context-extension plan was added
+    # beside the replacement policy and only the replacement policy was copied,
+    # and nothing noticed until the release stage read its own output.
+    for pointer_key, released_name in _MANIFEST_POINTER_FILES:
+        pointer = manifest.get(pointer_key)
+        if not pointer:
+            continue
+        pointer_path = manifest_repository / str(pointer)
+        if not pointer_path.is_file():
             raise RuntimeError(
-                f"Replacement policy is missing from the repository: {replacement_policy_path}"
+                f"Manifest {pointer_key} is missing from the repository: {pointer_path}"
             )
-        shutil.copy2(replacement_policy_path, release_manifests / "replacements.yaml")
+        shutil.copy2(pointer_path, release_manifests / released_name)
     for subdirectory in ("sources", "contamination", "registries", "licenses"):
         source_directory = manifest_repository / subdirectory
         if source_directory.exists():
