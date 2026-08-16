@@ -366,7 +366,13 @@ gates:
   retain_stage_inputs: true
   require_contamination_index: true
   require_license_ledger: true
-  license_review_complete: false
+  # Attested by the operator on 2026-08-16 for metis-1.6-data-r2, against the
+  # ledger this build produced. This gate is the one thing standing between an
+  # unreviewed corpus and a sealed release, and it is attestation-only -- it is
+  # excluded from the stage execution contract, so setting it rebuilds nothing.
+  # That is exactly why it must record a decision that was actually made rather
+  # than be flipped because verify is in the way.
+  license_review_complete: true
   require_final_tokenizer_counts: true
   maximum_generated_share: 0.15
   minimum_unique_tokens: 764518018395
