@@ -61,6 +61,8 @@ from .context_extension import (
     build_context_selection,
     context_group_id,
     initialize_context_arrays,
+    measure_context_availability,
+    merge_context_availability,
     pack_context_evaluation,
     pack_context_task,
     structural_evidence,
@@ -2810,6 +2812,28 @@ def _token_count_contract(
         cache_name="token-count-input-inventory.json",
     )
     tokenizer_contract = _production_tokenizer_contract(profile)
+    # The token-count outputs were re-hashed one file at a time inside the
+    # per-task loop below, another 1.2TB on the same single core. They are as
+    # frozen as their inputs, so verify them from the same cached, parallel
+    # inventory rather than re-reading them for every context stage.
+    output_paths = [
+        token_root / f"task-{index:06d}.jsonl.zst"
+        for index in range(expected_tasks)
+    ]
+    absent = [path.name for path in output_paths if not path.is_file()]
+    if absent:
+        raise RuntimeError(
+            f"Token-count outputs are missing: {sorted(absent)[:8]}"
+        )
+    output_inventory = {
+        str(row["path"]): row
+        for row in _cached_file_inventory(
+            output_paths,
+            relative_to=token_root,
+            state=state,
+            cache_name="token-count-output-inventory.json",
+        )
+    }
     task_contracts: list[dict[str, Any]] = []
     reports: list[dict[str, Any]] = []
     observed_inputs: list[dict[str, Any]] = []
@@ -2829,11 +2853,25 @@ def _token_count_contract(
                 f"Token-count report {task_index} is stale or not bound to the final corpus"
             )
         output_record = dict(report.get("output_artifact") or {})
-        output_path = _require_inventory_file(
-            token_root,
-            output_record,
-            f"token-count output {task_index}",
-        )
+        relative_output = str(output_record.get("path", ""))
+        output_path = (token_root / relative_output).resolve()
+        try:
+            output_path.relative_to(token_root.resolve())
+        except ValueError as exc:
+            raise RuntimeError(
+                f"token-count output {task_index} escapes its declared root: "
+                f"{output_record}"
+            ) from exc
+        observed_output = output_inventory.get(relative_output)
+        if (
+            observed_output is None
+            or int(observed_output["size"]) != int(output_record.get("size", -1))
+            or observed_output["sha256"] != output_record.get("sha256")
+        ):
+            raise RuntimeError(
+                f"token-count output {task_index} is missing or changed: "
+                f"{output_path}"
+            )
         expected_output = token_root / f"task-{task_index:06d}.jsonl.zst"
         if output_path != expected_output.resolve():
             raise RuntimeError(
@@ -2872,14 +2910,108 @@ def _token_count_contract(
     return payload, reports
 
 
+def _measure_token_count_shard(
+    task: tuple[str, list[str], int, int],
+) -> dict[str, Any]:
+    path, source_ids, minimum_long, minimum_score = task
+    return measure_context_availability(
+        _iter_rows(Path(path)),
+        source_ids=set(source_ids),
+        minimum_long=minimum_long,
+        minimum_score=minimum_score,
+    )
+
+
 class _RestartableTokenCountRows:
-    def __init__(self, token_root: Path, tasks: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        token_root: Path,
+        tasks: list[dict[str, Any]],
+        *,
+        cache_path: Path | None = None,
+        workers: int = 0,
+    ) -> None:
         self.token_root = token_root
         self.tasks = tasks
+        self.cache_path = cache_path
+        self.workers = workers or min(48, (os.cpu_count() or 8))
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         for task in self.tasks:
             yield from _iter_rows(self.token_root / task["output"]["path"])
+
+    def _shard_paths(self) -> list[Path]:
+        return [
+            self.token_root / task["output"]["path"] for task in self.tasks
+        ]
+
+    def measure_availability(
+        self,
+        *,
+        source_ids: set[str],
+        minimum_long: int,
+        minimum_score: int,
+    ) -> dict[str, Any]:
+        """Measure supply across shards at once instead of one core at a time.
+
+        The first pass of selection reads 1.2TB of token counts to add up
+        integers per source. It ran as one ordered stream on one core of a
+        192-core node, about two and a half hours. Nothing in the arithmetic
+        depends on the order, and the shards are frozen by the time selection
+        runs, so this fans the identical rule out per shard and adds up the
+        results. The digest of the inputs is what the cache is keyed on, so a
+        rerun after a later failure does not pay for it twice.
+        """
+
+        fingerprint = _json_sha256(
+            {
+                "shards": [
+                    {
+                        "path": str(task["output"]["path"]),
+                        "sha256": str(task["output"]["sha256"]),
+                    }
+                    for task in self.tasks
+                ],
+                "source_ids": sorted(source_ids),
+                "minimum_long": int(minimum_long),
+                "minimum_score": int(minimum_score),
+            }
+        )
+        if self.cache_path is not None and self.cache_path.is_file():
+            cached = json.loads(self.cache_path.read_text(encoding="utf-8"))
+            if cached.get("fingerprint") == fingerprint:
+                return {
+                    "total_available": {
+                        str(key): int(value)
+                        for key, value in cached["total_available"].items()
+                    },
+                    "long_available": {
+                        str(key): int(value)
+                        for key, value in cached["long_available"].items()
+                    },
+                    "documents": int(cached["documents"]),
+                }
+        ordered = sorted(source_ids)
+        payloads = [
+            (str(path), ordered, int(minimum_long), int(minimum_score))
+            for path in self._shard_paths()
+        ]
+        workers = max(1, min(self.workers, len(payloads)))
+        if workers == 1:
+            parts = [_measure_token_count_shard(row) for row in payloads]
+        else:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                # One shard per unit of work. Each takes seconds, so the
+                # dispatch cost is noise, while any larger chunk quantises the
+                # wall clock to the slowest group and leaves workers idle.
+                parts = list(pool.map(_measure_token_count_shard, payloads))
+        merged = merge_context_availability(parts)
+        if self.cache_path is not None:
+            atomic_json(
+                self.cache_path,
+                {"fingerprint": fingerprint, **merged},
+            )
+        return merged
 
 
 def _context_output_root(profile: dict[str, Any]) -> Path:
@@ -3018,7 +3150,9 @@ def _context_select(profile: dict[str, Any]) -> dict[str, Any]:
         return payload
     token_root = root / directories["token_counts"]
     records = _RestartableTokenCountRows(
-        token_root, [dict(row) for row in token_contract["tasks"]]
+        token_root,
+        [dict(row) for row in token_contract["tasks"]],
+        cache_path=output_root / "AVAILABILITY.json",
     )
     payload = build_context_selection(
         records,

@@ -29,6 +29,7 @@ from metis_data.context_extension import (
     allocate_context_replacements,
     build_context_pack_plan,
     build_context_selection,
+    measure_context_availability,
     context_evaluation_domain_targets,
     context_lane_quota_rows,
     structural_evidence,
@@ -1820,6 +1821,125 @@ class ParallelCpuBuildTests(unittest.TestCase):
                 failing["index"] = -1
                 self.assertEqual(group(40, 8, 48)[0], 0)
                 self.assertTrue(state.is_complete("normalize", "task-000042"))
+
+
+class ContextAvailabilityMeasurementTests(unittest.TestCase):
+    """The parallel first pass must agree with the reference one exactly."""
+
+    SOURCES = ("alpha", "beta", "gamma")
+
+    def _rows(self, count: int) -> list[dict]:
+        rows = []
+        for index in range(count):
+            source = self.SOURCES[index % len(self.SOURCES)]
+            rows.append(
+                {
+                    "source_id": source,
+                    "doc_id": f"doc-{index}",
+                    "token_count": (index * 977) % 20_000,
+                    "context_structure": {"score": index % 6},
+                }
+            )
+        # Rows selection must ignore: unknown source, and zero/absent tokens.
+        rows.append({"source_id": "unknown", "token_count": 50_000})
+        rows.append({"source_id": "alpha", "token_count": 0})
+        rows.append({"source_id": "beta"})
+        return rows
+
+    def _write_shards(self, root: Path, rows: list[dict], shards: int) -> list[dict]:
+        import zstandard as zstd
+
+        root.mkdir(parents=True, exist_ok=True)
+        tasks = []
+        for index in range(shards):
+            path = root / f"task-{index:06d}.jsonl.zst"
+            chunk = rows[index::shards]
+            raw = "".join(json.dumps(row) + "\n" for row in chunk)
+            path.write_bytes(zstd.ZstdCompressor(level=1).compress(raw.encode()))
+            tasks.append(
+                {
+                    "output": {
+                        "path": path.name,
+                        "size": path.stat().st_size,
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }
+                }
+            )
+        return tasks
+
+    def test_parallel_measurement_equals_the_serial_rule(self) -> None:
+        rows = self._rows(4_000)
+        source_ids = set(self.SOURCES)
+        serial = measure_context_availability(
+            rows,
+            source_ids=source_ids,
+            minimum_long=8192,
+            minimum_score=3,
+        )
+        self.assertTrue(serial["documents"] > 0 and serial["long_available"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tasks = self._write_shards(root / "counts", rows, shards=7)
+            records = stage_runner._RestartableTokenCountRows(
+                root / "counts",
+                tasks,
+                cache_path=root / "AVAILABILITY.json",
+                workers=4,
+            )
+            # Streaming the same shards must reproduce the row set, so the
+            # reference driver over the stream is the control.
+            streamed = measure_context_availability(
+                records,
+                source_ids=source_ids,
+                minimum_long=8192,
+                minimum_score=3,
+            )
+            parallel = records.measure_availability(
+                source_ids=source_ids,
+                minimum_long=8192,
+                minimum_score=3,
+            )
+        self.assertEqual(streamed, serial)
+        self.assertEqual(parallel, serial)
+
+    def test_measurement_cache_is_keyed_on_the_inputs(self) -> None:
+        rows = self._rows(600)
+        source_ids = set(self.SOURCES)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tasks = self._write_shards(root / "counts", rows, shards=3)
+            cache = root / "AVAILABILITY.json"
+            records = stage_runner._RestartableTokenCountRows(
+                root / "counts", tasks, cache_path=cache, workers=2
+            )
+            first = records.measure_availability(
+                source_ids=source_ids, minimum_long=8192, minimum_score=3
+            )
+            self.assertTrue(cache.is_file())
+
+            # A different threshold is a different question and must not be
+            # answered from the cache.
+            stricter = records.measure_availability(
+                source_ids=source_ids, minimum_long=16384, minimum_score=3
+            )
+            self.assertNotEqual(stricter["long_available"], first["long_available"])
+
+            # A changed shard digest must invalidate it too.
+            poisoned = [
+                {"output": {**task["output"], "sha256": "0" * 64}}
+                for task in tasks
+            ]
+            stale = stage_runner._RestartableTokenCountRows(
+                root / "counts", poisoned, cache_path=cache, workers=2
+            )
+            self.assertEqual(
+                stale.measure_availability(
+                    source_ids=source_ids, minimum_long=8192, minimum_score=3
+                ),
+                first,
+                "recomputing must still produce the truth",
+            )
 
 
 class FileInventoryCacheTests(unittest.TestCase):

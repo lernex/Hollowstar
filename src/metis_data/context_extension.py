@@ -792,6 +792,77 @@ def _route_fragment(
         offset += take
 
 
+def measure_context_availability(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    source_ids: set[str],
+    minimum_long: int,
+    minimum_score: int,
+) -> dict[str, Any]:
+    """Aggregate per-source supply from one ordered run of token-count rows.
+
+    This is the whole of selection's first pass, kept in one function because
+    a fast driver runs it per shard across processes while the reference
+    driver runs it over the stream. Two copies of this rule would be two rules.
+    Every value is an integer sum, so merging per-shard results is exact and
+    order-independent.
+    """
+
+    total_available: dict[str, int] = defaultdict(int)
+    long_available: dict[str, int] = defaultdict(int)
+    documents = 0
+    for raw in rows:
+        source_id = str(raw.get("source_id") or "")
+        if source_id not in source_ids:
+            continue
+        tokens = int(raw.get("token_count", 0))
+        evidence = raw.get("context_structure")
+        score = (
+            int(evidence.get("score", -1))
+            if isinstance(evidence, Mapping)
+            else -1
+        )
+        if tokens <= 0:
+            continue
+        total_available[source_id] += tokens
+        if tokens >= minimum_long and score >= minimum_score:
+            long_available[source_id] += tokens
+        documents += 1
+    return {
+        "total_available": dict(total_available),
+        "long_available": dict(long_available),
+        "documents": documents,
+    }
+
+
+def merge_context_availability(
+    parts: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    total_available: dict[str, int] = defaultdict(int)
+    long_available: dict[str, int] = defaultdict(int)
+    documents = 0
+    for part in parts:
+        for source_id, tokens in part["total_available"].items():
+            total_available[str(source_id)] += int(tokens)
+        for source_id, tokens in part["long_available"].items():
+            long_available[str(source_id)] += int(tokens)
+        documents += int(part["documents"])
+    return {
+        "total_available": dict(total_available),
+        "long_available": dict(long_available),
+        "documents": documents,
+    }
+
+
+def _measure(records: Any) -> Any:
+    """Use the record source's own fast measurement when it offers one."""
+
+    fast = getattr(records, "measure_availability", None)
+    if callable(fast):
+        return lambda _records, **kwargs: fast(**kwargs)
+    return lambda rows, **kwargs: measure_context_availability(rows, **kwargs)
+
+
 def build_context_selection(
     records: Iterable[Mapping[str, Any]],
     *,
@@ -820,26 +891,15 @@ def build_context_selection(
     source_ids = set(source_domains)
     minimum_long = int(plan["selection"]["minimum_long_document_tokens"])
     minimum_score = int(plan["selection"]["minimum_structural_score"])
-    total_available: dict[str, int] = defaultdict(int)
-    long_available: dict[str, int] = defaultdict(int)
-    documents = 0
-    for raw in records:
-        source_id = str(raw.get("source_id") or "")
-        if source_id not in source_ids:
-            continue
-        tokens = int(raw.get("token_count", 0))
-        evidence = raw.get("context_structure")
-        score = (
-            int(evidence.get("score", -1))
-            if isinstance(evidence, Mapping)
-            else -1
-        )
-        if tokens <= 0:
-            continue
-        total_available[source_id] += tokens
-        if tokens >= minimum_long and score >= minimum_score:
-            long_available[source_id] += tokens
-        documents += 1
+    measurement = _measure(records)(
+        records,
+        source_ids=source_ids,
+        minimum_long=minimum_long,
+        minimum_score=minimum_score,
+    )
+    total_available = defaultdict(int, measurement["total_available"])
+    long_available = defaultdict(int, measurement["long_available"])
+    documents = int(measurement["documents"])
 
     quota_rows = context_lane_quota_rows(plan)
     long_requirements = [
