@@ -675,7 +675,6 @@ def _task_identity(tasks: int | None, task: int | None) -> tuple[int, int]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     from .config import load_profile
-    from .state import StageState
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True)
@@ -768,10 +767,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 json.loads(path.read_text(encoding="utf-8"))["shards"]
             )
         sealed = seal(payload, measured, output_root)
-        state = StageState(
-            Path(profile["storage"]["lustre_root"])
-            / profile["storage"]["directories"]["state"]
-        )
+        from .stage_runner import _paths
+
+        _, state = _paths(profile)
         state.complete("select", "task-000000", sealed)
         print(
             f"sealed {len(sealed['shards'])} shards, "

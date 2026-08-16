@@ -34,29 +34,33 @@ export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
 
 NODES="${SLURM_JOB_NUM_NODES:-1}"
+CORES="${SLURM_CPUS_ON_NODE:-1}"
 EXTRACT_WORKERS="${METIS_SELECT_EXTRACT_WORKERS:-96}"
-MATERIALISE_WORKERS="${METIS_SELECT_MATERIALISE_WORKERS:-64}"
+MATERIALISE_WORKERS="${METIS_SELECT_MATERIALISE_WORKERS:-16}"
 CONCAT_WORKERS="${METIS_SELECT_CONCAT_WORKERS:-16}"
-GROUPS="${METIS_SELECT_GROUPS:-512}"
+GROUPS="${METIS_SELECT_GROUPS:-256}"
 BUFFER_GIB="${METIS_SELECT_BUFFER_GIB:-3}"
 
 PLAN_ROOT="$("$PYTHON" - "$PROFILE" <<'PY'
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(sys.argv[0]).resolve()))
 from metis_data.config import load_profile
 profile = load_profile(Path(sys.argv[1]))
 storage = profile["storage"]
 print(Path(storage["lustre_root"]) / storage["directories"]["selected"] / "plan")
 PY
 )"
-echo "plan root: $PLAN_ROOT"
+echo "plan root: $PLAN_ROOT ($NODES nodes, $CORES cores each)"
 
 run_phase() {
   local phase="$1"
   shift
   echo "=== $phase on $NODES node(s) at $(date -Is) ==="
-  srun --nodes="$NODES" --ntasks="$NODES" --ntasks-per-node=1 --exclusive \
+  # One task per node, and that task must be able to reach every core on it:
+  # the default step allocation is a single CPU, which would quietly confine a
+  # 96-worker pool to one core and undo the entire point of this.
+  srun --nodes="$NODES" --ntasks="$NODES" --ntasks-per-node=1 \
+    --cpus-per-task="$CORES" --cpu-bind=none \
     "$PYTHON" -m metis_data.select_parallel \
     --profile "$PROFILE" --phase "$phase" --tasks "$NODES" "$@"
 }
