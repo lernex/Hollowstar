@@ -1822,5 +1822,111 @@ class ParallelCpuBuildTests(unittest.TestCase):
                 self.assertTrue(state.is_complete("normalize", "task-000042"))
 
 
+class FileInventoryCacheTests(unittest.TestCase):
+    """The digest cache that keeps the context stages off a 1.4TB re-read."""
+
+    def _corpus(self, root: Path, count: int = 5) -> list[Path]:
+        root.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for index in range(count):
+            path = root / f"shard-{index:03d}.jsonl"
+            path.write_text(f"payload-{index}\n", encoding="utf-8")
+            paths.append(path)
+        return sorted(paths)
+
+    def test_cache_reproduces_full_hashing_and_stops_rereading(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            corpus = base / "final"
+            paths = self._corpus(corpus)
+            state = StateStore(base / "state")
+            expected = [
+                stage_runner._file_inventory(path, relative_to=corpus)
+                for path in paths
+            ]
+
+            reads: list[str] = []
+            real = stage_runner.sha256_file
+
+            def counting(path: Path) -> str:
+                reads.append(str(path))
+                return real(path)
+
+            with mock.patch.object(stage_runner, "sha256_file", counting):
+                cold = stage_runner._cached_file_inventory(
+                    paths,
+                    relative_to=corpus,
+                    state=state,
+                    cache_name="inv.json",
+                )
+                self.assertEqual(len(reads), len(paths))
+                reads.clear()
+                warm = stage_runner._cached_file_inventory(
+                    paths,
+                    relative_to=corpus,
+                    state=state,
+                    cache_name="inv.json",
+                )
+                self.assertEqual(reads, [], "a warm cache must not re-hash")
+
+            # The whole point is that the contract is unchanged, so the cached
+            # inventory has to be byte-identical to the fully hashed one.
+            self.assertEqual(cold, expected)
+            self.assertEqual(warm, expected)
+
+    def test_changed_input_is_rehashed_not_trusted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            corpus = base / "final"
+            paths = self._corpus(corpus)
+            state = StateStore(base / "state")
+            stage_runner._cached_file_inventory(
+                paths, relative_to=corpus, state=state, cache_name="inv.json"
+            )
+
+            victim = paths[2]
+            # Same length, so only the digest and the mtime can betray it.
+            victim.write_text("PAYLOAD-2\n", encoding="utf-8")
+            os.utime(victim, ns=(1, 1))
+
+            refreshed = stage_runner._cached_file_inventory(
+                paths, relative_to=corpus, state=state, cache_name="inv.json"
+            )
+            truth = [
+                stage_runner._file_inventory(path, relative_to=corpus)
+                for path in paths
+            ]
+            self.assertEqual(refreshed, truth)
+
+    def test_cache_is_rejected_when_it_describes_another_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            corpus = base / "final"
+            paths = self._corpus(corpus)
+            state = StateStore(base / "state")
+            stage_runner._cached_file_inventory(
+                paths, relative_to=corpus, state=state, cache_name="inv.json"
+            )
+            cached = state.read("inv.json")
+            cached["root"] = str(base / "somewhere-else")
+            state.write("inv.json", payload=cached)
+
+            reads: list[str] = []
+            real = stage_runner.sha256_file
+
+            def counting(path: Path) -> str:
+                reads.append(str(path))
+                return real(path)
+
+            with mock.patch.object(stage_runner, "sha256_file", counting):
+                stage_runner._cached_file_inventory(
+                    paths,
+                    relative_to=corpus,
+                    state=state,
+                    cache_name="inv.json",
+                )
+            self.assertEqual(len(reads), len(paths))
+
+
 if __name__ == "__main__":
     unittest.main()

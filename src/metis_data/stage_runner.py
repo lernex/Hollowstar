@@ -482,6 +482,83 @@ def _file_inventory(path: Path, *, relative_to: Path) -> dict[str, Any]:
     }
 
 
+_INVENTORY_CACHE_SCHEMA = "metis.file-inventory-cache/v1"
+
+
+def _cached_file_inventory(
+    paths: Sequence[Path],
+    *,
+    relative_to: Path,
+    state: StateStore,
+    cache_name: str,
+) -> list[dict[str, Any]]:
+    """Inventory immutable inputs without re-reading the ones already hashed.
+
+    The contract this feeds is rebuilt on every context stage so that changed
+    inputs are caught, and rebuilding it hashed 1.4TB each time -- 96 of those
+    in context_pack alone, to recompute answers about a corpus that is frozen
+    by then. Reuse a digest only when the file's size and nanosecond mtime are
+    both unchanged, so the rebuilt contract is byte-identical to the one full
+    hashing produces and a genuinely different input still gets re-read.
+    """
+
+    cached = state.read(cache_name, default=None)
+    entries: dict[str, dict[str, Any]] = {}
+    if (
+        isinstance(cached, dict)
+        and cached.get("schema") == _INVENTORY_CACHE_SCHEMA
+        and str(cached.get("root")) == str(relative_to.resolve())
+        and isinstance(cached.get("entries"), dict)
+    ):
+        entries = {
+            str(key): dict(value)
+            for key, value in cached["entries"].items()
+            if isinstance(value, dict)
+        }
+    inventory: list[dict[str, Any]] = []
+    refreshed: dict[str, dict[str, Any]] = {}
+    base = relative_to.resolve()
+    misses = 0
+    for path in paths:
+        resolved = path.resolve()
+        try:
+            relative = str(resolved.relative_to(base))
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Artifact escapes its immutable root: {path}"
+            ) from exc
+        status = resolved.stat()
+        size = int(status.st_size)
+        mtime_ns = int(status.st_mtime_ns)
+        hit = entries.get(relative)
+        if (
+            hit is not None
+            and int(hit.get("size", -1)) == size
+            and int(hit.get("mtime_ns", -1)) == mtime_ns
+            and isinstance(hit.get("sha256"), str)
+        ):
+            digest = str(hit["sha256"])
+        else:
+            digest = sha256_file(resolved)
+            misses += 1
+        refreshed[relative] = {
+            "size": size,
+            "mtime_ns": mtime_ns,
+            "sha256": digest,
+        }
+        inventory.append({"path": relative, "size": size, "sha256": digest})
+    if misses or refreshed.keys() != entries.keys():
+        state.write(
+            cache_name,
+            payload={
+                "schema": _INVENTORY_CACHE_SCHEMA,
+                "root": str(base),
+                "entries": refreshed,
+            },
+        )
+    return inventory
+
+
 def _require_inventory_file(root: Path, record: dict[str, Any], label: str) -> Path:
     candidate = (root / str(record.get("path", ""))).resolve()
     try:
@@ -2714,9 +2791,12 @@ def _token_count_contract(
         and not path.name.endswith(".incomplete")
         and ".incomplete" not in path.parts
     )
-    expected_inventory = [
-        _file_inventory(path, relative_to=final_root) for path in final_paths
-    ]
+    expected_inventory = _cached_file_inventory(
+        final_paths,
+        relative_to=final_root,
+        state=state,
+        cache_name="token-count-input-inventory.json",
+    )
     tokenizer_contract = _production_tokenizer_contract(profile)
     task_contracts: list[dict[str, Any]] = []
     reports: list[dict[str, Any]] = []
