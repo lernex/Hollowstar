@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from bisect import bisect_left
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Mapping
 
 import zstandard as zstd
 
@@ -158,6 +159,80 @@ class _AppendPool:
         self.buffered = 0
 
 
+def schedule_row_payload(
+    record: Mapping[str, Any],
+    *,
+    token_start: int,
+    token_count: int,
+    replay: bool,
+    exposure: int,
+) -> dict[str, Any]:
+    """The one definition of a schedule row.
+
+    Selection can either materialise rows as it routes them or route first and
+    materialise later across many cores. Both paths call this, so a shard built
+    either way carries identical fields; a second hand-written copy of this
+    dict is exactly the drifting twin the 1.7 lessons warn about.
+    """
+
+    return {
+        "source_id": record["source_id"],
+        "quota_source_id": record.get("quota_source_id", record["source_id"]),
+        "replacement_for_source_id": record.get("replacement_for_source_id"),
+        "replacement": bool(record.get("replacement", False)),
+        "doc_id": record["doc_id"],
+        "text": record["text"],
+        "token_start": token_start,
+        "token_count": token_count,
+        "replay": replay,
+        "exposure": exposure,
+        "generated": bool(record.get("generated", False)),
+        "transformed": bool(record.get("transformed", False)),
+        "content_sha256": record.get("content_sha256"),
+        "text_sha256": record.get("text_sha256"),
+        "license": record.get("license"),
+        "license_status": record.get("license_status"),
+    }
+
+
+def shard_seed(source_id: str, doc_id: str, replay: bool) -> int:
+    return int.from_bytes(
+        hashlib.sha256(f"{source_id}\0{doc_id}\0{int(replay)}".encode()).digest()[:8],
+        "big",
+    )
+
+
+class _RowSink:
+    """Compress selected rows into their shard as routing decides them."""
+
+    def __init__(self) -> None:
+        self.pool = _AppendPool(maximum_open=48)
+
+    def emit(
+        self,
+        shard: "ScheduleShard",
+        record: Mapping[str, Any],
+        *,
+        token_start: int,
+        token_count: int,
+        replay: bool,
+        exposure: int,
+    ) -> None:
+        self.pool.write(
+            shard.path,
+            schedule_row_payload(
+                record,
+                token_start=token_start,
+                token_count=token_count,
+                replay=replay,
+                exposure=exposure,
+            ),
+        )
+
+    def close(self) -> None:
+        self.pool.close()
+
+
 @dataclass
 class ScheduleShard:
     phase: str
@@ -169,10 +244,23 @@ class ScheduleShard:
 
 
 class ScheduleWriter:
-    def __init__(self, root: Path, phase_targets: dict[str, int], shard_tokens: int) -> None:
+    def __init__(
+        self,
+        root: Path,
+        phase_targets: dict[str, int],
+        shard_tokens: int,
+        *,
+        sink: Any | None = None,
+        reset: bool = True,
+    ) -> None:
         self.root = root
-        self.pool = _AppendPool(maximum_open=48)
+        self.sink = sink if sink is not None else _RowSink()
         self.shards: dict[str, list[ScheduleShard]] = {}
+        # Indices of the shards that still have room, per phase, kept sorted so
+        # the forward scan for the first non-full shard stays logarithmic. The
+        # readable form rescanned up to 555 shards per write and did it again
+        # for every fragment of a straddling document.
+        self._open: dict[str, list[int]] = {}
         global_index = 0
         for phase in PHASES:
             remaining = phase_targets[phase]
@@ -181,12 +269,31 @@ class ScheduleWriter:
             while remaining:
                 target = min(shard_tokens, remaining)
                 path = root / phase.replace("_", "-") / f"shard-{phase_index:05d}.jsonl.zst"
-                path.unlink(missing_ok=True)
+                if reset:
+                    path.unlink(missing_ok=True)
                 phase_shards.append(ScheduleShard(phase, phase_index, global_index, target, path))
                 remaining -= target
                 phase_index += 1
                 global_index += 1
             self.shards[phase] = phase_shards
+            self._open[phase] = list(range(len(phase_shards)))
+
+    def _first_open(self, phase: str, start: int) -> ScheduleShard:
+        """The first shard with room at or after ``start``, wrapping once."""
+
+        open_indices = self._open[phase]
+        if not open_indices:
+            raise RuntimeError(f"Phase {phase} schedule is already full")
+        position = bisect_left(open_indices, start)
+        if position == len(open_indices):
+            position = 0
+        return self.shards[phase][open_indices[position]]
+
+    def _retire(self, shard: ScheduleShard) -> None:
+        open_indices = self._open[shard.phase]
+        position = bisect_left(open_indices, shard.phase_index)
+        if position < len(open_indices) and open_indices[position] == shard.phase_index:
+            open_indices.pop(position)
 
     def write(
         self,
@@ -200,46 +307,32 @@ class ScheduleWriter:
     ) -> None:
         remaining = token_count
         offset = token_start
-        seed = int.from_bytes(hashlib.sha256(f"{record['source_id']}\0{record['doc_id']}\0{int(replay)}".encode()).digest()[:8], "big")
-        phase_shards = self.shards[phase]
-        start = seed % len(phase_shards)
+        seed = record.get("_shard_seed_replay" if replay else "_shard_seed_unique")
+        if seed is None:
+            seed = shard_seed(str(record["source_id"]), str(record["doc_id"]), replay)
+        start = seed % len(self.shards[phase])
         while remaining:
-            target_shard = None
-            for step in range(len(phase_shards)):
-                candidate = phase_shards[(start + step) % len(phase_shards)]
-                if candidate.written_tokens < candidate.target_tokens:
-                    target_shard = candidate
-                    break
-            if target_shard is None:
-                raise RuntimeError(f"Phase {phase} schedule is already full")
+            target_shard = self._first_open(phase, start)
             take = min(remaining, target_shard.target_tokens - target_shard.written_tokens)
-            self.pool.write(
-                target_shard.path,
-                {
-                    "source_id": record["source_id"],
-                    "quota_source_id": record.get("quota_source_id", record["source_id"]),
-                    "replacement_for_source_id": record.get("replacement_for_source_id"),
-                    "replacement": bool(record.get("replacement", False)),
-                    "doc_id": record["doc_id"],
-                    "text": record["text"],
-                    "token_start": offset,
-                    "token_count": take,
-                    "replay": replay,
-                    "exposure": exposure,
-                    "generated": bool(record.get("generated", False)),
-                    "transformed": bool(record.get("transformed", False)),
-                    "content_sha256": record.get("content_sha256"),
-                    "text_sha256": record.get("text_sha256"),
-                    "license": record.get("license"),
-                    "license_status": record.get("license_status"),
-                },
+            self.sink.emit(
+                target_shard,
+                record,
+                token_start=offset,
+                token_count=take,
+                replay=replay,
+                exposure=exposure,
             )
             target_shard.written_tokens += take
+            if target_shard.written_tokens == target_shard.target_tokens:
+                self._retire(target_shard)
             remaining -= take
             offset += take
 
     def close(self) -> list[dict[str, Any]]:
-        self.pool.close()
+        self.sink.close()
+        return self.verify(measure=True)
+
+    def verify(self, *, measure: bool) -> list[dict[str, Any]]:
         rows = []
         for phase in PHASES:
             for shard in self.shards[phase]:
@@ -247,17 +340,17 @@ class ScheduleWriter:
                     raise RuntimeError(
                         f"Selected shard {shard.path} has {shard.written_tokens:,} tokens, expected {shard.target_tokens:,}"
                     )
-                rows.append(
-                    {
-                        "phase": phase,
-                        "phase_index": shard.phase_index,
-                        "global_index": shard.global_index,
-                        "target_tokens": shard.target_tokens,
-                        "path": str(shard.path),
-                        "size": shard.path.stat().st_size,
-                        "sha256": _sha256_file(shard.path),
-                    }
-                )
+                row = {
+                    "phase": phase,
+                    "phase_index": shard.phase_index,
+                    "global_index": shard.global_index,
+                    "target_tokens": shard.target_tokens,
+                    "path": str(shard.path),
+                }
+                if measure:
+                    row["size"] = shard.path.stat().st_size
+                    row["sha256"] = _sha256_file(shard.path)
+                rows.append(row)
         return rows
 
 
@@ -270,6 +363,32 @@ def _iter_zstd(path: Path) -> Iterator[dict[str, Any]]:
                         yield json.loads(line)
 
 
+class _MemoryPool:
+    """A pool that keeps records in memory under the same interface.
+
+    Planning reruns the identical routing loop over records that carry no text,
+    so the fallback and replay pools never need to reach Lustre. Matching
+    ``_AppendPool``'s surface keeps one routing implementation rather than two.
+    """
+
+    def __init__(self) -> None:
+        self.rows: dict[Path, list[dict[str, Any]]] = {}
+
+    def write(self, path: Path, payload: dict[str, Any]) -> None:
+        # Planning reuses one record dict per row, so the pool has to take its
+        # own copy the way the serialising pool implicitly does.
+        self.rows.setdefault(path, []).append(dict(payload))
+
+    def exists(self, path: Path) -> bool:
+        return path in self.rows
+
+    def read(self, path: Path) -> Iterator[dict[str, Any]]:
+        return iter(self.rows.get(path, ()))
+
+    def close(self) -> None:
+        return None
+
+
 def build_selection(
     records: Iterable[dict[str, Any]],
     *,
@@ -279,18 +398,21 @@ def build_selection(
     shard_tokens: int,
     token_count_contract_sha256: str | None = None,
     tokenizer_contract: dict[str, Any] | None = None,
+    planner: Any | None = None,
 ) -> dict[str, Any]:
+    planning = planner is not None
     replay = replay_quotas(manifest)
     unique = unique_quotas(manifest, replay)
     output_root.mkdir(parents=True, exist_ok=True)
     replay_pool_root = output_root / "replay-pool"
     fallback_root = output_root / "selection-fallback"
-    if replay_pool_root.exists():
-        for stale in replay_pool_root.glob("*.jsonl.zst"):
-            stale.unlink()
-    if fallback_root.exists():
-        for stale in fallback_root.glob("*.jsonl.zst"):
-            stale.unlink()
+    if not planning:
+        if replay_pool_root.exists():
+            for stale in replay_pool_root.glob("*.jsonl.zst"):
+                stale.unlink()
+        if fallback_root.exists():
+            for stale in fallback_root.glob("*.jsonl.zst"):
+                stale.unlink()
     replacement_allocation = allocate_replacements(
         manifest,
         requirements=unique,
@@ -314,13 +436,19 @@ def build_selection(
         for source_id, target in required_actual.items()
     }
     assignment_cursor = {source_id: 0 for source_id in assignments}
-    replay_pool = _AppendPool(maximum_open=24)
-    fallback_pool = _AppendPool(maximum_open=24)
+    replay_pool = _MemoryPool() if planning else _AppendPool(maximum_open=24)
+    fallback_pool = _MemoryPool() if planning else _AppendPool(maximum_open=24)
     phase_targets = {
         phase: int(manifest["schedule"]["phases"][phase]["target_tokens"])
         for phase in PHASES
     }
-    schedule = ScheduleWriter(output_root / "schedule", phase_targets, shard_tokens)
+    schedule = ScheduleWriter(
+        output_root / "schedule",
+        phase_targets,
+        shard_tokens,
+        sink=planner,
+        reset=not planning,
+    )
     seed = int(manifest["selection"]["seed"])
     unique_written = {source: {phase: 0 for phase in PHASES} for source in unique}
     actual_source_unique_written = {
@@ -391,21 +519,33 @@ def build_selection(
             assignments[source_id]
         ):
             continue
-        if _stable_fraction(source_id, record["doc_id"], seed) > thresholds[source_id]:
+        fraction = record.get("_frac")
+        if fraction is None:
+            fraction = _stable_fraction(source_id, record["doc_id"], seed)
+        if fraction > thresholds[source_id]:
             fallback_pool.write(fallback_root / f"{source_id}.jsonl.zst", record)
             continue
         consume(record)
     fallback_pool.close()
 
-    for source_id, source_assignments in assignments.items():
+    for order, (source_id, source_assignments) in enumerate(assignments.items()):
         if all(int(row["remaining"]) <= 0 for row in source_assignments):
             continue
         fallback_path = fallback_root / f"{source_id}.jsonl.zst"
-        if fallback_path.exists():
-            for record in _iter_zstd(fallback_path):
+        if planning:
+            planner.begin_bucket(1, order, 0)
+            available = fallback_pool.exists(fallback_path)
+            stream = fallback_pool.read(fallback_path)
+        else:
+            available = fallback_path.exists()
+            stream = _iter_zstd(fallback_path) if available else iter(())
+        if available:
+            for record in stream:
                 consume(record)
                 if all(int(row["remaining"]) <= 0 for row in source_assignments):
                     break
+    if planning:
+        planner.begin_bucket(0, 0, 0)
     replay_pool.close()
     short = {
         source_id: [
@@ -424,22 +564,28 @@ def build_selection(
         raise RuntimeError(
             f"Deterministic replacement selection was short of assigned targets: {short}"
         )
-    for path in fallback_root.glob("*.jsonl.zst") if fallback_root.exists() else []:
-        path.unlink()
-    if fallback_root.exists():
-        fallback_root.rmdir()
+    if not planning:
+        for path in fallback_root.glob("*.jsonl.zst") if fallback_root.exists() else []:
+            path.unlink()
+        if fallback_root.exists():
+            fallback_root.rmdir()
 
     replay_written = {source: {phase: 0 for phase in PHASES} for source in replay}
     maximum_exposures = int(manifest["selection"]["replay"]["maximum_document_exposures"])
-    for source_id, quotas in replay.items():
+    for order, (source_id, quotas) in enumerate(replay.items()):
         if sum(quotas.values()) == 0:
             continue
         pool_path = replay_pool_root / f"{source_id}.jsonl.zst"
-        if not pool_path.exists():
+        if not (replay_pool.exists(pool_path) if planning else pool_path.exists()):
             raise RuntimeError(f"Replay pool is missing for {source_id}")
         remaining = dict(quotas)
         for exposure in range(1, maximum_exposures):
-            for record in _iter_zstd(pool_path):
+            if planning:
+                planner.begin_bucket(2, order, exposure)
+            stream = (
+                replay_pool.read(pool_path) if planning else _iter_zstd(pool_path)
+            )
+            for record in stream:
                 available = int(record["token_count"])
                 consumed = 0
                 for phase in ("phase_b", "phase_c"):
@@ -466,21 +612,11 @@ def build_selection(
                 break
         if sum(remaining.values()):
             raise RuntimeError(f"Replay cap of {maximum_exposures} exposures cannot satisfy {source_id}: {remaining}")
-    shards = schedule.close()
-    schedule_contract = [
-        {
-            key: shard[key]
-            for key in (
-                "phase",
-                "phase_index",
-                "global_index",
-                "target_tokens",
-                "size",
-                "sha256",
-            )
-        }
-        for shard in shards
-    ]
+    if planning:
+        planner.close()
+        shards = schedule.verify(measure=False)
+    else:
+        shards = schedule.close()
     payload = {
         "schema": "metis.selection-release/v2",
         "created_at": utc_now(),
@@ -498,8 +634,31 @@ def build_selection(
         "token_count_contract_sha256": token_count_contract_sha256,
         "tokenizer_contract": tokenizer_contract,
         "phase_tokens": phase_targets,
-        "schedule_manifest_sha256": _json_sha256(schedule_contract),
         "shards": shards,
     }
+    if planning:
+        # The shard bytes do not exist yet; the parallel builder seals the
+        # manifest once its workers have materialised and hashed them.
+        return payload
+    payload["schedule_manifest_sha256"] = seal_schedule_manifest(shards)
     atomic_json(output_root / "SELECTION.json", payload)
     return payload
+
+
+def seal_schedule_manifest(shards: Iterable[Mapping[str, Any]]) -> str:
+    return _json_sha256(
+        [
+            {
+                key: shard[key]
+                for key in (
+                    "phase",
+                    "phase_index",
+                    "global_index",
+                    "target_tokens",
+                    "size",
+                    "sha256",
+                )
+            }
+            for shard in shards
+        ]
+    )

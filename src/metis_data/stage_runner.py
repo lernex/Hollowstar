@@ -3412,15 +3412,37 @@ def _select(profile: dict[str, Any]) -> dict[str, Any]:
         for task in token_contract["tasks"]:
             yield from _iter_rows(token_root / task["output"]["path"])
 
-    payload = build_selection(
-        records(),
-        manifest=manifest,
-        eligible_tokens=eligible_tokens,
-        output_root=output_root,
-        shard_tokens=int(profile["storage"]["final_shard_tokens"]),
-        token_count_contract_sha256=sha256_file(token_contract_path),
-        tokenizer_contract=token_contract["tokenizer_contract"],
-    )
+    if os.environ.get("METIS_SELECT_PARALLEL") == "1":
+        # Opt-in so a queued job keeps the behaviour it was submitted with.
+        # Routing still runs once, in order, on one core; only the decompress,
+        # re-serialise and compress work fans out over the node.
+        from .select_parallel import build_selection_parallel
+
+        token_root = root / directories["token_counts"]
+        payload = build_selection_parallel(
+            [
+                token_root / str(task["output"]["path"])
+                for task in sorted(
+                    token_contract["tasks"], key=lambda row: int(row["task_index"])
+                )
+            ],
+            manifest=manifest,
+            eligible_tokens=eligible_tokens,
+            output_root=output_root,
+            shard_tokens=int(profile["storage"]["final_shard_tokens"]),
+            token_count_contract_sha256=sha256_file(token_contract_path),
+            tokenizer_contract=token_contract["tokenizer_contract"],
+        )
+    else:
+        payload = build_selection(
+            records(),
+            manifest=manifest,
+            eligible_tokens=eligible_tokens,
+            output_root=output_root,
+            shard_tokens=int(profile["storage"]["final_shard_tokens"]),
+            token_count_contract_sha256=sha256_file(token_contract_path),
+            tokenizer_contract=token_contract["tokenizer_contract"],
+        )
     state.complete("select", "task-000000", payload)
     return payload
 
