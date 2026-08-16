@@ -22,7 +22,7 @@ site:
 
 storage:
   lustre_root: ${METIS_LUSTRE_ROOT:-/lus/lustre1/vollmerc/metis-1.6}
-  release_root: ${METIS_DATA_RELEASE:-/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r1}
+  release_root: ${METIS_DATA_RELEASE:-/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r2}
   posttraining_release_index: ${METIS_POSTTRAINING_RELEASE_INDEX:-}
   state_root: ${METIS_PORTAGE_STATE_ROOT:-/lus/lustre1/vollmerc/metis-1.6/training/metis-1.6/portage}
 

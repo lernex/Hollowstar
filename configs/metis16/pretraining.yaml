@@ -1,6 +1,6 @@
 schema: metis.pretraining-contract/v1
 model: metis-1.6
-data_release: metis-1.6-data-r1
+data_release: metis-1.6-data-r2
 require_verified_release: true
 token_dtype: uint16
 tokenizer_vocabulary_size: 65536
@@ -64,7 +64,7 @@ continued_pretraining:
   token_counter: globally_emitted_non_padding_tokens
   optimizer_state: preserve
   # Separate corpus, separate schema, separate acquisition. It is deliberately
-  # not part of data_release: metis-1.6-data-r1.
+  # not part of data_release: metis-1.6-data-r2.
   data_env: METIS_CONTEXT_EXTENSION_DATA
   data_schema: metis.context-extension-data/v1
   in_pretraining_release: false
