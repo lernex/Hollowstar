@@ -268,6 +268,15 @@ scaling measured **3.06% MFU** against **2.81%** for delayed scaling. This is a
 runtime policy, not a model change; checkpointed weights load across the two
 recipes without missing or unexpected state.
 
+Later recurrent passes also use **geometrically bucketed active-token
+capacities**. Exact compaction gave Mamba and mHC a nearly unique sequence
+length after every stochastic halting decision, so compilation and kernel
+selection were rarely amortized. Eight capacities per octave bound dummy
+padding at 12.5%; padding is masked, placed after all real tokens, and assigned
+its own document reset, so it cannot affect causal real-token outputs. A
+differential test pins bucketed and exact packing to the same loss, hidden
+states, and chosen depths.
+
 ## 6. Learning rate and hyperparameters
 
 One learning rate across architectures of different active widths is not fair;

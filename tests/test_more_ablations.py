@@ -82,6 +82,17 @@ def test_ablation_fp8_uses_current_scaling_without_moving_production():
     assert load_family_config("logos").precision.fp8_scaling == "delayed"
 
 
+def test_ablation_buckets_active_tokens_without_moving_production():
+    ablation = spec_by_name("more-core").model_config(
+        mhc_backend="torch_reference",
+        mamba_backend="torch_reference",
+        attention_backend="torch_reference",
+    )
+    assert ablation.active_token_bucket_shift == 3
+    assert load_family_config("praxis").active_token_bucket_shift is None
+    assert load_family_config("logos").active_token_bucket_shift is None
+
+
 # --------------------------------------------------------------------------
 # ladder invariants
 

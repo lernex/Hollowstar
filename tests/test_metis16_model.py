@@ -213,6 +213,62 @@ def test_forced_depth_is_exact_and_active_sets_are_monotonic() -> None:
     assert int(output.telemetry["packed_continuation_enabled"]) == 1
 
 
+def test_bucketed_active_tokens_preserve_the_exact_model_result() -> None:
+    base = replace(
+        Metis16Config.tiny_for_tests(),
+        activation_recompute_policy="pass",
+    )
+    exact = Metis16ForCausalLM(base, dtype=torch.float32).train()
+    bucketed = Metis16ForCausalLM(
+        replace(base, active_token_bucket_shift=0),
+        dtype=torch.float32,
+    ).train()
+    bucketed.load_state_dict(exact.state_dict())
+    input_ids, labels, reset_mask = _batch(base)
+    forced_depth = torch.tensor(
+        [
+            [1, 3, 1, 2, 1, 3, 1, 2],
+            [2, 1, 3, 1, 2, 1, 3, 1],
+        ]
+    )
+    kwargs = {
+        "labels": labels,
+        "reset_mask": reset_mask,
+        "force_depth": forced_depth,
+        "curriculum": _fixed_curriculum(2),
+        "return_logits": False,
+    }
+    reference = exact(input_ids, **kwargs)
+    observed = bucketed(input_ids, **kwargs)
+    torch.testing.assert_close(observed.loss, reference.loss, rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(
+        observed.final_hidden_state,
+        reference.final_hidden_state,
+        rtol=1e-5,
+        atol=1e-6,
+    )
+    assert torch.equal(observed.chosen_depths, reference.chosen_depths)
+    assert int(observed.telemetry["packed_continuation_padding_tokens"]) > 0
+    (reference.loss + reference.auxiliary_loss).backward()
+    (observed.loss + observed.auxiliary_loss).backward()
+    for (left_name, left), (right_name, right) in zip(
+        exact.named_parameters(),
+        bucketed.named_parameters(),
+        strict=True,
+    ):
+        assert left_name == right_name
+        if left.grad is None or right.grad is None:
+            assert left.grad is None and right.grad is None, left_name
+            continue
+        torch.testing.assert_close(
+            right.grad,
+            left.grad,
+            rtol=1e-5,
+            atol=1e-6,
+            msg=lambda message, name=left_name: f"{name}: {message}",
+        )
+
+
 def test_chunked_loss_matches_explicit_logits_and_uses_aligned_labels() -> None:
     config = replace(Metis16Config.tiny_for_tests(), lm_head_chunk_size=3)
     model = Metis16ForCausalLM(config, dtype=torch.float32).eval()
