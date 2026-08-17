@@ -4214,6 +4214,9 @@ class RecurrentDepthMemory(nn.Module):
         return fused, summary, weights
 
 
+_CONTINUATION_LOGIT_LIMIT = 4.0
+
+
 class ContinuationController(nn.Module):
     def __init__(
         self,
@@ -4263,6 +4266,28 @@ class ContinuationController(nn.Module):
         # Learned logits remain free to override it from task-loss credit.
         token_difficulty = torch.tanh(innovation / state_scale).detach()
         logits = logits + token_difficulty - 0.5
+        # Keep the gate in the part of the sigmoid that still has a derivative.
+        # More depth always lowers the loss, so an unbounded logit runs away
+        # within a few steps; once it does, the sigmoid saturates, its gradient
+        # vanishes, and nothing can bring the policy back -- no budget penalty,
+        # at any multiplier, because the multiplier scales a gradient that is
+        # already zero. Measured on the campaign: the width policy, which is a
+        # softmax over eight choices, converges on its target from 7.35 to 3.45
+        # in fifty steps, while the depth policy pins at the maximum by step ten
+        # and stays there with the identical controller attached.
+        #
+        # Clamped in the forward, transparent in the backward. A smooth
+        # squashing function does not work here: tanh saturates too, so bounding
+        # the logit that way merely moves the vanishing derivative from one
+        # function to the next. Passing the gradient straight through keeps a
+        # finite slope no matter how far the logit has run, so a budget penalty
+        # can always pull it back, while the forward probability stays at 0.982
+        # -- a mean depth of 4.91 out of 5, which is every policy the model
+        # could otherwise reach.
+        bounded = logits.clamp(
+            -_CONTINUATION_LOGIT_LIMIT, _CONTINUATION_LOGIT_LIMIT
+        )
+        logits = logits + (bounded - logits).detach()
         return torch.sigmoid(logits)
 
 

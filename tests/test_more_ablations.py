@@ -327,6 +327,48 @@ def test_grouped_expert_execution_matches_the_loop_exactly():
     torch.testing.assert_close(left.loss, right.loss, rtol=1e-5, atol=1e-6)
 
 
+def test_the_halting_gate_keeps_a_gradient_when_it_saturates():
+    """A gate the budget cannot move is a budget that does not exist.
+
+    More depth always lowers the loss, so the continuation logit runs away
+    within a few steps. Unbounded, the sigmoid then saturates and its
+    derivative goes to zero -- and a Lagrange multiplier scales a gradient, so
+    once that gradient is zero no multiplier at any size can bring the policy
+    back. That is the whole explanation for the campaign's asymmetry: the width
+    policy is a softmax over eight choices and converges on its target from
+    7.35 to 3.45 in fifty steps, while the depth policy pins at the maximum by
+    step ten with the identical controller attached.
+
+    So the gate must still respond when it is pushed hard. This drives it far
+    past saturation and asserts that the derivative survives.
+    """
+
+    torch.manual_seed(3)
+    model = Metis16ForCausalLM(_tiny())
+    controller = model.continuation
+    width = controller.hidden.in_features
+    generator = torch.Generator().manual_seed(8)
+    features = torch.randn(6, width, generator=generator)
+    pieces = torch.split(
+        features,
+        [
+            model.config.d_model,
+            model.config.memory_dim,
+            model.config.d_model,
+            width - 2 * model.config.d_model - model.config.memory_dim,
+        ],
+        dim=-1,
+    )
+    with torch.no_grad():
+        controller.output.bias.fill_(60.0)
+    probability = controller(*pieces)
+    assert float(probability.mean().detach()) > 0.9, "the gate should be saturated here"
+    gradient = torch.autograd.grad(probability.sum(), controller.output.bias)[0]
+    assert float(gradient.abs().sum()) > 1e-4, (
+        "the saturated gate has no gradient left for a budget to act on"
+    )
+
+
 def test_budget_controller_binds_against_a_loss_that_rewards_more_compute():
     """More depth always lowers the loss, so only a binding budget stops it.
 
