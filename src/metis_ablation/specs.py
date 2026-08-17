@@ -601,6 +601,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         apus=28, micro_batch=4, grad_accum=4,
         ffn_mode="dense",
         dense_ffn_intermediate_dim=_DENSE_RECURSIVE_INTERMEDIATE,
+        continuation_mode="budgeted",
         depth_memory=False,
     ),
     AblationSpec(
@@ -609,6 +610,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         title="MoR + fixed-k MoE",
         isolates="DEPTH: adaptive depth against row 5's fixed depth",
         apus=28, micro_batch=4, grad_accum=4,
+        continuation_mode="budgeted",
         routed_k_mode="fixed", fixed_routed_k=4,
         depth_memory=False,
     ),
@@ -619,6 +621,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         isolates="WIDTH: adaptive k against row 5's fixed k",
         apus=28, micro_batch=4, grad_accum=4,
         continuation_mode="fixed_max", curriculum_max_passes=2,
+        routed_k_mode="budgeted",
         depth_memory=False,
     ),
     AblationSpec(
@@ -630,6 +633,8 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         # Holding the global batch fixed while halving accumulation amortizes
         # Python, recompute setup, and loader overhead over twice the tokens.
         apus=28, micro_batch=8, grad_accum=2,
+        continuation_mode="budgeted",
+        routed_k_mode="budgeted",
         depth_memory=False,
     ),
     AblationSpec(
@@ -638,6 +643,8 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         title="MoRE-RM",
         isolates="route-typed recurrent depth memory",
         apus=32, micro_batch=2, grad_accum=7,
+        continuation_mode="budgeted",
+        routed_k_mode="budgeted",
         depth_memory=True,
     ),
     AblationSpec(
@@ -646,6 +653,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         title="Random-k control",
         isolates="is the LEARNED width policy doing anything?",
         apus=28, micro_batch=4, grad_accum=4,
+        continuation_mode="budgeted",
         routed_k_mode="random",
         depth_memory=False,
         notes="Maximum-entropy width distribution at the same mean budget.",
@@ -657,6 +665,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         isolates="is the LEARNED depth policy doing anything?",
         apus=28, micro_batch=4, grad_accum=4,
         continuation_mode="random",
+        routed_k_mode="budgeted",
         depth_memory=False,
         notes="Memoryless halt tuned to the same mean depth.",
     ),

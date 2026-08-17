@@ -177,6 +177,18 @@ def test_pathway_rows_are_exactly_matched():
     assert cost("loop-fixed") == cost("loop-pathway-frozen")
 
 
+def test_learned_rows_use_exact_budgeted_depth_and_width():
+    assert spec_by_name("mor-dense-ffn").continuation_mode == "budgeted"
+    assert spec_by_name("mor-fixed-k").continuation_mode == "budgeted"
+    assert spec_by_name("fixed-depth-adaptive-k").routed_k_mode == "budgeted"
+    assert spec_by_name("more-core").continuation_mode == "budgeted"
+    assert spec_by_name("more-core").routed_k_mode == "budgeted"
+    assert spec_by_name("more-rm").continuation_mode == "budgeted"
+    assert spec_by_name("more-rm").routed_k_mode == "budgeted"
+    assert spec_by_name("random-k").continuation_mode == "budgeted"
+    assert spec_by_name("random-depth").routed_k_mode == "budgeted"
+
+
 def test_dense_controls_are_matched_to_their_stated_objective():
     report = dense_control_report()
     reference = report["more_core"]

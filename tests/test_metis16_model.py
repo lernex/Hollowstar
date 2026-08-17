@@ -15,6 +15,8 @@ from metis_training.model import (
     Metis16ForCausalLM,
     MetisProcessGroups,
     PLACEMENT_ROW_SHARDED_TABLE,
+    assign_budgeted_categories,
+    exact_budget_counts,
     sinkhorn_doubly_stochastic,
 )
 from metis_training.model_config import (
@@ -211,6 +213,50 @@ def test_forced_depth_is_exact_and_active_sets_are_monotonic() -> None:
     assert int(output.telemetry["executed_active_tokens"]) == int(forced_depth.sum())
     assert int(output.telemetry["dense_pass_fallback_tokens"]) == 0
     assert int(output.telemetry["packed_continuation_enabled"]) == 1
+
+
+def test_exact_budget_counts_are_noncollapsed_and_hit_the_mean() -> None:
+    counts = exact_budget_counts(range(1, 6), 2.0, 16_384)
+    assert sum(counts) == 16_384
+    assert sum((index + 1) * count for index, count in enumerate(counts)) == 32_768
+    assert sum(count > 0 for count in counts) >= 3
+
+
+def test_budgeted_categories_rank_tokens_at_an_exact_mean() -> None:
+    scores = torch.tensor([[0.8, -0.1, 0.4, 0.2, 0.9, 0.0, 0.7, 0.3]])
+    active = torch.ones_like(scores, dtype=torch.bool)
+    chosen = assign_budgeted_categories(
+        scores,
+        active,
+        values=range(1, 9),
+        mean=4.0,
+    )
+    assert int(chosen.sum()) == 32
+    assert int(chosen[0, scores.argmax()]) >= int(chosen[0, scores.argmin()])
+    assert torch.unique(chosen).numel() > 1
+
+
+def test_budgeted_depth_is_exact_noncollapsed_and_monotonic() -> None:
+    config = Metis16Config.tiny_for_tests()
+    model = Metis16ForCausalLM(config, dtype=torch.float32)
+    input_ids, labels, _reset_mask = _batch(config)
+    output = model(
+        input_ids,
+        labels,
+        curriculum=CurriculumState(
+            continuation_mode="budgeted",
+            routed_k_mode="budgeted",
+            stochastic_routing=False,
+            target_mean_depth=2.0,
+            target_mean_routed_k=2.0,
+        ),
+    )
+    assert float(output.telemetry["mean_depth"]) == pytest.approx(2.0)
+    assert float(output.telemetry["mean_routed_k"].detach()) == pytest.approx(2.0)
+    assert torch.unique(output.chosen_depths).numel() > 1
+    assert torch.all(output.active_masks[1:] <= output.active_masks[:-1])
+    assert float(model.depth_budget.multiplier) == 0.0
+    assert all(float(layer.moe.k_budget.multiplier) == 0.0 for layer in model.layers)
 
 
 def test_chunked_loss_matches_explicit_logits_and_uses_aligned_labels() -> None:

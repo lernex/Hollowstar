@@ -275,6 +275,14 @@ token order are unchanged. At the target depth on one Portage node, the larger
 micro-batch sustained about 9.4k tokens/s/APU against 8.2k for four sequences,
 while peaking below 95 GiB of the MI300A's 128 GiB unified HBM.
 
+The learned depth and width policies are **budgeted rankings**, not independent
+Bernoulli/Gumbel draws whose means are merely penalized. At every batch, the
+routers rank tokens while a maximum-entropy marginal supplies exact integer
+counts at mean depth 2 and mean k 4. This makes collapse to all-depth-1,
+all-depth-5, all-depth-2, or all-k-4 impossible without dictating *which* tokens
+receive the compute. Random-policy controls use the same marginals with random
+rankings, so learned-versus-random comparisons spend exactly the same compute.
+
 ## 6. Learning rate and hyperparameters
 
 One learning rate across architectures of different active widths is not fair;

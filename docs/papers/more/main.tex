@@ -224,10 +224,13 @@ This is a cheap eval-time ablation on a trained checkpoint: zero $\tau$ and
 re-measure the depth distribution.}
 
 \paragraph{Width.} A $k$-router emits logits over $\{k_{\min},\dots,\kmax\}$. Let
-$q_t^{(r)}$ be the softmax at temperature $\gamma$,
-$\hat{k}_t^{(r)} = \sum_j q_{t,j}^{(r)} k_j$ the expected count, and $k_t^{(r)}$
-the hard count (Gumbel straight-through during training, $\arg\max$ at
-inference). The hard count drives the packed dispatch exactly. The routed
+$q_t^{(r)}$ be the softmax at temperature $\gamma$ and
+$\hat{k}_t^{(r)} = \sum_j q_{t,j}^{(r)} k_j$ the expected count. The hard counts
+are assigned by ranking $\hat{k}$ within the batch under the maximum-entropy
+integer marginal whose mean is exactly $k^\star$. The hard count drives the
+packed dispatch exactly; easy/low-ranked tokens receive fewer experts and
+hard/high-ranked tokens receive more, while neither all-$k^\star$ nor an
+all-min/all-max collapse can satisfy the marginal. The routed
 contribution is scaled by a straight-through envelope
 \[
   \frac{k_t^{(r)} + \hat{k}_t^{(r)} - \operatorname{sg}[\hat{k}_t^{(r)}]}{\operatorname{sg}[k_t^{(r)}]},
@@ -235,6 +238,14 @@ contribution is scaled by a straight-through envelope
 identically one in the forward pass, but carrying gradient from the task loss
 into the $k$-router. This is what makes width a \emph{learned} decision rather
 than a scheduled one.
+
+\paragraph{Exact depth budget.} At every continuation boundary, the model ranks
+the active tokens by $p_t^{(r)}$. The number that survive is fixed by the
+maximum-entropy integer depth marginal with mean $d^\star=2$. Thus the router
+learns \emph{which} tokens deserve later passes while the batch budget fixes
+only \emph{how many}. Random-depth and random-$k$ controls use the identical
+marginals with random rankings, so learned-versus-random rows execute exactly
+the same hard compute.
 
 \paragraph{Pathway.} The expert router is re-evaluated at every pass from the
 updated state and current route features, so the selected coalition can change
@@ -249,23 +260,23 @@ story in ours. The expert-transition-matrix figure
 \[
   \mathcal{L} = \mathcal{L}_{\mathrm{LM}}
   + \lambda_k \big(\bar{\hat{k}} - k^\star\big)^2
-  + \lambda_d \big(\bar{d} - d^\star\big)^2
+  + \lambda_d \big(\bar{\hat{d}} - d^\star\big)^2
   + \lambda_z \mathcal{L}_z
   - \lambda_H \mathcal{H}\!\left[p^{(r)}\right],
 \]
-with $k^\star$, $d^\star$ the target mean width and depth. Expert load balancing
+with $k^\star$, $d^\star$ the exact hard marginal means; the quadratic terms
+calibrate the soft surrogates but do not enforce the hard budget. Expert load balancing
 uses the aux-loss-free selection-bias update \CITE{deepseekv3} rather than a
 balance loss, so the balancing objective is not fighting the width objective for
 control of the same router.
-\TODO{Report the coefficients and a sensitivity sweep. Two quadratic budget
-penalties pulling on a shared compute budget is the most fragile part of this
-design; the paper is stronger for saying so than for hoping nobody checks.}
+\TODO{Report the calibration coefficients and a sensitivity sweep.}
 
-\paragraph{Why one budget and not two.} \TODO{Argue explicitly. If depth and
-width are separately budgeted, the model can satisfy both without ever trading
-between them, and ``joint allocation'' becomes decoration. The depth--width
-correlation analysis in Section~\ref{sec:analysis} is the empirical test of
-whether real trading happens, and it is a test we can fail.}
+\paragraph{Why one budget and not two.} The current campaign fixes exact depth
+and width marginals separately. That proves learned allocation on both axes but
+does \emph{not} by itself prove a joint trade between them. The depth--width
+correlation analysis in Section~\ref{sec:analysis} is therefore a falsifier, not
+decoration; a true shared-cost controller remains required before the title's
+``one budget'' claim can be stated without qualification.
 
 % =====================================================================
 \section{MoRE-RM: route-typed recurrent depth memory}

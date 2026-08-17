@@ -402,15 +402,19 @@ class CurriculumState:
     def validate(self, config: Metis16Config) -> None:
         if self.continuation_mode not in {
             "adaptive",
+            "budgeted",
             "depth_one",
             "fixed_max",
             "random",
         }:
             raise ValueError(
-                "continuation_mode must be adaptive, depth_one, fixed_max, or random."
+                "continuation_mode must be adaptive, budgeted, depth_one, "
+                "fixed_max, or random."
             )
-        if self.routed_k_mode not in {"adaptive", "fixed", "random"}:
-            raise ValueError("routed_k_mode must be adaptive, fixed, or random.")
+        if self.routed_k_mode not in {"adaptive", "budgeted", "fixed", "random"}:
+            raise ValueError(
+                "routed_k_mode must be adaptive, budgeted, fixed, or random."
+            )
         if self.pathway_mode not in {"per_pass", "frozen"}:
             raise ValueError("pathway_mode must be per_pass or frozen.")
         if config.ffn_mode == "dense":
@@ -419,7 +423,12 @@ class CurriculumState:
                     "A dense feed-forward stack has no width or pathway decision; "
                     "leave routed_k_mode and pathway_mode at their defaults."
                 )
-        elif not config.min_routed_k <= self.fixed_routed_k <= config.max_routed_k:
+        elif (
+            self.routed_k_mode == "fixed"
+            and not config.min_routed_k
+            <= self.fixed_routed_k
+            <= config.max_routed_k
+        ):
             raise ValueError("fixed_routed_k is outside the model's routed-k bounds.")
         if self.max_passes is not None and not 1 <= self.max_passes <= config.max_passes:
             raise ValueError("curriculum max_passes is outside [1, config.max_passes].")
@@ -481,6 +490,90 @@ def max_entropy_categorical(values: Sequence[int], mean: float) -> tuple[float, 
     weights = [math.exp(lam * value - peak) for value in support]
     total = sum(weights)
     return tuple(weight / total for weight in weights)
+
+
+def exact_budget_counts(
+    values: Sequence[int],
+    mean: float,
+    total: int,
+) -> tuple[int, ...]:
+    """Integer maximum-entropy marginal with an exact total compute budget."""
+
+    support = tuple(int(value) for value in values)
+    if total < 0:
+        raise ValueError("total must be non-negative")
+    if not support:
+        raise ValueError("exact_budget_counts needs a non-empty support")
+    if total == 0:
+        return tuple(0 for _ in support)
+    probabilities = max_entropy_categorical(support, mean)
+    raw = [probability * total for probability in probabilities]
+    counts = [int(value) for value in raw]
+    remainder = total - sum(counts)
+    order = sorted(
+        range(len(support)),
+        key=lambda index: (raw[index] - counts[index], -index),
+        reverse=True,
+    )
+    for index in order[:remainder]:
+        counts[index] += 1
+
+    target_compute = int(round(float(mean) * total))
+    observed_compute = sum(value * count for value, count in zip(support, counts))
+    while observed_compute < target_compute:
+        for index in range(len(support) - 1):
+            if counts[index]:
+                counts[index] -= 1
+                counts[index + 1] += 1
+                observed_compute += support[index + 1] - support[index]
+                break
+        else:  # pragma: no cover - guarded by mean lying inside the support
+            raise RuntimeError("Could not raise the categorical compute budget")
+    while observed_compute > target_compute:
+        for index in range(len(support) - 1, 0, -1):
+            if counts[index]:
+                counts[index] -= 1
+                counts[index - 1] += 1
+                observed_compute -= support[index] - support[index - 1]
+                break
+        else:  # pragma: no cover - guarded by mean lying inside the support
+            raise RuntimeError("Could not lower the categorical compute budget")
+    return tuple(counts)
+
+
+def assign_budgeted_categories(
+    scores: Tensor,
+    active_mask: Tensor,
+    *,
+    values: Sequence[int],
+    mean: float,
+) -> Tensor:
+    """Give higher-scored active tokens larger categories at an exact mean."""
+
+    if scores.shape != active_mask.shape:
+        raise ValueError("scores and active_mask must have the same shape")
+    support = tuple(int(value) for value in values)
+    positions = torch.nonzero(active_mask.reshape(-1), as_tuple=False).flatten()
+    output = torch.full(
+        scores.shape,
+        support[0],
+        device=scores.device,
+        dtype=torch.long,
+    )
+    if positions.numel() == 0:
+        return output
+    counts = exact_budget_counts(support, float(mean), int(positions.numel()))
+    active_scores = scores.reshape(-1).index_select(0, positions)
+    order = torch.argsort(active_scores, stable=True)
+    sorted_positions = positions.index_select(0, order)
+    flat_output = output.reshape(-1)
+    start = 0
+    for value, count in zip(support, counts):
+        if count:
+            selected = sorted_positions[start : start + count]
+            flat_output.index_fill_(0, selected, value)
+        start += count
+    return output
 
 
 def geometric_continue_probability(max_passes: int, mean_depth: float) -> float:
@@ -2853,6 +2946,7 @@ class AdaptiveDroplessMoE(nn.Module):
     def _choose_k(
         self,
         logits: Tensor,
+        active_mask: Tensor,
         curriculum: CurriculumState,
         pass_index: int = 0,
     ) -> tuple[Tensor, Tensor, Tensor]:
@@ -2866,6 +2960,21 @@ class AdaptiveDroplessMoE(nn.Module):
         expected = torch.sum(probabilities * choices, dim=-1)
         if curriculum.routed_k_mode == "fixed":
             chosen = torch.full_like(expected, curriculum.fixed_routed_k, dtype=torch.long)
+        elif curriculum.routed_k_mode == "budgeted":
+            target = (
+                curriculum.target_mean_routed_k
+                if curriculum.target_mean_routed_k is not None
+                else self.config.target_mean_routed_k
+            )
+            chosen = assign_budgeted_categories(
+                expected.detach(),
+                active_mask,
+                values=range(
+                    self.config.min_routed_k,
+                    self.config.max_routed_k + 1,
+                ),
+                mean=float(target),
+            )
         elif curriculum.routed_k_mode == "random":
             # Same expected width as the learned policy, zero dependence on the
             # token.  ``expected`` is replaced by the constant target so the
@@ -2877,15 +2986,23 @@ class AdaptiveDroplessMoE(nn.Module):
                 else self.config.target_mean_routed_k
             )
             weights = self._random_k_weights(float(target), logits.device)
-            flat = torch.multinomial(
-                weights.expand(logits[..., 0].numel(), -1),
-                num_samples=1,
-                replacement=True,
+            random_scores = torch.rand(
+                expected.shape,
+                device=expected.device,
+                dtype=torch.float32,
                 generator=self._random_policy_generator(
                     curriculum, logits.device, pass_index
                 ),
-            ).squeeze(-1)
-            chosen = flat.view(logits.shape[:-1]) + self.config.min_routed_k
+            )
+            chosen = assign_budgeted_categories(
+                random_scores,
+                active_mask,
+                values=range(
+                    self.config.min_routed_k,
+                    self.config.max_routed_k + 1,
+                ),
+                mean=float(target),
+            )
             expected = torch.full_like(expected, float(target))
             probabilities = weights.expand_as(probabilities)
         elif self.training and curriculum.stochastic_routing:
@@ -3519,7 +3636,7 @@ class AdaptiveDroplessMoE(nn.Module):
             + token_difficulty.detach().unsqueeze(-1) * centered_choices
         )
         chosen_k, expected_k, _k_probabilities = self._choose_k(
-            k_logits, curriculum, pass_index
+            k_logits, active_mask, curriculum, pass_index
         )
         # ``pass_index`` is zero-based: the first pass through the shared stack
         # is 0, so pass one stores and every later pass reuses.
@@ -3663,9 +3780,18 @@ class AdaptiveDroplessMoE(nn.Module):
             if curriculum.target_mean_routed_k is not None
             else self.config.target_mean_routed_k
         )
-        k_budget = self.k_budget.penalty(
-            mean_expected_k, target=target_mean_k
-        ) * has_active
+        if curriculum.routed_k_mode == "budgeted":
+            k_budget = (
+                (mean_expected_k - float(target_mean_k)).square()
+                * self.config.k_budget_coefficient
+                * has_active
+            )
+        elif curriculum.routed_k_mode == "random":
+            k_budget = mean_expected_k * 0.0
+        else:
+            k_budget = self.k_budget.penalty(
+                mean_expected_k, target=target_mean_k
+            ) * has_active
         state = RouteState(
             summary=coalition,
             mean_k=chosen_k.float(),
@@ -4865,6 +4991,7 @@ class Metis16ForCausalLM(nn.Module):
         pass_index: int,
         curriculum: CurriculumState,
         force_depth: int | Tensor | None,
+        initial_token_count: int,
     ) -> Tensor:
         next_pass_number = pass_index + 2
         if force_depth is not None:
@@ -4878,29 +5005,41 @@ class Metis16ForCausalLM(nn.Module):
             decision = torch.zeros_like(active_mask)
         elif curriculum.continuation_mode == "fixed_max":
             decision = torch.ones_like(active_mask)
-        elif curriculum.continuation_mode == "random":
-            # Memoryless halt tuned to the same mean depth as the learned
-            # policy.  The continuation router still runs -- its parameters and
-            # its budget loss stay in the model so the comparison is
-            # parameter-matched -- but nothing it produces reaches this
-            # decision.
+        elif curriculum.continuation_mode in {"budgeted", "random"}:
             target = (
                 curriculum.target_mean_depth
                 if curriculum.target_mean_depth is not None
                 else self.config.target_mean_passes
             )
-            continue_probability = geometric_continue_probability(
-                self.config.max_passes, float(target)
+            depth_counts = exact_budget_counts(
+                range(1, self.config.max_passes + 1),
+                float(target),
+                int(initial_token_count),
             )
-            draws = torch.rand(
-                probability.shape,
-                device=probability.device,
-                dtype=torch.float32,
-                generator=self._random_depth_generator(
-                    curriculum, probability.device, pass_index
-                ),
-            )
-            decision = draws < continue_probability
+            desired = sum(depth_counts[next_pass_number - 1 :])
+            positions = torch.nonzero(
+                active_mask.reshape(-1), as_tuple=False
+            ).flatten()
+            desired = min(int(desired), int(positions.numel()))
+            decision = torch.zeros_like(active_mask)
+            if desired:
+                if curriculum.continuation_mode == "random":
+                    ranking = torch.rand(
+                        probability.shape,
+                        device=probability.device,
+                        dtype=torch.float32,
+                        generator=self._random_depth_generator(
+                            curriculum, probability.device, pass_index
+                        ),
+                    )
+                else:
+                    ranking = probability.detach()
+                scores = ranking.reshape(-1).index_select(0, positions)
+                selected = positions.index_select(
+                    0,
+                    torch.topk(scores, desired, sorted=False).indices,
+                )
+                decision.reshape(-1).index_fill_(0, selected, True)
         elif self.training and curriculum.stochastic_routing:
             decision = torch.rand_like(probability) < probability
         else:
@@ -6099,6 +6238,7 @@ class Metis16ForCausalLM(nn.Module):
                     pass_index=pass_index,
                     curriculum=curriculum_state,
                     force_depth=force_depth,
+                    initial_token_count=int(attention_mask.sum().item()),
                 )
                 soft_continue = continuation_probability * active_mask.float()
                 local_continue_gate = (
@@ -6149,19 +6289,27 @@ class Metis16ForCausalLM(nn.Module):
             if valid_expected_depth.numel()
             else expected_depth.sum() * 0.0
         )
+        target_mean_depth = (
+            curriculum_state.target_mean_depth
+            if curriculum_state.target_mean_depth is not None
+            else self.config.target_mean_passes
+        )
+        if curriculum_state.continuation_mode == "budgeted":
+            depth_budget = (
+                (mean_expected_depth - float(target_mean_depth)).square()
+                * self.config.depth_budget_coefficient
+            )
+        elif curriculum_state.continuation_mode == "random":
+            depth_budget = mean_expected_depth * 0.0
+        else:
+            depth_budget = self.depth_budget.penalty(
+                mean_expected_depth,
+                target=target_mean_depth,
+            )
         _add_loss(
             auxiliary_losses,
             "depth_budget",
-            self.depth_budget.penalty(
-                mean_expected_depth,
-                target=(
-                    curriculum_state.target_mean_depth
-                    if curriculum_state.target_mean_depth is not None
-                    else self.config.target_mean_passes
-                ),
-            )
-            if valid_expected_depth.numel()
-            else mean_expected_depth,
+            depth_budget if valid_expected_depth.numel() else mean_expected_depth,
         )
         final_hidden = self.final_norm(streams.mean(dim=-2))
         if return_logits is None:
@@ -6204,7 +6352,7 @@ class Metis16ForCausalLM(nn.Module):
         )
         adaptive_depth_enabled = (
             force_depth is None
-            and curriculum_state.continuation_mode == "adaptive"
+            and curriculum_state.continuation_mode in {"adaptive", "budgeted"}
             and effective_passes > 1
         )
         if adaptive_depth_enabled and valid_depths.numel():
