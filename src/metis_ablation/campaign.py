@@ -16,6 +16,7 @@ from typing import Any, Sequence
 from metis_training.metrics import MI300A_DENSE_PEAK_FLOPS, estimate_hardware_flops
 
 from .specs import (
+    scaled_ablation_ladder,
     ABLATION_LADDER,
     ALL_SPECS,
     SECOND_SEED,
@@ -34,7 +35,15 @@ DEFAULT_BUDGET_TOKENS = 50_000_000_000
 DEFAULT_MFU_BAND = (0.05, 0.10, 0.15)
 
 
-def _wave_specs(wave: str) -> tuple[AblationSpec, ...]:
+def _wave_specs(wave: str, scale: str | None = None) -> tuple[AblationSpec, ...]:
+    if scale:
+        # Carrying the whole ladder to a smaller geometry is an allocation
+        # decision, not a design one: every row moves together, so what the
+        # campaign compares is unchanged and only its point on the size axis
+        # moves. Wave 2 already reports that axis.
+        if wave not in {"1", "all"}:
+            raise SystemExit("--scale applies to wave 1, which is the ladder it rescales.")
+        return scaled_ablation_ladder(scale)
     if wave == "all":
         return ALL_SPECS
     try:
@@ -99,8 +108,9 @@ def plan(
     budget_tokens: int = DEFAULT_BUDGET_TOKENS,
     mfu_band: Sequence[float] = DEFAULT_MFU_BAND,
     total_apus: int = CAMPAIGN_APUS,
+    scale: str | None = None,
 ) -> dict[str, Any]:
-    specs = _wave_specs(wave)
+    specs = _wave_specs(wave, scale)
     if wave == "all":
         # Waves run one after another, so the machine constraint applies per
         # wave.  Validating the union would reject a campaign that fits fine.
@@ -241,8 +251,9 @@ def emit_slurm(
     telemetry_every: int = 10,
     base_port: int = 29_500,
     cpus_per_task: int = 48,
+    scale: str | None = None,
 ) -> list[Path]:
-    specs = _wave_specs(wave)
+    specs = _wave_specs(wave, scale)
     validate_allocation(specs)
     destination = destination / f"wave{wave}"
     destination.mkdir(parents=True, exist_ok=True)
@@ -415,11 +426,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     plan_parser = sub.add_parser("plan", help="Print the wave plan and cost model")
     plan_parser.add_argument("--wave", default="1", help="1, 2, 3, or all")
+    plan_parser.add_argument("--scale", default=None, choices=("xs", "xxs"), help="run wave 1 at a scaling-ladder geometry")
     plan_parser.add_argument("--budget-tokens", type=int, default=DEFAULT_BUDGET_TOKENS)
     plan_parser.add_argument("--json", action="store_true")
 
     slurm_parser = sub.add_parser("slurm", help="Emit sbatch files for the wave")
     slurm_parser.add_argument("--wave", default="1", help="1, 2, 3, or all")
+    slurm_parser.add_argument("--scale", default=None, choices=("xs", "xxs"), help="run wave 1 at a scaling-ladder geometry")
     slurm_parser.add_argument("--destination", required=True)
     slurm_parser.add_argument("--output-root", required=True)
     slurm_parser.add_argument("--release-root", required=True)
@@ -448,7 +461,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "plan":
-        payload = plan(wave=args.wave, budget_tokens=args.budget_tokens)
+        payload = plan(wave=args.wave, budget_tokens=args.budget_tokens, scale=args.scale)
         print(
             json.dumps(payload, indent=2, sort_keys=True)
             if args.json
@@ -480,6 +493,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         budget_tokens=args.budget_tokens,
         seed=args.seed,
         time_limit=args.time_limit,
+        scale=args.scale,
     )
     for path in written:
         print(path)

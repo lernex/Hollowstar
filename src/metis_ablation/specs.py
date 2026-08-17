@@ -670,6 +670,57 @@ _SCALE_GEOMETRIES: dict[str, dict[str, Any]] = {
 _SCALING_ARCHETYPES = ("dense-param-matched", "moe-k4", "more-core", "more-rm")
 
 
+def scaled_ablation_ladder(scale: str) -> tuple[AblationSpec, ...]:
+    """The whole wave-1 ladder at one of the scaling-ladder geometries.
+
+    Wave 2 already carries four archetypes down to XS and XXS; this carries all
+    thirteen rows, which is what an allocation window too small for the primary
+    geometry needs. Every row moves together -- ``d_model``, latent width, layer
+    count, expert count and the N-gram table all come from the same geometry --
+    so the comparison between rows is untouched. Only the point on the size axis
+    moves, and the campaign already treats that axis as something to report.
+
+    The dense controls are re-solved rather than rescaled. Their whole purpose
+    is to match MoRE's stored parameters or its executed FLOPs at the geometry
+    they actually run at, and a hand-scaled intermediate width would quietly
+    stop matching either.
+    """
+
+    if scale not in _SCALE_GEOMETRIES:
+        raise ValueError(f"Unknown scale {scale!r}; expected one of {sorted(_SCALE_GEOMETRIES)}.")
+    fields, _slots = _split_geometry(_SCALE_GEOMETRIES[scale])
+    geometry = dict(_SCALE_GEOMETRIES[scale])
+    dense_by_objective = {
+        ("stored", 1): _scaled_dense_intermediate(scale, "stored", 1),
+        ("flops", 1): _scaled_dense_intermediate(scale, "flops", 1),
+        ("flops", 2): _scaled_dense_intermediate(scale, "flops", 2),
+    }
+    scaled: list[AblationSpec] = []
+    for spec in ABLATION_LADDER:
+        overrides = dict(spec.config_overrides or {})
+        overrides.update(geometry)
+        dense_intermediate = spec.dense_ffn_intermediate_dim
+        if spec.ffn_mode == "dense":
+            # Which quantity this control matches is a property of the row, and
+            # it has to be re-solved at the new geometry to go on matching it.
+            if spec.name == "dense-param-matched":
+                key = ("stored", 1)
+            elif spec.continuation_mode == "depth_one":
+                key = ("flops", 1)
+            else:
+                key = ("flops", 2)
+            dense_intermediate = dense_by_objective[key]
+        scaled.append(
+            replace(
+                spec,
+                dense_ffn_intermediate_dim=dense_intermediate,
+                config_overrides=overrides,
+                notes=f"{spec.notes} Run at the {scale.upper()} geometry.",
+            )
+        )
+    return tuple(scaled)
+
+
 def _scaled_dense_intermediate(scale: str, objective: str, passes: int) -> int:
     fields, slots = _split_geometry(_SCALE_GEOMETRIES[scale])
     reference = proxy_config(
