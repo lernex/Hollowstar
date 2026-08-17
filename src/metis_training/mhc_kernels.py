@@ -28,6 +28,9 @@ else:
 MHC_CANARY_SCHEMA = "metis.mhc-fused-canary/v1"
 _N_STREAMS = 4
 _BLOCK_D = 256
+# Private accumulator slots for the mHC backward reductions. Large enough that
+# the grid rarely collides, small enough that the follow-up reduction is free.
+_MHC_PARTIAL_SLOTS = 2048
 
 
 def _canonical_sha256(payload: Mapping[str, Any], *, omit: Sequence[str] = ()) -> str:
@@ -248,10 +251,14 @@ if triton is not None:
         grad_matrix_ptr,
         grad_read_ptr,
         hidden_size,
+        partial_slots,
         BLOCK_D: tl.constexpr,
     ):
         token = tl.program_id(0)
         block = tl.program_id(1)
+        slot = (token * tl.num_programs(1) + block) % partial_slots
+        read_slot = grad_read_ptr + slot * _N_STREAMS_TL
+        matrix_slot = grad_matrix_ptr + slot * _N_STREAMS_TL * _N_STREAMS_TL
         offsets = block * BLOCK_D + tl.arange(0, BLOCK_D)
         mask = offsets < hidden_size
         stream_base = token * _N_STREAMS_TL * hidden_size + offsets
@@ -324,26 +331,26 @@ if triton is not None:
             grad_streams_ptr + stream_base + 3 * hidden_size, gx3, mask=mask
         )
 
-        tl.atomic_add(grad_read_ptr, tl.sum(gs * x0, axis=0))
-        tl.atomic_add(grad_read_ptr + 1, tl.sum(gs * x1, axis=0))
-        tl.atomic_add(grad_read_ptr + 2, tl.sum(gs * x2, axis=0))
-        tl.atomic_add(grad_read_ptr + 3, tl.sum(gs * x3, axis=0))
-        tl.atomic_add(grad_matrix_ptr, tl.sum(gm0 * x0, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 1, tl.sum(gm0 * x1, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 2, tl.sum(gm0 * x2, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 3, tl.sum(gm0 * x3, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 4, tl.sum(gm1 * x0, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 5, tl.sum(gm1 * x1, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 6, tl.sum(gm1 * x2, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 7, tl.sum(gm1 * x3, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 8, tl.sum(gm2 * x0, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 9, tl.sum(gm2 * x1, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 10, tl.sum(gm2 * x2, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 11, tl.sum(gm2 * x3, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 12, tl.sum(gm3 * x0, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 13, tl.sum(gm3 * x1, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 14, tl.sum(gm3 * x2, axis=0))
-        tl.atomic_add(grad_matrix_ptr + 15, tl.sum(gm3 * x3, axis=0))
+        tl.atomic_add(read_slot + 0, tl.sum(gs * x0, axis=0))
+        tl.atomic_add(read_slot + 1, tl.sum(gs * x1, axis=0))
+        tl.atomic_add(read_slot + 2, tl.sum(gs * x2, axis=0))
+        tl.atomic_add(read_slot + 3, tl.sum(gs * x3, axis=0))
+        tl.atomic_add(matrix_slot + 0, tl.sum(gm0 * x0, axis=0))
+        tl.atomic_add(matrix_slot + 1, tl.sum(gm0 * x1, axis=0))
+        tl.atomic_add(matrix_slot + 2, tl.sum(gm0 * x2, axis=0))
+        tl.atomic_add(matrix_slot + 3, tl.sum(gm0 * x3, axis=0))
+        tl.atomic_add(matrix_slot + 4, tl.sum(gm1 * x0, axis=0))
+        tl.atomic_add(matrix_slot + 5, tl.sum(gm1 * x1, axis=0))
+        tl.atomic_add(matrix_slot + 6, tl.sum(gm1 * x2, axis=0))
+        tl.atomic_add(matrix_slot + 7, tl.sum(gm1 * x3, axis=0))
+        tl.atomic_add(matrix_slot + 8, tl.sum(gm2 * x0, axis=0))
+        tl.atomic_add(matrix_slot + 9, tl.sum(gm2 * x1, axis=0))
+        tl.atomic_add(matrix_slot + 10, tl.sum(gm2 * x2, axis=0))
+        tl.atomic_add(matrix_slot + 11, tl.sum(gm2 * x3, axis=0))
+        tl.atomic_add(matrix_slot + 12, tl.sum(gm3 * x0, axis=0))
+        tl.atomic_add(matrix_slot + 13, tl.sum(gm3 * x1, axis=0))
+        tl.atomic_add(matrix_slot + 14, tl.sum(gm3 * x2, axis=0))
+        tl.atomic_add(matrix_slot + 15, tl.sum(gm3 * x3, axis=0))
 
 
     @triton.jit
@@ -576,13 +583,21 @@ class _MHCReadMixFunction(torch.autograd.Function):
         if grad_mixed is None:
             grad_mixed = torch.zeros_like(streams)
         grad_streams = torch.empty_like(streams)
+        # Every program instance contributes to the same twenty scalars -- four
+        # read weights and a four-by-four mix matrix. Adding straight into them
+        # serialises the whole grid on twenty words: at this geometry that is
+        # over two million atomics onto twenty addresses, and it is why this
+        # kernel measured 34 GB/s against an MI300A's several terabytes. Giving
+        # the grid a spread of private slots and reducing them afterwards costs
+        # a few hundred kilobytes and removes the contention.
+        slots = _MHC_PARTIAL_SLOTS
         grad_matrix_fp32 = torch.zeros(
-            (_N_STREAMS, _N_STREAMS),
+            (slots, _N_STREAMS, _N_STREAMS),
             device=streams.device,
             dtype=torch.float32,
         )
         grad_read_fp32 = torch.zeros(
-            (_N_STREAMS,),
+            (slots, _N_STREAMS),
             device=streams.device,
             dtype=torch.float32,
         )
@@ -597,12 +612,13 @@ class _MHCReadMixFunction(torch.autograd.Function):
             grad_matrix_fp32,
             grad_read_fp32,
             hidden_size,
+            slots,
             BLOCK_D=_BLOCK_D,
         )
         return (
             grad_streams.view(ctx.original_shape),
-            grad_matrix_fp32.to(matrix.dtype),
-            grad_read_fp32.to(read_weights.dtype),
+            grad_matrix_fp32.sum(dim=0).to(matrix.dtype),
+            grad_read_fp32.sum(dim=0).to(read_weights.dtype),
         )
 
 
