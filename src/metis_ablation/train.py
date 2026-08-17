@@ -18,13 +18,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import queue
+import threading
 import math
 import os
 import time
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 import torch
 import torch.distributed as dist
@@ -545,12 +547,14 @@ def _train_row_inner(
             )
 
             batches = (
-                sample_stream.micro_batches(
-                    step=step,
-                    rank=runtime.rank,
-                    world_size=runtime.world_size,
-                    micro_batch_size=spec.micro_batch,
-                    grad_accum=spec.grad_accum,
+                _PrefetchedBatches(
+                    sample_stream.micro_batches(
+                        step=step,
+                        rank=runtime.rank,
+                        world_size=runtime.world_size,
+                        micro_batch_size=spec.micro_batch,
+                        grad_accum=spec.grad_accum,
+                    )
                 )
                 if sample_stream is not None
                 else _synthetic_batches(
@@ -789,6 +793,51 @@ def _train_row_inner(
             json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
         )
     return summary
+
+
+class _PrefetchedBatches:
+    """Read the next micro-batch while the current one is still computing.
+
+    The sampler pulls a micro-batch out of the release when the training loop
+    asks for it, so every accumulation step began with a blocking Lustre read
+    and a host-to-device copy that nothing overlapped. Measured on the same row
+    at the same rank count: 43 s per optimizer step against the release and
+    21 s against synthetic batches. Half the campaign's wall clock was the
+    loader, and none of it was work.
+
+    One background thread runs one micro-batch ahead and pins its tensors, so
+    the copy the training loop still issues is from pinned memory and can
+    overlap. The thread only reads; it never touches the device, which keeps
+    every CUDA call on the loop's own thread and in the loop's own order.
+    """
+
+    _DONE = object()
+
+    def __init__(self, batches: Any, *, depth: int = 2) -> None:
+        self._queue: "queue.Queue[Any]" = queue.Queue(maxsize=max(1, depth))
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(
+            target=self._pump, args=(batches,), daemon=True
+        )
+        self._thread.start()
+
+    def _pump(self, batches: Any) -> None:
+        try:
+            for batch in batches:
+                self._queue.put(batch.pin_memory())
+        except BaseException as error:  # surfaced on the consuming thread
+            self._error = error
+        finally:
+            self._queue.put(self._DONE)
+
+    def __iter__(self) -> "Iterator[Any]":
+        while True:
+            item = self._queue.get()
+            if item is self._DONE:
+                if self._error is not None:
+                    raise self._error
+                return
+            yield item
 
 
 def _synthetic_batches(*, config: Any, spec: AblationSpec, step: int, rank: int, device):
