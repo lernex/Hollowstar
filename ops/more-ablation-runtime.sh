@@ -62,4 +62,12 @@ export HIP_FORCE_DEV_KERNARG=1
 export TMPDIR=$METIS_NODE_SCRATCH/tmp
 export AITER_JIT_DIR=$TMPDIR/aiter
 mkdir -p $TRITON_CACHE_DIR $MIOPEN_USER_DB_PATH $TMPDIR $AITER_JIT_DIR
+# AITER JIT-compiles its core module on first import. Twenty-eight ranks each
+# running a full C++ build at once, four to a node that shares one memory pool
+# with its APUs, segfaulted a node outright and cost minutes of every launch.
+# The module is a few tens of kilobytes; build it once and copy it in.
+METIS_AITER_PREBUILT=/lus/lustre1/vollmerc/more-runtime/aiter-prebuilt
+if [ -d "$METIS_AITER_PREBUILT" ]; then
+  cp -r "$METIS_AITER_PREBUILT"/. "$AITER_JIT_DIR"/ 2>/dev/null || true
+fi
 source /lus/lustre1/vollmerc/more-runtime/venv311/bin/activate
