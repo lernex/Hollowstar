@@ -483,6 +483,14 @@ class Metis16Config:
     expert_balance_bias_update_rate: float = 1.0e-3
     k_budget_coefficient: float = 1.0e-2
     depth_budget_coefficient: float = 1.0e-2
+    # Dual step size for the width and depth budget controllers. Zero keeps the
+    # fixed-coefficient penalty exactly as it was, which is what production
+    # Praxis and Logos run. Any positive value turns the coefficient above into
+    # the quadratic term of an augmented Lagrangian and lets a multiplier find
+    # the strength the constraint actually needs; see
+    # ``metis_training.model.BudgetController``.
+    budget_controller_rate: float = 0.0
+    budget_multiplier_limit: float = 1.0e3
     continuation_entropy_coefficient: float = 1.0e-3
     tie_embeddings: bool = True
     # Software-pipeline depth for the expert-parallel dispatch/expert/combine

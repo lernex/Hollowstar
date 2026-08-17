@@ -2402,6 +2402,66 @@ def _memory_attention_combine(weights: Tensor, value: Tensor) -> Tensor:
     return (weights.unsqueeze(-1) * value.unsqueeze(-3)).sum(dim=-2)
 
 
+class BudgetController(nn.Module):
+    """Hold a realized mean at its declared target by adapting the penalty.
+
+    The width and depth budgets were a fixed coefficient times a squared error.
+    A fixed coefficient has to be correct in *absolute* terms against a task
+    loss whose scale nobody knows in advance, and at 1e-2 against a loss of a
+    few hundred it was four orders of magnitude too weak to bind. Measured on
+    the canary: the depth policy starts at the intended mean of 1.86 and climbs
+    monotonically to the 5.0 ceiling by step nine, and the width policy sits at
+    7.3 against a target of 4.0 from step zero and never comes down.
+
+    That is not only four times the compute the campaign budgeted. It is a
+    MoRE-Core run in which every token takes the maximum depth, so the adaptive
+    depth axis -- the thing the paper is about -- measures nothing at all,
+    while the loss falls and every health gate stays green.
+
+    An augmented Lagrangian removes the guess. The multiplier climbs while the
+    realized mean exceeds its target and falls while it undershoots, so the
+    penalty finds whatever strength the constraint needs against whatever the
+    loss happens to weigh; the quadratic term keeps that search from
+    oscillating. The multiplier is a buffer, so it is checkpointed and restored
+    with the run rather than relearned on every restart.
+    """
+
+    def __init__(
+        self,
+        target: float,
+        *,
+        coefficient: float,
+        rate: float,
+        limit: float,
+    ) -> None:
+        super().__init__()
+        self.target = float(target)
+        self.coefficient = float(coefficient)
+        self.rate = float(rate)
+        self.limit = float(limit)
+        self.register_buffer("multiplier", torch.zeros((), dtype=torch.float32))
+
+    def penalty(self, realized_mean: Tensor, *, target: float | None = None) -> Tensor:
+        goal = self.target if target is None else float(target)
+        error = realized_mean - goal
+        if self.rate <= 0.0:
+            return error.square() * self.coefficient
+        # Read the multiplier before updating it, and read a copy. The width
+        # budget is evaluated once per layer per pass, so the same buffer is
+        # used by dozens of live graph nodes in one backward; mutating it in
+        # place under them trips the version counter and autograd refuses the
+        # whole step.
+        multiplier = self.multiplier.detach().clone()
+        if self.training:
+            # Dual ascent, off the tape. The multiplier is a Lagrange
+            # multiplier, not a parameter: it is driven by how far the
+            # constraint is from being met, never by the task gradient.
+            with torch.no_grad():
+                self.multiplier.add_(self.rate * error.detach().float())
+                self.multiplier.clamp_(-self.limit, self.limit)
+        return multiplier.to(error.dtype) * error + error.square() * self.coefficient
+
+
 class RoutingReplayTape:
     """Discrete expert selections, recorded per pass and replayed on recompute.
 
@@ -2670,6 +2730,12 @@ class AdaptiveDroplessMoE(nn.Module):
             dtype=torch.float32,
         )
         self.k_router.metis_precision_role = "router_logits"
+        self.k_budget = BudgetController(
+            config.target_mean_routed_k,
+            coefficient=config.k_budget_coefficient,
+            rate=config.budget_controller_rate,
+            limit=config.budget_multiplier_limit,
+        )
         self.expert_embeddings = nn.Parameter(
             torch.empty(
                 config.n_routed_experts,
@@ -3581,7 +3647,9 @@ class AdaptiveDroplessMoE(nn.Module):
             if curriculum.target_mean_routed_k is not None
             else self.config.target_mean_routed_k
         )
-        k_budget = (mean_expected_k - target_mean_k).square() * has_active
+        k_budget = self.k_budget.penalty(
+            mean_expected_k, target=target_mean_k
+        ) * has_active
         state = RouteState(
             summary=coalition,
             mean_k=chosen_k.float(),
@@ -3598,7 +3666,7 @@ class AdaptiveDroplessMoE(nn.Module):
             auxiliary_losses={
                 "expert_balance": balance_loss * self.config.expert_balance_coefficient,
                 "expert_router_z": z_loss * self.config.router_z_loss_coefficient,
-                "routed_k_budget": k_budget * self.config.k_budget_coefficient,
+                "routed_k_budget": k_budget,
             },
         )
         return output, state
@@ -4486,6 +4554,12 @@ class Metis16ForCausalLM(nn.Module):
             config,
             device=device,
             dtype=dtype,
+        )
+        self.depth_budget = BudgetController(
+            config.target_mean_passes,
+            coefficient=config.depth_budget_coefficient,
+            rate=config.budget_controller_rate,
+            limit=config.budget_multiplier_limit,
         )
         self.final_norm = RMSNorm(config.d_model, device=device, dtype=dtype)
         self.lm_head = _make_linear(
@@ -6033,15 +6107,14 @@ class Metis16ForCausalLM(nn.Module):
         _add_loss(
             auxiliary_losses,
             "depth_budget",
-            (
-                mean_expected_depth
-                - (
+            self.depth_budget.penalty(
+                mean_expected_depth,
+                target=(
                     curriculum_state.target_mean_depth
                     if curriculum_state.target_mean_depth is not None
                     else self.config.target_mean_passes
-                )
-            ).square()
-            * self.config.depth_budget_coefficient
+                ),
+            )
             if valid_expected_depth.numel()
             else mean_expected_depth,
         )

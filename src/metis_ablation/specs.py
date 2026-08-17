@@ -201,8 +201,16 @@ def proxy_config(
         "router_z_loss_coefficient": 0.001,
         "expert_balance_coefficient": 0.0,
         "expert_balance_bias_update_rate": 0.001,
-        "k_budget_coefficient": 0.01,
-        "depth_budget_coefficient": 0.01,
+        "k_budget_coefficient": 1.0,
+        "depth_budget_coefficient": 1.0,
+        # The fixed coefficients above cannot hold either policy at its target:
+        # measured on the canary, depth climbs from its intended 1.86 to the
+        # 5.0 ceiling within nine steps and width sits at 7.3 against a target
+        # of 4.0 from the first step. That is four times the budgeted compute,
+        # and a MoRE-Core run whose adaptive-depth axis measures nothing. The
+        # dual step turns them into an augmented Lagrangian that finds its own
+        # strength.
+        "budget_controller_rate": 0.05,
         "continuation_entropy_coefficient": 0.001,
         "tie_embeddings": True,
         "moe_dispatch_chunks": 1,

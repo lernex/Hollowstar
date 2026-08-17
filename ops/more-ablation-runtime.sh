@@ -20,6 +20,16 @@ export NVTE_USE_CK_GROUPED_GEMM=1
 # came from. Transformer Engine keeps its own hipBLASLt path for FP8; this
 # only redirects the aten surface.
 export TORCH_BLAS_PREFER_HIPBLASLT=0
+# MI300A takes its HBM from system memory, so allocator fragmentation is more
+# expensive here than on a discrete part: a fragmented pool cannot be papered
+# over by spare VRAM. Expandable segments grow one virtual reservation instead
+# of scattering fixed blocks (PyTorch HIP notes, 2026).
+export PYTORCH_HIP_ALLOC_CONF="expandable_segments:True,garbage_collection_threshold:0.8"
+# RCCL on Slingshot: let the library pin ranks itself, give it enough channels
+# for four APUs per node, and allow GPU-Direct RDMA (RCCL usage tips, 2026).
+export NCCL_IGNORE_CPU_AFFINITY=1
+export NCCL_MIN_NCHANNELS=24
+export NCCL_NET_GDR_LEVEL=1
 # flash_attn resolves its ROCm backend at import time; name it rather than
 # relying on the auto-detect branch.
 export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE

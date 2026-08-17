@@ -23,6 +23,7 @@ from metis_mamba.optim import MuonAdamWHybrid, _zeropower_via_newton_schulz5
 from metis_training.data import PHASE_STARTS, PHASE_TOKENS
 from metis_training.metrics import estimate_hardware_flops
 from metis_training.model import (
+    BudgetController,
     CurriculumState,
     Metis16ForCausalLM,
     _memory_attention_combine,
@@ -324,6 +325,81 @@ def test_grouped_expert_execution_matches_the_loop_exactly():
         left = loop_model(input_ids, labels, curriculum=curriculum)
         right = grouped_model(input_ids, labels, curriculum=curriculum)
     torch.testing.assert_close(left.loss, right.loss, rtol=1e-5, atol=1e-6)
+
+
+def test_budget_controller_binds_against_a_loss_that_rewards_more_compute():
+    """More depth always lowers the loss, so only a binding budget stops it.
+
+    This is the canary's failure in miniature. Depth helps, so an unconstrained
+    policy climbs to the ceiling -- measured, from its intended mean of 1.86 to
+    the 5.0 maximum within nine steps, with halt_collapse reaching 1.000, which
+    is to say no token ever stopped. The fixed coefficient could not hold it:
+    at 1e-2 against a task term of any real size the equilibrium is far past
+    the target.
+
+    The point of the constraint is not that depth is bad. It is that rows 5, 8,
+    9 and 10 of the campaign are supposed to execute identical FLOPs per token,
+    so that the comparison is about *where* compute goes rather than how much.
+    A multiplier that finds its own strength restores that.
+    """
+
+    def settled_mean(rate, coefficient, steps=4000, reward=5.0):
+        controller = BudgetController(
+            2.0, coefficient=coefficient, rate=rate, limit=1.0e3
+        )
+        controller.train()
+        value = torch.nn.Parameter(torch.tensor(2.0))
+        optimizer = torch.optim.SGD([value], lr=0.01)
+        history = []
+        for _ in range(steps):
+            optimizer.zero_grad()
+            # A task that always prefers more compute, exactly as the real one
+            # does, plus the budget that is supposed to stand against it.
+            (controller.penalty(value) - reward * value).backward()
+            optimizer.step()
+            history.append(float(value.detach()))
+        return sum(history[-500:]) / 500
+
+    controlled = settled_mean(0.05, 1.0)
+    fixed = settled_mean(0.0, 0.01)
+    assert abs(controlled - 2.0) < 0.25, controlled
+    assert fixed > 20.0, f"the fixed coefficient bound after all: {fixed}"
+
+
+def test_budget_controller_pushes_back_up_when_the_policy_undershoots():
+    """An equality constraint, not a squeeze towards always-shallow.
+
+    The worry a mean budget deserves is that it teaches the model never to go
+    deep. It cannot: the multiplier is signed, so a policy that undershoots its
+    target drives the multiplier down through zero and is pushed back up. The
+    budget fixes how much compute is spent, never where.
+    """
+
+    controller = BudgetController(2.0, coefficient=1.0, rate=0.05, limit=1.0e3)
+    controller.train()
+    value = torch.nn.Parameter(torch.tensor(1.0))
+    optimizer = torch.optim.SGD([value], lr=0.01)
+    history = []
+    for _ in range(4000):
+        optimizer.zero_grad()
+        # A task that prefers *less* compute, the opposite failure.
+        (controller.penalty(value) + 5.0 * value).backward()
+        optimizer.step()
+        history.append(float(value.detach()))
+    assert float(controller.multiplier) < 0.0, "the multiplier never turned around"
+    assert abs(sum(history[-500:]) / 500 - 2.0) < 0.25, sum(history[-500:]) / 500
+
+
+def test_budget_controller_is_off_unless_a_rate_is_declared():
+    """Production Praxis and Logos must see the penalty they already saw."""
+
+    controller = BudgetController(2.0, coefficient=0.01, rate=0.0, limit=1e3)
+    controller.train()
+    realized = torch.tensor(5.0)
+    torch.testing.assert_close(
+        controller.penalty(realized), (realized - 2.0).square() * 0.01
+    )
+    assert float(controller.multiplier) == 0.0, "an inactive controller must not drift"
 
 
 def test_replicated_dispatch_matches_the_general_path():
