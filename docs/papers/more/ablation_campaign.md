@@ -268,6 +268,12 @@ scaling measured **3.06% MFU** against **2.81%** for delayed scaling. This is a
 runtime policy, not a model change; checkpointed weights load across the two
 recipes without missing or unexpected state.
 
+MoRE-Core runs a **micro-batch of eight sequences per APU** and accumulates
+twice, instead of four sequences accumulated four times. The global batch and
+token order are unchanged. At the target depth on one Portage node, the larger
+micro-batch sustained about 9.4k tokens/s/APU against 8.2k for four sequences,
+while peaking below 95 GiB of the MI300A's 128 GiB unified HBM.
+
 ## 6. Learning rate and hyperparameters
 
 One learning rate across architectures of different active widths is not fair;

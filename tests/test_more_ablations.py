@@ -91,6 +91,15 @@ def test_every_row_consumes_an_identical_global_batch():
         assert spec.apus * spec.micro_batch * spec.grad_accum == GLOBAL_BATCH_SEQUENCES
 
 
+def test_more_core_uses_the_measured_eight_sequence_micro_batch():
+    primary = spec_by_name("more-core")
+    assert (primary.apus, primary.micro_batch, primary.grad_accum) == (28, 8, 2)
+    for name in ("more-core-xs", "more-core-xxs", "more-core-seed2"):
+        spec = spec_by_name(name)
+        assert spec.micro_batch == 8
+        assert spec.apus * spec.micro_batch * spec.grad_accum == GLOBAL_BATCH_SEQUENCES
+
+
 def test_rank_counts_are_whole_nodes_and_fit_the_allocation():
     report = validate_allocation()
     assert report["rows"] == 13

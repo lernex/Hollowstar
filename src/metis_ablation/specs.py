@@ -606,7 +606,10 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         name="more-core",
         title="MoRE-Core",
         isolates="all three axes together",
-        apus=28, micro_batch=4, grad_accum=4,
+        # The proxy fits eight 4K sequences per MI300A at the target depth.
+        # Holding the global batch fixed while halving accumulation amortizes
+        # Python, recompute setup, and loader overhead over twice the tokens.
+        apus=28, micro_batch=8, grad_accum=2,
         depth_memory=False,
     ),
     AblationSpec(
@@ -761,11 +764,11 @@ def _scaled_dense_intermediate(scale: str, objective: str, passes: int) -> int:
 _SCALING_ALLOCATION: dict[tuple[str, str], tuple[int, int, int]] = {
     ("xs", "dense-param-matched"): (64, 1, 7),
     ("xs", "moe-k4"): (32, 2, 7),
-    ("xs", "more-core"): (56, 2, 4),
+    ("xs", "more-core"): (56, 8, 1),
     ("xs", "more-rm"): (56, 2, 4),
     ("xxs", "dense-param-matched"): (28, 4, 4),
     ("xxs", "moe-k4"): (16, 4, 7),
-    ("xxs", "more-core"): (28, 4, 4),
+    ("xxs", "more-core"): (28, 8, 2),
     ("xxs", "more-rm"): (28, 4, 4),
 }
 
@@ -841,7 +844,7 @@ SECOND_SEED = 27_182_818
 # was given the smaller micro batch there.
 _SEED_ALLOCATION: dict[str, tuple[int, int, int]] = {
     "dense-param-matched": (112, 1, 4),
-    "more-core": (56, 4, 2),
+    "more-core": (56, 8, 1),
     "more-rm": (56, 2, 4),
     "loop-fixed": (56, 4, 2),
     "loop-pathway-frozen": (56, 4, 2),
