@@ -257,6 +257,17 @@ to one. Numerics are unchanged — `test_grouped_expert_execution_matches_the_lo
 asserts bitwise-close losses between the two paths. Praxis and Logos keep
 `expert_execution: loop`, so production is byte-identical to before.
 
+### FP8 scaling on Portage
+
+The ablation family uses Transformer Engine **current scaling** while Praxis and
+Logos retain delayed scaling. Transformer Engine documents current scaling as
+using the tensor being quantized rather than delayed amax history (August 2026);
+this also removes the data-parallel amax-reduction path that delayed scaling
+uses by default. On the exact MI300A proxy path at fixed depth 2 / k=4, current
+scaling measured **3.06% MFU** against **2.81%** for delayed scaling. This is a
+runtime policy, not a model change; checkpointed weights load across the two
+recipes without missing or unexpected state.
+
 ## 6. Learning rate and hyperparameters
 
 One learning rate across architectures of different active widths is not fair;

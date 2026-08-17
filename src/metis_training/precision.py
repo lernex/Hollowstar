@@ -229,6 +229,7 @@ class PrecisionAudit:
     transformer_engine_available: bool
     transformer_engine_version: str | None
     fp8_format: str | None
+    fp8_scaling: str | None
     fp8_linear_roles: tuple[str, ...]
     bf16_roles: tuple[str, ...]
     fp32_roles: tuple[str, ...]
@@ -379,6 +380,9 @@ class PrecisionPolicy:
             transformer_engine_available=te_ready,
             transformer_engine_version=self._te_version,
             fp8_format=config.fp8_format if self.effective_profile == "fp8" else None,
+            fp8_scaling=(
+                config.fp8_scaling if self.effective_profile == "fp8" else None
+            ),
             fp8_linear_roles=tuple(
                 role for role, dtype in execution_map.items() if dtype == "fp8"
             )
@@ -495,6 +499,13 @@ class PrecisionPolicy:
             fp8_format = getattr(format_enum, "HYBRID")
         else:
             fp8_format = getattr(format_enum, "E4M3")
+        if self.config.fp8_scaling == "current":
+            current = getattr(recipe_mod, "Float8CurrentScaling", None)
+            if current is None:
+                raise RuntimeError(
+                    "Transformer Engine Float8CurrentScaling is unavailable"
+                )
+            return current(fp8_format=fp8_format)
         delayed = getattr(recipe_mod, "DelayedScaling", None)
         if delayed is None:
             raise RuntimeError("Transformer Engine DelayedScaling recipe is unavailable")

@@ -4,6 +4,7 @@ import copy
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -185,6 +186,34 @@ class PrecisionRolePlanTests(unittest.TestCase):
                 recipe = policy._build_fp8_recipe()
                 self.assertIsInstance(recipe, delayed)
         self.assertEqual(len(observed), 2)
+
+    def test_current_scaling_recipe_uses_transformer_engine_current_scaling(
+        self,
+    ) -> None:
+        policy = PrecisionPolicy(
+            replace(self.config.precision, fp8_scaling="current"),
+            requested_profile="bf16",
+            device=torch.device("cpu"),
+            production=False,
+        )
+
+        class Format:
+            E4M3 = "e4m3"
+            HYBRID = "hybrid"
+
+        observed: list[object] = []
+
+        class Float8CurrentScaling:
+            def __init__(self, *, fp8_format):
+                observed.append(fp8_format)
+
+        policy._recipe_module = SimpleNamespace(
+            Format=Format,
+            Float8CurrentScaling=Float8CurrentScaling,
+        )
+        recipe = policy._build_fp8_recipe()
+        self.assertIsInstance(recipe, Float8CurrentScaling)
+        self.assertEqual(observed, ["hybrid"])
 
     def test_mixed_plan_keeps_small_slow_role_in_bf16(self) -> None:
         measurements = _measurements(

@@ -56,6 +56,7 @@ class PrecisionConfig:
 
     backend: str = "auto"
     fp8_format: str = "hybrid_e4m3_e5m2"
+    fp8_scaling: str = "delayed"
     parameter_dtype: str = "bfloat16"
     activation_dtype: str = "bfloat16"
     master_weight_dtype: str = "float32"
@@ -151,6 +152,8 @@ class PrecisionConfig:
                 "precision.fp8_format must be e4m3fn, e4m3fnuz, or "
                 "hybrid_e4m3_e5m2."
             )
+        if self.fp8_scaling not in {"delayed", "current"}:
+            raise ValueError("precision.fp8_scaling must be delayed or current.")
         if self.expert_collective_wire not in {"bfloat16", "fp8_dispatch", "fp8"}:
             raise ValueError(
                 "precision.expert_collective_wire must be bfloat16, "
