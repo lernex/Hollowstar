@@ -212,6 +212,14 @@ def proxy_config(
         # strength.
         "budget_controller_rate": 1.0,
         "depth_budget_controller_rate": 20.0,
+        # At the clamp boundary the gate's slope is d(sigmoid)/dz = 0.0177, so a
+        # multiplier acting through it is attenuated about fifty-six fold. The
+        # default ceiling of 1e3 is therefore an effective gain of about 18 --
+        # less than the width budget reaches -- and the depth policy sat at the
+        # ceiling against it. The penalty is proportional to the error, so a
+        # high ceiling costs nothing once the constraint is met: it is a limit
+        # on how hard the controller may pull, not on how hard it will.
+        "budget_multiplier_limit": 1.0e5,
         "continuation_entropy_coefficient": 0.001,
         "tie_embeddings": True,
         "moe_dispatch_chunks": 1,
