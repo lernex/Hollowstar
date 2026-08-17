@@ -210,7 +210,7 @@ def proxy_config(
         # and a MoRE-Core run whose adaptive-depth axis measures nothing. The
         # dual step turns them into an augmented Lagrangian that finds its own
         # strength.
-        "budget_controller_rate": 0.05,
+        "budget_controller_rate": 1.0,
         "continuation_entropy_coefficient": 0.001,
         "tie_embeddings": True,
         "moe_dispatch_chunks": 1,
