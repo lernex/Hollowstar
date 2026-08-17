@@ -689,6 +689,13 @@ class Metis16Config:
             raise ValueError("moe_dispatch_chunks must be between 1 and 8.")
         if self.lm_head_chunk_size <= 0:
             raise ValueError("lm_head_chunk_size must be positive.")
+        if any(
+            layer < 0 or layer >= self.n_layers
+            for layer in self.ngram_memory.injection_layers
+        ):
+            raise ValueError(
+                "Every N-gram injection layer must refer to a physical layer."
+            )
         self._validate_memory_policies()
         if self.family == "ablation":
             # The ablation proxy keeps the production backbone -- four mHC

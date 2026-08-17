@@ -100,6 +100,33 @@ def test_more_core_uses_the_measured_eight_sequence_micro_batch():
         assert spec.apus * spec.micro_batch * spec.grad_accum == GLOBAL_BATCH_SEQUENCES
 
 
+def test_primary_proxy_is_the_parameter_matched_shallow_recurrent_block():
+    config = spec_by_name("more-core").model_config(
+        mhc_backend="torch_reference",
+        mamba_backend="torch_reference",
+        attention_backend="torch_reference",
+    )
+    assert config.d_model == 4096
+    assert config.n_layers == 2
+    assert config.attention_indices == (1,)
+    assert config.latent_dim == 2048
+    assert config.n_routed_experts == 72
+    assert config.expert_intermediate_dim == 1152
+    assert config.ngram_memory.injection_layers == (0, 1)
+    assert all(
+        0 <= layer < config.n_layers
+        for layer in config.ngram_memory.injection_layers
+    )
+    with pytest.raises(ValueError, match="N-gram injection layer"):
+        replace(
+            config,
+            ngram_memory=replace(
+                config.ngram_memory,
+                injection_layers=(config.n_layers,),
+            ),
+        ).validate()
+
+
 def test_rank_counts_are_whole_nodes_and_fit_the_allocation():
     report = validate_allocation()
     assert report["rows"] == 13

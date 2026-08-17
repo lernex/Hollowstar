@@ -403,20 +403,20 @@ depth of MoRE-Core; fixed-$k$ rows use $k=4$.
 \toprule
 \# & Model & Recur. & Depth & Width $k$ & Pathway & Mem. & Stored/Active & GF/tok \\
 \midrule
-1 & Dense, FLOP-matched & -- & 1 & -- & dense & -- & 1.12B / 0.70B & 7.29 \\
-2 & Dense, parameter-matched & -- & 1 & -- & dense & -- & 1.82B / 1.41B & 12.96 \\
-3 & MoE, $k{=}4$ & -- & 1 & fixed & routed & -- & 1.83B / 0.30B & 4.10 \\
-4 & MoE, $k{=}8$ & -- & 1 & fixed & routed & -- & 1.83B / 0.30B & 4.49 \\
-5 & Fixed LoopMoE & yes & fixed 2 & fixed & re-routed & -- & 1.83B / 0.30B & 7.30 \\
-6 & Loop, pathway frozen & yes & fixed 2 & fixed & frozen & -- & 1.83B / 0.30B & 7.30 \\
-7 & MoR + dense FFN & yes & adaptive & -- & dense & -- & 0.72B / 0.30B & 7.28 \\
-8 & MoR + fixed-$k$ MoE & yes & adaptive & fixed & re-routed & -- & 1.83B / 0.30B & 7.30 \\
-9 & Fixed-depth, adaptive $k$ & yes & fixed 2 & adaptive & re-routed & -- & 1.83B / 0.30B & 7.30 \\
-10 & \textbf{MoRE-Core} & yes & adaptive & adaptive & re-routed & -- & 1.83B / 0.30B & 7.30 \\
-11 & \textbf{MoRE-RM} & yes & adaptive & adaptive & re-routed & yes & 1.83B / 0.30B & 7.30 \\
+1 & Dense, FLOP-matched & -- & 1 & -- & dense & -- & 1.17B / 0.60B & 7.30 \\
+2 & Dense, parameter-matched & -- & 1 & -- & dense & -- & 1.81B / 1.24B & 12.42 \\
+3 & MoE, $k{=}4$ & -- & 1 & fixed & routed & -- & 1.81B / 0.279B & 4.73 \\
+4 & MoE, $k{=}8$ & -- & 1 & fixed & routed & -- & 1.81B / 0.336B & 5.18 \\
+5 & Fixed LoopMoE & yes & fixed 2 & fixed & re-routed & -- & 1.81B / 0.279B & 7.31 \\
+6 & Loop, pathway frozen & yes & fixed 2 & fixed & frozen & -- & 1.81B / 0.279B & 7.31 \\
+7 & MoR + dense FFN & yes & adaptive & -- & dense & -- & 0.85B / 0.278B & 7.29 \\
+8 & MoR + fixed-$k$ MoE & yes & adaptive & fixed & re-routed & -- & 1.81B / 0.279B & 7.31 \\
+9 & Fixed-depth, adaptive $k$ & yes & fixed 2 & adaptive & re-routed & -- & 1.81B / 0.279B & 7.31 \\
+10 & \textbf{MoRE-Core} & yes & adaptive & adaptive & re-routed & -- & 1.81B / 0.279B & 7.31 \\
+11 & \textbf{MoRE-RM} & yes & adaptive & adaptive & re-routed & yes & 1.81B / 0.279B & 7.31 \\
 \midrule
-12 & Random-$k$ control & yes & adaptive & random & re-routed & -- & 1.83B / 0.30B & 7.30 \\
-13 & Random-depth control & yes & random & adaptive & re-routed & -- & 1.83B / 0.30B & 7.30 \\
+12 & Random-$k$ control & yes & adaptive & random & re-routed & -- & 1.81B / 0.279B & 7.31 \\
+13 & Random-depth control & yes & random & adaptive & re-routed & -- & 1.81B / 0.279B & 7.31 \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -438,7 +438,7 @@ policy. To our knowledge this control is absent from the adaptive-compute
 literature, and it is the experiment most capable of embarrassing us, which is
 why it is in the required set rather than the appendix.
 \item \textbf{Row 7} is necessarily smaller in stored parameters: a dense-FFN
-recursive model cannot hold 1.5B stored at 0.29B active. That asymmetry is not a
+recursive model cannot hold 1.8B stored at 0.279B active. That asymmetry is not a
 flaw in the control, it is precisely what the sparse-expert axis buys, and we
 report both numbers rather than picking the flattering one.
 \end{itemize}
@@ -452,8 +452,8 @@ someone assumes we tried and failed.
 
 \subsection{Configuration}
 
-\TODO{Proxy manifest table: 10 physical layers (8 Mamba-2 + 2 attention),
-$d_{\mathrm{model}}=1792$, latent $896$, expert intermediate $448$, 96 routed + 1
+\TODO{Proxy manifest table: 2 physical layers (1 Mamba-2 + 1 attention),
+$d_{\mathrm{model}}=4096$, latent $2048$, expert intermediate $1152$, 72 routed + 1
 shared, $k \in [1,8]$ with $k^\star=4$, $\Rmax=5$, $d^\star=2$, sequence 4096,
 tokenizer 65{,}536. Fill in exact audited counts from the ablation manifest.}
 

@@ -77,8 +77,8 @@ def _consecutive_primes(start: int, count: int) -> tuple[int, ...]:
     return tuple(found)
 
 
-# Half-Praxis conditional memory: same shape as production, ~0.30B rows instead
-# of 0.60B.  Frozen rather than generated so the primary ladder's manifest is
+# Proxy conditional memory: same shape as production, ~0.30B rows instead of
+# 0.60B. Frozen rather than generated so the primary ladder's manifest is
 # byte-stable across releases of this file.
 _NGRAM_SLOTS_ORDER_2 = (
     292_969, 292_973, 292_979, 292_993, 293_021, 293_071, 293_081, 293_087,
@@ -118,6 +118,18 @@ def _ngram_config(slots_per_head: int | None = None) -> NGramMemoryConfig:
     )
 
 
+def _proxy_ngram_injection_layers(n_layers: int) -> tuple[int, ...]:
+    """Place both conditional-memory injections inside the physical block."""
+
+    if n_layers < 2:
+        return (0,)
+    if n_layers <= 2:
+        return (0, 1)
+    if n_layers <= 5:
+        return (1, n_layers - 1)
+    return (2, 5)
+
+
 def _autotune() -> AutotuneConfig:
     return AutotuneConfig(
         micro_batch_sizes=(4, 2, 1),
@@ -141,7 +153,7 @@ def proxy_config(
     ngram_slots_per_head: int | None = None,
     overrides: Mapping[str, Any] | None = None,
 ) -> Metis16Config:
-    """Half-Praxis proxy: ~1.50B stored core, ~0.29B core active per pass.
+    """Parameter-matched shallow recurrent proxy for the MoRE ladder.
 
     Expert parallelism is fixed at 1: every rank replicates all routed experts
     and the whole job is data-parallel.  The model state is roughly 21GB against
@@ -161,11 +173,15 @@ def proxy_config(
         # belongs to Praxis and Logos, not to a routing study.
         "final_context_length": SEQUENCE_LENGTH,
         "context_extension_train_length": SEQUENCE_LENGTH,
-        "d_model": 1_792,
-        "n_layers": 10,
-        "attention_indices": (3, 7),
-        "n_heads": 28,
-        "n_kv_heads": 7,
+        # A shallow physical block is the architecture the experiment repeats.
+        # At identical stored parameters and executed FLOPs, two wide layers
+        # turn launch-bound micro-GEMMs into MI300A-sized contractions while
+        # retaining one Mamba and one attention layer per recurrent pass.
+        "d_model": 4_096,
+        "n_layers": 2,
+        "attention_indices": (1,),
+        "n_heads": 64,
+        "n_kv_heads": 16,
         "head_dim": 64,
         "attention_pass_lora_rank": 8,
         "attention_backend": attention_backend,
@@ -173,17 +189,17 @@ def proxy_config(
         "mamba_d_state": 128,
         "mamba_d_conv": 4,
         "mamba_head_dim": 64,
-        "mamba_ngroups": 8,
+        "mamba_ngroups": 16,
         "mamba_chunk_size": 256,
         "mamba_backend": mamba_backend,
         "n_streams": 4,
         "mhc_pass_embedding_dim": 64,
         "mhc_sinkhorn_iterations": 8,
         "mhc_backend": mhc_backend,
-        "latent_dim": 896,
-        "n_routed_experts": 96,
+        "latent_dim": 2_048,
+        "n_routed_experts": 72,
         "n_shared_experts": 1,
-        "expert_intermediate_dim": 448,
+        "expert_intermediate_dim": 1_152,
         "min_routed_k": 1,
         "max_routed_k": 8,
         "target_mean_routed_k": 4.0,
@@ -245,6 +261,10 @@ def proxy_config(
     }
     if overrides:
         base.update(dict(overrides))
+    base["ngram_memory"] = replace(
+        base["ngram_memory"],
+        injection_layers=_proxy_ngram_injection_layers(int(base["n_layers"])),
+    )
     if ffn_mode == "dense":
         # Applied *after* the overrides on purpose: a scaling-ladder geometry
         # carries an expert count, and a dense control must never inherit one no

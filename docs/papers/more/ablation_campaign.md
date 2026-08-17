@@ -24,30 +24,31 @@ expert GEMM in §5 lands.
 
 ## 1. Model size
 
-**Half-Praxis, as proposed.** Confirmed as the right size — it is the plan's
-existing proxy manifest and it fits on a single 128 GB APU with FP32 masters and
-optimizer state, which is what makes §4's parallelism strategy possible.
+**Parameter-matched shallow recurrent block.** The proxy keeps the original
+1.8B stored-parameter and 7.3 GFLOP/token envelope, but concentrates it into one
+Mamba-2 layer and one attention layer that are reused recurrently. This is both
+closer to the object under study -- the repeated block -- and substantially
+better matched to MI300A matrix dimensions than ten launch-bound narrow layers.
 
 | | Praxis (production) | **Proxy S (ablation primary)** |
 |---|---:|---:|
-| `d_model` | 2048 | **1792** |
-| Physical layers | 12 (10 Mamba + 2 attn) | **10 (8 Mamba + 2 attn)** |
-| `latent_dim` | 1024 | **896** |
-| `expert_intermediate_dim` | 512 | **448** |
-| Routed experts | 128 | **96** |
+| `d_model` | 2048 | **4096** |
+| Physical layers | 12 (10 Mamba + 2 attn) | **2 (1 Mamba + 1 attn)** |
+| `latent_dim` | 1024 | **2048** |
+| `expert_intermediate_dim` | 512 | **1152** |
+| Routed experts | 128 | **72** |
 | `k` range / target | 1–8 / 4 | **1–8 / 4** |
 | `max_passes` / target | 5 / 2 | **5 / 2** |
-| Stored core | ~2.9B | **~1.5B** |
-| Core active / pass @ k=4 | ~0.47B | **~0.29B** |
+| Stored total | ~3.5B | **1.81B** |
+| Active / pass @ k=4 | ~0.47B | **0.279B** |
 
-Derivation of the 0.29B (matches the plan's figure, useful for the FLOP math):
+Audited primary-proxy parameter categories:
 
-- Mamba-2 mixer ≈ 23.1M/layer × 8 = 185M
-- Attention ≈ 8.0M/layer × 2 = 16M
-- Latent down+up = 3.21M/layer × 10 = 32M
-- Experts (k+1) × 1.204M/layer × 10 → k=4: 60M, k=8: 108M
-- **Core active/pass @ k=4 = 293M**, @ k=8 = 342M
-- Tied embedding / LM head = 117M, applied **once per token**, not per pass
+- Routed experts: 1.019B stored.
+- Embedding / tied head: 0.268B stored, executed once per token.
+- Mamba + attention mixers: 0.160B stored.
+- N-gram tables: 0.300B stored.
+- **Active/pass @ k=4 = 0.279B**, @ k=8 = 0.336B.
 
 ## 2. FLOPs per token
 
@@ -118,20 +119,20 @@ the machine).
 
 | # | Model | Isolates | Stored / Active per pass | GFLOP/tok | APUs | Nodes | Hrs @10% |
 |---:|---|---|---|---:|---:|---:|---:|
-| 1 | Dense, FLOP-matched | dense reference at MoRE's executed compute | 1.12B / 0.70B | 7.29 | 28 | 7 | 18.4 |
-| 2 | Dense, parameter-matched | dense reference at MoRE's stored parameters | 1.82B / 1.41B | 12.96 | 56 | 14 | 16.4 |
-| 3 | MoE k=4 | sparse routing without recursion | 1.83B / 0.30B | 4.10 | 16 | 4 | 18.2 |
-| 4 | MoE k=8 | wider single-pass MoE reference | 1.83B / 0.30B | 4.49 | 16 | 4 | 19.9 |
-| 5 | Fixed LoopMoE | recursion at fixed depth and fixed k | 1.83B / 0.30B | 7.30 | 28 | 7 | 18.5 |
-| 6 | Loop, pathway frozen | PATHWAY: identical to row 5 except experts are chosen once | 1.83B / 0.30B | 7.30 | 28 | 7 | 18.5 |
-| 7 | MoR + dense FFN | adaptive depth without sparse experts | 0.72B / 0.30B | 7.28 | 28 | 7 | 18.4 |
-| 8 | MoR + fixed-k MoE | DEPTH: adaptive depth against row 5's fixed depth | 1.83B / 0.30B | 7.30 | 28 | 7 | 18.5 |
-| 9 | Fixed depth, adaptive k | WIDTH: adaptive k against row 5's fixed k | 1.83B / 0.30B | 7.30 | 28 | 7 | 18.5 |
-| 10 | MoRE-Core | all three axes together | 1.83B / 0.30B | 7.30 | 28 | 7 | 18.5 |
-| 11 | MoRE-RM | route-typed recurrent depth memory | 1.83B / 0.30B | 7.30 | 32 | 8 | 16.2 |
-| 12 | Random-k control | is the LEARNED width policy doing anything? | 1.83B / 0.30B | 7.30 | 28 | 7 | 18.5 |
-| 13 | Random-depth control | is the LEARNED depth policy doing anything? | 1.83B / 0.30B | 7.30 | 28 | 7 | 18.5 |
-| | **Total** | | | **94.5** | **372** | **93** | **19.9** |
+| 1 | Dense, FLOP-matched | dense reference at MoRE's executed compute | 1.17B / 0.60B | 7.30 | 28 | 7 | 18.4 |
+| 2 | Dense, parameter-matched | dense reference at MoRE's stored parameters | 1.81B / 1.24B | 12.42 | 56 | 14 | 15.7 |
+| 3 | MoE k=4 | sparse routing without recursion | 1.81B / 0.279B | 4.73 | 16 | 4 | 20.9 |
+| 4 | MoE k=8 | wider single-pass MoE reference | 1.81B / 0.336B | 5.18 | 16 | 4 | 22.9 |
+| 5 | Fixed LoopMoE | recursion at fixed depth and fixed k | 1.81B / 0.279B | 7.31 | 28 | 7 | 18.5 |
+| 6 | Loop, pathway frozen | PATHWAY: identical to row 5 except experts are chosen once | 1.81B / 0.279B | 7.31 | 28 | 7 | 18.5 |
+| 7 | MoR + dense FFN | adaptive depth without sparse experts | 0.85B / 0.278B | 7.29 | 28 | 7 | 18.4 |
+| 8 | MoR + fixed-k MoE | DEPTH: adaptive depth against row 5's fixed depth | 1.81B / 0.279B | 7.31 | 28 | 7 | 18.5 |
+| 9 | Fixed depth, adaptive k | WIDTH: adaptive k against row 5's fixed k | 1.81B / 0.279B | 7.31 | 28 | 7 | 18.5 |
+| 10 | MoRE-Core | all three axes together | 1.81B / 0.279B | 7.31 | 28 | 7 | 18.5 |
+| 11 | MoRE-RM | route-typed recurrent depth memory | 1.81B / 0.279B | 7.31 | 32 | 8 | 16.2 |
+| 12 | Random-k control | is the LEARNED width policy doing anything? | 1.81B / 0.279B | 7.31 | 28 | 7 | 18.5 |
+| 13 | Random-depth control | is the LEARNED depth policy doing anything? | 1.81B / 0.279B | 7.31 | 28 | 7 | 18.5 |
+| | **Total** | | | **95.36** | **372** | **93** | **22.9** |
 | | Spare (eval, canaries, restarts) | | | | 12 | 3 | |
 
 Regenerate this table with `python -m metis_ablation.campaign plan`; it is
@@ -139,10 +140,10 @@ computed from `metis_training.metrics.estimate_hardware_flops`, the same
 accounting the trainer reports against every telemetry step, rather than from a
 parallel hand-derivation that can silently drift.
 
-Every row is the **Proxy S geometry** from §1 (half-Praxis: 10 layers, `d_model`
-1792, latent 896, 96+1 experts, `R_max`=5) except where the architecture forbids
+Every row is the **Proxy S geometry** from §1 (two physical layers, `d_model`
+4096, latent 2048, 72+1 experts, `R_max`=5) except where the architecture forbids
 it: rows 1 and 7 are dense, so stored equals active and a dense-FFN recursive
-model simply cannot hold 1.5B stored at 0.29B active. Report both numbers; the
+model simply cannot hold 1.8B stored at 0.279B active. Report both numbers; the
 asymmetry is what the sparse axis buys.
 
 **One wave, 13–40 h wall clock depending on MFU; plan against ~20 h.**
@@ -210,10 +211,10 @@ about an hour) ahead of wave 1.
 **Recommendation: DP only. No expert parallelism, no tensor parallelism, no
 pipeline parallelism.**
 
-Memory per APU for the 1.5B proxy: BF16 params 3 GB + FP32 masters 6 GB + FP32
-Adam moments 12 GB ≈ **21 GB** of 128 GB, before activations, which are bounded
-by pass-level recompute (`activation_recompute_policy: pass`). All 96 routed
-experts replicated on every rank costs 116M params — trivial.
+Memory per APU for the 1.81B proxy remains within 128 GB under pass-level
+recompute (`activation_recompute_policy: pass`); the measured eight-sequence
+MoRE-Core path peaks around 105.5 GiB. All 72 routed experts are replicated on
+every rank, so the campaign still avoids an all-to-all systems confound.
 
 Consequences, all good:
 
@@ -249,7 +250,7 @@ Mitigations, in order of preference:
 `AdaptiveDroplessMoE._execute_local` issued one `torch.nonzero` per expert,
 which forces a device-to-host synchronization each time. Under production expert
 parallelism a rank owns 1–6 experts and the cost is invisible; under
-replicated-expert DP a rank owns all 96, giving thousands of stalls per forward.
+replicated-expert DP a rank owns all 72, giving thousands of stalls per forward.
 
 `expert_execution: grouped` sorts assignments once and derives segment
 boundaries from a single `bincount`, cutting synchronizations from 96 per layer
