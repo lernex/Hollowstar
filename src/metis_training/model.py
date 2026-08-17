@@ -2374,6 +2374,37 @@ def expert_segment_plan(
     return slots, padded
 
 
+def _stream_gate_logits(streams: Tensor, vectors: Tensor) -> Tensor:
+    """Score each stream against its own gate vector: ``...sd,sd->...s``.
+
+    Written as a multiply and a reduction rather than the einsum it obviously
+    is, because einsum lowers this to a batched GEMM whose N is one, and
+    rocBLAS answers a degenerate batched GEMM with hundreds of milliseconds of
+    *host* time for microseconds of matrix-core work. Measured on one MI300A at
+    the ablation geometry: 480 ms per call for 29M multiply-accumulates. The
+    contraction is identical; only the reduction order differs.
+    """
+
+    return (streams * vectors).sum(dim=-1)
+
+
+def _memory_attention_scores(query: Tensor, key: Tensor) -> Tensor:
+    """Score every stream against every memory entry: ``...sh,...mh->...sm``.
+
+    Batched over tokens, so einsum produces a GEMM with a batch of 16,384 and a
+    4x256 by 256xm problem inside it -- the shape rocBLAS is worst at. See
+    :func:`_stream_gate_logits`.
+    """
+
+    return (query.unsqueeze(-2) * key.unsqueeze(-3)).sum(dim=-1)
+
+
+def _memory_attention_combine(weights: Tensor, value: Tensor) -> Tensor:
+    """Blend memory entries by their weights: ``...sm,...mh->...sh``."""
+
+    return (weights.unsqueeze(-1) * value.unsqueeze(-3)).sum(dim=-2)
+
+
 class RoutingReplayTape:
     """Discrete expert selections, recorded per pass and replayed on recompute.
 
@@ -3790,7 +3821,7 @@ class NGramConditionalMemory(nn.Module):
         vectors = self.gate_vectors[injection_index, pass_index]
         bias = self.gate_bias[injection_index, pass_index]
         logits = (
-            torch.einsum("...sd,sd->...s", streams.float(), vectors.float())
+            _stream_gate_logits(streams.float(), vectors.float())
             / math.sqrt(self.config.d_model)
         ) + bias.float()
         gates = torch.sigmoid(logits) * float(gate_scale)
@@ -4002,7 +4033,7 @@ class RecurrentDepthMemory(nn.Module):
         query = self.query(streams)
         key = self.key(entries)
         value = self.value(entries)
-        scores = torch.einsum("...sh,...mh->...sm", query.float(), key.float())
+        scores = _memory_attention_scores(query.float(), key.float())
         scores = scores / math.sqrt(self.config.memory_dim)
         scores = scores.masked_fill(~valid.unsqueeze(-2), float("-inf"))
         no_valid = ~valid.any(dim=-1)
@@ -4017,14 +4048,10 @@ class RecurrentDepthMemory(nn.Module):
             weights,
             torch.zeros_like(weights),
         )
-        retrieved = torch.einsum(
-            "...sm,...mh->...sh",
-            weights.to(value.dtype),
-            value,
-        )
+        retrieved = _memory_attention_combine(weights.to(value.dtype), value)
         projected = self.output(retrieved)
         gate_logits = (
-            torch.einsum("...sd,sd->...s", streams.float(), self.stream_gate.float())
+            _stream_gate_logits(streams.float(), self.stream_gate.float())
             / math.sqrt(self.config.d_model)
         ) + self.stream_gate_bias.float()
         gates = torch.sigmoid(gate_logits) * float(gate_scale)

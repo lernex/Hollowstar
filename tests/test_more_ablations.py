@@ -25,6 +25,9 @@ from metis_training.metrics import estimate_hardware_flops
 from metis_training.model import (
     CurriculumState,
     Metis16ForCausalLM,
+    _memory_attention_combine,
+    _memory_attention_scores,
+    _stream_gate_logits,
     expert_segment_plan,
     geometric_continue_probability,
     max_entropy_categorical,
@@ -448,6 +451,40 @@ def test_expert_segment_plan_rejects_an_index_past_the_bank():
 
     with pytest.raises(RuntimeError):
         expert_segment_plan(torch.tensor([0, 1, 4]), 3, 16)
+
+
+def test_contractions_agree_with_the_einsums_they_replace():
+    """Multiply-and-reduce must be the same contraction, not merely a fast one.
+
+    These three sites were rewritten because einsum lowers them to degenerate
+    batched GEMMs that rocBLAS answers with hundreds of milliseconds of host
+    time. Rewriting a contraction by hand is an easy place to transpose an axis
+    and get a plausible tensor of the right shape, so each is pinned to the
+    einsum it replaced.
+    """
+
+    generator = torch.Generator().manual_seed(20_260_816)
+
+    def randn(*shape):
+        return torch.randn(*shape, generator=generator, dtype=torch.float64)
+
+    streams, vectors = randn(3, 7, 4, 32), randn(4, 32)
+    torch.testing.assert_close(
+        _stream_gate_logits(streams, vectors),
+        torch.einsum("...sd,sd->...s", streams, vectors),
+    )
+
+    query, key = randn(3, 7, 4, 16), randn(3, 7, 5, 16)
+    torch.testing.assert_close(
+        _memory_attention_scores(query, key),
+        torch.einsum("...sh,...mh->...sm", query, key),
+    )
+
+    weights, value = randn(3, 7, 4, 5), randn(3, 7, 5, 16)
+    torch.testing.assert_close(
+        _memory_attention_combine(weights, value),
+        torch.einsum("...sm,...mh->...sh", weights, value),
+    )
 
 
 def test_batched_newton_schulz_matches_the_matrix_at_a_time_version():
