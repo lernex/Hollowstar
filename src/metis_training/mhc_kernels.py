@@ -525,25 +525,31 @@ class _MHCReadMixFunction(torch.autograd.Function):
             BLOCK_D=_BLOCK_D,
         )
         # The twenty weight gradients are a contraction over every token and
-        # every channel: grad_matrix[o, i] sums grad_mixed[o] * streams[i], and
-        # grad_read[i] sums grad_source * streams[i]. Stacking grad_mixed and
-        # grad_source gives five left-hand rows sharing one right-hand side, so
-        # the whole thing is a single tall-skinny GEMM over a [5, N] by [N, 4]
-        # problem rather than a hundred thousand block reductions.
-        flat_streams = streams.reshape(token_count, _N_STREAMS, hidden_size)
-        flat_streams = flat_streams.transpose(0, 1).reshape(_N_STREAMS, -1)
-        left = torch.cat(
-            (
-                grad_mixed.reshape(token_count, _N_STREAMS, hidden_size)
-                .transpose(0, 1)
-                .reshape(_N_STREAMS, -1),
-                grad_source.reshape(1, -1),
-            ),
+        # every channel. Expressing that as a GEMM is a trap: the contracted
+        # dimension is tens of millions long while the other two are four, so
+        # rocBLAS answers with a split-K kernel it re-tunes for every packed
+        # token count, and the float casts materialise hundreds of megabytes.
+        # Measured, that was 188 ms per call against 55.7 ms for the block
+        # reductions it replaced. A reduction is a reduction: broadcast and sum,
+        # accumulating in fp32 without ever building an fp32 copy.
+        streams_view = streams.reshape(token_count, _N_STREAMS, hidden_size)
+        mixed_view = grad_mixed.reshape(token_count, _N_STREAMS, hidden_size)
+        grad_matrix_fp32 = torch.stack(
+            [
+                torch.sum(
+                    mixed_view[:, index : index + 1, :] * streams_view,
+                    dim=(0, 2),
+                    dtype=torch.float32,
+                )
+                for index in range(_N_STREAMS)
+            ],
             dim=0,
         )
-        contracted = left.float() @ flat_streams.float().t()
-        grad_matrix_fp32 = contracted[:_N_STREAMS]
-        grad_read_fp32 = contracted[_N_STREAMS]
+        grad_read_fp32 = torch.sum(
+            grad_source.reshape(token_count, 1, hidden_size) * streams_view,
+            dim=(0, 2),
+            dtype=torch.float32,
+        )
         return (
             grad_streams.view(ctx.original_shape),
             grad_matrix_fp32.to(matrix.dtype),
@@ -610,20 +616,17 @@ class _MHCMaskedWriteFunction(torch.autograd.Function):
             hidden_size,
             BLOCK_D=_BLOCK_D,
         )
-        # grad_write[i] contracts grad_output[i] against the update over every
-        # active token and channel -- four numbers from a reduction the whole
-        # grid was performing by hand. One [4, N] by [N, 1] product instead.
+        # Same contraction, same reason for not making it a GEMM.
         active_update = (
-            update.reshape(token_count, hidden_size)
-            * active_mask.reshape(token_count, 1).to(update.dtype)
-        ).reshape(-1, 1)
-        grad_write_fp32 = (
+            update.reshape(token_count, 1, hidden_size)
+            * active_mask.reshape(token_count, 1, 1).to(update.dtype)
+        )
+        grad_write_fp32 = torch.sum(
             grad_output_c.reshape(token_count, _N_STREAMS, hidden_size)
-            .transpose(0, 1)
-            .reshape(_N_STREAMS, -1)
-            .float()
-            @ active_update.float()
-        ).reshape(_N_STREAMS)
+            * active_update,
+            dim=(0, 2),
+            dtype=torch.float32,
+        )
         return (
             grad_mixed.view(ctx.original_shape),
             grad_write_fp32.to(write_weights.dtype),
