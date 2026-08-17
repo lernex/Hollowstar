@@ -50,6 +50,14 @@ export FLASH_ATTENTION_TRITON_AMD_AUTOTUNE=0
 # "LLVM ERROR: IO failure on output stream: Bad address" comes from; the error
 # names neither memory nor the cache.  /data is a 1.8 TB local disk.
 METIS_NODE_SCRATCH=/data/$USER/metis-${SLURM_JOB_ID:-local}-${SLURM_PROCID:-0}
+# /data is a per-node disk and it is not healthy on every node: parrypeak061
+# answers mkdir with an I/O error while its four APUs are perfectly fine, and a
+# job that assumes otherwise loses the whole row to one bad mount. Fall back to
+# the tmpfs rather than the run.
+if ! mkdir -p "$METIS_NODE_SCRATCH" 2>/dev/null; then
+  METIS_NODE_SCRATCH=/tmp/metis-$USER-${SLURM_JOB_ID:-local}-${SLURM_PROCID:-0}
+  echo "metis: /data unusable on $(hostname), falling back to $METIS_NODE_SCRATCH" >&2
+fi
 export TRITON_CACHE_DIR=$METIS_NODE_SCRATCH/triton
 export MIOPEN_USER_DB_PATH=$METIS_NODE_SCRATCH/miopen
 export MIOPEN_CUSTOM_CACHE_DIR=$MIOPEN_USER_DB_PATH
