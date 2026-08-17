@@ -490,6 +490,12 @@ class Metis16Config:
     # the strength the constraint actually needs; see
     # ``metis_training.model.BudgetController``.
     budget_controller_rate: float = 0.0
+    # The width budget is evaluated once per MoE layer per pass and the depth
+    # budget once per forward, so at equal rates the depth multiplier receives
+    # roughly twenty times less integral gain per optimizer step and takes
+    # twenty times longer to bind. Measured: width falls 7.35 -> 3.37 in fifty
+    # steps while depth climbs 1.83 -> 5.00 in ten. Give depth its own rate.
+    depth_budget_controller_rate: float = 0.0
     budget_multiplier_limit: float = 1.0e3
     continuation_entropy_coefficient: float = 1.0e-3
     tie_embeddings: bool = True

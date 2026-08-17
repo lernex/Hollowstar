@@ -4558,7 +4558,10 @@ class Metis16ForCausalLM(nn.Module):
         self.depth_budget = BudgetController(
             config.target_mean_passes,
             coefficient=config.depth_budget_coefficient,
-            rate=config.budget_controller_rate,
+            rate=(
+                config.depth_budget_controller_rate
+                or config.budget_controller_rate
+            ),
             limit=config.budget_multiplier_limit,
         )
         self.final_norm = RMSNorm(config.d_model, device=device, dtype=dtype)

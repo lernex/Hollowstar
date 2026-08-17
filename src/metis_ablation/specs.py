@@ -211,6 +211,7 @@ def proxy_config(
         # dual step turns them into an augmented Lagrangian that finds its own
         # strength.
         "budget_controller_rate": 1.0,
+        "depth_budget_controller_rate": 20.0,
         "continuation_entropy_coefficient": 0.001,
         "tie_embeddings": True,
         "moe_dispatch_chunks": 1,
