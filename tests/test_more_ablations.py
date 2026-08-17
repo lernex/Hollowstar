@@ -33,6 +33,7 @@ from metis_training.model import (
     max_entropy_categorical,
 )
 from metis_training.model_config import Metis16Config, load_family_config
+from metis_training.precision import bucketed_row_count
 
 
 # --------------------------------------------------------------------------
@@ -451,6 +452,54 @@ def test_expert_segment_plan_rejects_an_index_past_the_bank():
 
     with pytest.raises(RuntimeError):
         expert_segment_plan(torch.tensor([0, 1, 4]), 3, 16)
+
+
+def test_row_bucketing_bounds_the_waste_and_the_number_of_shapes():
+    """Two properties, and the tension between them is the whole design.
+
+    Too fine a bucket and Transformer Engine sees a row count it has never
+    tuned for on every step, which measured at 908 ms per call against 0.70 ms
+    for a repeated shape. Too coarse and the padding is real arithmetic. So:
+    never pad by more than an eighth, and never let the whole range of packed
+    row counts open up more than a couple of hundred distinct shapes.
+    """
+
+    multiple = 16
+    for rows in list(range(1, 600)) + [1024, 4097, 7568, 16384, 30224, 65536]:
+        padded = bucketed_row_count(rows, multiple=multiple)
+        assert padded >= rows
+        assert padded % multiple == 0
+        assert padded <= max(multiple, rows * 9 // 8 + multiple), rows
+
+    shapes = {bucketed_row_count(rows) for rows in range(0, 65_537)}
+    assert len(shapes) < 160, len(shapes)
+    assert bucketed_row_count(0) == multiple, "an empty call still needs a block"
+
+
+def test_row_bucketing_does_not_change_the_result():
+    """Zero rows must contribute nothing beyond the GEMM's own reassociation.
+
+    A bias-free projection maps a zero row to a zero row, and the padded rows
+    are sliced off before anything reads them, so the mathematical result does
+    not depend on the bucket. What does move is the last bit or two, because
+    changing M lets the GEMM block and accumulate differently -- and that was
+    already true of the sixteen-row padding this replaces. What must never
+    happen is a bucket that changes the answer in any way a reader would
+    notice.
+    """
+
+    torch.manual_seed(19)
+    projection = torch.nn.Linear(24, 12, bias=False)
+    values = torch.randn(37, 24)
+    reference = projection(values)
+    for padded in (bucketed_row_count(37, multiple=16), 64, 256):
+        widened = torch.nn.functional.pad(values, (0, 0, 0, padded - 37))
+        torch.testing.assert_close(
+            projection(widened)[:37], reference, rtol=1e-4, atol=1e-6
+        )
+        # The padding cannot raise an absolute maximum, which is what FP8
+        # delayed scaling reduces over.
+        assert torch.equal(widened.abs().amax(), values.abs().amax())
 
 
 def test_contractions_agree_with_the_einsums_they_replace():

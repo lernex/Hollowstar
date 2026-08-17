@@ -31,6 +31,10 @@ _DYNAMIC_ROW_LINEAR_TYPES: dict[type[nn.Module], type[nn.Module]] = {}
 # Transformer Engine contracts over the input's last dimension and requires it
 # to be a multiple of sixteen; the row padding above covers the leading dims.
 _FP8_CONTRACTION_MULTIPLE = 16
+# Packed row counts are rounded up to a geometric bucket rather than to the
+# bare FP8 stride; see :func:`bucketed_row_count`. Three means no call is
+# padded by more than an eighth of itself, and eight buckets cover each octave.
+_ROW_BUCKET_SHIFT = 3
 
 
 @dataclass
@@ -104,6 +108,43 @@ def _restore_fp8_state(
         target.copy_(saved)
 
 
+def bucketed_row_count(
+    row_count: int,
+    *,
+    multiple: int = _FP8_CONTRACTION_MULTIPLE,
+    shift: int = _ROW_BUCKET_SHIFT,
+) -> int:
+    """Round a packed row count up to one of a small number of buckets.
+
+    Padding to the bare sixteen-row FP8 requirement leaves the row count free
+    to take four thousand distinct values, and pass packing makes it take a
+    different one on every step. hipBLASLt -- which Transformer Engine uses for
+    its GEMMs regardless of what the aten surface is told to prefer -- searches
+    for a kernel per shape and caches the answer per shape, so a shape it never
+    sees twice is a search it never amortizes. Measured on one MI300A: 0.91 ms
+    per forward and backward at a repeated row count, **908 ms** at row counts
+    varying by sixteen, and 0.70 ms at row counts rounded to a thousand.
+
+    Bucketing geometrically rather than to a fixed stride keeps the waste
+    bounded at both ends: the step is the largest power of two no greater than
+    ``row_count`` divided by ``2**shift``, so no call is padded by more than
+    ``1/2**shift`` of itself, and the whole range of row counts collapses to
+    about ``2**shift`` buckets per octave.
+
+    The padding is arithmetically free. Rows of zeros contribute nothing to a
+    bias-free projection, they cannot raise an absolute maximum, and the padded
+    outputs are sliced off before anything reads them. It is not bitwise free:
+    changing M lets the GEMM block and accumulate differently. That was already
+    true of the sixteen-row padding this replaces, and it moves every row of
+    the campaign the same way.
+    """
+
+    if row_count <= 0:
+        return multiple
+    step = max(multiple, 1 << max(0, row_count.bit_length() - 1 - shift))
+    return -(-row_count // step) * step
+
+
 def _dynamic_row_linear_type(base: type[nn.Module]) -> type[nn.Module]:
     """Return a TE Linear subclass that pads arbitrary packed row counts."""
 
@@ -113,6 +154,7 @@ def _dynamic_row_linear_type(base: type[nn.Module]) -> type[nn.Module]:
 
     class DynamicRowLinear(base):  # type: ignore[misc, valid-type]
         metis_dynamic_row_multiple = 16
+        metis_dynamic_row_bucket_shift = _ROW_BUCKET_SHIFT
 
         def forward(self, values: torch.Tensor, *args: Any, **kwargs: Any) -> Any:
             # ``nn.Linear`` accepts a bare feature vector and returns one, and
@@ -129,11 +171,11 @@ def _dynamic_row_linear_type(base: type[nn.Module]) -> type[nn.Module]:
             leading = values.shape[:-1]
             flattened = values.reshape(-1, values.shape[-1])
             row_count = int(flattened.shape[0])
-            padded_rows = (
-                self.metis_dynamic_row_multiple
-                if row_count == 0
-                else (-row_count) % self.metis_dynamic_row_multiple
-            )
+            padded_rows = bucketed_row_count(
+                row_count,
+                multiple=self.metis_dynamic_row_multiple,
+                shift=self.metis_dynamic_row_bucket_shift,
+            ) - row_count
             if padded_rows:
                 flattened = F.pad(flattened, (0, 0, 0, padded_rows))
             result = super().forward(flattened, *args, **kwargs)
