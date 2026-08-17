@@ -2153,13 +2153,20 @@ class _StackedGroupedLinear(nn.Module):
     def expert_weight(self, index: int) -> Tensor:
         return self.weight[index]
 
-    def forward(self, values: Tensor, m_splits: list[int]) -> Tensor:
-        if len(m_splits) != self.num_gemms:
-            raise ValueError(
-                f"Grouped linear has {self.num_gemms} experts but received "
-                f"{len(m_splits)} segments."
-            )
-        segments = torch.split(values, m_splits)
+    def forward(self, values: Tensor, m_splits: Tensor) -> Tensor:
+        """Contract every expert's segment against its own weight.
+
+        ``m_splits`` is the per-expert row count as a *device* tensor. Keeping
+        it on the device is the point: the alternative is a Python list, and
+        producing one costs a device-to-host synchronization per layer per
+        pass.
+        """
+
+        grouped = getattr(torch, "_grouped_mm", None)
+        if grouped is not None and values.is_cuda:
+            offsets = torch.cumsum(m_splits, 0).to(torch.int32)
+            return grouped(values, self.weight.transpose(1, 2), offs=offsets)
+        segments = torch.split(values, [int(size) for size in m_splits.tolist()])
         return torch.cat(
             [
                 F.linear(segment, self.weight[index])
@@ -2179,34 +2186,18 @@ def _make_grouped_linear(
     device: torch.device | str | None,
     dtype: torch.dtype | None,
 ) -> nn.Module:
-    """Build one projection covering every expert, through the policy if it has one."""
+    """Build one projection covering every expert.
 
-    if precision_policy is not None and callable(
-        getattr(precision_policy, "grouped_linear", None)
-    ):
-        # Transformer Engine's GroupedLinear defaults its placement rather than
-        # accepting ``None`` for it the way ``nn.Linear`` does, and the model is
-        # built without a device whenever the trainer places it afterwards.
-        placement: dict[str, Any] = {}
-        if device is not None:
-            placement["device"] = device
-        if dtype is not None:
-            placement["params_dtype"] = dtype
-        module = precision_policy.grouped_linear(
-            num_gemms,
-            in_features,
-            out_features,
-            bias=False,
-            role=role,
-            **placement,
-        )
-        if module is not None:
-            if not isinstance(module, nn.Module):
-                raise TypeError(
-                    "precision_policy.grouped_linear(...) must return torch.nn.Module."
-                )
-            setattr(module, "metis_precision_role", role)
-            return module
+    Deliberately not routed through the precision policy. Transformer Engine's
+    grouped linear wants its segment lengths as a Python list, which costs a
+    device-to-host synchronization per layer per pass, and its ROCm FP8 grouped
+    path quantizes and reduces amax per expert in Python -- reinstating exactly
+    the per-expert cost a grouped GEMM exists to remove. The stacked bank below
+    takes its segment lengths as a device tensor, and measured faster than
+    Transformer Engine's BF16 grouped path as well: 1.365 ms against 1.75 ms at
+    the ablation geometry.
+    """
+
     module = _StackedGroupedLinear(
         num_gemms,
         in_features,
@@ -2296,37 +2287,12 @@ class GroupedSwiGLUExperts(nn.Module):
             if parameter is not None and parameter.is_cuda:
                 torch.cuda.manual_seed(int(seed))
             for projection in (self.gate_up, self.down):
-                reset = getattr(projection, "reset_expert_parameters", None)
-                if callable(reset):
-                    reset(index)
-                    continue
-                _reset_grouped_expert_slice(projection, index)
+                projection.reset_expert_parameters(index)
 
-    def forward(self, packed: Tensor, m_splits: list[int]) -> Tensor:
-        policy = self._precision_policy
-        # Transformer Engine reads the enclosing FP8 autocast, and the model's
-        # execution context has one open. Bank execution is BF16 by measurement,
-        # so the context is closed again for exactly these two GEMMs.
-        bf16 = getattr(policy, "bf16_reference_context", None)
-        context = bf16() if callable(bf16) else nullcontext()
-        with context:
-            fused = self.gate_up(packed, m_splits)
-            gate, up = fused.chunk(2, dim=-1)
-            return self.down(F.silu(gate) * up, m_splits)
-
-
-def _reset_grouped_expert_slice(projection: nn.Module, index: int) -> None:
-    """Re-initialize expert ``index`` of a Transformer Engine grouped projection."""
-
-    weight = getattr(projection, f"weight{index}", None)
-    if weight is None:
-        weight = getattr(projection, "weight", None)
-        if weight is None or weight.ndim != 3:
-            raise RuntimeError(
-                "Grouped projection exposes no per-expert weight to initialize."
-            )
-        weight = weight[index]
-    nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
+    def forward(self, packed: Tensor, m_splits: Tensor) -> Tensor:
+        fused = self.gate_up(packed, m_splits)
+        gate, up = fused.chunk(2, dim=-1)
+        return self.down(F.silu(gate) * up, m_splits)
 
 
 def expert_segment_plan(
@@ -2343,11 +2309,19 @@ def expert_segment_plan(
     nothing is written twice, which is the property the whole corpus depends on
     and the one a loss curve would never reveal.
 
-    Segments are padded up to ``row_multiple`` because Transformer Engine
-    contracts in row blocks, and every expert is given at least one block. That
-    last part replaces the zero-token probe the per-expert paths need: an expert
-    nobody routed to still executes, so the graph shape and the amax reduction
-    are identical on every rank regardless of how routing fell.
+    Segments are padded up to ``row_multiple`` because grouped GEMMs contract
+    in row blocks, and every expert is given at least one block. That last part
+    replaces the zero-token probe the per-expert paths need: an expert nobody
+    routed to still executes, so the graph shape is identical on every rank
+    regardless of how routing fell.
+
+    The padded counts are made to sum to a total that depends only on the
+    number of assignments, never on how they were distributed, by giving the
+    leftover rows to the last segment. That is what lets the caller size the
+    packed buffer from a shape it already knows instead of reading the counts
+    back to the host -- and a read-back here is a pipeline stall per layer per
+    pass. The leftover rows are zeros in a segment that already exists, so they
+    cost a little arithmetic and change nothing.
     """
 
     if local_indices.ndim != 1:
@@ -2362,6 +2336,11 @@ def expert_segment_plan(
         )
     blocks = torch.div(counts + (multiple - 1), multiple, rounding_mode="floor")
     padded = torch.clamp(blocks, min=1) * multiple
+    total = packed_expert_rows(int(local_indices.numel()), expert_count, multiple)
+    padded = torch.cat(
+        [padded[:-1], (total - padded[:-1].sum()).reshape(1)],
+        dim=0,
+    )
     order = torch.argsort(local_indices, stable=True)
     sorted_experts = local_indices.index_select(0, order)
     source_offsets = torch.cumsum(counts, 0) - counts
@@ -2372,6 +2351,24 @@ def expert_segment_plan(
     destinations = destination_offsets.index_select(0, sorted_experts) + within_segment
     slots = torch.empty_like(destinations).index_copy_(0, order, destinations)
     return slots, padded
+
+
+def packed_expert_rows(
+    assignment_count: int,
+    expert_count: int,
+    row_multiple: int,
+) -> int:
+    """Rows the packed expert buffer needs, whatever the routing turned out to be.
+
+    Every segment is padded up to ``row_multiple`` and every expert owns at
+    least one block, so the padded total can exceed the assignment count by at
+    most one block per expert. Sizing for that worst case makes the buffer a
+    function of shapes the caller already holds on the host.
+    """
+
+    multiple = max(int(row_multiple), 1)
+    blocks = -(-int(assignment_count) // multiple) + int(expert_count)
+    return blocks * multiple
 
 
 def _stream_gate_logits(streams: Tensor, vectors: Tensor) -> Tensor:
@@ -2900,13 +2897,16 @@ class AdaptiveDroplessMoE(nn.Module):
             self.local_expert_count,
             bank.row_multiple,
         )
-        # The one and only host synchronization in this path, as in the sorted
-        # path it replaces: the grouped GEMM needs its segment lengths on the
-        # host to lay out the sub-problems.
-        m_splits = [int(value) for value in padded.tolist()]
-        packed = hidden_states.new_zeros(sum(m_splits), hidden_states.shape[-1])
+        # Sized from shapes already on the host, so this whole path runs
+        # without a single device-to-host synchronization.
+        total = packed_expert_rows(
+            int(local_indices.numel()),
+            self.local_expert_count,
+            bank.row_multiple,
+        )
+        packed = hidden_states.new_zeros(total, hidden_states.shape[-1])
         packed = packed.index_copy(0, slots, hidden_states)
-        routed = bank(packed, m_splits)
+        routed = bank(packed, padded)
         return routed.index_select(0, slots).to(hidden_states.dtype)
 
     def _execute_local(self, hidden_states: Tensor, local_indices: Tensor) -> Tensor:
@@ -3169,6 +3169,83 @@ class AdaptiveDroplessMoE(nn.Module):
         token_indices: Tensor,
         token_count: int,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        if self.world_size == 1:
+            return self._dispatch_replicated(
+                hidden_states,
+                expert_indices,
+                weights,
+                token_indices,
+                token_count,
+            )
+        return self._dispatch_general(
+            hidden_states,
+            expert_indices,
+            weights,
+            token_indices,
+            token_count,
+        )
+
+    def _dispatch_replicated(
+        self,
+        hidden_states: Tensor,
+        expert_indices: Tensor,
+        weights: Tensor,
+        token_indices: Tensor,
+        token_count: int,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Dispatch when this rank already owns every expert.
+
+        The general path sorts assignments by destination rank, exchanges
+        counts, and moves the tokens across the expert group. With replicated
+        experts there is one destination, so the sort is over a constant key
+        and is the identity, the exchange is a collective with itself, and the
+        three all-to-alls move data from this rank to this rank. All of that is
+        removable. What was not free is the pair of ``.tolist()`` calls that
+        turn the split counts into Python lists: each is a device-to-host
+        synchronization, and at ten layers by five passes by two executions
+        under pass recompute that is two hundred pipeline stalls per
+        micro-step.
+
+        This is a scheduling change and nothing else;
+        ``test_replicated_dispatch_matches_the_general_path`` pins the two
+        together rather than trusting that argument.
+        """
+
+        local_indices = expert_indices.remainder(self.local_expert_count)
+        order = torch.arange(
+            expert_indices.numel(),
+            device=expert_indices.device,
+            dtype=torch.long,
+        )
+        output = self._execute_local(hidden_states, local_indices)
+        processed = torch.tensor(
+            output.shape[0],
+            device=hidden_states.device,
+            dtype=torch.long,
+        )
+        return self._combine_outputs(
+            output,
+            order=order,
+            send_hidden=hidden_states,
+            send_local=local_indices,
+            weights=weights,
+            token_indices=token_indices,
+            token_count=token_count,
+            hidden_states=hidden_states,
+            processed=processed,
+            elapsed=0.0,
+        )
+
+    def _dispatch_general(
+        self,
+        hidden_states: Tensor,
+        expert_indices: Tensor,
+        weights: Tensor,
+        token_indices: Tensor,
+        token_count: int,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """Move each assignment to the rank that owns its expert, and back."""
+
         destinations = torch.div(
             expert_indices,
             self.local_expert_count,

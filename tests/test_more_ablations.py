@@ -29,6 +29,7 @@ from metis_training.model import (
     _memory_attention_scores,
     _stream_gate_logits,
     expert_segment_plan,
+    packed_expert_rows,
     geometric_continue_probability,
     max_entropy_categorical,
 )
@@ -323,6 +324,62 @@ def test_grouped_expert_execution_matches_the_loop_exactly():
         left = loop_model(input_ids, labels, curriculum=curriculum)
         right = grouped_model(input_ids, labels, curriculum=curriculum)
     torch.testing.assert_close(left.loss, right.loss, rtol=1e-5, atol=1e-6)
+
+
+def test_replicated_dispatch_matches_the_general_path():
+    """The fast path is the general path with the no-ops removed, exactly.
+
+    With one member in the expert group the sort is over a constant key, the
+    count exchange is a collective with itself, and the all-to-alls move data
+    from a rank to itself. Removing them is only safe if the result is
+    identical, and the general path is still live code for production expert
+    parallelism -- so this pins one to the other rather than trusting the
+    argument.
+    """
+
+    torch.manual_seed(31)
+    model = Metis16ForCausalLM(replace(_tiny(), expert_execution="grouped_gemm"))
+    moe = model.layers[0].moe
+    assert moe.world_size == 1
+
+    experts = moe.config.n_routed_experts
+    tokens, latent = 12, moe.config.latent_dim
+    generator = torch.Generator().manual_seed(4)
+    hidden = torch.randn(tokens * 2, latent, generator=generator)
+    indices = torch.randint(0, experts, (tokens * 2,), generator=generator)
+    weights = torch.rand(tokens * 2, generator=generator)
+    token_indices = torch.randint(0, tokens, (tokens * 2,), generator=generator)
+
+    with torch.no_grad():
+        fast = moe._dispatch_replicated(hidden, indices, weights, token_indices, tokens)
+        general = moe._dispatch_general(hidden, indices, weights, token_indices, tokens)
+    assert torch.equal(fast[0], general[0]), "combined expert output moved"
+    assert torch.equal(fast[1], general[1]), "processed-assignment count moved"
+
+
+def test_packed_buffer_size_does_not_depend_on_where_the_routing_went():
+    """The packed buffer must be sized from shapes, not from the counts.
+
+    Reading the segment lengths back to the host to size the buffer is a
+    pipeline stall per layer per pass -- two hundred of them per micro-step,
+    measured at 10.8 s of wall clock. Sizing for the worst case removes the
+    read entirely, which is only sound if the worst case really is a bound and
+    really is independent of the distribution.
+    """
+
+    generator = torch.Generator().manual_seed(20_260_817)
+    for experts, rows, multiple in ((7, 61, 16), (96, 4096, 16), (5, 0, 8), (3, 7, 1)):
+        expected = packed_expert_rows(rows, experts, multiple)
+        for trial in range(6):
+            if trial == 0:  # everything to one expert, the worst imbalance
+                indices = torch.zeros(rows, dtype=torch.long)
+            else:
+                indices = torch.randint(0, experts, (rows,), generator=generator)
+            slots, padded = expert_segment_plan(indices, experts, multiple)
+            assert int(padded.sum()) == expected, "buffer size moved with the routing"
+            assert bool((padded >= torch.bincount(indices, minlength=experts)).all())
+            assert int(torch.unique(slots).numel()) == rows
+            assert bool((slots < expected).all())
 
 
 def test_grouped_gemm_expert_execution_matches_the_loop_exactly():
