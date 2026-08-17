@@ -193,10 +193,6 @@ def proxy_config(
         "expert_execution": "grouped_gemm",
         "max_passes": 5,
         "target_mean_passes": 2.0,
-        # Exact active counts make every stochastic continuation decision a new
-        # Mamba/mHC shape. Eight geometric buckets per octave cap padding at
-        # 12.5% while allowing the ROCm kernels to reuse compiled shapes.
-        "active_token_bucket_shift": 3,
         "route_feature_dim": 256,
         "memory_dim": 256,
         "memory_heads": 4,

@@ -476,11 +476,6 @@ class Metis16Config:
     expert_replicas: int = 1
     max_passes: int = 5
     target_mean_passes: float = 2.0
-    # Geometric capacity bucketing for packed later-pass tokens. ``None`` keeps
-    # exact compaction; a non-negative shift bounds padding to 1 / 2**shift of
-    # the active set while collapsing thousands of possible Mamba/mHC shapes
-    # into a handful of reusable capacities per octave.
-    active_token_bucket_shift: int | None = None
     route_feature_dim: int = 256
     memory_dim: int = 256
     memory_heads: int = 4
@@ -688,11 +683,6 @@ class Metis16Config:
             raise ValueError("Production Metis-1.6 is locked to five passes.")
         if not 1.0 <= self.target_mean_passes <= self.max_passes:
             raise ValueError("target_mean_passes must lie in [1, max_passes].")
-        if (
-            self.active_token_bucket_shift is not None
-            and self.active_token_bucket_shift < 0
-        ):
-            raise ValueError("active_token_bucket_shift cannot be negative.")
         if self.memory_dim % self.memory_heads:
             raise ValueError("memory_dim must be divisible by memory_heads.")
         if not 1 <= self.moe_dispatch_chunks <= 8:

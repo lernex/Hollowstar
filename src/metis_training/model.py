@@ -1135,20 +1135,10 @@ class ActiveTokenLayout:
     flat_token_indices: Tensor
     batch_size: int
     sequence_length: int
-    padded_token_count: int | None = None
-    valid_token_count: int | None = None
-
-    @property
-    def active_token_count(self) -> int:
-        if self.valid_token_count is not None:
-            return int(self.valid_token_count)
-        return int(self.flat_token_indices.numel())
 
     @property
     def token_count(self) -> int:
-        if self.padded_token_count is not None:
-            return int(self.padded_token_count)
-        return self.active_token_count
+        return int(self.flat_token_indices.numel())
 
     def pack(self, values: Tensor) -> Tensor:
         if values.shape[:2] != (self.batch_size, self.sequence_length):
@@ -1157,18 +1147,8 @@ class ActiveTokenLayout:
         selected = values.reshape(
             self.batch_size * self.sequence_length,
             *tail,
-        ).index_select(0, self.flat_token_indices)[: self.active_token_count]
-        packed = selected.unsqueeze(0)
-        padding = self.token_count - self.active_token_count
-        if padding:
-            packed = torch.cat(
-                (
-                    packed,
-                    values.new_zeros(1, padding, *tail),
-                ),
-                dim=1,
-            )
-        return packed
+        ).index_select(0, self.flat_token_indices)
+        return selected.unsqueeze(0)
 
     def scatter(self, packed: Tensor, *, base: Tensor | None = None) -> Tensor:
         if packed.shape[0] != 1 or packed.shape[1] != self.token_count:
@@ -1183,40 +1163,16 @@ class ActiveTokenLayout:
             if base.shape != (self.batch_size, self.sequence_length, *tail):
                 raise ValueError("Active-token scatter base has the wrong shape.")
             flat = base.reshape(self.batch_size * self.sequence_length, *tail)
-        scattered = flat.index_copy(
-            0,
-            self.flat_token_indices[: self.active_token_count],
-            packed.squeeze(0)[: self.active_token_count],
-        )
+        scattered = flat.index_copy(0, self.flat_token_indices, packed.squeeze(0))
         return scattered.view(self.batch_size, self.sequence_length, *tail)
 
 
-def _bucketed_active_token_count(count: int, shift: int | None) -> int:
-    if count <= 0:
-        return 1
-    if shift is None:
-        return count
-    step = max(8, 1 << max(0, count.bit_length() - 1 - int(shift)))
-    return -(-count // step) * step
-
-
-def _active_token_layout(
-    active_mask: Tensor,
-    *,
-    bucket_shift: int | None = None,
-) -> ActiveTokenLayout:
+def _active_token_layout(active_mask: Tensor) -> ActiveTokenLayout:
     if active_mask.ndim != 2:
         raise ValueError("active_mask must have shape [batch, sequence].")
     batch, sequence = active_mask.shape
     indices = torch.nonzero(active_mask.reshape(-1), as_tuple=False).flatten()
-    active = int(indices.numel())
-    return ActiveTokenLayout(
-        indices,
-        batch,
-        sequence,
-        padded_token_count=_bucketed_active_token_count(active, bucket_shift),
-        valid_token_count=active,
-    )
+    return ActiveTokenLayout(indices, batch, sequence)
 
 
 def _packed_document_metadata(
@@ -1237,8 +1193,7 @@ def _packed_document_metadata(
     boundary.
     """
 
-    active_count = layout.active_token_count
-    indices = layout.flat_token_indices[:active_count]
+    indices = layout.flat_token_indices
     batch_ids = torch.div(
         indices,
         layout.sequence_length,
@@ -1248,19 +1203,16 @@ def _packed_document_metadata(
         source_documents = batch_ids
     else:
         source_documents = document_ids.reshape(-1).index_select(0, indices)
-    boundaries = torch.zeros(
+    boundaries = torch.ones(
         layout.token_count,
         device=indices.device,
         dtype=torch.bool,
     )
-    if active_count:
-        boundaries[0] = not continues_previous
-    if active_count > 1:
-        boundaries[1:active_count] = (batch_ids[1:] != batch_ids[:-1]) | (
+    boundaries[0] = not continues_previous
+    if layout.token_count > 1:
+        boundaries[1:] = (batch_ids[1:] != batch_ids[:-1]) | (
             source_documents[1:] != source_documents[:-1]
         )
-    if layout.token_count > active_count:
-        boundaries[active_count] = True
     packed_document_ids = boundaries.to(torch.long).cumsum(dim=0) - 1
     return packed_document_ids.unsqueeze(0), boundaries.unsqueeze(0)
 
@@ -5658,9 +5610,6 @@ class Metis16ForCausalLM(nn.Module):
             (), device=input_ids.device, dtype=torch.long
         )
         packed_passes = torch.zeros((), device=input_ids.device, dtype=torch.long)
-        packed_padding_tokens = torch.zeros(
-            (), device=input_ids.device, dtype=torch.long
-        )
 
         for pass_index in range(effective_passes):
             active_masks.append(active_mask)
@@ -5706,10 +5655,7 @@ class Metis16ForCausalLM(nn.Module):
             run_memory_masks: tuple[Tensor, ...] = tuple(bank.valid_masks)
             if int(active_mask.sum().item()) < input_ids.numel():
                 token_layout = (
-                    _active_token_layout(
-                        active_mask,
-                        bucket_shift=self.config.active_token_bucket_shift,
-                    )
+                    _active_token_layout(active_mask)
                     if local_has_active
                     else ActiveTokenLayout(
                         torch.zeros(
@@ -5719,21 +5665,14 @@ class Metis16ForCausalLM(nn.Module):
                         ),
                         input_ids.shape[0],
                         input_ids.shape[1],
-                        padded_token_count=1,
-                        valid_token_count=0,
                     )
                 )
                 packed_passes = packed_passes + 1
-                packed_padding_tokens = packed_padding_tokens + (
-                    token_layout.token_count - token_layout.active_token_count
+                run_attention_mask = torch.ones(
+                    (1, token_layout.token_count),
+                    device=input_ids.device,
+                    dtype=torch.bool,
                 )
-                run_attention_mask = (
-                    torch.arange(
-                        token_layout.token_count,
-                        device=input_ids.device,
-                    )
-                    < token_layout.active_token_count
-                ).unsqueeze(0)
                 # The packed buffer's first token continues a neighbouring
                 # shard's document more often than not, and only the group
                 # knows that, so the CP state has to be resolved before the
@@ -5747,9 +5686,7 @@ class Metis16ForCausalLM(nn.Module):
                         sequence_length=input_ids.shape[1],
                         segment_stride=segment_stride,
                         local_count=(
-                            token_layout.active_token_count
-                            if local_has_active
-                            else 0
+                            token_layout.token_count if local_has_active else 0
                         ),
                     )
                     if context_parallel.enabled
@@ -6322,7 +6259,6 @@ class Metis16ForCausalLM(nn.Module):
             ),
             "packed_continuation_enabled": final_hidden.new_ones((), dtype=torch.long),
             "packed_continuation_passes": packed_passes,
-            "packed_continuation_padding_tokens": packed_padding_tokens,
             "executed_active_tokens": executed_active_tokens,
             "dense_envelope_tokens": final_hidden.new_tensor(
                 int(attention_mask.sum().item()) * effective_passes,
