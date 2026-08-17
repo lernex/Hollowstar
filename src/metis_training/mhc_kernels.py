@@ -301,6 +301,163 @@ if triton is not None:
         tl.store(grad_streams_ptr + stream_base + 3 * hidden_size, gx3, mask=mask)
 
 
+    @triton.jit
+    def _mhc_masked_write_forward_kernel(
+        mixed_ptr,
+        write_ptr,
+        update_ptr,
+        original_ptr,
+        active_ptr,
+        output_ptr,
+        hidden_size,
+        BLOCK_D: tl.constexpr,
+    ):
+        token = tl.program_id(0)
+        block = tl.program_id(1)
+        offsets = block * BLOCK_D + tl.arange(0, BLOCK_D)
+        mask = offsets < hidden_size
+        stream_base = token * _N_STREAMS_TL * hidden_size + offsets
+        update_base = token * hidden_size + offsets
+        active = tl.load(active_ptr + token)
+        update = tl.load(update_ptr + update_base, mask=mask, other=0.0).to(
+            tl.float32
+        )
+        w0 = tl.load(write_ptr).to(tl.float32)
+        w1 = tl.load(write_ptr + 1).to(tl.float32)
+        w2 = tl.load(write_ptr + 2).to(tl.float32)
+        w3 = tl.load(write_ptr + 3).to(tl.float32)
+        mixed0 = tl.load(mixed_ptr + stream_base, mask=mask, other=0.0).to(
+            tl.float32
+        )
+        mixed1 = tl.load(
+            mixed_ptr + stream_base + hidden_size, mask=mask, other=0.0
+        ).to(tl.float32)
+        mixed2 = tl.load(
+            mixed_ptr + stream_base + 2 * hidden_size, mask=mask, other=0.0
+        ).to(tl.float32)
+        mixed3 = tl.load(
+            mixed_ptr + stream_base + 3 * hidden_size, mask=mask, other=0.0
+        ).to(tl.float32)
+        original0 = tl.load(
+            original_ptr + stream_base, mask=mask, other=0.0
+        ).to(tl.float32)
+        original1 = tl.load(
+            original_ptr + stream_base + hidden_size, mask=mask, other=0.0
+        ).to(tl.float32)
+        original2 = tl.load(
+            original_ptr + stream_base + 2 * hidden_size,
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        original3 = tl.load(
+            original_ptr + stream_base + 3 * hidden_size,
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        tl.store(
+            output_ptr + stream_base,
+            tl.where(active, mixed0 + w0 * update, original0),
+            mask=mask,
+        )
+        tl.store(
+            output_ptr + stream_base + hidden_size,
+            tl.where(active, mixed1 + w1 * update, original1),
+            mask=mask,
+        )
+        tl.store(
+            output_ptr + stream_base + 2 * hidden_size,
+            tl.where(active, mixed2 + w2 * update, original2),
+            mask=mask,
+        )
+        tl.store(
+            output_ptr + stream_base + 3 * hidden_size,
+            tl.where(active, mixed3 + w3 * update, original3),
+            mask=mask,
+        )
+
+
+    @triton.jit
+    def _mhc_masked_write_backward_kernel(
+        write_ptr,
+        update_ptr,
+        active_ptr,
+        grad_output_ptr,
+        grad_mixed_ptr,
+        grad_update_ptr,
+        grad_original_ptr,
+        hidden_size,
+        BLOCK_D: tl.constexpr,
+    ):
+        token = tl.program_id(0)
+        block = tl.program_id(1)
+        offsets = block * BLOCK_D + tl.arange(0, BLOCK_D)
+        mask = offsets < hidden_size
+        stream_base = token * _N_STREAMS_TL * hidden_size + offsets
+        update_base = token * hidden_size + offsets
+        active = tl.load(active_ptr + token)
+        active_f = active.to(tl.float32)
+        inactive_f = 1.0 - active_f
+        update = tl.load(update_ptr + update_base, mask=mask, other=0.0).to(
+            tl.float32
+        )
+        g0 = tl.load(
+            grad_output_ptr + stream_base, mask=mask, other=0.0
+        ).to(tl.float32)
+        g1 = tl.load(
+            grad_output_ptr + stream_base + hidden_size,
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        g2 = tl.load(
+            grad_output_ptr + stream_base + 2 * hidden_size,
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        g3 = tl.load(
+            grad_output_ptr + stream_base + 3 * hidden_size,
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        w0 = tl.load(write_ptr).to(tl.float32)
+        w1 = tl.load(write_ptr + 1).to(tl.float32)
+        w2 = tl.load(write_ptr + 2).to(tl.float32)
+        w3 = tl.load(write_ptr + 3).to(tl.float32)
+        tl.store(grad_mixed_ptr + stream_base, active_f * g0, mask=mask)
+        tl.store(
+            grad_mixed_ptr + stream_base + hidden_size,
+            active_f * g1,
+            mask=mask,
+        )
+        tl.store(
+            grad_mixed_ptr + stream_base + 2 * hidden_size,
+            active_f * g2,
+            mask=mask,
+        )
+        tl.store(
+            grad_mixed_ptr + stream_base + 3 * hidden_size,
+            active_f * g3,
+            mask=mask,
+        )
+        tl.store(grad_original_ptr + stream_base, inactive_f * g0, mask=mask)
+        tl.store(
+            grad_original_ptr + stream_base + hidden_size,
+            inactive_f * g1,
+            mask=mask,
+        )
+        tl.store(
+            grad_original_ptr + stream_base + 2 * hidden_size,
+            inactive_f * g2,
+            mask=mask,
+        )
+        tl.store(
+            grad_original_ptr + stream_base + 3 * hidden_size,
+            inactive_f * g3,
+            mask=mask,
+        )
+        grad_update = active_f * (w0 * g0 + w1 * g1 + w2 * g2 + w3 * g3)
+        tl.store(grad_update_ptr + update_base, grad_update, mask=mask)
+
+
 class _MHCReadMixFunction(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -439,11 +596,6 @@ class _MHCMaskedWriteFunction(torch.autograd.Function):
         token_count = int(update.numel() // hidden_size)
         grad_output_c = grad_output.contiguous()
         grad_mixed = torch.empty_like(grad_output_c)
-        grad_write_fp32 = torch.zeros(
-            (_N_STREAMS,),
-            device=update.device,
-            dtype=torch.float32,
-        )
         grad_update = torch.empty_like(update)
         grad_original = torch.empty_like(grad_output_c)
         grid = (token_count, triton.cdiv(hidden_size, _BLOCK_D))
@@ -453,12 +605,25 @@ class _MHCMaskedWriteFunction(torch.autograd.Function):
             active_mask,
             grad_output_c,
             grad_mixed,
-            grad_write_fp32,
             grad_update,
             grad_original,
             hidden_size,
             BLOCK_D=_BLOCK_D,
         )
+        # grad_write[i] contracts grad_output[i] against the update over every
+        # active token and channel -- four numbers from a reduction the whole
+        # grid was performing by hand. One [4, N] by [N, 1] product instead.
+        active_update = (
+            update.reshape(token_count, hidden_size)
+            * active_mask.reshape(token_count, 1).to(update.dtype)
+        ).reshape(-1, 1)
+        grad_write_fp32 = (
+            grad_output_c.reshape(token_count, _N_STREAMS, hidden_size)
+            .transpose(0, 1)
+            .reshape(_N_STREAMS, -1)
+            .float()
+            @ active_update.float()
+        ).reshape(_N_STREAMS)
         return (
             grad_mixed.view(ctx.original_shape),
             grad_write_fp32.to(write_weights.dtype),
