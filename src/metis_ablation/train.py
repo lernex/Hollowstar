@@ -17,6 +17,7 @@ differences partly an artifact of routing skew.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import queue
 import threading
@@ -529,6 +530,25 @@ def _train_row_inner(
     if runtime.device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(runtime.device)
 
+    release_batches = (
+        _PrefetchedBatches(
+            (
+                batch
+                for pending in range(start_step, total_steps)
+                for batch in sample_stream.micro_batches(
+                    step=pending,
+                    rank=runtime.rank,
+                    world_size=runtime.world_size,
+                    micro_batch_size=spec.micro_batch,
+                    grad_accum=spec.grad_accum,
+                )
+            ),
+            depth=2 * spec.grad_accum,
+        )
+        if sample_stream is not None
+        else None
+    )
+
     with metrics:
         for step in range(start_step, total_steps):
             optimizer.zero_grad(set_to_none=True)
@@ -547,16 +567,8 @@ def _train_row_inner(
             )
 
             batches = (
-                _PrefetchedBatches(
-                    sample_stream.micro_batches(
-                        step=step,
-                        rank=runtime.rank,
-                        world_size=runtime.world_size,
-                        micro_batch_size=spec.micro_batch,
-                        grad_accum=spec.grad_accum,
-                    )
-                )
-                if sample_stream is not None
+                itertools.islice(release_batches, spec.grad_accum)
+                if release_batches is not None
                 else _synthetic_batches(
                     config=config,
                     spec=spec,
@@ -831,13 +843,15 @@ class _PrefetchedBatches:
             self._queue.put(self._DONE)
 
     def __iter__(self) -> "Iterator[Any]":
-        while True:
-            item = self._queue.get()
-            if item is self._DONE:
-                if self._error is not None:
-                    raise self._error
-                return
-            yield item
+        return self
+
+    def __next__(self) -> Any:
+        item = self._queue.get()
+        if item is self._DONE:
+            if self._error is not None:
+                raise self._error
+            raise StopIteration
+        return item
 
 
 def _synthetic_batches(*, config: Any, spec: AblationSpec, step: int, rank: int, device):
