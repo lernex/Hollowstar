@@ -28,9 +28,6 @@ else:
 MHC_CANARY_SCHEMA = "metis.mhc-fused-canary/v1"
 _N_STREAMS = 4
 _BLOCK_D = 256
-# Private accumulator slots for the mHC backward reductions. Large enough that
-# the grid rarely collides, small enough that the follow-up reduction is free.
-_MHC_PARTIAL_SLOTS = 2048
 
 
 def _canonical_sha256(payload: Mapping[str, Any], *, omit: Sequence[str] = ()) -> str:
@@ -242,59 +239,38 @@ if triton is not None:
 
     @triton.jit
     def _mhc_read_mix_backward_kernel(
-        streams_ptr,
         matrix_ptr,
         read_ptr,
         grad_source_ptr,
         grad_mixed_ptr,
         grad_streams_ptr,
-        grad_matrix_ptr,
-        grad_read_ptr,
         hidden_size,
-        partial_slots,
         BLOCK_D: tl.constexpr,
     ):
+        """Gradient with respect to the streams, and nothing else.
+
+        The previous version also accumulated the twenty weight-gradient
+        scalars here, which meant every program in a hundred-thousand-program
+        grid performed twenty full cross-lane reductions and twenty atomic adds
+        to produce twenty numbers. That is what made this kernel move 764 MB in
+        55.7 ms -- 13.7 GB/s against several terabytes of bandwidth. The weight
+        gradients are a contraction over every token and channel, which is one
+        tall-skinny GEMM, so they are computed as one; and the gradient of the
+        streams does not depend on the streams at all, so what is left here is
+        purely elementwise and runs at memory speed.
+        """
+
         token = tl.program_id(0)
         block = tl.program_id(1)
-        slot = (token * tl.num_programs(1) + block) % partial_slots
-        read_slot = grad_read_ptr + slot * _N_STREAMS_TL
-        matrix_slot = grad_matrix_ptr + slot * _N_STREAMS_TL * _N_STREAMS_TL
         offsets = block * BLOCK_D + tl.arange(0, BLOCK_D)
         mask = offsets < hidden_size
         stream_base = token * _N_STREAMS_TL * hidden_size + offsets
         source_base = token * hidden_size + offsets
-        x0 = tl.load(streams_ptr + stream_base, mask=mask, other=0.0).to(
-            tl.float32
-        )
-        x1 = tl.load(
-            streams_ptr + stream_base + hidden_size, mask=mask, other=0.0
-        ).to(tl.float32)
-        x2 = tl.load(
-            streams_ptr + stream_base + 2 * hidden_size, mask=mask, other=0.0
-        ).to(tl.float32)
-        x3 = tl.load(
-            streams_ptr + stream_base + 3 * hidden_size, mask=mask, other=0.0
-        ).to(tl.float32)
-        gs = tl.load(grad_source_ptr + source_base, mask=mask, other=0.0).to(
-            tl.float32
-        )
-        gm0 = tl.load(grad_mixed_ptr + stream_base, mask=mask, other=0.0).to(
-            tl.float32
-        )
-        gm1 = tl.load(
-            grad_mixed_ptr + stream_base + hidden_size, mask=mask, other=0.0
-        ).to(tl.float32)
-        gm2 = tl.load(
-            grad_mixed_ptr + stream_base + 2 * hidden_size,
-            mask=mask,
-            other=0.0,
-        ).to(tl.float32)
-        gm3 = tl.load(
-            grad_mixed_ptr + stream_base + 3 * hidden_size,
-            mask=mask,
-            other=0.0,
-        ).to(tl.float32)
-
+        gs = tl.load(grad_source_ptr + source_base, mask=mask, other=0.0).to(tl.float32)
+        gm0 = tl.load(grad_mixed_ptr + stream_base, mask=mask, other=0.0).to(tl.float32)
+        gm1 = tl.load(grad_mixed_ptr + stream_base + hidden_size, mask=mask, other=0.0).to(tl.float32)
+        gm2 = tl.load(grad_mixed_ptr + stream_base + 2 * hidden_size, mask=mask, other=0.0).to(tl.float32)
+        gm3 = tl.load(grad_mixed_ptr + stream_base + 3 * hidden_size, mask=mask, other=0.0).to(tl.float32)
         r0 = tl.load(read_ptr).to(tl.float32)
         r1 = tl.load(read_ptr + 1).to(tl.float32)
         r2 = tl.load(read_ptr + 2).to(tl.float32)
@@ -315,216 +291,14 @@ if triton is not None:
         m31 = tl.load(matrix_ptr + 13).to(tl.float32)
         m32 = tl.load(matrix_ptr + 14).to(tl.float32)
         m33 = tl.load(matrix_ptr + 15).to(tl.float32)
-
         gx0 = r0 * gs + m00 * gm0 + m10 * gm1 + m20 * gm2 + m30 * gm3
         gx1 = r1 * gs + m01 * gm0 + m11 * gm1 + m21 * gm2 + m31 * gm3
         gx2 = r2 * gs + m02 * gm0 + m12 * gm1 + m22 * gm2 + m32 * gm3
         gx3 = r3 * gs + m03 * gm0 + m13 * gm1 + m23 * gm2 + m33 * gm3
         tl.store(grad_streams_ptr + stream_base, gx0, mask=mask)
-        tl.store(
-            grad_streams_ptr + stream_base + hidden_size, gx1, mask=mask
-        )
-        tl.store(
-            grad_streams_ptr + stream_base + 2 * hidden_size, gx2, mask=mask
-        )
-        tl.store(
-            grad_streams_ptr + stream_base + 3 * hidden_size, gx3, mask=mask
-        )
-
-        tl.atomic_add(read_slot + 0, tl.sum(gs * x0, axis=0))
-        tl.atomic_add(read_slot + 1, tl.sum(gs * x1, axis=0))
-        tl.atomic_add(read_slot + 2, tl.sum(gs * x2, axis=0))
-        tl.atomic_add(read_slot + 3, tl.sum(gs * x3, axis=0))
-        tl.atomic_add(matrix_slot + 0, tl.sum(gm0 * x0, axis=0))
-        tl.atomic_add(matrix_slot + 1, tl.sum(gm0 * x1, axis=0))
-        tl.atomic_add(matrix_slot + 2, tl.sum(gm0 * x2, axis=0))
-        tl.atomic_add(matrix_slot + 3, tl.sum(gm0 * x3, axis=0))
-        tl.atomic_add(matrix_slot + 4, tl.sum(gm1 * x0, axis=0))
-        tl.atomic_add(matrix_slot + 5, tl.sum(gm1 * x1, axis=0))
-        tl.atomic_add(matrix_slot + 6, tl.sum(gm1 * x2, axis=0))
-        tl.atomic_add(matrix_slot + 7, tl.sum(gm1 * x3, axis=0))
-        tl.atomic_add(matrix_slot + 8, tl.sum(gm2 * x0, axis=0))
-        tl.atomic_add(matrix_slot + 9, tl.sum(gm2 * x1, axis=0))
-        tl.atomic_add(matrix_slot + 10, tl.sum(gm2 * x2, axis=0))
-        tl.atomic_add(matrix_slot + 11, tl.sum(gm2 * x3, axis=0))
-        tl.atomic_add(matrix_slot + 12, tl.sum(gm3 * x0, axis=0))
-        tl.atomic_add(matrix_slot + 13, tl.sum(gm3 * x1, axis=0))
-        tl.atomic_add(matrix_slot + 14, tl.sum(gm3 * x2, axis=0))
-        tl.atomic_add(matrix_slot + 15, tl.sum(gm3 * x3, axis=0))
-
-
-    @triton.jit
-    def _mhc_masked_write_forward_kernel(
-        mixed_ptr,
-        write_ptr,
-        update_ptr,
-        original_ptr,
-        active_ptr,
-        output_ptr,
-        hidden_size,
-        BLOCK_D: tl.constexpr,
-    ):
-        token = tl.program_id(0)
-        block = tl.program_id(1)
-        offsets = block * BLOCK_D + tl.arange(0, BLOCK_D)
-        mask = offsets < hidden_size
-        stream_base = token * _N_STREAMS_TL * hidden_size + offsets
-        update_base = token * hidden_size + offsets
-        active = tl.load(active_ptr + token)
-        update = tl.load(update_ptr + update_base, mask=mask, other=0.0).to(
-            tl.float32
-        )
-        w0 = tl.load(write_ptr).to(tl.float32)
-        w1 = tl.load(write_ptr + 1).to(tl.float32)
-        w2 = tl.load(write_ptr + 2).to(tl.float32)
-        w3 = tl.load(write_ptr + 3).to(tl.float32)
-        mixed0 = tl.load(mixed_ptr + stream_base, mask=mask, other=0.0).to(
-            tl.float32
-        )
-        mixed1 = tl.load(
-            mixed_ptr + stream_base + hidden_size, mask=mask, other=0.0
-        ).to(tl.float32)
-        mixed2 = tl.load(
-            mixed_ptr + stream_base + 2 * hidden_size, mask=mask, other=0.0
-        ).to(tl.float32)
-        mixed3 = tl.load(
-            mixed_ptr + stream_base + 3 * hidden_size, mask=mask, other=0.0
-        ).to(tl.float32)
-        original0 = tl.load(
-            original_ptr + stream_base, mask=mask, other=0.0
-        ).to(tl.float32)
-        original1 = tl.load(
-            original_ptr + stream_base + hidden_size, mask=mask, other=0.0
-        ).to(tl.float32)
-        original2 = tl.load(
-            original_ptr + stream_base + 2 * hidden_size,
-            mask=mask,
-            other=0.0,
-        ).to(tl.float32)
-        original3 = tl.load(
-            original_ptr + stream_base + 3 * hidden_size,
-            mask=mask,
-            other=0.0,
-        ).to(tl.float32)
-        tl.store(
-            output_ptr + stream_base,
-            tl.where(active, mixed0 + w0 * update, original0),
-            mask=mask,
-        )
-        tl.store(
-            output_ptr + stream_base + hidden_size,
-            tl.where(active, mixed1 + w1 * update, original1),
-            mask=mask,
-        )
-        tl.store(
-            output_ptr + stream_base + 2 * hidden_size,
-            tl.where(active, mixed2 + w2 * update, original2),
-            mask=mask,
-        )
-        tl.store(
-            output_ptr + stream_base + 3 * hidden_size,
-            tl.where(active, mixed3 + w3 * update, original3),
-            mask=mask,
-        )
-
-
-    @triton.jit
-    def _mhc_masked_write_backward_kernel(
-        write_ptr,
-        update_ptr,
-        active_ptr,
-        grad_output_ptr,
-        grad_mixed_ptr,
-        grad_write_ptr,
-        grad_update_ptr,
-        grad_original_ptr,
-        hidden_size,
-        BLOCK_D: tl.constexpr,
-    ):
-        token = tl.program_id(0)
-        block = tl.program_id(1)
-        offsets = block * BLOCK_D + tl.arange(0, BLOCK_D)
-        mask = offsets < hidden_size
-        stream_base = token * _N_STREAMS_TL * hidden_size + offsets
-        update_base = token * hidden_size + offsets
-        active = tl.load(active_ptr + token)
-        active_f = active.to(tl.float32)
-        inactive_f = 1.0 - active_f
-        update = tl.load(update_ptr + update_base, mask=mask, other=0.0).to(
-            tl.float32
-        )
-        g0 = tl.load(
-            grad_output_ptr + stream_base, mask=mask, other=0.0
-        ).to(tl.float32)
-        g1 = tl.load(
-            grad_output_ptr + stream_base + hidden_size,
-            mask=mask,
-            other=0.0,
-        ).to(tl.float32)
-        g2 = tl.load(
-            grad_output_ptr + stream_base + 2 * hidden_size,
-            mask=mask,
-            other=0.0,
-        ).to(tl.float32)
-        g3 = tl.load(
-            grad_output_ptr + stream_base + 3 * hidden_size,
-            mask=mask,
-            other=0.0,
-        ).to(tl.float32)
-        w0 = tl.load(write_ptr).to(tl.float32)
-        w1 = tl.load(write_ptr + 1).to(tl.float32)
-        w2 = tl.load(write_ptr + 2).to(tl.float32)
-        w3 = tl.load(write_ptr + 3).to(tl.float32)
-        tl.store(grad_mixed_ptr + stream_base, active_f * g0, mask=mask)
-        tl.store(
-            grad_mixed_ptr + stream_base + hidden_size,
-            active_f * g1,
-            mask=mask,
-        )
-        tl.store(
-            grad_mixed_ptr + stream_base + 2 * hidden_size,
-            active_f * g2,
-            mask=mask,
-        )
-        tl.store(
-            grad_mixed_ptr + stream_base + 3 * hidden_size,
-            active_f * g3,
-            mask=mask,
-        )
-        tl.store(grad_original_ptr + stream_base, inactive_f * g0, mask=mask)
-        tl.store(
-            grad_original_ptr + stream_base + hidden_size,
-            inactive_f * g1,
-            mask=mask,
-        )
-        tl.store(
-            grad_original_ptr + stream_base + 2 * hidden_size,
-            inactive_f * g2,
-            mask=mask,
-        )
-        tl.store(
-            grad_original_ptr + stream_base + 3 * hidden_size,
-            inactive_f * g3,
-            mask=mask,
-        )
-        grad_update = active_f * (w0 * g0 + w1 * g1 + w2 * g2 + w3 * g3)
-        tl.store(grad_update_ptr + update_base, grad_update, mask=mask)
-        tl.atomic_add(
-            grad_write_ptr,
-            tl.sum(active_f * g0 * update, axis=0),
-        )
-        tl.atomic_add(
-            grad_write_ptr + 1,
-            tl.sum(active_f * g1 * update, axis=0),
-        )
-        tl.atomic_add(
-            grad_write_ptr + 2,
-            tl.sum(active_f * g2 * update, axis=0),
-        )
-        tl.atomic_add(
-            grad_write_ptr + 3,
-            tl.sum(active_f * g3 * update, axis=0),
-        )
+        tl.store(grad_streams_ptr + stream_base + hidden_size, gx1, mask=mask)
+        tl.store(grad_streams_ptr + stream_base + 2 * hidden_size, gx2, mask=mask)
+        tl.store(grad_streams_ptr + stream_base + 3 * hidden_size, gx3, mask=mask)
 
 
 class _MHCReadMixFunction(torch.autograd.Function):
@@ -583,42 +357,40 @@ class _MHCReadMixFunction(torch.autograd.Function):
         if grad_mixed is None:
             grad_mixed = torch.zeros_like(streams)
         grad_streams = torch.empty_like(streams)
-        # Every program instance contributes to the same twenty scalars -- four
-        # read weights and a four-by-four mix matrix. Adding straight into them
-        # serialises the whole grid on twenty words: at this geometry that is
-        # over two million atomics onto twenty addresses, and it is why this
-        # kernel measured 34 GB/s against an MI300A's several terabytes. Giving
-        # the grid a spread of private slots and reducing them afterwards costs
-        # a few hundred kilobytes and removes the contention.
-        slots = _MHC_PARTIAL_SLOTS
-        grad_matrix_fp32 = torch.zeros(
-            (slots, _N_STREAMS, _N_STREAMS),
-            device=streams.device,
-            dtype=torch.float32,
-        )
-        grad_read_fp32 = torch.zeros(
-            (slots, _N_STREAMS),
-            device=streams.device,
-            dtype=torch.float32,
-        )
         grid = (token_count, triton.cdiv(hidden_size, _BLOCK_D))
         _mhc_read_mix_backward_kernel[grid](
-            streams,
             matrix,
             read_weights,
             grad_source.contiguous(),
             grad_mixed.contiguous(),
             grad_streams,
-            grad_matrix_fp32,
-            grad_read_fp32,
             hidden_size,
-            slots,
             BLOCK_D=_BLOCK_D,
         )
+        # The twenty weight gradients are a contraction over every token and
+        # every channel: grad_matrix[o, i] sums grad_mixed[o] * streams[i], and
+        # grad_read[i] sums grad_source * streams[i]. Stacking grad_mixed and
+        # grad_source gives five left-hand rows sharing one right-hand side, so
+        # the whole thing is a single tall-skinny GEMM over a [5, N] by [N, 4]
+        # problem rather than a hundred thousand block reductions.
+        flat_streams = streams.reshape(token_count, _N_STREAMS, hidden_size)
+        flat_streams = flat_streams.transpose(0, 1).reshape(_N_STREAMS, -1)
+        left = torch.cat(
+            (
+                grad_mixed.reshape(token_count, _N_STREAMS, hidden_size)
+                .transpose(0, 1)
+                .reshape(_N_STREAMS, -1),
+                grad_source.reshape(1, -1),
+            ),
+            dim=0,
+        )
+        contracted = left.float() @ flat_streams.float().t()
+        grad_matrix_fp32 = contracted[:_N_STREAMS]
+        grad_read_fp32 = contracted[_N_STREAMS]
         return (
             grad_streams.view(ctx.original_shape),
-            grad_matrix_fp32.sum(dim=0).to(matrix.dtype),
-            grad_read_fp32.sum(dim=0).to(read_weights.dtype),
+            grad_matrix_fp32.to(matrix.dtype),
+            grad_read_fp32.to(read_weights.dtype),
         )
 
 
