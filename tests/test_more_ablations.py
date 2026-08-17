@@ -408,6 +408,40 @@ def test_budget_controller_binds_against_a_loss_that_rewards_more_compute():
     assert fixed > 20.0, f"the fixed coefficient bound after all: {fixed}"
 
 
+def test_the_budget_multiplier_does_not_wind_up_while_the_policy_is_pinned():
+    """A stored-up multiplier arrives all at once, and that is an oscillation.
+
+    Measured on MoRE-Core, with no leak: depth pinned at the 5.00 ceiling from
+    step 20 to step 60 while the multiplier accumulated against an error it
+    could not act on, broke through to 2.01 at step 70, and was driven to 1.00 --
+    the floor -- by step 80, with the width policy rebounding from 2.6 to 7.5 to
+    compensate. Neither end of that is a policy.
+
+    So the multiplier must forget. This holds a controller against a constant
+    error it cannot fix, as a saturated policy does, and asserts what it stores
+    stays bounded.
+    """
+
+    controller = BudgetController(
+        2.0, coefficient=1.0, rate=20.0, limit=1.0e9, leak=0.02
+    )
+    controller.train()
+    pinned = torch.tensor(5.0)  # a policy stuck at the ceiling
+    for _ in range(2000):
+        controller.penalty(pinned)
+    stored = abs(float(controller.multiplier))
+    # rate * error / leak is where a leaky integrator settles.
+    assert stored < 1.5 * (20.0 * 3.0 / 0.02), stored
+
+    unleaked = BudgetController(
+        2.0, coefficient=1.0, rate=20.0, limit=1.0e9, leak=0.0
+    )
+    unleaked.train()
+    for _ in range(2000):
+        unleaked.penalty(pinned)
+    assert abs(float(unleaked.multiplier)) > 10 * stored, "the leak changed nothing"
+
+
 def test_budget_controller_pushes_back_up_when_the_policy_undershoots():
     """An equality constraint, not a squeeze towards always-shallow.
 

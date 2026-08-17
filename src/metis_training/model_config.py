@@ -496,6 +496,10 @@ class Metis16Config:
     # twenty times longer to bind. Measured: width falls 7.35 -> 3.37 in fifty
     # steps while depth climbs 1.83 -> 5.00 in ten. Give depth its own rate.
     depth_budget_controller_rate: float = 0.0
+    # Exponential forgetting on the budget multipliers. A pure integrator winds
+    # up while the policy it controls is pinned against a limit, and delivers
+    # the whole accumulated total the moment the policy moves.
+    budget_controller_leak: float = 0.0
     budget_multiplier_limit: float = 1.0e3
     continuation_entropy_coefficient: float = 1.0e-3
     tie_embeddings: bool = True

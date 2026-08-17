@@ -220,6 +220,7 @@ def proxy_config(
         # high ceiling costs nothing once the constraint is met: it is a limit
         # on how hard the controller may pull, not on how hard it will.
         "budget_multiplier_limit": 1.0e5,
+        "budget_controller_leak": 0.02,
         "continuation_entropy_coefficient": 0.001,
         "tie_embeddings": True,
         "moe_dispatch_chunks": 1,

@@ -2433,12 +2433,14 @@ class BudgetController(nn.Module):
         coefficient: float,
         rate: float,
         limit: float,
+        leak: float = 0.0,
     ) -> None:
         super().__init__()
         self.target = float(target)
         self.coefficient = float(coefficient)
         self.rate = float(rate)
         self.limit = float(limit)
+        self.leak = float(leak)
         self.register_buffer("multiplier", torch.zeros((), dtype=torch.float32))
 
     def penalty(self, realized_mean: Tensor, *, target: float | None = None) -> Tensor:
@@ -2457,6 +2459,19 @@ class BudgetController(nn.Module):
             # multiplier, not a parameter: it is driven by how far the
             # constraint is from being met, never by the task gradient.
             with torch.no_grad():
+                # Leak before integrating. A pure integrator winds up: while the
+                # policy is pinned against a limit the error persists, the
+                # multiplier accumulates for as long as that lasts, and none of
+                # it does anything -- until the policy becomes responsive again
+                # and the whole stored-up total arrives at once. Measured on
+                # MoRE-Core: depth pinned at 5.00 from step 20 to 60, broke to
+                # 2.01 at step 70, and was slammed to 1.00 by step 80, with the
+                # width policy rebounding from 2.6 to 7.5 to compensate. Neither
+                # end of that is a policy; it is an oscillation. The leak bounds
+                # what can be stored, so the multiplier remembers a persistent
+                # error without remembering it forever.
+                if self.leak:
+                    self.multiplier.mul_(1.0 - self.leak)
                 self.multiplier.add_(self.rate * error.detach().float())
                 self.multiplier.clamp_(-self.limit, self.limit)
         return multiplier.to(error.dtype) * error + error.square() * self.coefficient
@@ -2735,6 +2750,7 @@ class AdaptiveDroplessMoE(nn.Module):
             coefficient=config.k_budget_coefficient,
             rate=config.budget_controller_rate,
             limit=config.budget_multiplier_limit,
+            leak=config.budget_controller_leak,
         )
         self.expert_embeddings = nn.Parameter(
             torch.empty(
@@ -4588,6 +4604,7 @@ class Metis16ForCausalLM(nn.Module):
                 or config.budget_controller_rate
             ),
             limit=config.budget_multiplier_limit,
+            leak=config.budget_controller_leak,
         )
         self.final_norm = RMSNorm(config.d_model, device=device, dtype=dtype)
         self.lm_head = _make_linear(
