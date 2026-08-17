@@ -2184,14 +2184,21 @@ def _make_grouped_linear(
     if precision_policy is not None and callable(
         getattr(precision_policy, "grouped_linear", None)
     ):
+        # Transformer Engine's GroupedLinear defaults its placement rather than
+        # accepting ``None`` for it the way ``nn.Linear`` does, and the model is
+        # built without a device whenever the trainer places it afterwards.
+        placement: dict[str, Any] = {}
+        if device is not None:
+            placement["device"] = device
+        if dtype is not None:
+            placement["params_dtype"] = dtype
         module = precision_policy.grouped_linear(
             num_gemms,
             in_features,
             out_features,
             bias=False,
             role=role,
-            device=device,
-            params_dtype=dtype,
+            **placement,
         )
         if module is not None:
             if not isinstance(module, nn.Module):
