@@ -18,8 +18,10 @@ aspirational:
 
 from __future__ import annotations
 
+import functools
+
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Callable, Iterator
 
 from metis_training.data import DeterministicReleaseStream, TrainingBatch
 from metis_training.contracts import load_family_manifest  # noqa: F401  (re-export convenience)
@@ -163,10 +165,47 @@ class AblationSampleStream:
                 f"does not tile the {self.block_tokens:,}-token block; every row "
                 "must consume an identical global batch."
             )
+        for read in self.micro_batch_reads(
+            step=step,
+            rank=rank,
+            world_size=world_size,
+            micro_batch_size=micro_batch_size,
+            grad_accum=grad_accum,
+        ):
+            yield read()
+
+    def micro_batch_reads(
+        self,
+        *,
+        step: int,
+        rank: int,
+        world_size: int,
+        micro_batch_size: int,
+        grad_accum: int,
+    ) -> Iterator[Callable[[], TrainingBatch]]:
+        """The same micro-batches, as reads not yet performed.
+
+        Handing back the reads instead of their results lets a loader issue
+        several at once. The release is not short of bandwidth -- a rank draws
+        tens of kilobytes a second -- but each read is a separate round trip to
+        Lustre, and one thread issuing them in series cannot stay ahead of the
+        accelerators. The cursor arithmetic stays here, where the invariant that
+        the union over ranks and micro-steps is exactly the block still lives.
+        """
+
+        span = world_size * micro_batch_size * self.stream.sequence_length
+        if span * grad_accum != self.block_tokens:
+            raise ValueError(
+                f"world_size*micro_batch*sequence*grad_accum = {span * grad_accum:,} "
+                f"does not tile the {self.block_tokens:,}-token block; every row "
+                "must consume an identical global batch."
+            )
         base = self.release_cursor(step)
         for accumulation in range(grad_accum):
-            yield self.stream.batch(
-                global_token_cursor=base + accumulation * span,
+            cursor = base + accumulation * span
+            yield functools.partial(
+                self.stream.batch,
+                global_token_cursor=cursor,
                 rank=rank,
                 world_size=world_size,
                 micro_batch_size=micro_batch_size,
