@@ -41,24 +41,35 @@ class OptimizerBuildSummary:
 
 
 def _zeropower_via_newton_schulz5(update: torch.Tensor, *, steps: int, eps: float = 1e-7) -> torch.Tensor:
-    if update.ndim != 2:
-        raise ValueError("Muon updates require 2D tensors.")
+    """Orthogonalize a matrix, or a stack of them, by five Newton-Schulz steps.
+
+    A stacked expert bank presents its projections as one
+    ``[experts, out, in]`` parameter rather than one 2D parameter per expert.
+    Muon's semantics are per matrix either way -- each expert is orthogonalized
+    against itself and no other -- so the leading dimensions are carried as a
+    batch and every reduction is taken per matrix. Handling both shapes in one
+    function is deliberate: a separate batched implementation would be free to
+    drift away from the 2D one it is supposed to reproduce.
+    """
+
+    if update.ndim < 2:
+        raise ValueError("Muon updates require at least a 2D tensor.")
     if steps <= 0:
         return update
     x = update.float()
-    norm = x.norm()
+    norm = x.flatten(start_dim=-2).norm(dim=-1)[..., None, None]
     valid_norm = torch.isfinite(norm) & (norm > 0)
-    transpose = x.size(0) > x.size(1)
+    transpose = x.size(-2) > x.size(-1)
     if transpose:
-        x = x.T
+        x = x.transpose(-2, -1)
     safe_norm = torch.where(valid_norm, norm.clamp_min(eps), torch.ones_like(norm))
     x = torch.where(valid_norm, x / safe_norm, torch.zeros_like(x))
     a, b, c = 3.4445, -4.7750, 2.0315
     for _ in range(steps):
-        xx_t = x @ x.T
+        xx_t = x @ x.transpose(-2, -1)
         x = (a * x) + ((b * xx_t + c * (xx_t @ xx_t)) @ x)
     if transpose:
-        x = x.T
+        x = x.transpose(-2, -1)
     return x
 
 
@@ -261,8 +272,11 @@ class MuonAdamWHybrid(Optimizer):
             grad = param.grad
             if grad.is_sparse:
                 raise RuntimeError("MuonAdamWHybrid does not support sparse gradients.")
-            if grad.ndim != 2:
-                raise RuntimeError("Muon groups may only contain 2D matrix parameters.")
+            if grad.ndim not in (2, 3):
+                raise RuntimeError(
+                    "Muon groups may only contain matrix parameters, or one "
+                    "stack of them."
+                )
             grad_f = grad.float()
             state = self.state[param]
             if len(state) == 0:
@@ -410,8 +424,14 @@ def build_muon_adamw_optimizer(
             include_routed_experts=include_routed_experts,
         )
         if mode == "muon":
-            if param.ndim != 2:
-                raise RuntimeError(f"Muon-classified parameter is not 2D: {name} {tuple(param.shape)}")
+            # A stacked expert bank is one parameter holding every expert's
+            # matrix; Muon orthogonalizes each of them separately, so a 3D
+            # parameter is a batch of matrices rather than a shape error.
+            if param.ndim not in (2, 3):
+                raise RuntimeError(
+                    f"Muon-classified parameter is not a matrix or a stack of "
+                    f"them: {name} {tuple(param.shape)}"
+                )
             bucket_name = "muon"
         elif use_decay:
             bucket_name = "adamw_decay"

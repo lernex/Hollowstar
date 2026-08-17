@@ -19,11 +19,13 @@ from metis_ablation.specs import (
     validate_allocation,
 )
 from metis_ablation.train import AblationSchedule
+from metis_mamba.optim import MuonAdamWHybrid, _zeropower_via_newton_schulz5
 from metis_training.data import PHASE_STARTS, PHASE_TOKENS
 from metis_training.metrics import estimate_hardware_flops
 from metis_training.model import (
     CurriculumState,
     Metis16ForCausalLM,
+    expert_segment_plan,
     geometric_continue_probability,
     max_entropy_categorical,
 )
@@ -317,6 +319,215 @@ def test_grouped_expert_execution_matches_the_loop_exactly():
         left = loop_model(input_ids, labels, curriculum=curriculum)
         right = grouped_model(input_ids, labels, curriculum=curriculum)
     torch.testing.assert_close(left.loss, right.loss, rtol=1e-5, atol=1e-6)
+
+
+def test_grouped_gemm_expert_execution_matches_the_loop_exactly():
+    """Contracting the bank in one GEMM must not move a single number.
+
+    The loop path applies expert ``i`` to its assigned rows in ascending
+    original order; the grouped-GEMM path packs those same rows, in that same
+    order, into expert ``i``'s segment. So this is an exact equality, not a
+    tolerance -- anything looser would pass while rows were being routed to the
+    wrong expert.
+    """
+
+    torch.manual_seed(7)
+    loop_config = _tiny()
+    grouped_config = replace(loop_config, expert_execution="grouped_gemm")
+    grouped_config._validate_tiny()
+
+    loop_model = Metis16ForCausalLM(loop_config)
+    grouped_model = Metis16ForCausalLM(grouped_config)
+    _copy_expert_bank(loop_model, grouped_model)
+    loop_model.eval()
+    grouped_model.eval()
+
+    input_ids, labels = _tiny_batch(loop_config)
+    curriculum = _curriculum()
+    with torch.no_grad():
+        left = loop_model(input_ids, labels, curriculum=curriculum)
+        right = grouped_model(input_ids, labels, curriculum=curriculum)
+    assert torch.equal(left.loss, right.loss)
+
+
+def test_grouped_gemm_seeds_each_expert_the_same_way_the_loop_does():
+    """Expert ``i`` is the same expert in both layouts, from the same seed.
+
+    The per-expert seeding is what makes a rank's expert weights a function of
+    the *global* expert identity. If the grouped bank consumed its random
+    stream in a different order the two layouts would train different models
+    from the same manifest, and nothing downstream would notice.
+    """
+
+    torch.manual_seed(7)
+    loop_model = Metis16ForCausalLM(_tiny())
+    torch.manual_seed(7)
+    grouped_model = Metis16ForCausalLM(
+        replace(_tiny(), expert_execution="grouped_gemm")
+    )
+    loop_moe = loop_model.layers[0].moe
+    grouped_bank = grouped_model.layers[0].moe.local_experts
+    for index, expert in enumerate(loop_moe.local_experts):
+        assert torch.equal(
+            expert.gate_up.weight, grouped_bank.gate_up.weight[index]
+        )
+        assert torch.equal(expert.down.weight, grouped_bank.down.weight[index])
+
+
+def test_grouped_gemm_backward_matches_the_loop():
+    """Gradients too -- a forward-only check would miss a wrong scatter."""
+
+    torch.manual_seed(7)
+    loop_model = Metis16ForCausalLM(_tiny())
+    grouped_model = Metis16ForCausalLM(
+        replace(_tiny(), expert_execution="grouped_gemm")
+    )
+    _copy_expert_bank(loop_model, grouped_model)
+    input_ids, labels = _tiny_batch(loop_model.config)
+    curriculum = _curriculum()
+
+    loop_output = loop_model(input_ids, labels, curriculum=curriculum)
+    (loop_output.loss + loop_output.auxiliary_loss).backward()
+    grouped_output = grouped_model(input_ids, labels, curriculum=curriculum)
+    (grouped_output.loss + grouped_output.auxiliary_loss).backward()
+
+    loop_moe = loop_model.layers[0].moe
+    grouped_bank = grouped_model.layers[0].moe.local_experts
+    for index, expert in enumerate(loop_moe.local_experts):
+        torch.testing.assert_close(
+            expert.gate_up.weight.grad,
+            grouped_bank.gate_up.weight.grad[index],
+            rtol=0.0,
+            atol=0.0,
+        )
+    torch.testing.assert_close(
+        loop_model.embedding.weight.grad,
+        grouped_model.embedding.weight.grad,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+
+
+def test_expert_segment_plan_covers_every_assignment_exactly_once():
+    """No assignment dropped, none written twice, none in a neighbour's segment.
+
+    A packing bug here is the archetypal silent failure: every GEMM still runs,
+    every shape still checks, and a slice of the batch is quietly computed by
+    the wrong expert or not at all.
+    """
+
+    generator = torch.Generator().manual_seed(20_260_816)
+    for expert_count, rows, multiple in (
+        (7, 61, 1),
+        (7, 61, 16),
+        (96, 1024, 16),
+        (4, 0, 16),
+        (5, 9, 8),
+    ):
+        indices = torch.randint(0, expert_count, (rows,), generator=generator)
+        slots, padded = expert_segment_plan(indices, expert_count, multiple)
+
+        assert int(padded.numel()) == expert_count
+        assert torch.equal(padded % multiple, torch.zeros_like(padded))
+        assert bool((padded >= multiple).all()), "every expert must own a block"
+        counts = torch.bincount(indices, minlength=expert_count)
+        assert bool((padded >= counts).all()), "a segment lost an assignment"
+
+        assert int(slots.numel()) == rows
+        assert int(torch.unique(slots).numel()) == rows, "two rows share a slot"
+        assert bool((slots >= 0).all()) and bool((slots < int(padded.sum())).all())
+
+        # The slot each row lands in must belong to that row's own expert.
+        starts = torch.cumsum(padded, 0) - padded
+        owner = torch.bucketize(slots, starts, right=True) - 1
+        assert torch.equal(owner, indices), "a row landed in another expert's segment"
+
+
+def test_expert_segment_plan_rejects_an_index_past_the_bank():
+    """Routing and the bank must agree on how many experts exist."""
+
+    with pytest.raises(RuntimeError):
+        expert_segment_plan(torch.tensor([0, 1, 4]), 3, 16)
+
+
+def test_batched_newton_schulz_matches_the_matrix_at_a_time_version():
+    """Stacking experts must not change what Muon does to any one of them.
+
+    The grouped bank hands Muon one ``[experts, out, in]`` parameter where the
+    per-expert bank handed it ``experts`` separate matrices. If the batched
+    Newton-Schulz reduced over the expert axis anywhere -- the norm is the easy
+    place to get this wrong -- every expert would be orthogonalized against the
+    others and the two layouts would train different models while both looked
+    healthy.
+    """
+
+    generator = torch.Generator().manual_seed(20_260_816)
+    for shape in ((8, 64, 32), (5, 24, 96), (3, 16, 16)):
+        stack = torch.randn(*shape, generator=generator, dtype=torch.float32)
+        batched = _zeropower_via_newton_schulz5(stack, steps=5)
+        for index in range(shape[0]):
+            one = _zeropower_via_newton_schulz5(stack[index], steps=5)
+            torch.testing.assert_close(batched[index], one, rtol=1e-6, atol=1e-6)
+
+
+def test_muon_steps_a_stacked_expert_bank_like_separate_experts():
+    """End to end: the same gradients move the same weights either way."""
+
+    torch.manual_seed(11)
+    experts, out_features, in_features = 6, 32, 16
+    reference = [
+        torch.nn.Parameter(torch.randn(out_features, in_features))
+        for _ in range(experts)
+    ]
+    stacked = torch.nn.Parameter(torch.stack([p.detach().clone() for p in reference]))
+    gradients = [torch.randn(out_features, in_features) for _ in range(experts)]
+    for parameter, gradient in zip(reference, gradients):
+        parameter.grad = gradient.clone()
+    stacked.grad = torch.stack(gradients)
+
+    def optimizer_for(params):
+        return MuonAdamWHybrid(
+            [
+                {
+                    "params": params,
+                    "names": ["w"] * len(params),
+                    "optimizer": "muon",
+                    "weight_decay": 0.01,
+                }
+            ],
+            lr=1e-3,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+            weight_decay=0.01,
+            muon_beta=0.95,
+            muon_ns_steps=5,
+            muon_nesterov=True,
+        )
+
+    optimizer_for(reference).step()
+    optimizer_for([stacked]).step()
+    for index, parameter in enumerate(reference):
+        torch.testing.assert_close(stacked[index], parameter, rtol=1e-5, atol=1e-6)
+
+
+def _copy_expert_bank(loop_model, grouped_model):
+    """Give the grouped model the loop model's weights, bank layout aside."""
+
+    loop_state = loop_model.state_dict()
+    grouped_state = grouped_model.state_dict()
+    for name, value in loop_state.items():
+        if ".local_experts." not in name:
+            grouped_state[name] = value
+    for layer_index, layer in enumerate(loop_model.layers):
+        prefix = f"layers.{layer_index}.moe.local_experts"
+        for index, expert in enumerate(layer.moe.local_experts):
+            grouped_state[f"{prefix}.gate_up.weight"][index] = (
+                loop_state[f"{prefix}.{index}.gate_up.weight"]
+            )
+            grouped_state[f"{prefix}.down.weight"][index] = (
+                loop_state[f"{prefix}.{index}.down.weight"]
+            )
+    grouped_model.load_state_dict(grouped_state)
 
 
 def test_dense_ffn_row_trains():

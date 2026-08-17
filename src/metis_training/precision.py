@@ -399,6 +399,42 @@ class PrecisionPolicy:
             return linear_type(in_features, out_features, bias=bias, **kwargs)
         return nn.Linear(in_features, out_features, bias=bias, **kwargs)
 
+    def grouped_linear(
+        self,
+        num_gemms: int,
+        in_features: int,
+        out_features: int,
+        bias: bool = False,
+        *,
+        role: str,
+        **kwargs: Any,
+    ) -> nn.Module | None:
+        """Create one projection that contracts every expert in a single GEMM.
+
+        Returns ``None`` when no grouped implementation is available, which
+        tells the caller to build the portable stacked-weight bank instead.
+
+        Unlike :meth:`linear` this does not consult the role's declared
+        precision. The grouped bank runs on the BF16 surface regardless -- see
+        :class:`~metis_training.model.GroupedSwiGLUExperts` -- so the only
+        question here is whether Transformer Engine can supply the grouped
+        kernel, and TE's grouped GEMM is available on the BF16 surface whether
+        or not the role was declared FP8.
+        """
+
+        if self._te is None:
+            return None
+        grouped_type = getattr(self._te, "GroupedLinear", None)
+        if grouped_type is None:
+            return None
+        return grouped_type(num_gemms, in_features, out_features, bias=bias, **kwargs)
+
+    @property
+    def grouped_row_multiple(self) -> int:
+        """Rows each expert segment is padded to before the grouped GEMM."""
+
+        return _FP8_CONTRACTION_MULTIPLE
+
     def _build_fp8_recipe(self) -> Any:
         assert self._recipe_module is not None
         recipe_mod = self._recipe_module

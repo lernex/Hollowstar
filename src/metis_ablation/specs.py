@@ -190,7 +190,7 @@ def proxy_config(
         "world_size": int(world_size),
         "expert_parallel_size": 1,
         "expert_replicas": int(world_size),
-        "expert_execution": "grouped",
+        "expert_execution": "grouped_gemm",
         "max_passes": 5,
         "target_mean_passes": 2.0,
         "route_feature_dim": 256,

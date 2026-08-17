@@ -11,7 +11,7 @@ MANIFEST_SCHEMA = "metis.model-family/v1"
 _PLACEMENTS = {"replicated", "expert_sharded", "sparse_table"}
 _TABLE_MODES = {"replicated", "row_sharded"}
 _FFN_MODES = {"moe", "dense"}
-_EXPERT_EXECUTIONS = {"loop", "grouped"}
+_EXPERT_EXECUTIONS = {"loop", "grouped", "grouped_gemm"}
 _PATHWAY_MODES = {"per_pass", "frozen"}
 # Families whose manifests are research artifacts rather than release contracts.
 # Production geometry, context, and pass locks are relaxed for these; every
@@ -462,8 +462,10 @@ class Metis16Config:
     dense_ffn_intermediate_dim: int = 0
     # ``loop`` issues one GEMM pair per local expert, which is what production
     # expert parallelism wants because each rank owns a handful of experts.
-    # ``grouped`` sorts the assignments once, derives segment boundaries with a
-    # single host synchronization per layer, and then slices -- the only viable
+    # ``grouped`` sorts the assignments once and derives segment boundaries with
+    # a single host synchronization per layer, but still dispatches per expert.
+    # ``grouped_gemm`` contracts the whole bank in one GEMM per projection, so
+    # the dispatch count stops scaling with the expert count -- the only viable
     # path when every rank replicates all routed experts.
     expert_execution: str = "loop"
     world_size: int = 128
@@ -571,7 +573,7 @@ class Metis16Config:
         if self.ffn_mode not in _FFN_MODES:
             raise ValueError("ffn_mode must be moe or dense.")
         if self.expert_execution not in _EXPERT_EXECUTIONS:
-            raise ValueError("expert_execution must be loop or grouped.")
+            raise ValueError("expert_execution must be loop, grouped, or grouped_gemm.")
         if self.ffn_mode == "dense" and self.family not in _RELAXED_FAMILIES:
             raise ValueError(
                 "A dense feed-forward sublayer is an ablation control; production "
