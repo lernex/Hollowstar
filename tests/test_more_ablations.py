@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -1529,6 +1530,68 @@ def test_resume_refuses_a_changed_schedule(tiny_proxy, tmp_path: Path):
         _train(spec, tmp_path, checkpoint_every=2, max_steps=3)
     with pytest.raises(RuntimeError, match="Refusing to resume"):
         _train(spec, tmp_path, checkpoint_every=2, max_steps=4, learning_rate=9.0e-4)
+
+
+def test_current_scaling_restore_discards_only_delayed_fp8_metadata(
+    tiny_proxy,
+    tmp_path: Path,
+):
+    """Delayed TE history is transient state, not a current-scaling parameter.
+
+    Transformer Engine accepts delayed ``_extra_state`` into a current-scaling
+    module, then changes its metadata inventory on the first recompute. The
+    failure arrives in backward, long after state_dict claimed the restore was
+    valid, so the checkpoint loader has to remove that recipe-owned state
+    explicitly while keeping every real weight strict.
+    """
+
+    from metis_ablation.train import RunPaths, _restore_checkpoint
+
+    class ExtraStateLinear(torch.nn.Linear):
+        def get_extra_state(self):
+            return {"delayed_amax": torch.ones(1)}
+
+        def set_extra_state(self, state):
+            self.delayed_amax = state
+
+    class CurrentScalingModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.projection = ExtraStateLinear(3, 2)
+            self.config = SimpleNamespace(
+                precision=SimpleNamespace(fp8_scaling="current")
+            )
+
+    source = CurrentScalingModel()
+    optimizer = torch.optim.SGD(source.parameters(), lr=0.1)
+    paths = RunPaths(tmp_path)
+    paths.prepare()
+    checkpoint = paths.checkpoints / "step-0000002"
+    checkpoint.mkdir()
+    torch.save(
+        {
+            "model": source.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "step": 2,
+            "total_steps": 4,
+            "base_learning_rate": 0.1,
+        },
+        checkpoint / "state.pt",
+    )
+
+    target = CurrentScalingModel()
+    restored = _restore_checkpoint(
+        checkpoint,
+        model=target,
+        optimizer=torch.optim.SGD(target.parameters(), lr=0.1),
+        device=torch.device("cpu"),
+        total_steps=4,
+        learning_rate=0.1,
+    )
+    assert restored == 2
+    torch.testing.assert_close(target.projection.weight, source.projection.weight)
+    torch.testing.assert_close(target.projection.bias, source.projection.bias)
+    assert not hasattr(target.projection, "delayed_amax")
 
 
 def test_checkpoints_are_pruned_and_atomic(tiny_proxy, tmp_path: Path):

@@ -280,7 +280,38 @@ def _restore_checkpoint(
             "schedule change would silently train a different model. Pass "
             "--no-resume to start over, or restore the original arguments."
         )
-    model.load_state_dict(payload["model"])
+    model_state = payload["model"]
+    fp8_scaling = getattr(
+        getattr(getattr(model, "config", None), "precision", None),
+        "fp8_scaling",
+        "delayed",
+    )
+    if fp8_scaling == "current":
+        # Current scaling derives scale factors from the tensor being
+        # quantized and has no delayed history to resume. Loading a delayed
+        # scaling module's TE _extra_state is accepted by state_dict, but the
+        # stale metadata inventory then changes on the first recompute and
+        # makes checkpoint replay fail. Weights and ordinary buffers remain
+        # strict; only recipe-owned transient metadata is deliberately reset.
+        model_state = {
+            name: value
+            for name, value in model_state.items()
+            if "_extra_state" not in name
+        }
+        incompatible = model.load_state_dict(model_state, strict=False)
+        unexpected = list(incompatible.unexpected_keys)
+        missing = [
+            name
+            for name in incompatible.missing_keys
+            if "_extra_state" not in name
+        ]
+        if unexpected or missing:
+            raise RuntimeError(
+                "Current-scaling checkpoint restore changed non-FP8 model state: "
+                f"missing={missing[:8]} unexpected={unexpected[:8]}"
+            )
+    else:
+        model.load_state_dict(model_state)
     optimizer.load_state_dict(payload["optimizer"])
     if "cpu_rng_state" in payload:
         torch.set_rng_state(payload["cpu_rng_state"].to(torch.uint8).cpu())
