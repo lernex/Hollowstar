@@ -4667,6 +4667,10 @@ class Metis16ForCausalLM(nn.Module):
             device=device,
             dtype=dtype,
         )
+        # PyTorch initializes Embedding with unit variance. With tied output
+        # weights and RMS-normalized states that makes logits scale as sqrt(d)
+        # and turns the initial cross entropy from log(vocab) into the hundreds.
+        nn.init.normal_(self.embedding.weight, std=config.d_model ** -0.5)
         self.embedding.metis_precision_role = "embedding"
         self.stream_embeddings = nn.Parameter(
             torch.empty(config.n_streams, config.d_model, device=device, dtype=dtype)

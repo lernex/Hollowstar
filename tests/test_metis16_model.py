@@ -106,6 +106,17 @@ def test_tiny_parameter_audit_matches_instantiated_unique_parameters() -> None:
     assert config.logical_parameter_audit().stored_total == instantiated
 
 
+def test_tied_embedding_initialization_keeps_logits_at_unit_scale() -> None:
+    config = Metis16Config.tiny_for_tests()
+    torch.manual_seed(7)
+    model = Metis16ForCausalLM(config, dtype=torch.float32)
+
+    observed = model.embedding.weight.detach().std()
+    expected = torch.tensor(config.d_model ** -0.5)
+    torch.testing.assert_close(observed, expected, rtol=0.15, atol=0.0)
+    assert model.lm_head.weight is model.embedding.weight
+
+
 def test_shapes_dropless_dynamic_k_and_backward() -> None:
     config = Metis16Config.tiny_for_tests()
     model = Metis16ForCausalLM(config, dtype=torch.float32)
