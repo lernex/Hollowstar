@@ -454,16 +454,6 @@ def _train_row_inner(
         include_routed_experts=True,
         muon_state_bits=spec.muon_state_bits,
     )
-    forward_model = (
-        model
-        if spec.compile_mode == "none"
-        else torch.compile(
-            model,
-            mode=spec.compile_mode,
-            dynamic=True,
-            fullgraph=False,
-        )
-    )
 
     paths = RunPaths(Path(output_root).expanduser().resolve() / spec.name)
     if runtime.rank == 0:
@@ -675,11 +665,7 @@ def _train_row_inner(
                         torch.cuda.set_rng_state(cuda_rng, runtime.device)
                     del reference
                 with analysis_context:
-                    output = forward_model(
-                        batch.input_ids,
-                        batch.labels,
-                        **forward_kwargs,
-                    )
+                    output = model(batch.input_ids, batch.labels, **forward_kwargs)
                 if reference_loss is not None and fp8_parity_error is None:
                     actual = float(output.loss.detach().float().item())
                     fp8_parity_error = abs(actual - reference_loss) / max(
