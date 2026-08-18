@@ -25,11 +25,42 @@ export TORCH_BLAS_PREFER_HIPBLASLT=0
 # over by spare VRAM. Expandable segments grow one virtual reservation instead
 # of scattering fixed blocks (PyTorch HIP notes, 2026).
 export PYTORCH_HIP_ALLOC_CONF="expandable_segments:True,garbage_collection_threshold:0.8"
-# RCCL on Slingshot: let the library pin ranks itself, give it enough channels
-# for four APUs per node, and allow GPU-Direct RDMA (RCCL usage tips, 2026).
+# RCCL on Slingshot: let the library pin ranks itself and give it enough
+# channels for four APUs per node.
 export NCCL_IGNORE_CPU_AFFINITY=1
 export NCCL_MIN_NCHANNELS=24
-export NCCL_NET_GDR_LEVEL=1
+
+# The in-tree ROCm wheel otherwise falls back to NET/Socket. Measured on
+# Portage on 2026-08-17, a 1 GiB two-node all-reduce moved from 2.49 GB/s over
+# sockets to 52.3 GB/s over OFI/CXI GDRDMA. HPE's June 2026 Slingshot RCCL
+# guidance requires both the OFI plugin and these CXI rendezvous settings.
+# Do not force OFI for a single-node step: it needlessly allocates a VNI and is
+# slower than the native intra-node path.
+if [ "${SLURM_JOB_NUM_NODES:-1}" -gt 1 ]; then
+  METIS_RCCL_OFI_ROOT=${METIS_RCCL_OFI_ROOT:-/lus/lustre1/vollmerc/more-runtime/rccl-ofi-v1.21.0-rocm7.2.1-pcihwloc/opt}
+  METIS_RCCL_OFI_PLUGIN=$METIS_RCCL_OFI_ROOT/aws-ofi-rccl/lib/librccl-net.so
+  if [ ! -s "$METIS_RCCL_OFI_PLUGIN" ]; then
+    echo "metis: missing required Slingshot RCCL plugin: $METIS_RCCL_OFI_PLUGIN" >&2
+    return 1
+  fi
+  export LD_LIBRARY_PATH="$METIS_RCCL_OFI_ROOT/aws-ofi-rccl/lib:$METIS_RCCL_OFI_ROOT/hwloc/lib:${LD_LIBRARY_PATH:-}"
+  export NCCL_NET_PLUGIN=$METIS_RCCL_OFI_PLUGIN
+  export NCCL_NET=OFI
+  export NCCL_CROSS_NIC=1
+  export NCCL_NET_GDR_LEVEL=PHB
+  export NCCL_SOCKET_IFNAME=hsn0,hsn1,hsn2,hsn3
+  export HSA_FORCE_FINE_GRAIN_PCIE=1
+  export FI_PROVIDER=cxi
+  export FI_MR_CACHE_MONITOR=userfaultfd
+  export FI_CXI_DISABLE_HOST_REGISTER=1
+  export FI_CXI_DEFAULT_CQ_SIZE=131072
+  export FI_CXI_RDZV_PROTO=alt_read
+  export FI_CXI_RX_MATCH_MODE=hybrid
+  export FI_CXI_RDZV_EAGER_SIZE=0
+  export FI_CXI_RDZV_THRESHOLD=0
+  export FI_CXI_RDZV_GET_MIN=0
+  export FI_CXI_DEFAULT_TX_SIZE=2048
+fi
 # flash_attn resolves its ROCm backend at import time; name it rather than
 # relying on the auto-detect branch.
 export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE

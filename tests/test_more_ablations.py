@@ -1226,6 +1226,7 @@ def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
     body = (tmp_path / "wave1" / "10-more-core.sbatch").read_text()
     assert "--seed 1234" in body
     assert "export WORLD_SIZE=28" in body
+    assert "srun --kill-on-bad-exit=1 --network=disable_rdzv_get" in body
 
 
 def test_every_task_in_a_launcher_gets_its_own_rank_and_apu(tmp_path: Path):

@@ -30,8 +30,10 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 # The ROCm stack is not on the default path on Portage, and a login shell that
 # happens to have the right venv activated is not a reproducible launch. The
 # activation script is named explicitly so the job records which runtime it ran
-# against; see docs/papers/more/ablation_campaign.md.
-source "${METIS_ABLATION_RUNTIME:?set METIS_ABLATION_RUNTIME to the runtime activation script}"
+# against; see docs/papers/more/ablation_campaign.md. Checked here so an unset
+# variable fails the job immediately rather than once per task.
+: "${METIS_ABLATION_RUNTIME:?set METIS_ABLATION_RUNTIME to the runtime activation script}"
+export METIS_ABLATION_RUNTIME
 
 mkdir -p "${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/sweep/moe-k4-lr1e-4/moe-k4"
 
@@ -45,9 +47,15 @@ export METIS_ABLATION_RELEASE="${METIS_RELEASE_ROOT:?set METIS_RELEASE_ROOT}"
 # LOCAL_RANK have to be resolved inside the step, because SLURM_PROCID only
 # exists per task -- exporting them from the batch shell would launch every
 # task as rank 0 against APU 0.
-srun --kill-on-bad-exit=1 bash -c '
+srun --kill-on-bad-exit=1 --network=disable_rdzv_get bash -c '
 export RANK="$SLURM_PROCID"
 export LOCAL_RANK="$SLURM_LOCALID"
+# Sourced per task rather than once in the batch shell. The runtime derives
+# per-rank scratch paths from SLURM_PROCID, which only exists inside the step;
+# sourced above, all four ranks on a node would share one Triton JIT cache and
+# corrupt each other compiled kernels -- which surfaces as
+# "LLVM ERROR: IO failure on output stream", not as anything about caches.
+source "$METIS_ABLATION_RUNTIME"
 exec python -m metis_ablation.train \
   --row '"'"'moe-k4'"'"' \
   --output "$METIS_ABLATION_OUTPUT" \

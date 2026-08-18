@@ -234,6 +234,24 @@ Ring all-reduce moves ~2× model size per rank per step regardless of DP width:
 is only ~0.77 s (global batch 1M tokens), so an unhidden all-reduce would
 dominate.
 
+The original Portage runtime was silently using RCCL's socket fallback. A
+two-node, eight-APU 1 GiB all-reduce measured **2.49 GB/s algorithm bandwidth**
+over `NET/Socket`. The
+[HPE Slingshot RCCL guidance](https://github.com/HewlettPackard/shs-ccl-docs/blob/main/rccl/rccl_tuning_guide.md)
+(June 2026), its OFI plugin, and the prescribed CXI rendezvous settings raised
+the same measurement to **52.3 GB/s** over
+`NET/OFI/*/GDRDMA` on 2026-08-17, a 21× transport improvement. Multi-node
+launches therefore request `--network=disable_rdzv_get` and fail closed unless
+the pinned `librccl-net.so` is present. Single-node probes deliberately keep
+RCCL's native transport because forcing OFI there allocates an unnecessary VNI.
+
+The plugin's hwloc dependency is built without ROCm device discovery. The
+PyTorch wheel already carries ROCm-SMI, while a ROCm-enabled external hwloc
+loads a second ROCm-SMI SONAME; both copies register the same process-exit
+tables and the otherwise successful job aborts in a double free at teardown.
+PCI topology discovery is sufficient for the four CXI devices and preserves
+clean communicator shutdown.
+
 Mitigations, in order of preference:
 
 1. **Bucketed all-reduce overlapped with the backward pass** (standard DDP). Non-optional.

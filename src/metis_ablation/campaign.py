@@ -214,7 +214,7 @@ export METIS_ABLATION_RELEASE="{release_root}"
 # LOCAL_RANK have to be resolved inside the step, because SLURM_PROCID only
 # exists per task -- exporting them from the batch shell would launch every
 # task as rank 0 against APU 0.
-srun --kill-on-bad-exit=1 bash -c '
+srun --kill-on-bad-exit=1 --network=disable_rdzv_get bash -c '
 export RANK="$SLURM_PROCID"
 export LOCAL_RANK="$SLURM_LOCALID"
 # Sourced per task rather than once in the batch shell. The runtime derives
