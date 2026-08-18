@@ -325,6 +325,7 @@ class AblationSpec:
     depth_memory: bool = True
     iso_flop: bool = True
     muon_state_bits: int = 32
+    muon_ns_steps: int = 5
     optimizer_sharding: str = "none"
     notes: str = ""
     config_overrides: Mapping[str, Any] = field(default_factory=dict)
@@ -332,6 +333,8 @@ class AblationSpec:
     def __post_init__(self) -> None:
         if self.muon_state_bits not in {8, 32}:
             raise ValueError(f"{self.name}: muon_state_bits must be 8 or 32.")
+        if self.muon_ns_steps < 1:
+            raise ValueError(f"{self.name}: muon_ns_steps must be positive.")
         if self.optimizer_sharding not in {"none", "world"}:
             raise ValueError(
                 f"{self.name}: optimizer_sharding must be none or world."

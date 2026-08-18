@@ -239,6 +239,13 @@ def test_global_batch_mismatch_is_rejected_at_construction():
         )
 
 
+def test_ablation_spec_requires_positive_muon_iterations():
+    base = spec_by_name("more-core")
+    assert base.muon_ns_steps == 5
+    with pytest.raises(ValueError, match="muon_ns_steps must be positive"):
+        replace(base, muon_ns_steps=0)
+
+
 # --------------------------------------------------------------------------
 # random-policy controls
 

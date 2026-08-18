@@ -536,7 +536,7 @@ def _train_row_inner(
         weight_decay=0.1,
         sparse_learning_rate_scale=float(config.ngram_memory.learning_rate_scale),
         muon_beta=0.95,
-        muon_ns_steps=5,
+        muon_ns_steps=spec.muon_ns_steps,
         muon_nesterov=True,
         include_routed_experts=True,
         muon_state_bits=spec.muon_state_bits,
