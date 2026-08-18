@@ -162,6 +162,18 @@ def proxy_config(
     wall-clock differences partly an artifact of routing skew.
     """
 
+    precision = PrecisionConfig()
+    precision = replace(
+        precision,
+        fp8_scaling="blockwise",
+        fp8_roles=tuple(
+            role for role in precision.fp8_roles if role != "mhc_controller"
+        ),
+        bf16_roles=precision.bf16_roles + ("mhc_controller",),
+        expert_collective_wire="bfloat16",
+        require_fp8_validation=True,
+        allow_bf16_fallback=True,
+    )
     base: dict[str, Any] = {
         "schema": "metis.model-family/v1",
         "family": "ablation",
@@ -247,7 +259,8 @@ def proxy_config(
         "activation_recompute_policy": "pass",
         "ffn_mode": ffn_mode,
         "ngram_memory": _ngram_config(ngram_slots_per_head),
-        "precision": PrecisionConfig(
+        "precision": replace(
+            precision,
             backend="auto",
             fp8_format="hybrid_e4m3_e5m2",
             # Transformer Engine 2.17 supplies a native gfx942 blockwise path,
@@ -255,11 +268,6 @@ def proxy_config(
             # one tensor-wide amax. Production families retain delayed scaling
             # through PrecisionConfig's default; the ablation parity gate
             # validates this more aggressive execution policy per run.
-            fp8_scaling="blockwise",
-            # No expert parallelism means no dispatch collective to compress.
-            expert_collective_wire="bfloat16",
-            require_fp8_validation=True,
-            allow_bf16_fallback=True,
         ),
         "autotune": _autotune(),
     }
