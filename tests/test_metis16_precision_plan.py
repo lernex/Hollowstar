@@ -215,6 +215,32 @@ class PrecisionRolePlanTests(unittest.TestCase):
         self.assertIsInstance(recipe, Float8CurrentScaling)
         self.assertEqual(observed, ["hybrid"])
 
+    def test_blockwise_recipe_uses_transformer_engine_block_scaling(self) -> None:
+        policy = PrecisionPolicy(
+            replace(self.config.precision, fp8_scaling="blockwise"),
+            requested_profile="bf16",
+            device=torch.device("cpu"),
+            production=False,
+        )
+
+        class Format:
+            E4M3 = "e4m3"
+            HYBRID = "hybrid"
+
+        observed: list[object] = []
+
+        class Float8BlockScaling:
+            def __init__(self, *, fp8_format):
+                observed.append(fp8_format)
+
+        policy._recipe_module = SimpleNamespace(
+            Format=Format,
+            Float8BlockScaling=Float8BlockScaling,
+        )
+        recipe = policy._build_fp8_recipe()
+        self.assertIsInstance(recipe, Float8BlockScaling)
+        self.assertEqual(observed, ["hybrid"])
+
     def test_mixed_plan_keeps_small_slow_role_in_bf16(self) -> None:
         measurements = _measurements(
             self.config,

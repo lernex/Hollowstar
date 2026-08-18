@@ -71,13 +71,13 @@ def test_expert_execution_defaults_to_the_production_loop():
     assert load_family_config("logos").expert_execution == "loop"
 
 
-def test_ablation_fp8_uses_current_scaling_without_moving_production():
+def test_ablation_fp8_uses_blockwise_scaling_without_moving_production():
     ablation = spec_by_name("more-core").model_config(
         mhc_backend="torch_reference",
         mamba_backend="torch_reference",
         attention_backend="torch_reference",
     )
-    assert ablation.precision.fp8_scaling == "current"
+    assert ablation.precision.fp8_scaling == "blockwise"
     assert load_family_config("praxis").precision.fp8_scaling == "delayed"
     assert load_family_config("logos").precision.fp8_scaling == "delayed"
 

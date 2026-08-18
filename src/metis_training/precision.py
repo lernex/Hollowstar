@@ -506,6 +506,13 @@ class PrecisionPolicy:
                     "Transformer Engine Float8CurrentScaling is unavailable"
                 )
             return current(fp8_format=fp8_format)
+        if self.config.fp8_scaling == "blockwise":
+            blockwise = getattr(recipe_mod, "Float8BlockScaling", None)
+            if blockwise is None:
+                raise RuntimeError(
+                    "Transformer Engine Float8BlockScaling is unavailable"
+                )
+            return blockwise(fp8_format=fp8_format)
         delayed = getattr(recipe_mod, "DelayedScaling", None)
         if delayed is None:
             raise RuntimeError("Transformer Engine DelayedScaling recipe is unavailable")

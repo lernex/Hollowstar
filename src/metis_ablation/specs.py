@@ -250,12 +250,12 @@ def proxy_config(
         "precision": PrecisionConfig(
             backend="auto",
             fp8_format="hybrid_e4m3_e5m2",
-            # Transformer Engine 2.17 current scaling avoids the distributed
-            # amax-reduction path while computing a scale from the tensor being
-            # quantized. On Portage's exact fixed-depth proxy path this raised
-            # measured MFU from 2.81% to 3.06%; the production families retain
-            # delayed scaling through PrecisionConfig's default.
-            fp8_scaling="current",
+            # Transformer Engine 2.17 supplies a native gfx942 blockwise path,
+            # which gives each row/column block its own scale instead of using
+            # one tensor-wide amax. Production families retain delayed scaling
+            # through PrecisionConfig's default; the ablation parity gate
+            # validates this more aggressive execution policy per run.
+            fp8_scaling="blockwise",
             # No expert parallelism means no dispatch collective to compress.
             expert_collective_wire="bfloat16",
             require_fp8_validation=True,

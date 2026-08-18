@@ -278,14 +278,14 @@ asserts bitwise-close losses between the two paths. Praxis and Logos keep
 
 ### FP8 scaling on Portage
 
-The ablation family uses Transformer Engine **current scaling** while Praxis and
-Logos retain delayed scaling. Transformer Engine documents current scaling as
-using the tensor being quantized rather than delayed amax history (August 2026);
-this also removes the data-parallel amax-reduction path that delayed scaling
-uses by default. On the exact MI300A proxy path at fixed depth 2 / k=4, current
-scaling measured **3.06% MFU** against **2.81%** for delayed scaling. This is a
-runtime policy, not a model change; checkpointed weights load across the two
-recipes without missing or unexpected state.
+The ablation family uses Transformer Engine **blockwise FP8 scaling** while
+Praxis and Logos retain delayed scaling. Transformer Engine 2.17 documents
+blockwise FP8 as a native gfx942 path: each row/column block gets its own scale
+rather than sharing one scale across a whole tensor. The former current-scaling
+path had already measured **3.06% MFU** against **2.81%** for delayed scaling;
+blockwise is measured separately below before it is retained. This is a runtime
+precision policy, not a model change, and every candidate remains gated against
+a BF16 reference loss.
 
 MoRE-Core runs a **micro-batch of eight sequences per APU** and accumulates
 twice, instead of four sequences accumulated four times. The global batch and
