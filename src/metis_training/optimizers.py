@@ -185,6 +185,7 @@ def build_training_optimizers(
     muon_ns_steps: int,
     muon_nesterov: bool,
     include_routed_experts: bool,
+    muon_state_bits: int = 32,
 ) -> tuple[OptimizerBundle, TrainingOptimizerSummary]:
     placements = _parameter_placements(model)
     named = list(model.named_parameters())
@@ -219,6 +220,7 @@ def build_training_optimizers(
             include_routed_experts=include_routed_experts,
             adamw_impl="loop",
             master_weights=True,
+            muon_state_bits=muon_state_bits,
         )
     finally:
         for parameter in sparse_parameters:

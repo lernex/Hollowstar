@@ -20,7 +20,12 @@ from metis_ablation.specs import (
     validate_allocation,
 )
 from metis_ablation.train import AblationSchedule
-from metis_mamba.optim import MuonAdamWHybrid, _zeropower_via_newton_schulz5
+from metis_mamba.optim import (
+    MuonAdamWHybrid,
+    _dequantize_blockwise_int8,
+    _quantize_blockwise_int8,
+    _zeropower_via_newton_schulz5,
+)
 from metis_training.data import PHASE_STARTS, PHASE_TOKENS
 from metis_training.metrics import estimate_hardware_flops
 from metis_training.model import (
@@ -917,6 +922,60 @@ def test_muon_steps_a_stacked_expert_bank_like_separate_experts():
     optimizer_for([stacked]).step()
     for index, parameter in enumerate(reference):
         torch.testing.assert_close(stacked[index], parameter, rtol=1e-5, atol=1e-6)
+
+
+def test_blockwise_int8_muon_state_respects_its_error_bound():
+    generator = torch.Generator().manual_seed(20_260_817)
+    values = torch.randn(73, 91, generator=generator, dtype=torch.float32)
+    quantized, scales = _quantize_blockwise_int8(values, block_size=2048)
+    restored = _dequantize_blockwise_int8(
+        quantized,
+        scales,
+        shape=values.shape,
+    )
+
+    flat_values = values.flatten()
+    flat_restored = restored.flatten()
+    for block_index, scale in enumerate(scales):
+        start = block_index * 2048
+        end = min(start + 2048, flat_values.numel())
+        error = (flat_restored[start:end] - flat_values[start:end]).abs()
+        assert float(error.max()) <= float(scale) * 0.5001 + 1.0e-7
+
+
+def test_int8_muon_keeps_only_quantized_momentum_and_tracks_fp32():
+    torch.manual_seed(12)
+    initial = torch.randn(64, 32)
+    full = torch.nn.Parameter(initial.clone())
+    quantized = torch.nn.Parameter(initial.clone())
+
+    def optimizer_for(parameter, state_bits):
+        return MuonAdamWHybrid(
+            [{"params": [parameter], "optimizer": "muon", "weight_decay": 0.01}],
+            lr=1e-3,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+            weight_decay=0.01,
+            muon_beta=0.95,
+            muon_ns_steps=5,
+            muon_nesterov=True,
+            muon_state_bits=state_bits,
+        )
+
+    full_optimizer = optimizer_for(full, 32)
+    quantized_optimizer = optimizer_for(quantized, 8)
+    for _ in range(4):
+        gradient = torch.randn_like(initial)
+        full.grad = gradient.clone()
+        quantized.grad = gradient.clone()
+        full_optimizer.step()
+        quantized_optimizer.step()
+
+    state = quantized_optimizer.state[quantized]
+    assert state["momentum_buffer"].dtype == torch.int8
+    assert state["momentum_scale"].dtype == torch.float32
+    assert state["momentum_buffer"].numel() == 2048
+    torch.testing.assert_close(quantized, full, rtol=2e-4, atol=2e-5)
 
 
 def _copy_expert_bank(loop_model, grouped_model):

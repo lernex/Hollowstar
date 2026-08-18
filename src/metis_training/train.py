@@ -382,6 +382,7 @@ def _build_optimizer(
         muon_ns_steps=int(muon["newton_schulz_steps"]),
         muon_nesterov=bool(muon["nesterov"]),
         include_routed_experts=bool(muon["include_routed_experts"]),
+        muon_state_bits=int(muon.get("state_bits", 32)),
     )
     return optimizer, summary.to_dict()
 

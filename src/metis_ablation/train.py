@@ -452,6 +452,7 @@ def _train_row_inner(
         muon_ns_steps=5,
         muon_nesterov=True,
         include_routed_experts=True,
+        muon_state_bits=spec.muon_state_bits,
     )
 
     paths = RunPaths(Path(output_root).expanduser().resolve() / spec.name)

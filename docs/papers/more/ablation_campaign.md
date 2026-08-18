@@ -263,6 +263,18 @@ Mitigations, in order of preference:
 4. FP8 gradient reduction halves the wire cost but adds a numerical risk the
    science campaign does not need. Skip unless MFU measurement demands it.
 
+The optimizer also supports blockwise 8-bit Muon momentum while retaining FP32
+AdamW states and FP32 master weights. Gupta et al.,
+[Effective Quantization of Muon Optimizer States](https://arxiv.org/abs/2509.23106v3)
+(February 2026), found that 2,048-value linear-quantization blocks matched
+full-precision Muon within 0.002 validation loss from 162M through 2.7B
+parameters and within seed variation on six downstream tasks, while reducing
+optimizer-state memory by up to 62%. Their fully quantized AdamW hybrid showed a
+small but consistent quality loss, so this implementation deliberately
+quantizes only Muon momentum. It remains an opt-in ablation until Portage
+wall-clock measurements show that reduced HBM residency outweighs the extra
+quantize/dequantize kernels.
+
 ### Grouped expert GEMM — landed
 
 `AdaptiveDroplessMoE._execute_local` issued one `torch.nonzero` per expert,

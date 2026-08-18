@@ -34,6 +34,7 @@ class OptimizerBuildSummary:
     routed_experts_muon: bool
     adamw_impl: str
     master_weights: bool
+    muon_state_bits: int
     groups: list[OptimizerGroupSummary]
 
     def to_dict(self) -> dict[str, Any]:
@@ -81,6 +82,48 @@ def _muon_update_scale(rows: int, cols: int, mode: str) -> float:
     raise ValueError("muon_scale_mode must be one of: original, match_rms_adamw.")
 
 
+def _quantize_blockwise_int8(
+    values: torch.Tensor,
+    *,
+    block_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if block_size <= 0:
+        raise ValueError("block_size must be positive.")
+    flat = values.float().reshape(-1)
+    block_count = math.ceil(flat.numel() / block_size)
+    padded_count = block_count * block_size
+    if padded_count != flat.numel():
+        padded = torch.zeros(
+            padded_count,
+            dtype=flat.dtype,
+            device=flat.device,
+        )
+        padded[: flat.numel()].copy_(flat)
+    else:
+        padded = flat
+    blocks = padded.view(block_count, block_size)
+    absmax = blocks.abs().amax(dim=1)
+    scales = absmax.div(127.0)
+    safe_scales = torch.where(scales > 0, scales, torch.ones_like(scales))
+    quantized = torch.round(blocks / safe_scales.unsqueeze(1)).clamp_(-127, 127)
+    return quantized.to(torch.int8), scales
+
+
+def _dequantize_blockwise_int8(
+    quantized: torch.Tensor,
+    scales: torch.Tensor,
+    *,
+    shape: torch.Size,
+) -> torch.Tensor:
+    if quantized.ndim != 2 or scales.ndim != 1:
+        raise ValueError("Quantized Muon state must be blocked int8 plus one scale per block.")
+    if quantized.shape[0] != scales.numel():
+        raise ValueError("Quantized Muon state block and scale counts differ.")
+    element_count = math.prod(shape)
+    values = quantized.float() * scales.unsqueeze(1)
+    return values.reshape(-1)[:element_count].view(shape)
+
+
 class MuonAdamWHybrid(Optimizer):
     """Single optimizer object with AdamW groups and Muon matrix groups."""
 
@@ -98,9 +141,12 @@ class MuonAdamWHybrid(Optimizer):
         muon_scale_mode: str = "match_rms_adamw",
         adamw_impl: str = "foreach",
         master_weights: bool = False,
+        muon_state_bits: int = 32,
     ) -> None:
         if muon_scale_mode not in {"original", "match_rms_adamw"}:
             raise ValueError("muon_scale_mode must be one of: original, match_rms_adamw.")
+        if muon_state_bits not in {8, 32}:
+            raise ValueError("muon_state_bits must be 8 or 32.")
         defaults = {
             "lr": lr,
             "betas": betas,
@@ -112,6 +158,7 @@ class MuonAdamWHybrid(Optimizer):
             "muon_scale_mode": muon_scale_mode,
             "adamw_impl": adamw_impl,
             "master_weights": master_weights,
+            "muon_state_bits": muon_state_bits,
         }
         super().__init__(param_groups, defaults)
 
@@ -266,6 +313,9 @@ class MuonAdamWHybrid(Optimizer):
         nesterov = bool(group["muon_nesterov"])
         scale_mode = str(group.get("muon_scale_mode", "match_rms_adamw"))
         use_master_weights = bool(group.get("master_weights", False))
+        state_bits = int(group.get("muon_state_bits", 32))
+        if state_bits not in {8, 32}:
+            raise RuntimeError("Muon state precision must be 8 or 32 bits.")
         for param in group["params"]:
             if param.grad is None:
                 continue
@@ -280,14 +330,44 @@ class MuonAdamWHybrid(Optimizer):
             grad_f = grad.float()
             state = self.state[param]
             if len(state) == 0:
-                state["momentum_buffer"] = torch.zeros_like(param, dtype=torch.float32)
+                if state_bits == 8:
+                    block_count = math.ceil(param.numel() / 2048)
+                    state["momentum_buffer"] = torch.zeros(
+                        (block_count, 2048),
+                        dtype=torch.int8,
+                        device=param.device,
+                    )
+                    state["momentum_scale"] = torch.zeros(
+                        block_count,
+                        dtype=torch.float32,
+                        device=param.device,
+                    )
+                else:
+                    state["momentum_buffer"] = torch.zeros_like(
+                        param,
+                        dtype=torch.float32,
+                    )
                 if use_master_weights:
                     state["master_param"] = param.detach().float().clone()
             elif use_master_weights and "master_param" not in state:
                 state["master_param"] = param.detach().float().clone()
-            momentum = state["momentum_buffer"]
+            if state_bits == 8:
+                momentum = _dequantize_blockwise_int8(
+                    state["momentum_buffer"],
+                    state["momentum_scale"],
+                    shape=param.shape,
+                )
+            else:
+                momentum = state["momentum_buffer"]
             momentum.mul_(beta).add_(grad_f)
             update = grad_f.add(momentum, alpha=beta) if nesterov else momentum
+            if state_bits == 8:
+                quantized, scales = _quantize_blockwise_int8(
+                    momentum,
+                    block_size=2048,
+                )
+                state["momentum_buffer"] = quantized
+                state["momentum_scale"] = scales
             update = _zeropower_via_newton_schulz5(update, steps=ns_steps)
             rows, cols = int(param.shape[-2]), int(param.shape[-1])
             update_scale = _muon_update_scale(rows, cols, scale_mode)
@@ -407,9 +487,12 @@ def build_muon_adamw_optimizer(
     include_routed_experts: bool = False,
     adamw_impl: str = "foreach",
     master_weights: bool = False,
+    muon_state_bits: int = 32,
 ) -> tuple[MuonAdamWHybrid, OptimizerBuildSummary]:
     if muon_scale_mode not in {"original", "match_rms_adamw"}:
         raise ValueError("muon_scale_mode must be one of: original, match_rms_adamw.")
+    if muon_state_bits not in {8, 32}:
+        raise ValueError("muon_state_bits must be 8 or 32.")
     buckets: dict[str, dict[str, Any]] = {
         "adamw_decay": {"params": [], "names": [], "optimizer": "adamw", "weight_decay": weight_decay},
         "adamw_no_decay": {"params": [], "names": [], "optimizer": "adamw", "weight_decay": 0.0},
@@ -461,6 +544,7 @@ def build_muon_adamw_optimizer(
             "muon_scale_mode": muon_scale_mode,
             "adamw_impl": adamw_impl,
             "master_weights": master_weights,
+            "muon_state_bits": muon_state_bits,
         }
         param_groups.append(group)
         group_summaries.append(
@@ -485,6 +569,7 @@ def build_muon_adamw_optimizer(
         muon_scale_mode=muon_scale_mode,
         adamw_impl=adamw_impl,
         master_weights=master_weights,
+        muon_state_bits=muon_state_bits,
     )
     muon_params = sum(group.param_count for group in group_summaries if group.optimizer == "muon")
     adamw_params = sum(group.param_count for group in group_summaries if group.optimizer == "adamw")
@@ -496,6 +581,7 @@ def build_muon_adamw_optimizer(
         routed_experts_muon=include_routed_experts,
         adamw_impl=adamw_impl,
         master_weights=master_weights,
+        muon_state_bits=muon_state_bits,
         groups=group_summaries,
     )
     return optimizer, summary
@@ -567,6 +653,7 @@ def build_xla_stable_adamw_optimizer(
         muon_scale_mode="match_rms_adamw",
         adamw_impl=adamw_impl,
         master_weights=master_weights,
+        muon_state_bits=32,
     )
     total_params = sum(group.param_count for group in group_summaries)
     summary = OptimizerBuildSummary(
@@ -577,6 +664,7 @@ def build_xla_stable_adamw_optimizer(
         routed_experts_muon=False,
         adamw_impl=adamw_impl,
         master_weights=master_weights,
+        muon_state_bits=32,
         groups=group_summaries,
     )
     return optimizer, summary
