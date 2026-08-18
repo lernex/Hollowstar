@@ -30,6 +30,7 @@ from .context_parallel import (
     reference_context_parallel_attention,
 )
 from .mhc_kernels import mhc_masked_write, mhc_read_mix
+from .routing_kernels import stream_gate_logits
 from .model_config import Metis16Config, load_family_config
 
 
@@ -2519,7 +2520,7 @@ def _stream_gate_logits(streams: Tensor, vectors: Tensor) -> Tensor:
     contraction is identical; only the reduction order differs.
     """
 
-    return (streams * vectors).sum(dim=-1)
+    return stream_gate_logits(streams, vectors)
 
 
 def _memory_attention_scores(query: Tensor, key: Tensor) -> Tensor:
