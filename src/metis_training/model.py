@@ -6360,13 +6360,19 @@ class Metis16ForCausalLM(nn.Module):
                     )
                     selected_targets = next_active.masked_select(active_mask).float()
                     if selected_probabilities.numel():
+                        selected_probabilities = selected_probabilities.float().clamp(
+                            1.0e-8,
+                            1.0 - 1.0e-8,
+                        )
+                        calibration_loss = -(
+                            selected_targets * selected_probabilities.log()
+                            + (1.0 - selected_targets)
+                            * (1.0 - selected_probabilities).log()
+                        ).mean()
                         _add_loss(
                             auxiliary_losses,
                             "continuation_budget_calibration",
-                            F.binary_cross_entropy(
-                                selected_probabilities.float(),
-                                selected_targets,
-                            )
+                            calibration_loss
                             * self.config.budgeted_depth_calibration_coefficient,
                         )
                 soft_continue = continuation_probability * active_mask.float()
