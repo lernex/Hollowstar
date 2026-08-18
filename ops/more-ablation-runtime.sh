@@ -76,33 +76,41 @@ export FLASH_ATTENTION_TRITON_AMD_AUTOTUNE=0
 # Triton JIT-compiles and writes each kernel here. Four ranks per node sharing
 # one directory corrupt each other's output; it surfaces as
 # LLVM ERROR: IO failure on output stream, which names neither Triton nor the
-# cache. Keep one per rank, on node-local disk rather than Lustre.
+# cache. Keep one persistent directory per local rank and software ABI: Slurm
+# allocates all four APUs/192 CPUs together, so two jobs never write the same
+# node-local cache concurrently, and restarts should not recompile sixteen
+# thousand launches per rank.
 # Node-local NVMe, not /tmp.  /tmp on these nodes is a tmpfs, and an MI300A
 # APU takes its HBM from the same system memory the tmpfs lives in -- a
 # four-rank node runs at roughly 385 GB of 501 GB before the compiler writes a
 # byte.  Triton spilling its output into that is where
 # "LLVM ERROR: IO failure on output stream: Bad address" comes from; the error
 # names neither memory nor the cache.  /data is a 1.8 TB local disk.
+METIS_CACHE_ABI=gfx942-rocm721-torch213-te217
+METIS_LOCAL_CACHE_RANK=${LOCAL_RANK:-${SLURM_LOCALID:-0}}
 METIS_NODE_SCRATCH=/data/$USER/metis-${SLURM_JOB_ID:-local}-${SLURM_PROCID:-0}
+METIS_NODE_CACHE=/data/$USER/metis-cache-$METIS_CACHE_ABI-rank$METIS_LOCAL_CACHE_RANK
 # /data is a per-node disk and it is not healthy on every node: parrypeak061
 # answers mkdir with an I/O error while its four APUs are perfectly fine, and a
 # job that assumes otherwise loses the whole row to one bad mount. Fall back to
 # the tmpfs rather than the run.
-if ! mkdir -p "$METIS_NODE_SCRATCH" 2>/dev/null; then
+if ! mkdir -p "$METIS_NODE_SCRATCH" "$METIS_NODE_CACHE" 2>/dev/null; then
   METIS_NODE_SCRATCH=/tmp/metis-$USER-${SLURM_JOB_ID:-local}-${SLURM_PROCID:-0}
+  METIS_NODE_CACHE=$METIS_NODE_SCRATCH/cache
   echo "metis: /data unusable on $(hostname), falling back to $METIS_NODE_SCRATCH" >&2
 fi
-export TRITON_CACHE_DIR=$METIS_NODE_SCRATCH/triton
-export MIOPEN_USER_DB_PATH=$METIS_NODE_SCRATCH/miopen
+export TRITON_CACHE_DIR=$METIS_NODE_CACHE/triton
+export MIOPEN_USER_DB_PATH=$METIS_NODE_CACHE/miopen
 export MIOPEN_CUSTOM_CACHE_DIR=$MIOPEN_USER_DB_PATH
 export HIP_FORCE_DEV_KERNARG=1
 # AITER JIT-builds into ~/.aiter by default -- shared NFS home, one directory
 # for every rank on every node. Twenty-eight ranks racing a copytree and a
 # build there is what produced LLVM ERROR: IO failure on output stream.
 # Triton's AMD backend also links through NamedTemporaryFile in TMPDIR.
-# Both go per rank, on node-local tmpfs.
+# Temporary linker output stays per job; AITER's built modules are keyed by the
+# same ABI as Triton and persist beside it.
 export TMPDIR=$METIS_NODE_SCRATCH/tmp
-export AITER_JIT_DIR=$TMPDIR/aiter
+export AITER_JIT_DIR=$METIS_NODE_CACHE/aiter
 mkdir -p $TRITON_CACHE_DIR $MIOPEN_USER_DB_PATH $TMPDIR $AITER_JIT_DIR
 # AITER JIT-compiles its core module on first import. Twenty-eight ranks each
 # running a full C++ build at once, four to a node that shares one memory pool
