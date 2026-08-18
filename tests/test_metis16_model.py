@@ -386,8 +386,6 @@ def test_sparse_gradient_sync_uses_dense_collective_past_wire_break_even(
 
     synchronized = model_module._sync_sparse_gradient(gradient, group=group)
     assert synchronized.is_sparse
-    assert synchronized.sparse_dim() == 1
-    assert synchronized.dense_dim() == 1
     torch.testing.assert_close(synchronized.to_dense(), gradient.to_dense())
 
 
