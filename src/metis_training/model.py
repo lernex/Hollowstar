@@ -4018,7 +4018,16 @@ def _sync_sparse_gradient(gradient: Tensor, *, group: Any) -> Tensor:
         dense = gradient.to_dense()
         dense.div_(float(world_size))
         dist.all_reduce(dense, group=group)
-        return dense.to_sparse().coalesce()
+        nonzero_rows = torch.any(dense != 0, dim=tuple(range(1, dense.ndim)))
+        rows = torch.nonzero(nonzero_rows, as_tuple=False).flatten()
+        values = dense.index_select(0, rows)
+        return torch.sparse_coo_tensor(
+            rows.unsqueeze(0),
+            values,
+            size=dense.shape,
+            device=dense.device,
+            dtype=dense.dtype,
+        ).coalesce()
     max_nnz = max(counts)
     padded_indices = torch.zeros(
         indices.shape[0],
