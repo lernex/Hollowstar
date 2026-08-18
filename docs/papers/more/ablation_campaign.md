@@ -415,7 +415,10 @@ each is the kind of thing a loss curve cannot reveal.
   binary cross-entropy for continue/halt and categorical cross-entropy for k.
   The labels are the token rankings selected under the exact quota, so the
   calibration sharpens easy/hard separation without changing one executed
-  token or carrying controller state across steps.
+  token or carrying controller state across steps. On Portage, coefficients
+  `depth=4.0` and `k=0.1` moved expected depth to 2.16 and expected k from 7.24
+  to 4.12 by step eight; weighting k at 1.0 slowed the language-model objective
+  because that loss is evaluated once per MoE layer and pass.
   (`test_exact_budget_calibration_teaches_the_selected_depth_and_width`)
 - **Expert transitions were compared positionally across packed passes.** A
   packed pass is a *subsequence* of its predecessor, not a prefix, so pairing by

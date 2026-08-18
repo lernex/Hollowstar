@@ -235,8 +235,8 @@ def proxy_config(
         "expert_balance_bias_update_rate": 0.001,
         "k_budget_coefficient": 1.0,
         "depth_budget_coefficient": 1.0,
-        "budgeted_k_calibration_coefficient": 1.0,
-        "budgeted_depth_calibration_coefficient": 1.0,
+        "budgeted_k_calibration_coefficient": 0.1,
+        "budgeted_depth_calibration_coefficient": 4.0,
         # The fixed coefficients above cannot hold either policy at its target:
         # measured on the canary, depth climbs from its intended 1.86 to the
         # 5.0 ceiling within nine steps and width sits at 7.3 against a target
