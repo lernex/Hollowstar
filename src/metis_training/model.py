@@ -2234,6 +2234,7 @@ class _StackedGroupedLinear(nn.Module):
         out_features: int,
         *,
         weight_chunks: int = 1,
+        cache_materialized_weight: bool = True,
         device: torch.device | str | None,
         dtype: torch.dtype | None,
     ) -> None:
@@ -2242,6 +2243,7 @@ class _StackedGroupedLinear(nn.Module):
         self.in_features = int(in_features)
         self.out_features = int(out_features)
         self.weight_chunk_count = int(weight_chunks)
+        self.cache_materialized_weight = bool(cache_materialized_weight)
         if self.num_gemms % self.weight_chunk_count:
             raise ValueError("Grouped-linear expert count must divide its weight chunks.")
         self._materialized_weight: Tensor | None = None
@@ -2286,6 +2288,8 @@ class _StackedGroupedLinear(nn.Module):
     def _forward_weight(self) -> Tensor:
         if self.weight_chunk_count == 1:
             return self.weight
+        if not self.cache_materialized_weight:
+            return torch.cat(tuple(self.weight_chunks), dim=0)
         if self._materialized_weight is None:
             materialized = torch.cat(tuple(self.weight_chunks), dim=0)
             if materialized.requires_grad:
@@ -2330,6 +2334,7 @@ def _make_grouped_linear(
     *,
     role: str,
     weight_chunks: int = 1,
+    cache_materialized_weight: bool = True,
     device: torch.device | str | None,
     dtype: torch.dtype | None,
 ) -> nn.Module:
@@ -2350,6 +2355,7 @@ def _make_grouped_linear(
         in_features,
         out_features,
         weight_chunks=weight_chunks,
+        cache_materialized_weight=cache_materialized_weight,
         device=device,
         dtype=dtype,
     )
@@ -2385,6 +2391,7 @@ class GroupedSwiGLUExperts(nn.Module):
         *,
         precision_policy: Any,
         weight_chunks: int = 1,
+        cache_materialized_weight: bool = True,
         fused_activation: bool = False,
         device: torch.device | str | None,
         dtype: torch.dtype | None,
@@ -2401,6 +2408,7 @@ class GroupedSwiGLUExperts(nn.Module):
             2 * intermediate_dim,
             role="expert_gate_up_projection",
             weight_chunks=weight_chunks,
+            cache_materialized_weight=cache_materialized_weight,
             device=device,
             dtype=dtype,
         )
@@ -2411,9 +2419,15 @@ class GroupedSwiGLUExperts(nn.Module):
             latent_dim,
             role="expert_down_projection",
             weight_chunks=weight_chunks,
+            cache_materialized_weight=cache_materialized_weight,
             device=device,
             dtype=dtype,
         )
+
+    def set_weight_materialization_cache(self, enabled: bool) -> None:
+        for projection in (self.gate_up, self.down):
+            projection.cache_materialized_weight = bool(enabled)
+            projection._materialized_weight = None
 
     @property
     def row_multiple(self) -> int:
@@ -2929,6 +2943,9 @@ class AdaptiveDroplessMoE(nn.Module):
                 config.expert_intermediate_dim,
                 precision_policy=precision_policy,
                 weight_chunks=config.expert_weight_chunks,
+                cache_materialized_weight=(
+                    config.activation_recompute_policy == "none"
+                ),
                 fused_activation=config.expert_swiglu_fused,
                 device=device,
                 dtype=dtype,
@@ -4981,6 +4998,13 @@ class Metis16ForCausalLM(nn.Module):
                 "activation recompute policy must be none, pass, or layer."
             )
         self.activation_recompute_policy = policy
+        cache_materialized_weight = policy == "none"
+        for layer in self.layers:
+            experts = getattr(layer.moe, "local_experts", None)
+            if isinstance(experts, GroupedSwiGLUExperts):
+                experts.set_weight_materialization_cache(
+                    cache_materialized_weight
+                )
 
     @torch.no_grad()
     def update_expert_selection_biases(self, counts_by_layer: Tensor) -> None:

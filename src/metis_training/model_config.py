@@ -618,11 +618,6 @@ class Metis16Config:
                 raise ValueError(
                     "expert_weight_chunks above one require grouped_gemm execution."
                 )
-            if self.activation_recompute_policy != "none":
-                raise ValueError(
-                    "expert_weight_chunks above one currently require no activation "
-                    "recompute so one materialized bank can be shared across passes."
-                )
         if self.expert_swiglu_fused and self.expert_execution != "grouped_gemm":
             raise ValueError("expert_swiglu_fused requires grouped_gemm execution.")
         if self.ffn_mode == "dense" and self.family not in _RELAXED_FAMILIES:

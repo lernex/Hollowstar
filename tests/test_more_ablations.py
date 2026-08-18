@@ -1035,6 +1035,68 @@ def test_chunked_expert_weights_match_one_stacked_parameter():
     assert chunked._materialized_weight is None
 
 
+def test_uncached_chunked_expert_weights_support_repeated_replay():
+    torch.manual_seed(17)
+    experts, in_features, out_features = 6, 16, 24
+    reference = _StackedGroupedLinear(
+        experts,
+        in_features,
+        out_features,
+        weight_chunks=1,
+        device=None,
+        dtype=torch.float32,
+    )
+    chunked = _StackedGroupedLinear(
+        experts,
+        in_features,
+        out_features,
+        weight_chunks=3,
+        cache_materialized_weight=False,
+        device=None,
+        dtype=torch.float32,
+    )
+    with torch.no_grad():
+        for index in range(experts):
+            chunked.expert_weight(index).copy_(reference.expert_weight(index))
+
+    splits = torch.tensor([3, 2, 4, 1, 3, 2], dtype=torch.long)
+    left_input = torch.randn(int(splits.sum()), in_features, requires_grad=True)
+    right_input = left_input.detach().clone().requires_grad_(True)
+    left = reference(left_input, splits) + reference(left_input, splits)
+    right = chunked(right_input, splits) + chunked(right_input, splits)
+    torch.testing.assert_close(right, left)
+
+    gradient = torch.randn_like(left)
+    left.backward(gradient)
+    right.backward(gradient)
+    torch.testing.assert_close(right_input.grad, left_input.grad)
+    chunked_grad = torch.cat(
+        [parameter.grad for parameter in chunked.weight_chunks],
+        dim=0,
+    )
+    torch.testing.assert_close(chunked_grad, reference.weight.grad)
+    assert chunked._materialized_weight is None
+
+
+def test_chunked_expert_weights_allow_layer_recompute():
+    original = spec_by_name("more-core")
+    spec = replace(
+        original,
+        config_overrides={
+            **original.config_overrides,
+            "expert_weight_chunks": 4,
+            "activation_recompute_policy": "layer",
+        },
+    )
+    config = spec.model_config(
+        mhc_backend="torch_reference",
+        mamba_backend="torch_reference",
+        attention_backend="torch_reference",
+    )
+    assert config.expert_weight_chunks == 4
+    assert config.activation_recompute_policy == "layer"
+
+
 def test_blockwise_int8_muon_state_respects_its_error_bound():
     generator = torch.Generator().manual_seed(20_260_817)
     values = torch.randn(73, 91, generator=generator, dtype=torch.float32)
