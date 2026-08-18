@@ -1,9 +1,9 @@
 # MoRE ablation campaign — sizing, compute, allocation, and execution
 
-Status: planning draft, 2026-07-25. Supersedes the "Fast ablation allocation"
-sizing in `METIS_1.6_PLAN.md:1038` for the post-PT window. Every number here is a
-planning estimate; replace with measured tokens/second from the canary before
-committing a calendar date.
+Status: measured Portage canaries, 2026-08-18. Supersedes the "Fast ablation
+allocation" sizing in `METIS_1.6_PLAN.md:1038` for the post-PT window. Planning
+tables remain for compute accounting; the accepted throughput lanes are
+recorded in §5.
 
 ## 0. Window and available hardware
 
@@ -323,6 +323,56 @@ This retains three genuine compute levels while avoiding depth-4/5 tail batches
 that measured as almost pure launch overhead on MI300A. `max_passes=5` remains
 the architectural cap for explicit controls and later budget studies, but the
 primary 50B-token policy does not train on those two tail levels.
+
+### Measured Wave-1 throughput lanes (2026-08-18)
+
+The target was 500k real release-data tokens/s for every row. The table reports
+the warmed median from the retained canary window; every run used a 480-sequence
+global batch, 4,096-token sequences, NS=5 Muon, blockwise int8 Muon momentum,
+full-world optimizer ownership, and the OFI/CXI runtime. FP8 loss parity stayed
+below 0.001 in every retained row.
+
+| Row | APUs | Micro × accum | Recompute | Precision exception | Median tok/s |
+|---|---:|---:|---|---|---:|
+| dense-flop-matched | 24 | 10 × 2 | none | dense gate/up BF16 | 583,717 |
+| dense-param-matched | 80 | 6 × 1 | none | dense gate/up BF16 | 664,770 |
+| moe-k4 | 20 | 12 × 2 | none | — | 574,808 |
+| moe-k8 | 20 | 12 × 2 | none | — | 635,051 |
+| loop-fixed | 40 | 12 × 1 | layer | — | 680,845 |
+| loop-pathway-frozen | 40 | 12 × 1 | layer | — | 569,067 |
+| mor-dense-ffn | 80 | 6 × 1 | none | — | 651,111 |
+| mor-fixed-k | 80 | 6 × 1 | none | — | 693,859 |
+| fixed-depth-adaptive-k | 40 | 12 × 1 | layer | — | 567,609 |
+| more-core | 80 | 6 × 1 | none | — | **512,083** |
+| more-rm | 80 | 6 × 1 | none | — | 695,082 |
+| random-k | 80 | 6 × 1 | none | — | 686,428 |
+| random-depth | 80 | 6 × 1 | none | — | 705,660 |
+| **Sum of measured row rates** | | | | | **8,220,090** |
+
+MoRE-Core's final acceptance covered 50 optimizer steps: 49 warmed steps had a
+512k median and 543k mean. Over the final 20 steps, expected depth averaged
+2.14, expected k 3.99, and expert-load CV 1.05; realized depth and k remained
+exactly 2 and 4 with no dropped assignments. MoRE-RM's retained canary also
+kept exact depth 2/k 4, used recurrent memory (`depth_memory_last_norm=2.95`),
+and finished at 549k tokens/s.
+
+Held-out routing captures at step five show that the exact means are not hiding
+constant decisions. Both learned rows populated depths 1/2/3 in exact thirds
+and routed tokens across the complete k=1..8 support. Depth and width remained
+distinct axes (Pearson r = -0.022 for Core and 0.004 for RM), while expert
+coalitions changed substantially between recurrent stages: Core's off-diagonal
+transition mass was 0.791 from pass 1→2 and 0.422 from pass 2→3; RM measured
+0.689 and 0.578. Thus the policy is neither all-depth-2 nor fixed-k-4, and later
+passes are not merely replaying the same expert coalition.
+
+These rates are individually real but are **not a simultaneous 13-row
+allocation**: the retained lanes total 744 APUs, above Portage's 512-APU
+physical maximum. The campaign must run in at least two scheduling waves unless
+the recursive rows gain a lower-memory 40-APU lane. Attempts to force that lane
+were rejected: microbatch 12 without recompute page-thrashed at 89–93% HBM, and
+full-layer recompute stayed below 450k on the slow adaptive rows. Summing the
+measured rates is useful for comparing achieved row throughput against the
+6.45M target, but must not be presented as concurrently observed throughput.
 
 ## 6. Learning rate and hyperparameters
 
