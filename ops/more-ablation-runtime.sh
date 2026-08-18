@@ -2,6 +2,9 @@
 # METIS_ABLATION_RUNTIME, once per task, so the per-rank scratch paths below
 # resolve against that task's SLURM_PROCID.
 source /etc/profile.d/modules.sh 2>/dev/null || true
+# A compiler/runtime abort must leave a small log, not one 5-40 GiB core file
+# per rank on the shared home filesystem.
+ulimit -c 0
 module load cray-python/3.11.7
 module load rocm/7.2.1
 export ROCM_PATH=/opt/rocm-7.2.1
