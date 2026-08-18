@@ -413,7 +413,10 @@ each is the kind of thing a loss curve cannot reveal.
   which preserves FLOPs but does not learn calibrated difficulty. Budgeted
   depth and width now use the same leaky dual controllers as adaptive routing;
   exact assignment still fixes realized compute, while the soft policies are
-  trained back toward their declared means.
+  trained back toward their declared means. Their rates are reduced to 1.0 for
+  depth and 0.1 for width because the old 20/1 rates, tuned to move realized
+  compute, overshot soft expected depth from 2.94 to 1.02 in three steps once
+  hard assignment already carried the compute constraint.
   (`test_exact_compute_budgets_still_train_the_soft_policies_to_their_targets`)
 - **Expert transitions were compared positionally across packed passes.** A
   packed pass is a *subsequence* of its predecessor, not a prefix, so pairing by

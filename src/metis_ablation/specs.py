@@ -242,8 +242,14 @@ def proxy_config(
         # and a MoRE-Core run whose adaptive-depth axis measures nothing. The
         # dual step turns them into an augmented Lagrangian that finds its own
         # strength.
-        "budget_controller_rate": 1.0,
-        "depth_budget_controller_rate": 20.0,
+        # Exact hard assignment fixes realized compute immediately, so the dual
+        # controller only has to calibrate the soft policy used by the
+        # straight-through gradient. The older 1/20 rates were tuned while the
+        # controller also had to pull realized compute off the ceiling; here
+        # they over-corrected expected depth from 2.94 to 1.02 in three steps
+        # and dominated the clipped task gradient.
+        "budget_controller_rate": 0.1,
+        "depth_budget_controller_rate": 1.0,
         # At the clamp boundary the gate's slope is d(sigmoid)/dz = 0.0177, so a
         # multiplier acting through it is attenuated about fifty-six fold. The
         # default ceiling of 1e3 is therefore an effective gain of about 18 --
