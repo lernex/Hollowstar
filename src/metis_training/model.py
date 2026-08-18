@@ -3789,11 +3789,10 @@ class AdaptiveDroplessMoE(nn.Module):
             else self.config.target_mean_routed_k
         )
         if curriculum.routed_k_mode == "budgeted":
-            k_budget = (
-                (mean_expected_k - float(target_mean_k)).square()
-                * self.config.k_budget_coefficient
-                * has_active
-            )
+            k_budget = self.k_budget.penalty(
+                mean_expected_k,
+                target=target_mean_k,
+            ) * has_active
         elif curriculum.routed_k_mode == "random":
             k_budget = mean_expected_k * 0.0
         else:
@@ -6391,9 +6390,9 @@ class Metis16ForCausalLM(nn.Module):
             else self.config.target_mean_passes
         )
         if curriculum_state.continuation_mode == "budgeted":
-            depth_budget = (
-                (mean_expected_depth - float(target_mean_depth)).square()
-                * self.config.depth_budget_coefficient
+            depth_budget = self.depth_budget.penalty(
+                mean_expected_depth,
+                target=target_mean_depth,
             )
         elif curriculum_state.continuation_mode == "random":
             depth_budget = mean_expected_depth * 0.0

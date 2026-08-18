@@ -550,6 +550,32 @@ def test_budget_controller_is_off_unless_a_rate_is_declared():
     assert float(controller.multiplier) == 0.0, "an inactive controller must not drift"
 
 
+def test_exact_compute_budgets_still_train_the_soft_policies_to_their_targets():
+    torch.manual_seed(6)
+    config = _tiny(
+        budget_controller_rate=1.0,
+        depth_budget_controller_rate=2.0,
+        budget_controller_leak=0.02,
+        budgeted_depth_values=(1, 2, 3),
+    )
+    model = Metis16ForCausalLM(config).train()
+    input_ids, labels = _tiny_batch(config, batch=2, length=16)
+
+    model(
+        input_ids,
+        labels,
+        curriculum=_curriculum(
+            continuation_mode="budgeted",
+            routed_k_mode="budgeted",
+            target_mean_depth=2.0,
+            target_mean_routed_k=2.0,
+        ),
+    )
+
+    assert float(model.depth_budget.multiplier) != 0.0
+    assert float(model.layers[0].moe.k_budget.multiplier) != 0.0
+
+
 def test_replicated_dispatch_matches_the_general_path():
     """The fast path is the general path with the no-ops removed, exactly.
 

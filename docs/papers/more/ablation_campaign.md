@@ -405,6 +405,16 @@ each is the kind of thing a loss curve cannot reveal.
   and N-gram gate scales, and the production token schedule keeps its previous
   joint annealing while both ablation rows keep N-gram injection at 1.0.
   (`test_more_core_keeps_shared_ngram_memory_enabled`)
+- **Exact hard budgets bypassed the adaptive controllers.** The `{1,2,3}`
+  assignment kept realized depth exactly 2.0, but its soft continuation
+  probabilities climbed to 2.94 expected passes in four steps because the
+  budgeted path used the old fixed `1e-2` penalty instead of the augmented
+  Lagrangian. The hard quota then ranked an almost uniformly "go deep" policy,
+  which preserves FLOPs but does not learn calibrated difficulty. Budgeted
+  depth and width now use the same leaky dual controllers as adaptive routing;
+  exact assignment still fixes realized compute, while the soft policies are
+  trained back toward their declared means.
+  (`test_exact_compute_budgets_still_train_the_soft_policies_to_their_targets`)
 - **Expert transitions were compared positionally across packed passes.** A
   packed pass is a *subsequence* of its predecessor, not a prefix, so pairing by
   position matched unrelated tokens and manufactured off-diagonal mass out of
