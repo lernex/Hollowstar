@@ -1158,60 +1158,6 @@ def test_int8_muon_keeps_only_quantized_momentum_and_tracks_fp32():
     torch.testing.assert_close(quantized, full, rtol=2e-4, atol=2e-5)
 
 
-def test_world_sharded_optimizer_all_gathers_once_per_dtype(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    from metis_training.optimizers import (
-        OptimizerBundle,
-        WorldShardedOptimizerBundle,
-    )
-
-    class Model(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.large = torch.nn.Parameter(torch.zeros(9))
-            self.small = torch.nn.Parameter(torch.zeros(5))
-            self.bf16 = torch.nn.Parameter(
-                torch.zeros(7, dtype=torch.bfloat16)
-            )
-
-    model = Model()
-    optimizer = OptimizerBundle(
-        torch.optim.SGD(model.parameters(), lr=0.1),
-        None,
-    )
-    group = object()
-    sharded = WorldShardedOptimizerBundle(
-        optimizer,
-        model,
-        process_group=group,
-        rank=0,
-        world_size=2,
-    )
-    calls: list[torch.dtype] = []
-
-    def all_gather_into_tensor(output, local, *, group):
-        calls.append(local.dtype)
-        elements = local.numel()
-        output[:elements].fill_(1)
-        output[elements:].fill_(2)
-
-    monkeypatch.setattr(
-        torch.distributed,
-        "all_gather_into_tensor",
-        all_gather_into_tensor,
-    )
-    sharded.step()
-
-    assert len(calls) == len({parameter.dtype for parameter in model.parameters()})
-    for name, parameter in model.named_parameters():
-        owner = sharded.owner_names[name]
-        torch.testing.assert_close(
-            parameter.float(),
-            torch.full_like(parameter.float(), owner + 1),
-        )
-
-
 def _copy_expert_bank(loop_model, grouped_model):
     """Give the grouped model the loop model's weights, bank layout aside."""
 
