@@ -309,6 +309,46 @@ def test_all_ignored_labels_produce_finite_graph_connected_zero() -> None:
     assert model.embedding.weight.grad is not None
 
 
+def test_sparse_table_sync_runs_once_after_gradient_accumulation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import metis_training.model as model_module
+
+    config = Metis16Config.tiny_for_tests()
+    model = Metis16ForCausalLM(config, dtype=torch.float32)
+    fake_group = object()
+    original_group_size = model_module._group_world_size
+    monkeypatch.setattr(
+        model_module,
+        "_group_world_size",
+        lambda group: 2 if group is fake_group else original_group_size(group),
+    )
+    model.enable_managed_sparse_gradient_sync(fake_group)
+
+    calls: list[torch.Tensor] = []
+
+    def record(gradient: torch.Tensor, *, group: object) -> torch.Tensor:
+        assert group is fake_group
+        calls.append(gradient.coalesce().values().clone())
+        return gradient.coalesce()
+
+    monkeypatch.setattr(model_module, "_sync_sparse_gradient", record)
+    input_ids, labels, _reset_mask = _batch(config, batch=1, length=6)
+    for _ in range(2):
+        output = model(
+            input_ids,
+            labels,
+            force_depth=1,
+            curriculum=_fixed_curriculum(1),
+        )
+        output.loss.backward()
+
+    table_count = len(model.ngram_memory.tables)
+    assert calls == []
+    model.synchronize_sparse_gradients()
+    assert len(calls) == table_count
+
+
 def test_document_reset_prevents_cross_document_state_leakage() -> None:
     config = Metis16Config.tiny_for_tests()
     model = Metis16ForCausalLM(config, dtype=torch.float32).eval()

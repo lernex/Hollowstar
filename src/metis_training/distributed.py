@@ -550,6 +550,9 @@ def synchronize_gradients(
     overlapped = reducer is not None and reducer.finalize()
     placements = _placements(model)
     named = list(model.named_parameters())
+    sparse_synchronizer = getattr(model, "synchronize_sparse_gradients", None)
+    if callable(sparse_synchronizer):
+        sparse_synchronizer()
     sparse = [
         (name, parameter)
         for name, parameter in named

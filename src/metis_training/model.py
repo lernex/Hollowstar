@@ -4010,7 +4010,7 @@ class NGramConditionalMemory(nn.Module):
             )
         )
         self._sync_enabled = False
-        self._sync_handles: list[Any] = []
+        self._sync_group: Any = None
 
     def _valid_ngram_mask(
         self,
@@ -4118,20 +4118,28 @@ class NGramConditionalMemory(nn.Module):
     def enable_managed_sparse_gradient_sync(self, group: Any) -> None:
         if self._sync_enabled:
             return
-        if _group_world_size(group) <= 1:
-            self._sync_enabled = True
+        self._sync_group = group
+        self._sync_enabled = True
+
+    def synchronize_sparse_gradients(self) -> None:
+        """Average accumulated sparse rows once per optimizer step.
+
+        A gradient hook runs once per backward call. Under gradient
+        accumulation that repeated the three sparse collectives for every
+        micro-batch and every one of the sixteen tables. Deferring until the
+        accumulation is complete preserves the exact summed gradient while
+        paying the synchronization once.
+        """
+
+        if not self._sync_enabled or _group_world_size(self._sync_group) <= 1:
             return
         for table in self.tables.values():
             weight = table.embedding.weight
-            self._sync_handles.append(
-                weight.register_hook(
-                    lambda gradient, sync_group=group: _sync_sparse_gradient(
-                        gradient,
-                        group=sync_group,
-                    )
+            if weight.grad is not None:
+                weight.grad = _sync_sparse_gradient(
+                    weight.grad,
+                    group=self._sync_group,
                 )
-            )
-        self._sync_enabled = True
 
     @property
     def sparse_sync_enabled(self) -> bool:
@@ -4866,6 +4874,9 @@ class Metis16ForCausalLM(nn.Module):
 
     def sparse_gradient_sync_enabled(self) -> bool:
         return self.ngram_memory.sparse_sync_enabled
+
+    def synchronize_sparse_gradients(self) -> None:
+        self.ngram_memory.synchronize_sparse_gradients()
 
     def parameter_placements(self) -> dict[str, str]:
         placements: dict[str, str] = {}
