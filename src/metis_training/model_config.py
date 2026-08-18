@@ -474,6 +474,7 @@ class Metis16Config:
     # path when every rank replicates all routed experts.
     expert_execution: str = "loop"
     expert_weight_chunks: int = 1
+    expert_swiglu_fused: bool = False
     world_size: int = 128
     expert_parallel_size: int = 128
     expert_replicas: int = 1
@@ -622,6 +623,8 @@ class Metis16Config:
                     "expert_weight_chunks above one currently require no activation "
                     "recompute so one materialized bank can be shared across passes."
                 )
+        if self.expert_swiglu_fused and self.expert_execution != "grouped_gemm":
+            raise ValueError("expert_swiglu_fused requires grouped_gemm execution.")
         if self.ffn_mode == "dense" and self.family not in _RELAXED_FAMILIES:
             raise ValueError(
                 "A dense feed-forward sublayer is an ablation control; production "

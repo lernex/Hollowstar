@@ -140,6 +140,74 @@ if triton is not None:
         )
 
 
+    @triton.jit
+    def _swiglu_forward_kernel(
+        gate_up,
+        output,
+        elements: tl.constexpr,
+        width: tl.constexpr,
+        BLOCK: tl.constexpr,
+    ):
+        offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = offsets < elements
+        row = offsets // width
+        column = offsets - row * width
+        gate = tl.load(
+            gate_up + row * (2 * width) + column,
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        up = tl.load(
+            gate_up + row * (2 * width) + width + column,
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        sigmoid = 1.0 / (1.0 + tl.exp(-gate))
+        tl.store(output + offsets, gate * sigmoid * up, mask=mask)
+
+
+    @triton.jit
+    def _swiglu_backward_kernel(
+        grad_output,
+        gate_up,
+        grad_input,
+        elements: tl.constexpr,
+        width: tl.constexpr,
+        BLOCK: tl.constexpr,
+    ):
+        offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = offsets < elements
+        row = offsets // width
+        column = offsets - row * width
+        gate = tl.load(
+            gate_up + row * (2 * width) + column,
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        up = tl.load(
+            gate_up + row * (2 * width) + width + column,
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        gradient = tl.load(
+            grad_output + offsets,
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        sigmoid = 1.0 / (1.0 + tl.exp(-gate))
+        silu = gate * sigmoid
+        tl.store(
+            grad_input + row * (2 * width) + column,
+            gradient * up * sigmoid * (1.0 + gate * (1.0 - sigmoid)),
+            mask=mask,
+        )
+        tl.store(
+            grad_input + row * (2 * width) + width + column,
+            gradient * silu,
+            mask=mask,
+        )
+
+
 class _FusedStreamGate(torch.autograd.Function):
     @staticmethod
     def forward(ctx, values: Tensor, vectors: Tensor) -> Tensor:
@@ -225,6 +293,49 @@ class _FusedStreamGate(torch.autograd.Function):
         return grad_values.view(ctx.input_shape), grad_vectors
 
 
+class _FusedSwiGLU(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, gate_up: Tensor) -> Tensor:
+        if triton is None:
+            raise RuntimeError("Fused SwiGLU requires Triton.")
+        if gate_up.ndim != 2 or gate_up.shape[1] % 2:
+            raise ValueError("Fused SwiGLU expects [rows, 2 * width].")
+        rows, doubled_width = gate_up.shape
+        width = doubled_width // 2
+        gate_up = gate_up.contiguous()
+        output = torch.empty(
+            rows,
+            width,
+            device=gate_up.device,
+            dtype=gate_up.dtype,
+        )
+        _swiglu_forward_kernel[(triton.cdiv(rows * width, 256),)](
+            gate_up,
+            output,
+            elements=rows * width,
+            width=width,
+            BLOCK=256,
+        )
+        ctx.save_for_backward(gate_up)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor) -> tuple[Tensor]:
+        (gate_up,) = ctx.saved_tensors
+        rows, doubled_width = gate_up.shape
+        width = doubled_width // 2
+        grad_input = torch.empty_like(gate_up)
+        _swiglu_backward_kernel[(triton.cdiv(rows * width, 256),)](
+            grad_output.contiguous(),
+            gate_up,
+            grad_input,
+            elements=rows * width,
+            width=width,
+            BLOCK=256,
+        )
+        return (grad_input,)
+
+
 def stream_gate_logits(values: Tensor, vectors: Tensor) -> Tensor:
     if values.shape[-2:] != vectors.shape:
         raise ValueError("Stream values and gate vectors have incompatible shapes.")
@@ -235,4 +346,17 @@ def stream_gate_logits(values: Tensor, vectors: Tensor) -> Tensor:
     return (values * vectors).sum(dim=-1)
 
 
-__all__ = ["stream_gate_logits"]
+def swiglu(gate_up: Tensor) -> Tensor:
+    if gate_up.shape[-1] % 2:
+        raise ValueError("SwiGLU requires an even final dimension.")
+    if gate_up.is_cuda:
+        if triton is None:
+            raise RuntimeError("ROCm SwiGLU fusion requires Triton.")
+        shape = gate_up.shape
+        output = _FusedSwiGLU.apply(gate_up.reshape(-1, shape[-1]))
+        return output.view(*shape[:-1], shape[-1] // 2)
+    gate, up = gate_up.chunk(2, dim=-1)
+    return torch.nn.functional.silu(gate) * up
+
+
+__all__ = ["stream_gate_logits", "swiglu"]

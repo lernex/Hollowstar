@@ -30,7 +30,7 @@ from .context_parallel import (
     reference_context_parallel_attention,
 )
 from .mhc_kernels import mhc_masked_write, mhc_read_mix
-from .routing_kernels import stream_gate_logits
+from .routing_kernels import stream_gate_logits, swiglu
 from .model_config import Metis16Config, load_family_config
 
 
@@ -2155,6 +2155,7 @@ class SwiGLUExpert(nn.Module):
         *,
         precision_policy: Any,
         weight_chunks: int = 1,
+        fused_activation: bool = False,
         device: torch.device | str | None,
         dtype: torch.dtype | None,
     ) -> None:
@@ -2372,6 +2373,7 @@ class GroupedSwiGLUExperts(nn.Module):
         *,
         precision_policy: Any,
         weight_chunks: int = 1,
+        fused_activation: bool = False,
         device: torch.device | str | None,
         dtype: torch.dtype | None,
     ) -> None:
@@ -2379,6 +2381,7 @@ class GroupedSwiGLUExperts(nn.Module):
         self.expert_count = int(expert_count)
         self.intermediate_dim = int(intermediate_dim)
         self._precision_policy = precision_policy
+        self.fused_activation = bool(fused_activation)
         self.gate_up = _make_grouped_linear(
             precision_policy,
             self.expert_count,
@@ -2429,8 +2432,12 @@ class GroupedSwiGLUExperts(nn.Module):
 
     def forward(self, packed: Tensor, m_splits: Tensor) -> Tensor:
         fused = self.gate_up(packed, m_splits)
-        gate, up = fused.chunk(2, dim=-1)
-        return self.down(F.silu(gate) * up, m_splits)
+        if self.fused_activation:
+            activated = swiglu(fused)
+        else:
+            gate, up = fused.chunk(2, dim=-1)
+            activated = F.silu(gate) * up
+        return self.down(activated, m_splits)
 
 
 def expert_segment_plan(
@@ -2910,6 +2917,7 @@ class AdaptiveDroplessMoE(nn.Module):
                 config.expert_intermediate_dim,
                 precision_policy=precision_policy,
                 weight_chunks=config.expert_weight_chunks,
+                fused_activation=config.expert_swiglu_fused,
                 device=device,
                 dtype=dtype,
             )

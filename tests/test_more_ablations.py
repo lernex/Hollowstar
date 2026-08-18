@@ -730,6 +730,22 @@ def test_grouped_gemm_expert_execution_matches_the_loop_exactly():
     assert torch.equal(left.loss, right.loss)
 
 
+def test_fused_grouped_swiglu_matches_the_readable_activation():
+    torch.manual_seed(8)
+    reference_config = replace(_tiny(), expert_execution="grouped_gemm")
+    fused_config = replace(reference_config, expert_swiglu_fused=True)
+    reference = Metis16ForCausalLM(reference_config)
+    fused = Metis16ForCausalLM(fused_config)
+    fused.load_state_dict(reference.state_dict())
+    input_ids, labels = _tiny_batch(reference_config)
+    curriculum = _curriculum()
+
+    reference_output = reference(input_ids, labels, curriculum=curriculum)
+    fused_output = fused(input_ids, labels, curriculum=curriculum)
+
+    torch.testing.assert_close(fused_output.loss, reference_output.loss)
+
+
 def test_grouped_gemm_seeds_each_expert_the_same_way_the_loop_does():
     """Expert ``i`` is the same expert in both layouts, from the same seed.
 
