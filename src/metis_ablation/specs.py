@@ -209,6 +209,10 @@ def proxy_config(
         "expert_execution": "grouped_gemm",
         "max_passes": 5,
         "target_mean_passes": 2.0,
+        # The trained policy uses easy / medium / hard depth levels. All three
+        # are populated at an exact mean of two, avoiding both constant-depth
+        # collapse and the tiny depth-4/5 tails that dominate launch overhead.
+        "budgeted_depth_values": (1, 2, 3),
         "route_feature_dim": 256,
         "memory_dim": 256,
         "memory_heads": 4,

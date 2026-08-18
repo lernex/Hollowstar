@@ -5012,11 +5012,22 @@ class Metis16ForCausalLM(nn.Module):
                 else self.config.target_mean_passes
             )
             depth_counts = exact_budget_counts(
-                range(1, self.config.max_passes + 1),
+                (
+                    self.config.budgeted_depth_values
+                    or tuple(range(1, self.config.max_passes + 1))
+                ),
                 float(target),
                 int(initial_token_count),
             )
-            desired = sum(depth_counts[next_pass_number - 1 :])
+            depth_support = (
+                self.config.budgeted_depth_values
+                or tuple(range(1, self.config.max_passes + 1))
+            )
+            desired = sum(
+                count
+                for depth, count in zip(depth_support, depth_counts)
+                if depth >= next_pass_number
+            )
             positions = torch.nonzero(
                 active_mask.reshape(-1), as_tuple=False
             ).flatten()

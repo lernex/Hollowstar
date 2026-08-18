@@ -476,6 +476,10 @@ class Metis16Config:
     expert_replicas: int = 1
     max_passes: int = 5
     target_mean_passes: float = 2.0
+    # Optional hard support used by exact budgeted depth ranking. Empty means
+    # every depth in [1, max_passes]; research proxies may choose a smaller
+    # trained support while retaining a larger architectural cap.
+    budgeted_depth_values: tuple[int, ...] = ()
     route_feature_dim: int = 256
     memory_dim: int = 256
     memory_heads: int = 4
@@ -545,6 +549,10 @@ class Metis16Config:
             cooked.update(dict(cooked.pop("depth_memory")))
         if "attention_indices" in cooked:
             cooked["attention_indices"] = _tuple_int(cooked["attention_indices"])
+        if "budgeted_depth_values" in cooked:
+            cooked["budgeted_depth_values"] = _tuple_int(
+                cooked["budgeted_depth_values"]
+            )
         cooked["ngram_memory"] = NGramMemoryConfig.from_mapping(cooked.get("ngram_memory"))
         cooked["precision"] = PrecisionConfig.from_mapping(cooked.get("precision"))
         cooked["autotune"] = AutotuneConfig.from_mapping(cooked.get("autotune"))
@@ -683,6 +691,29 @@ class Metis16Config:
             raise ValueError("Production Metis-1.6 is locked to five passes.")
         if not 1.0 <= self.target_mean_passes <= self.max_passes:
             raise ValueError("target_mean_passes must lie in [1, max_passes].")
+        if self.budgeted_depth_values:
+            if (
+                tuple(sorted(set(self.budgeted_depth_values)))
+                != self.budgeted_depth_values
+            ):
+                raise ValueError(
+                    "budgeted_depth_values must be sorted and unique."
+                )
+            if not all(
+                1 <= value <= self.max_passes
+                for value in self.budgeted_depth_values
+            ):
+                raise ValueError(
+                    "budgeted_depth_values must lie inside [1, max_passes]."
+                )
+            if not (
+                self.budgeted_depth_values[0]
+                <= self.target_mean_passes
+                <= self.budgeted_depth_values[-1]
+            ):
+                raise ValueError(
+                    "target_mean_passes must lie inside budgeted_depth_values."
+                )
         if self.memory_dim % self.memory_heads:
             raise ValueError("memory_dim must be divisible by memory_heads.")
         if not 1 <= self.moe_dispatch_chunks <= 8:

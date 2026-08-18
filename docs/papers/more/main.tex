@@ -241,7 +241,8 @@ than a scheduled one.
 
 \paragraph{Exact depth budget.} At every continuation boundary, the model ranks
 the active tokens by $p_t^{(r)}$. The number that survive is fixed by the
-maximum-entropy integer depth marginal with mean $d^\star=2$. Thus the router
+maximum-entropy integer depth marginal over $\{1,2,3\}$ with mean
+$d^\star=2$. Thus the router
 learns \emph{which} tokens deserve later passes while the batch budget fixes
 only \emph{how many}. Random-depth and random-$k$ controls use the identical
 marginals with random rankings, so learned-versus-random rows execute exactly

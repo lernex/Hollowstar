@@ -283,6 +283,13 @@ all-depth-5, all-depth-2, or all-k-4 impossible without dictating *which* tokens
 receive the compute. Random-policy controls use the same marginals with random
 rankings, so learned-versus-random comparisons spend exactly the same compute.
 
+The primary depth marginal uses the trained support **{1, 2, 3}**, uniformly at
+mean 2: easy tokens receive one pass, medium tokens two, and hard tokens three.
+This retains three genuine compute levels while avoiding depth-4/5 tail batches
+that measured as almost pure launch overhead on MI300A. `max_passes=5` remains
+the architectural cap for explicit controls and later budget studies, but the
+primary 50B-token policy does not train on those two tail levels.
+
 ## 6. Learning rate and hyperparameters
 
 One learning rate across architectures of different active widths is not fair;

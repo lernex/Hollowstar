@@ -112,6 +112,7 @@ def test_primary_proxy_is_the_parameter_matched_shallow_recurrent_block():
     assert config.latent_dim == 2048
     assert config.n_routed_experts == 72
     assert config.expert_intermediate_dim == 1152
+    assert config.budgeted_depth_values == (1, 2, 3)
     assert config.ngram_memory.injection_layers == (0, 1)
     assert all(
         0 <= layer < config.n_layers
@@ -125,6 +126,10 @@ def test_primary_proxy_is_the_parameter_matched_shallow_recurrent_block():
                 injection_layers=(config.n_layers,),
             ),
         ).validate()
+    with pytest.raises(ValueError, match="sorted and unique"):
+        replace(config, budgeted_depth_values=(1, 3, 2)).validate()
+    with pytest.raises(ValueError, match="inside budgeted_depth_values"):
+        replace(config, budgeted_depth_values=(3, 4)).validate()
 
 
 def test_rank_counts_are_whole_nodes_and_fit_the_allocation():
