@@ -4013,6 +4013,12 @@ def _sync_sparse_gradient(gradient: Tensor, *, group: Any) -> Tensor:
     gathered_nnz = [torch.empty_like(local_nnz) for _ in range(_group_world_size(group))]
     dist.all_gather(gathered_nnz, local_nnz, group=group)
     counts = [int(item.item()) for item in gathered_nnz]
+    world_size = _group_world_size(group)
+    if _dense_sparse_sync_uses_less_wire(gradient, counts, world_size=world_size):
+        dense = gradient.to_dense()
+        dense.div_(float(world_size))
+        dist.all_reduce(dense, group=group)
+        return dense.to_sparse().coalesce()
     max_nnz = max(counts)
     padded_indices = torch.zeros(
         indices.shape[0],
@@ -4040,7 +4046,7 @@ def _sync_sparse_gradient(gradient: Tensor, *, group: Any) -> Tensor:
     merged_values = torch.cat(
         [value[:count] for value, count in zip(all_values, counts)],
         dim=0,
-    ) / float(_group_world_size(group))
+    ) / float(world_size)
     return torch.sparse_coo_tensor(
         merged_indices,
         merged_values,
@@ -4048,6 +4054,34 @@ def _sync_sparse_gradient(gradient: Tensor, *, group: Any) -> Tensor:
         device=gradient.device,
         dtype=gradient.dtype,
     ).coalesce()
+
+
+def _dense_sparse_sync_uses_less_wire(
+    gradient: Tensor,
+    counts: Sequence[int],
+    *,
+    world_size: int,
+) -> bool:
+    """Choose dense reduction once the global COO union costs more on the wire."""
+
+    if world_size <= 1 or not gradient.is_sparse:
+        return False
+    gradient = gradient.coalesce()
+    values = gradient.values()
+    values_per_row = math.prod(values.shape[1:]) if values.ndim > 1 else 1
+    sparse_row_bytes = (
+        gradient.indices().shape[0] * torch.tensor([], dtype=torch.long).element_size()
+        + values_per_row * values.element_size()
+    )
+    sparse_bytes = sum(int(count) for count in counts) * sparse_row_bytes
+    dense_bytes = (
+        2.0
+        * float(world_size - 1)
+        / float(world_size)
+        * gradient.numel()
+        * gradient.element_size()
+    )
+    return dense_bytes <= float(sparse_bytes)
 
 
 class NGramConditionalMemory(nn.Module):
