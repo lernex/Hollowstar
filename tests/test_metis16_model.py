@@ -701,20 +701,8 @@ def test_expert_initialization_is_keyed_by_global_identity() -> None:
     assert not torch.equal(first_expert, other_expert)
 
 
-@pytest.mark.parametrize(
-    "policy",
-    ("pass", "layer", "layer_selective", "moe"),
-)
-def test_recompute_matches_forward_and_backward(
-    policy: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    if policy == "layer_selective":
-        monkeypatch.setattr(
-            model_module,
-            "_selective_layer_checkpoint_ops",
-            lambda: (torch.ops.aten.mm.default,),
-        )
+@pytest.mark.parametrize("policy", ("pass", "layer", "moe"))
+def test_recompute_matches_forward_and_backward(policy: str) -> None:
     config = Metis16Config.tiny_for_tests()
     torch.manual_seed(77)
     reference = Metis16ForCausalLM(config, dtype=torch.float32)

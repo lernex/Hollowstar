@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from inspect import signature
 import math
@@ -12,11 +12,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from torch import nn
-from torch.utils.checkpoint import (
-    checkpoint,
-    create_selective_checkpoint_contexts,
-    set_checkpoint_early_stop,
-)
+from torch.utils.checkpoint import checkpoint, set_checkpoint_early_stop
 
 from .context_parallel import (
     ContextParallelContext,
@@ -174,53 +170,6 @@ def _activation_checkpoint_context_fn(precision_policy: Any) -> Callable[[], tup
         return nullcontext(), nullcontext()
 
     return contexts
-
-
-@contextmanager
-def _combined_contexts(*contexts: Any) -> Iterator[None]:
-    with ExitStack() as stack:
-        for context in contexts:
-            stack.enter_context(context)
-        yield
-
-
-def _layer_checkpoint_context_fn(
-    precision_policy: Any,
-    *,
-    selective: bool,
-) -> Callable[[], tuple[Any, Any]]:
-    base_factory = _activation_checkpoint_context_fn(precision_policy)
-    if not selective:
-        return base_factory
-
-    operations = _selective_layer_checkpoint_ops()
-
-    def contexts() -> tuple[Any, Any]:
-        base_forward, base_recompute = base_factory()
-        selective_forward, selective_recompute = (
-            create_selective_checkpoint_contexts(list(operations))
-        )
-        return (
-            _combined_contexts(base_forward, selective_forward),
-            _combined_contexts(base_recompute, selective_recompute),
-        )
-
-    return contexts
-
-
-def _selective_layer_checkpoint_ops() -> tuple[Any, ...]:
-    flash_attention = getattr(
-        getattr(torch.ops, "flash_attn", None),
-        "_flash_attn_varlen_forward",
-        None,
-    )
-    flash_attention = getattr(flash_attention, "default", None)
-    if flash_attention is None:
-        raise RuntimeError(
-            "Selective layer recompute requires "
-            "flash_attn::_flash_attn_varlen_forward."
-        )
-    return (flash_attention,)
 
 
 def _fp32_linear(module: nn.Module, values: Tensor) -> Tensor:
@@ -4782,12 +4731,8 @@ class Metis16Block(nn.Module):
                     active_mask,
                     use_reentrant=False,
                     preserve_rng_state=True,
-                    context_fn=_layer_checkpoint_context_fn(
-                        self.precision_policy,
-                        selective=(
-                            self.activation_recompute_policy
-                            == "layer_selective"
-                        ),
+                    context_fn=_activation_checkpoint_context_fn(
+                        self.precision_policy
                     ),
                 )
             moe_output = moe_outputs[0]
@@ -5087,16 +5032,9 @@ class Metis16ForCausalLM(nn.Module):
     def set_activation_recompute_policy(self, policy: str) -> None:
         """Select pass-boundary recomputation without changing the manifest."""
 
-        if policy not in {
-            "none",
-            "pass",
-            "layer",
-            "layer_selective",
-            "moe",
-        }:
+        if policy not in {"none", "pass", "layer", "moe"}:
             raise ValueError(
-                "activation recompute policy must be none, pass, layer, "
-                "layer_selective, or moe."
+                "activation recompute policy must be none, pass, layer, or moe."
             )
         self.activation_recompute_policy = policy
         cache_materialized_weight = policy == "none"
@@ -5553,7 +5491,7 @@ class Metis16ForCausalLM(nn.Module):
         recompute_layers = (
             self.training
             and torch.is_grad_enabled()
-            and self.activation_recompute_policy in {"layer", "layer_selective"}
+            and self.activation_recompute_policy == "layer"
         )
 
         for layer_index, layer in enumerate(self.layers):
@@ -6224,8 +6162,7 @@ class Metis16ForCausalLM(nn.Module):
                 and self.activation_recompute_policy == "pass"
             )
             if self.training and torch.is_grad_enabled() and (
-                self.activation_recompute_policy
-                in {"pass", "layer", "layer_selective", "moe"}
+                self.activation_recompute_policy in {"pass", "layer", "moe"}
             ):
                 activation_recompute_used = True
             if recompute_this_pass:
