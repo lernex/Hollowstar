@@ -1078,15 +1078,14 @@ def test_uncached_chunked_expert_weights_support_repeated_replay():
     assert chunked._materialized_weight is None
 
 
-@pytest.mark.parametrize("policy", ("layer", "moe"))
-def test_chunked_expert_weights_allow_selective_recompute(policy: str):
+def test_chunked_expert_weights_allow_layer_recompute():
     original = spec_by_name("more-core")
     spec = replace(
         original,
         config_overrides={
             **original.config_overrides,
             "expert_weight_chunks": 4,
-            "activation_recompute_policy": policy,
+            "activation_recompute_policy": "layer",
         },
     )
     config = spec.model_config(
@@ -1095,7 +1094,7 @@ def test_chunked_expert_weights_allow_selective_recompute(policy: str):
         attention_backend="torch_reference",
     )
     assert config.expert_weight_chunks == 4
-    assert config.activation_recompute_policy == policy
+    assert config.activation_recompute_policy == "layer"
 
 
 def test_blockwise_int8_muon_state_respects_its_error_bound():

@@ -701,7 +701,7 @@ def test_expert_initialization_is_keyed_by_global_identity() -> None:
     assert not torch.equal(first_expert, other_expert)
 
 
-@pytest.mark.parametrize("policy", ("pass", "layer", "moe"))
+@pytest.mark.parametrize("policy", ("pass", "layer"))
 def test_recompute_matches_forward_and_backward(policy: str) -> None:
     config = Metis16Config.tiny_for_tests()
     torch.manual_seed(77)

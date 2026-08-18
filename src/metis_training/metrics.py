@@ -214,17 +214,12 @@ def estimate_hardware_flops(
     its backward, so the hardware performs two forwards per backward instead of
     one.  Model FLOPs are 2F + 4F; executed FLOPs are 2F + 2F + 4F.
 
-    ``layer`` replays one block at a time instead of one pass at a time. Every
+    ``layer`` replays one block at a time instead of one pass at a time.  Every
     block is still replayed exactly once, so the executed total is identical --
     the two policies differ in peak activation memory, not in arithmetic, which
     is what makes ``layer`` the cheap way through the context-extension memory
     wall.  Context parallelism likewise shards this total across ranks rather
     than adding to it, so no factor appears here for it either.
-
-    ``moe`` replays only each block's feed-forward sublayer. Its extra forward
-    is priced from the audited latent projections, shared/dense experts,
-    observed routed experts, and expert routers rather than charging a second
-    mixer and memory forward.
     """
 
     model_flops = estimate_train_flops(
@@ -235,24 +230,6 @@ def estimate_hardware_flops(
     )
     if config.activation_recompute_policy in {"pass", "layer"}:
         return model_flops * 8.0 / 6.0
-    if config.activation_recompute_policy == "moe":
-        audit = config.logical_parameter_audit()
-        passes = float(observed_mean_passes or config.target_mean_passes)
-        routed_k = float(observed_mean_routed_k or config.target_mean_routed_k)
-        routed_active = (
-            0.0
-            if config.ffn_mode == "dense"
-            else float(audit.routed_experts)
-            * routed_k
-            / float(config.n_routed_experts)
-        )
-        moe_active = (
-            float(audit.latent_projections)
-            + float(audit.shared_experts)
-            + float(audit.expert_routers)
-            + routed_active
-        )
-        return model_flops + 2.0 * float(tokens) * passes * moe_active
     return model_flops
 
 

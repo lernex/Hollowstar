@@ -4617,8 +4617,6 @@ class Metis16Block(nn.Module):
     ) -> None:
         super().__init__()
         self.layer_index = layer_index
-        self.precision_policy = precision_policy
-        self.activation_recompute_policy = config.activation_recompute_policy
         self.is_attention = layer_index in config.attention_indices
         if self.is_attention:
             self.mixer = NoPEGQAAttention(
@@ -4701,52 +4699,15 @@ class Metis16Block(nn.Module):
             active_mask=active_mask,
         )
         moe_input, moe_residual = self.moe_connection.read(streams, pass_embedding)
-        if (
-            self.training
-            and torch.is_grad_enabled()
-            and self.activation_recompute_policy == "moe"
-        ):
-
-            def checkpointed_moe(
-                values: Tensor,
-                features: Tensor,
-                mask: Tensor,
-            ) -> tuple[Tensor, ...]:
-                output, state = self.moe(
-                    values,
-                    route_features=features,
-                    active_mask=mask,
-                    curriculum=curriculum,
-                    pass_index=pass_index,
-                    pathway_cache=pathway_cache,
-                    replay_tape=replay_tape,
-                )
-                return (output, *_route_state_to_flat(state))
-
-            with set_checkpoint_early_stop(False):
-                moe_outputs = checkpoint(
-                    checkpointed_moe,
-                    moe_input,
-                    route_features,
-                    active_mask,
-                    use_reentrant=False,
-                    preserve_rng_state=True,
-                    context_fn=_activation_checkpoint_context_fn(
-                        self.precision_policy
-                    ),
-                )
-            moe_output = moe_outputs[0]
-            route_state = _route_state_from_flat(moe_outputs[1:])
-        else:
-            moe_output, route_state = self.moe(
-                moe_input,
-                route_features=route_features,
-                active_mask=active_mask,
-                curriculum=curriculum,
-                pass_index=pass_index,
-                pathway_cache=pathway_cache,
-                replay_tape=replay_tape,
-            )
+        moe_output, route_state = self.moe(
+            moe_input,
+            route_features=route_features,
+            active_mask=active_mask,
+            curriculum=curriculum,
+            pass_index=pass_index,
+            pathway_cache=pathway_cache,
+            replay_tape=replay_tape,
+        )
         streams = self.moe_connection.write(
             moe_residual,
             moe_output,
@@ -5032,14 +4993,13 @@ class Metis16ForCausalLM(nn.Module):
     def set_activation_recompute_policy(self, policy: str) -> None:
         """Select pass-boundary recomputation without changing the manifest."""
 
-        if policy not in {"none", "pass", "layer", "moe"}:
+        if policy not in {"none", "pass", "layer"}:
             raise ValueError(
-                "activation recompute policy must be none, pass, layer, or moe."
+                "activation recompute policy must be none, pass, or layer."
             )
         self.activation_recompute_policy = policy
         cache_materialized_weight = policy == "none"
         for layer in self.layers:
-            layer.activation_recompute_policy = policy
             experts = getattr(layer.moe, "local_experts", None)
             if isinstance(experts, GroupedSwiGLUExperts):
                 experts.set_weight_materialization_cache(
@@ -6162,7 +6122,7 @@ class Metis16ForCausalLM(nn.Module):
                 and self.activation_recompute_policy == "pass"
             )
             if self.training and torch.is_grad_enabled() and (
-                self.activation_recompute_policy in {"pass", "layer", "moe"}
+                self.activation_recompute_policy in {"pass", "layer"}
             ):
                 activation_recompute_used = True
             if recompute_this_pass:

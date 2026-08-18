@@ -863,9 +863,9 @@ class Metis16Config:
         other.
         """
 
-        if self.activation_recompute_policy not in {"none", "pass", "layer", "moe"}:
+        if self.activation_recompute_policy not in {"none", "pass", "layer"}:
             raise ValueError(
-                "activation_recompute_policy must be none, pass, layer, or moe."
+                "activation_recompute_policy must be none, pass, or layer."
             )
         if self.context_parallel_size < 1:
             raise ValueError("context_parallel_size must be at least 1.")
