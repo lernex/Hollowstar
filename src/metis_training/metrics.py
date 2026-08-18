@@ -235,6 +235,14 @@ def estimate_hardware_flops(
     )
     if config.activation_recompute_policy in {"pass", "layer"}:
         return model_flops * 8.0 / 6.0
+    if config.activation_recompute_policy == "layer_selective":
+        terms = estimate_train_flop_terms(
+            config,
+            tokens=tokens,
+            observed_mean_passes=observed_mean_passes,
+            observed_mean_routed_k=observed_mean_routed_k,
+        )
+        return model_flops * 8.0 / 6.0 - terms["attention_scores"] / 3.0
     if config.activation_recompute_policy == "moe":
         audit = config.logical_parameter_audit()
         passes = float(observed_mean_passes or config.target_mean_passes)

@@ -91,7 +91,10 @@ def _run_single(policy: str):
     return output, gradients
 
 
-@pytest.mark.parametrize("policy", ["none", "pass", "layer", "moe"])
+@pytest.mark.parametrize(
+    "policy",
+    ["none", "pass", "layer", "layer_selective", "moe"],
+)
 def test_activation_recompute_policies_are_accepted(policy: str) -> None:
     config = replace(Metis16Config.tiny_for_tests(), activation_recompute_policy=policy)
     config._validate_tiny()
@@ -100,7 +103,10 @@ def test_activation_recompute_policies_are_accepted(policy: str) -> None:
 
 def test_unknown_activation_recompute_policy_is_rejected() -> None:
     config = replace(Metis16Config.tiny_for_tests(), activation_recompute_policy="block")
-    with pytest.raises(ValueError, match="none, pass, layer, or moe"):
+    with pytest.raises(
+        ValueError,
+        match="none, pass, layer, layer_selective, or moe",
+    ):
         config._validate_tiny()
 
 
@@ -338,6 +344,9 @@ def test_layer_recompute_is_priced_like_pass_recompute() -> None:
     moe = replace(base, activation_recompute_policy="moe")
     moe_flops = estimate_hardware_flops(moe, tokens=4096)
     assert model_flops < moe_flops < model_flops * 8 / 6
+    selective = replace(base, activation_recompute_policy="layer_selective")
+    selective_flops = estimate_hardware_flops(selective, tokens=4096)
+    assert model_flops < selective_flops < model_flops * 8 / 6
 
 
 # ---------------------------------------------------------------------------
