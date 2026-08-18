@@ -3789,9 +3789,25 @@ class AdaptiveDroplessMoE(nn.Module):
             else self.config.target_mean_routed_k
         )
         if curriculum.routed_k_mode == "budgeted":
-            k_budget = self.k_budget.penalty(
-                mean_expected_k,
-                target=target_mean_k,
+            chosen_index = chosen_k - self.config.min_routed_k
+            calibration = F.nll_loss(
+                _k_probabilities.clamp_min(1.0e-8).log().reshape(
+                    -1,
+                    _k_probabilities.shape[-1],
+                ),
+                chosen_index.reshape(-1),
+                reduction="none",
+            ).view_as(chosen_k)
+            k_calibration = (
+                calibration * active_weights
+            ).sum() / active_denominator
+            k_budget = (
+                self.k_budget.penalty(
+                    mean_expected_k,
+                    target=target_mean_k,
+                )
+                + k_calibration
+                * self.config.budgeted_k_calibration_coefficient
             ) * has_active
         elif curriculum.routed_k_mode == "random":
             k_budget = mean_expected_k * 0.0
@@ -6335,6 +6351,24 @@ class Metis16ForCausalLM(nn.Module):
                     force_depth=force_depth,
                     initial_token_count=int(attention_mask.sum().item()),
                 )
+                if (
+                    curriculum_state.continuation_mode == "budgeted"
+                    and self.config.budgeted_depth_calibration_coefficient > 0.0
+                ):
+                    selected_probabilities = continuation_probability.masked_select(
+                        active_mask
+                    )
+                    selected_targets = next_active.masked_select(active_mask).float()
+                    if selected_probabilities.numel():
+                        _add_loss(
+                            auxiliary_losses,
+                            "continuation_budget_calibration",
+                            F.binary_cross_entropy(
+                                selected_probabilities.float(),
+                                selected_targets,
+                            )
+                            * self.config.budgeted_depth_calibration_coefficient,
+                        )
                 soft_continue = continuation_probability * active_mask.float()
                 local_continue_gate = (
                     next_active.float()

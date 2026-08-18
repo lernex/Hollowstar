@@ -492,6 +492,8 @@ class Metis16Config:
     expert_balance_bias_update_rate: float = 1.0e-3
     k_budget_coefficient: float = 1.0e-2
     depth_budget_coefficient: float = 1.0e-2
+    budgeted_k_calibration_coefficient: float = 0.0
+    budgeted_depth_calibration_coefficient: float = 0.0
     # Dual step size for the width and depth budget controllers. Zero keeps the
     # fixed-coefficient penalty exactly as it was, which is what production
     # Praxis and Logos run. Any positive value turns the coefficient above into
@@ -722,6 +724,10 @@ class Metis16Config:
             raise ValueError("moe_dispatch_chunks must be between 1 and 8.")
         if self.lm_head_chunk_size <= 0:
             raise ValueError("lm_head_chunk_size must be positive.")
+        if self.budgeted_k_calibration_coefficient < 0.0:
+            raise ValueError("budgeted_k_calibration_coefficient cannot be negative.")
+        if self.budgeted_depth_calibration_coefficient < 0.0:
+            raise ValueError("budgeted_depth_calibration_coefficient cannot be negative.")
         if any(
             layer < 0 or layer >= self.n_layers
             for layer in self.ngram_memory.injection_layers

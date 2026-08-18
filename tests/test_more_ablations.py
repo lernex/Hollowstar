@@ -576,6 +576,32 @@ def test_exact_compute_budgets_still_train_the_soft_policies_to_their_targets():
     assert float(model.layers[0].moe.k_budget.multiplier) != 0.0
 
 
+def test_exact_budget_calibration_teaches_the_selected_depth_and_width():
+    torch.manual_seed(9)
+    baseline_config = _tiny(budgeted_depth_values=(1, 2, 3))
+    calibrated_config = replace(
+        baseline_config,
+        budgeted_k_calibration_coefficient=1.0,
+        budgeted_depth_calibration_coefficient=1.0,
+    )
+    baseline = Metis16ForCausalLM(baseline_config).train()
+    calibrated = Metis16ForCausalLM(calibrated_config).train()
+    calibrated.load_state_dict(baseline.state_dict())
+    input_ids, labels = _tiny_batch(baseline_config, batch=2, length=16)
+    curriculum = _curriculum(
+        continuation_mode="budgeted",
+        routed_k_mode="budgeted",
+        target_mean_depth=2.0,
+        target_mean_routed_k=2.0,
+    )
+
+    baseline_output = baseline(input_ids, labels, curriculum=curriculum)
+    calibrated_output = calibrated(input_ids, labels, curriculum=curriculum)
+
+    torch.testing.assert_close(baseline_output.loss, calibrated_output.loss)
+    assert calibrated_output.auxiliary_loss > baseline_output.auxiliary_loss
+
+
 def test_replicated_dispatch_matches_the_general_path():
     """The fast path is the general path with the no-ops removed, exactly.
 

@@ -235,6 +235,8 @@ def proxy_config(
         "expert_balance_bias_update_rate": 0.001,
         "k_budget_coefficient": 1.0,
         "depth_budget_coefficient": 1.0,
+        "budgeted_k_calibration_coefficient": 1.0,
+        "budgeted_depth_calibration_coefficient": 1.0,
         # The fixed coefficients above cannot hold either policy at its target:
         # measured on the canary, depth climbs from its intended 1.86 to the
         # 5.0 ceiling within nine steps and width sits at 7.3 against a target
@@ -248,8 +250,8 @@ def proxy_config(
         # controller also had to pull realized compute off the ceiling; here
         # they over-corrected expected depth from 2.94 to 1.02 in three steps
         # and dominated the clipped task gradient.
-        "budget_controller_rate": 0.1,
-        "depth_budget_controller_rate": 1.0,
+        "budget_controller_rate": 0.0,
+        "depth_budget_controller_rate": 0.0,
         # At the clamp boundary the gate's slope is d(sigmoid)/dz = 0.0177, so a
         # multiplier acting through it is attenuated about fifty-six fold. The
         # default ceiling of 1e3 is therefore an effective gain of about 18 --
