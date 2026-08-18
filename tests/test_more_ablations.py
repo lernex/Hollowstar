@@ -1949,7 +1949,12 @@ def test_telemetry_carries_the_paper_axes(tiny_proxy, tmp_path: Path):
         "tokens_per_second", "fp8_parity_relative_error",
     ):
         assert key in record, key
-    for key in ("mean_depth", "mean_routed_k", "expert_entropy_ratio"):
+    for key in (
+        "mean_depth",
+        "mean_routed_k",
+        "mean_expected_routed_k",
+        "expert_entropy_ratio",
+    ):
         assert key in record["telemetry"], key
 
 

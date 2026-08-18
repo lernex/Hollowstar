@@ -5343,6 +5343,8 @@ class Metis16ForCausalLM(nn.Module):
         all_to_all_bytes = torch.zeros((), device=streams.device, dtype=torch.long)
         routed_k_sum = zero
         routed_k_count = torch.zeros((), device=streams.device, dtype=torch.long)
+        expected_k_sum = zero
+        expected_k_count = torch.zeros((), device=streams.device, dtype=torch.long)
         expert_entropy_sum = zero
         expert_entropy_count = torch.zeros((), device=streams.device, dtype=torch.long)
         expert_load_cv_sum = zero
@@ -5424,6 +5426,13 @@ class Metis16ForCausalLM(nn.Module):
                     valid_k.numel(),
                     dtype=torch.long,
                 )
+            valid_expected_k = route_state.expected_k.masked_select(active_mask)
+            if valid_expected_k.numel():
+                expected_k_sum = expected_k_sum + valid_expected_k.float().sum()
+                expected_k_count = expected_k_count + valid_expected_k.new_tensor(
+                    valid_expected_k.numel(),
+                    dtype=torch.long,
+                )
             valid_entropy = route_state.entropy.masked_select(active_mask)
             if valid_entropy.numel():
                 expert_entropy_sum = expert_entropy_sum + valid_entropy.float().sum()
@@ -5491,6 +5500,8 @@ class Metis16ForCausalLM(nn.Module):
             expert_selection_counts,
             routed_k_sum,
             routed_k_count,
+            expected_k_sum,
+            expected_k_count,
             expert_entropy_sum,
             expert_entropy_count,
             expert_load_cv_sum,
@@ -5825,6 +5836,8 @@ class Metis16ForCausalLM(nn.Module):
         auxiliary_losses: dict[str, Tensor] = {}
         routed_k_sum = torch.zeros((), device=input_ids.device, dtype=torch.float32)
         routed_k_count = torch.zeros((), device=input_ids.device, dtype=torch.long)
+        expected_k_sum = torch.zeros((), device=input_ids.device, dtype=torch.float32)
+        expected_k_count = torch.zeros((), device=input_ids.device, dtype=torch.long)
         expert_entropy_sum = torch.zeros(
             (), device=input_ids.device, dtype=torch.float32
         )
@@ -6074,6 +6087,8 @@ class Metis16ForCausalLM(nn.Module):
                 pass_expert_selection_counts,
                 pass_routed_k_sum,
                 pass_routed_k_count,
+                pass_expected_k_sum,
+                pass_expected_k_count,
                 pass_expert_entropy_sum,
                 pass_expert_entropy_count,
                 pass_expert_load_cv_sum,
@@ -6187,6 +6202,8 @@ class Metis16ForCausalLM(nn.Module):
             )
             routed_k_sum = routed_k_sum + pass_routed_k_sum
             routed_k_count = routed_k_count + pass_routed_k_count
+            expected_k_sum = expected_k_sum + pass_expected_k_sum
+            expected_k_count = expected_k_count + pass_expected_k_count
             expert_entropy_sum = expert_entropy_sum + pass_expert_entropy_sum
             expert_entropy_count = (
                 expert_entropy_count + pass_expert_entropy_count
@@ -6476,6 +6493,11 @@ class Metis16ForCausalLM(nn.Module):
             if int(routed_k_count.item()) > 0
             else graph_anchor * 0.0
         )
+        mean_expected_k = (
+            expected_k_sum / expected_k_count.float()
+            if int(expected_k_count.item()) > 0
+            else graph_anchor * 0.0
+        )
         expert_entropy_ratio = (
             (
                 expert_entropy_sum
@@ -6518,6 +6540,7 @@ class Metis16ForCausalLM(nn.Module):
             "mean_passes": mean_depth,
             "mean_expected_depth": mean_expected_depth,
             "mean_routed_k": mean_k,
+            "mean_expected_routed_k": mean_expected_k,
             "active_token_ratios": active_ratios,
             "moe_assignments": assignments,
             "moe_processed_assignments": processed_assignments,

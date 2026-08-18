@@ -265,6 +265,7 @@ def test_budgeted_depth_is_exact_noncollapsed_and_monotonic() -> None:
     )
     assert float(output.telemetry["mean_depth"]) == pytest.approx(2.0)
     assert float(output.telemetry["mean_routed_k"].detach()) == pytest.approx(2.0)
+    assert 1.0 <= float(output.telemetry["mean_expected_routed_k"]) <= 3.0
     assert torch.unique(output.chosen_depths).numel() > 1
     assert torch.all(output.active_masks[1:] <= output.active_masks[:-1])
     assert float(model.depth_budget.multiplier) == 0.0
