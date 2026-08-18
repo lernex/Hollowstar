@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -345,7 +346,7 @@ def test_sparse_table_sync_runs_once_after_gradient_accumulation(
 
     assert calls == []
     model.synchronize_sparse_gradients()
-    assert len(calls) == 1
+    assert len(calls) == math.ceil(len(model.ngram_memory.tables) / 4)
     for table in model.ngram_memory.tables.values():
         gradient = table.embedding.weight.grad
         assert gradient is not None
