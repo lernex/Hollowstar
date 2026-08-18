@@ -4822,8 +4822,10 @@ class Metis16ForCausalLM(nn.Module):
     def set_activation_recompute_policy(self, policy: str) -> None:
         """Select pass-boundary recomputation without changing the manifest."""
 
-        if policy not in {"none", "pass"}:
-            raise ValueError("activation recompute policy must be none or pass.")
+        if policy not in {"none", "pass", "layer"}:
+            raise ValueError(
+                "activation recompute policy must be none, pass, or layer."
+            )
         self.activation_recompute_policy = policy
 
     @torch.no_grad()
@@ -5640,7 +5642,7 @@ class Metis16ForCausalLM(nn.Module):
             if (
                 self.training
                 and torch.is_grad_enabled()
-                and self.activation_recompute_policy == "pass"
+                and self.activation_recompute_policy in {"pass", "layer"}
             )
             else None
         )

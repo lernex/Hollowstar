@@ -211,8 +211,8 @@ about an hour) ahead of wave 1.
 **Recommendation: DP only. No expert parallelism, no tensor parallelism, no
 pipeline parallelism.**
 
-Memory per APU for the 1.81B proxy remains within 128 GB under pass-level
-recompute (`activation_recompute_policy: pass`); the measured eight-sequence
+Memory per APU for the 1.81B proxy remains within 128 GB under layer-level
+recompute (`activation_recompute_policy: layer`); the measured eight-sequence
 MoRE-Core path peaks around 105.5 GiB. All 72 routed experts are replicated on
 every rank, so the campaign still avoids an all-to-all systems confound.
 

@@ -579,13 +579,14 @@ def test_expert_initialization_is_keyed_by_global_identity() -> None:
     assert not torch.equal(first_expert, other_expert)
 
 
-def test_pass_recompute_matches_forward_and_backward() -> None:
+@pytest.mark.parametrize("policy", ("pass", "layer"))
+def test_recompute_matches_forward_and_backward(policy: str) -> None:
     config = Metis16Config.tiny_for_tests()
     torch.manual_seed(77)
     reference = Metis16ForCausalLM(config, dtype=torch.float32)
     recomputed = Metis16ForCausalLM(config, dtype=torch.float32)
     recomputed.load_state_dict(reference.state_dict())
-    recomputed.set_activation_recompute_policy("pass")
+    recomputed.set_activation_recompute_policy(policy)
     input_ids, labels, _reset_mask = _batch(config, batch=1, length=6)
     forced_depth = torch.tensor([[1, 2, 3, 1, 2, 3]])
     kwargs = {

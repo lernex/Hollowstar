@@ -256,7 +256,7 @@ def proxy_config(
         "continuation_entropy_coefficient": 0.001,
         "tie_embeddings": True,
         "moe_dispatch_chunks": 1,
-        "activation_recompute_policy": "pass",
+        "activation_recompute_policy": "layer",
         "ffn_mode": ffn_mode,
         "ngram_memory": _ngram_config(ngram_slots_per_head),
         "precision": replace(
