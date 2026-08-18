@@ -4001,19 +4001,16 @@ class DistributedHashEmbedding(nn.Module):
 def _sync_sparse_gradient(gradient: Tensor, *, group: Any) -> Tensor:
     """Coalesce and average sparse row gradients across table replicas."""
 
-    world_size = _group_world_size(group)
-    if world_size == 1:
+    if _group_world_size(group) == 1:
         return gradient.coalesce() if gradient.is_sparse else gradient
     if not gradient.is_sparse:
         dist.all_reduce(gradient, group=group)
-        return gradient / world_size
-    if world_size >= 8 and gradient.sparse_dim() == 1:
-        return _sync_sparse_gradient_by_row_owner(gradient, group=group)
+        return gradient / _group_world_size(group)
     gradient = gradient.coalesce()
     indices = gradient.indices()
     values = gradient.values()
     local_nnz = torch.tensor([indices.shape[1]], device=values.device, dtype=torch.int64)
-    gathered_nnz = [torch.empty_like(local_nnz) for _ in range(world_size)]
+    gathered_nnz = [torch.empty_like(local_nnz) for _ in range(_group_world_size(group))]
     dist.all_gather(gathered_nnz, local_nnz, group=group)
     counts = [int(item.item()) for item in gathered_nnz]
     max_nnz = max(counts)
@@ -4043,96 +4040,9 @@ def _sync_sparse_gradient(gradient: Tensor, *, group: Any) -> Tensor:
     merged_values = torch.cat(
         [value[:count] for value, count in zip(all_values, counts)],
         dim=0,
-    ) / float(world_size)
+    ) / float(_group_world_size(group))
     return torch.sparse_coo_tensor(
         merged_indices,
-        merged_values,
-        size=gradient.shape,
-        device=gradient.device,
-        dtype=gradient.dtype,
-    ).coalesce()
-
-
-def _sync_sparse_gradient_by_row_owner(gradient: Tensor, *, group: Any) -> Tensor:
-    """Average row-sparse gradients without gathering duplicate rows."""
-
-    gradient = gradient.coalesce()
-    if gradient.sparse_dim() != 1:
-        raise ValueError("Row-owner sparse sync requires one sparse dimension.")
-    world_size = _group_world_size(group)
-    rows = gradient.indices()[0]
-    values = gradient.values()
-    destinations = rows.remainder(world_size)
-    order = torch.argsort(destinations, stable=True)
-    destinations = destinations.index_select(0, order)
-    send_rows = rows.index_select(0, order)
-    send_values = values.index_select(0, order)
-    send_counts_tensor = torch.bincount(
-        destinations,
-        minlength=world_size,
-    ).to(device=rows.device, dtype=torch.int64)
-    recv_counts_tensor = _exchange_counts(send_counts_tensor, group=group)
-    send_counts = [int(value) for value in send_counts_tensor.tolist()]
-    recv_counts = [int(value) for value in recv_counts_tensor.tolist()]
-    received_rows = _all_to_all_indices(
-        send_rows,
-        input_splits=send_counts,
-        output_splits=recv_counts,
-        group=group,
-    )
-    received_values = _bf16_all_to_all(
-        send_values,
-        input_splits=tuple(send_counts),
-        output_splits=tuple(recv_counts),
-        group=group,
-    )
-    owner_shard = torch.sparse_coo_tensor(
-        received_rows.unsqueeze(0),
-        received_values,
-        size=gradient.shape,
-        device=gradient.device,
-        dtype=gradient.dtype,
-    ).coalesce()
-    owner_rows = owner_shard.indices()
-    owner_values = owner_shard.values() / float(world_size)
-    owner_nnz = torch.tensor(
-        [owner_rows.shape[1]],
-        device=rows.device,
-        dtype=torch.int64,
-    )
-    gathered_nnz = [torch.empty_like(owner_nnz) for _ in range(world_size)]
-    dist.all_gather(gathered_nnz, owner_nnz, group=group)
-    counts = [int(item.item()) for item in gathered_nnz]
-    max_nnz = max(counts)
-    padded_rows = torch.zeros(
-        1,
-        max_nnz,
-        device=rows.device,
-        dtype=rows.dtype,
-    )
-    padded_values = torch.zeros(
-        max_nnz,
-        *values.shape[1:],
-        device=values.device,
-        dtype=values.dtype,
-    )
-    if owner_rows.shape[1]:
-        padded_rows[:, : owner_rows.shape[1]] = owner_rows
-        padded_values[: owner_values.shape[0]] = owner_values
-    all_rows = [torch.empty_like(padded_rows) for _ in counts]
-    all_values = [torch.empty_like(padded_values) for _ in counts]
-    dist.all_gather(all_rows, padded_rows, group=group)
-    dist.all_gather(all_values, padded_values, group=group)
-    merged_rows = torch.cat(
-        [value[:, :count] for value, count in zip(all_rows, counts)],
-        dim=1,
-    )
-    merged_values = torch.cat(
-        [value[:count] for value, count in zip(all_values, counts)],
-        dim=0,
-    )
-    return torch.sparse_coo_tensor(
-        merged_rows,
         merged_values,
         size=gradient.shape,
         device=gradient.device,
