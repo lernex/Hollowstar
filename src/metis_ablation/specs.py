@@ -317,12 +317,15 @@ class AblationSpec:
     depth_memory: bool = True
     iso_flop: bool = True
     muon_state_bits: int = 32
+    compile_mode: str = "none"
     notes: str = ""
     config_overrides: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.muon_state_bits not in {8, 32}:
             raise ValueError(f"{self.name}: muon_state_bits must be 8 or 32.")
+        if self.compile_mode not in {"none", "default", "reduce-overhead", "max-autotune"}:
+            raise ValueError(f"{self.name}: unsupported compile_mode {self.compile_mode!r}.")
         product = self.apus * self.micro_batch * self.grad_accum
         if product != GLOBAL_BATCH_SEQUENCES:
             raise ValueError(
