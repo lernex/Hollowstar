@@ -17,6 +17,7 @@ differences partly an artifact of routing skew.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import itertools
 import json
 import queue
@@ -53,6 +54,7 @@ from metis_training.metrics import (
 )
 from metis_training.model import Metis16ForCausalLM, MetisProcessGroups
 from metis_training.optimizers import (
+    WorldShardedOptimizerBundle,
     build_training_optimizers,
     clip_grad_norm_,
 )
@@ -219,24 +221,73 @@ def _save_checkpoint(
     samples it would have drawn without the interruption.
     """
 
-    if rank != 0:
-        return None
     target = paths.checkpoints / f"step-{step:07d}"
-    target.mkdir(parents=True, exist_ok=True)
+    sharded = bool(getattr(optimizer, "is_world_sharded", False))
+    if rank == 0:
+        target.mkdir(parents=True, exist_ok=True)
+    if sharded and dist.is_initialized():
+        dist.barrier()
+    if sharded:
+        shard_name = f"optimizer-rank-{rank:05d}.pt"
+        shard_payload = {
+            "schema": "more.ablation-optimizer-shard/v1",
+            "rank": rank,
+            "world_size": int(optimizer.shard_world_size),
+            "optimizer": optimizer.state_dict(),
+            "cpu_rng_state": torch.get_rng_state(),
+        }
+        if device.type == "cuda":
+            shard_payload["cuda_rng_state"] = torch.cuda.get_rng_state(device)
+        shard_staging = target / f"{shard_name}.partial"
+        torch.save(shard_payload, shard_staging)
+        shard_staging.replace(target / shard_name)
+        if dist.is_initialized():
+            dist.barrier()
+    elif rank != 0:
+        return None
+
+    if rank != 0:
+        if sharded and dist.is_initialized():
+            dist.barrier()
+        return None
+
     payload = {
-        "schema": "more.ablation-checkpoint/v2",
+        "schema": (
+            "more.ablation-checkpoint/v3"
+            if sharded
+            else "more.ablation-checkpoint/v2"
+        ),
         "model": model.state_dict(),
-        "optimizer": optimizer.state_dict(),
         "step": step,
         "spec": asdict(spec),
         # The schedule shape is part of the run's identity: resuming a cosine
         # decay against a different horizon silently trains a different model.
         "total_steps": int(total_steps),
         "base_learning_rate": float(learning_rate),
-        "cpu_rng_state": torch.get_rng_state(),
     }
-    if device.type == "cuda":
-        payload["cuda_rng_state"] = torch.cuda.get_rng_state(device)
+    if sharded:
+        shards = []
+        for shard_rank in range(int(optimizer.shard_world_size)):
+            shard_name = f"optimizer-rank-{shard_rank:05d}.pt"
+            shard_path = target / shard_name
+            digest = hashlib.sha256()
+            with shard_path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+                    digest.update(chunk)
+            shards.append(
+                {
+                    "rank": shard_rank,
+                    "path": shard_name,
+                    "bytes": shard_path.stat().st_size,
+                    "sha256": digest.hexdigest(),
+                }
+            )
+        payload["optimizer_shards"] = shards
+    else:
+        payload["optimizer"] = optimizer.state_dict()
+        payload["cpu_rng_state"] = torch.get_rng_state()
+        if device.type == "cuda":
+            payload["cuda_rng_state"] = torch.cuda.get_rng_state(device)
     # Write beside the target and rename, so a job killed mid-write leaves the
     # previous checkpoint intact rather than a truncated one.
     staging = target / "state.pt.partial"
@@ -250,6 +301,8 @@ def _save_checkpoint(
         for item in stale.iterdir():
             item.unlink()
         stale.rmdir()
+    if sharded and dist.is_initialized():
+        dist.barrier()
     return target
 
 
@@ -312,11 +365,45 @@ def _restore_checkpoint(
             )
     else:
         model.load_state_dict(model_state)
-    optimizer.load_state_dict(payload["optimizer"])
-    if "cpu_rng_state" in payload:
-        torch.set_rng_state(payload["cpu_rng_state"].to(torch.uint8).cpu())
-    if device.type == "cuda" and "cuda_rng_state" in payload:
-        torch.cuda.set_rng_state(payload["cuda_rng_state"].to(torch.uint8).cpu(), device)
+    if payload.get("schema") == "more.ablation-checkpoint/v3":
+        if not bool(getattr(optimizer, "is_world_sharded", False)):
+            raise RuntimeError("Checkpoint requires a world-sharded optimizer")
+        shards = payload.get("optimizer_shards")
+        if not isinstance(shards, list) or len(shards) != optimizer.shard_world_size:
+            raise RuntimeError("Checkpoint optimizer shard manifest is incomplete")
+        entry = shards[optimizer.shard_rank]
+        if int(entry.get("rank", -1)) != optimizer.shard_rank:
+            raise RuntimeError("Checkpoint optimizer shard rank order changed")
+        shard_path = path / str(entry["path"])
+        digest = hashlib.sha256()
+        with shard_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+                digest.update(chunk)
+        if shard_path.stat().st_size != int(entry["bytes"]):
+            raise RuntimeError("Checkpoint optimizer shard size changed")
+        if digest.hexdigest() != str(entry["sha256"]):
+            raise RuntimeError("Checkpoint optimizer shard hash changed")
+        shard = torch.load(shard_path, map_location=device, weights_only=False)
+        if int(shard.get("rank", -1)) != optimizer.shard_rank:
+            raise RuntimeError("Optimizer shard payload belongs to another rank")
+        if int(shard.get("world_size", -1)) != optimizer.shard_world_size:
+            raise RuntimeError("Optimizer shard world size changed")
+        optimizer.load_state_dict(shard["optimizer"])
+        torch.set_rng_state(shard["cpu_rng_state"].to(torch.uint8).cpu())
+        if device.type == "cuda" and "cuda_rng_state" in shard:
+            torch.cuda.set_rng_state(
+                shard["cuda_rng_state"].to(torch.uint8).cpu(),
+                device,
+            )
+    else:
+        optimizer.load_state_dict(payload["optimizer"])
+        if "cpu_rng_state" in payload:
+            torch.set_rng_state(payload["cpu_rng_state"].to(torch.uint8).cpu())
+        if device.type == "cuda" and "cuda_rng_state" in payload:
+            torch.cuda.set_rng_state(
+                payload["cuda_rng_state"].to(torch.uint8).cpu(),
+                device,
+            )
     return int(payload["step"])
 
 
@@ -454,6 +541,27 @@ def _train_row_inner(
         include_routed_experts=True,
         muon_state_bits=spec.muon_state_bits,
     )
+    optimizer_manifest = optimizer_summary.to_dict()
+    if spec.optimizer_sharding == "world":
+        if not runtime.distributed or topology.expert_parallel_size != 1:
+            raise RuntimeError(
+                "World optimizer sharding requires replicated experts on a "
+                "multi-rank run."
+            )
+        optimizer = WorldShardedOptimizerBundle(
+            optimizer,
+            model,
+            process_group=topology.dense_data_group,
+            rank=runtime.rank,
+            world_size=runtime.world_size,
+        )
+        optimizer_manifest["sharding"] = {
+            "mode": "world",
+            "world_size": runtime.world_size,
+            "owner_loads": list(optimizer.owner_loads),
+        }
+    else:
+        optimizer_manifest["sharding"] = {"mode": "none"}
 
     paths = RunPaths(Path(output_root).expanduser().resolve() / spec.name)
     if runtime.rank == 0:
@@ -529,7 +637,7 @@ def _train_row_inner(
             "schema": "more.ablation-run/v1",
             "spec": asdict(spec),
             "model": config.to_dict(),
-            "optimizer": optimizer_summary.to_dict(),
+            "optimizer": optimizer_manifest,
             "parameters": {
                 "stored_total": audit.stored_total,
                 "active_per_pass_mean": audit.active_per_pass_mean,

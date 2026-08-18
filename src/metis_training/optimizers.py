@@ -6,8 +6,9 @@ from typing import Any, Iterable, Mapping
 
 import torch
 import torch.distributed as dist
-from torch import nn
+from torch import Tensor, nn
 from torch.optim import Optimizer
+from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
 from metis_mamba.optim import OptimizerBuildSummary, build_muon_adamw_optimizer
 
@@ -146,6 +147,136 @@ class OptimizerBundle:
             self.sparse.load_state_dict(sparse_state)
         elif self.sparse is not None:
             raise RuntimeError("Checkpoint is missing sparse optimizer state")
+
+
+class WorldShardedOptimizerBundle:
+    """Shard optimizer ownership while keeping model parameters replicated.
+
+    Every rank receives the same reduced gradient. A deterministic greedy
+    partition assigns each whole parameter to one owner, only that owner keeps
+    optimizer state and applies the update, and the updated parameter buckets
+    are broadcast in a fixed order. Splitting the grouped expert-bank
+    parameters separately lets their expensive Muon polar updates run on
+    different owners without changing the one-bank model forward.
+    """
+
+    checkpoint_schema = "metis.world-sharded-optimizer/v1"
+    is_world_sharded = True
+
+    def __init__(
+        self,
+        bundle: OptimizerBundle,
+        model: nn.Module,
+        *,
+        process_group: dist.ProcessGroup,
+        rank: int,
+        world_size: int,
+    ) -> None:
+        if world_size <= 1:
+            raise ValueError("World optimizer sharding requires multiple ranks.")
+        if rank < 0 or rank >= world_size:
+            raise ValueError("Optimizer shard rank is outside the world.")
+        self.bundle = bundle
+        self.model = model
+        self.process_group = process_group
+        self.shard_rank = int(rank)
+        self.shard_world_size = int(world_size)
+        named = [
+            (name, parameter)
+            for name, parameter in model.named_parameters()
+            if parameter.requires_grad
+        ]
+        loads = [0] * world_size
+        owners: dict[int, int] = {}
+        owner_names: dict[str, int] = {}
+        for name, parameter in sorted(
+            named,
+            key=lambda item: (-item[1].numel(), item[0]),
+        ):
+            owner = min(range(world_size), key=lambda index: (loads[index], index))
+            owners[id(parameter)] = owner
+            owner_names[name] = owner
+            loads[owner] += parameter.numel()
+        self.owner_names = owner_names
+        self.owner_loads = tuple(loads)
+
+        for optimizer in (bundle.dense, bundle.sparse):
+            if optimizer is None:
+                continue
+            for group in optimizer.param_groups:
+                group["params"] = [
+                    parameter
+                    for parameter in group["params"]
+                    if owners[id(parameter)] == rank
+                ]
+
+        buckets: dict[tuple[int, torch.dtype], list[Tensor]] = {}
+        for _name, parameter in named:
+            key = (owners[id(parameter)], parameter.dtype)
+            buckets.setdefault(key, []).append(parameter)
+        self._broadcast_buckets = tuple(
+            (owner, dtype, tuple(parameters))
+            for (owner, dtype), parameters in sorted(
+                buckets.items(),
+                key=lambda item: (str(item[0][1]), item[0][0]),
+            )
+        )
+
+    @property
+    def dense(self) -> Optimizer:
+        return self.bundle.dense
+
+    @property
+    def sparse(self) -> FP32MasterSparseAdam | None:
+        return self.bundle.sparse
+
+    @property
+    def param_groups(self) -> list[dict[str, Any]]:
+        return self.bundle.param_groups
+
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        self.model.zero_grad(set_to_none=set_to_none)
+
+    def step(self) -> None:
+        self.bundle.step()
+        for owner, _dtype, parameters in self._broadcast_buckets:
+            flat = _flatten_dense_tensors(
+                [parameter.data for parameter in parameters]
+            )
+            dist.broadcast(
+                flat,
+                src=owner,
+                group=self.process_group,
+            )
+            for parameter, value in zip(
+                parameters,
+                _unflatten_dense_tensors(
+                    flat,
+                    [parameter.data for parameter in parameters],
+                ),
+                strict=True,
+            ):
+                parameter.data.copy_(value)
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.checkpoint_schema,
+            "rank": self.shard_rank,
+            "world_size": self.shard_world_size,
+            "owners": dict(self.owner_names),
+            "bundle": self.bundle.state_dict(),
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        if state.get("schema") != self.checkpoint_schema:
+            raise RuntimeError("Unexpected world-sharded optimizer checkpoint schema")
+        if int(state.get("rank", -1)) != self.shard_rank:
+            raise RuntimeError("Optimizer checkpoint belongs to a different rank")
+        if int(state.get("world_size", -1)) != self.shard_world_size:
+            raise RuntimeError("Optimizer checkpoint world size changed")
+        if dict(state.get("owners", {})) != self.owner_names:
+            raise RuntimeError("Optimizer parameter ownership changed")
+        self.bundle.load_state_dict(state["bundle"])
 
 
 def _parameter_placements(model: nn.Module) -> dict[str, str]:

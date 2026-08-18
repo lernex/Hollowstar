@@ -259,7 +259,11 @@ Mitigations, in order of preference:
    Comfortably hides the collective. Use the *same* global batch for all 13 rows —
    comparability matters more than per-row optimality here.
 3. ZeRO-1 optimizer sharding if memory headroom is wanted for larger micro-batches.
-   Not needed for capacity; it does not reduce collective volume.
+   The Wave trainer now supports deterministic full-world ownership and
+   rank-local, hash-bound optimizer checkpoint shards. Parameters remain
+   replicated and are broadcast in fixed owner order after each update, so
+   model math is unchanged and a preempted run restores every owner's state
+   without consolidating tens of gigabytes on rank zero.
 4. FP8 gradient reduction halves the wire cost but adds a numerical risk the
    science campaign does not need. Skip unless MFU measurement demands it.
 

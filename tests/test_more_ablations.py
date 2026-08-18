@@ -1921,6 +1921,81 @@ def test_checkpoints_are_pruned_and_atomic(tiny_proxy, tmp_path: Path):
         assert not (path / "state.pt.partial").exists()
 
 
+def test_world_sharded_checkpoint_hashes_and_restores_rank_state(tmp_path: Path):
+    from metis_ablation.train import (
+        RunPaths,
+        _restore_checkpoint,
+        _save_checkpoint,
+    )
+
+    class FakeShardedOptimizer:
+        is_world_sharded = True
+        shard_rank = 0
+        shard_world_size = 1
+
+        def __init__(self):
+            self.value = torch.tensor(7.0)
+
+        def state_dict(self):
+            return {"value": self.value.clone()}
+
+        def load_state_dict(self, state):
+            self.value = state["value"].clone()
+
+    spec = _smoke_spec("more-core")
+    paths = RunPaths(tmp_path / spec.name)
+    paths.prepare()
+    model = torch.nn.Linear(2, 2)
+    optimizer = FakeShardedOptimizer()
+    expected_weight = model.weight.detach().clone()
+    checkpoint = _save_checkpoint(
+        paths,
+        model=model,
+        optimizer=optimizer,
+        step=2,
+        spec=spec,
+        rank=0,
+        device=torch.device("cpu"),
+        total_steps=4,
+        learning_rate=1.0e-3,
+    )
+    assert checkpoint is not None
+    manifest = torch.load(
+        checkpoint / "state.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert manifest["schema"] == "more.ablation-checkpoint/v3"
+    assert len(manifest["optimizer_shards"]) == 1
+
+    with torch.no_grad():
+        model.weight.add_(1.0)
+    optimizer.value.zero_()
+    restored_step = _restore_checkpoint(
+        checkpoint,
+        model=model,
+        optimizer=optimizer,
+        device=torch.device("cpu"),
+        total_steps=4,
+        learning_rate=1.0e-3,
+    )
+    assert restored_step == 2
+    torch.testing.assert_close(model.weight, expected_weight)
+    torch.testing.assert_close(optimizer.value, torch.tensor(7.0))
+
+    shard = checkpoint / manifest["optimizer_shards"][0]["path"]
+    shard.write_bytes(shard.read_bytes() + b"tamper")
+    with pytest.raises(RuntimeError, match="size changed"):
+        _restore_checkpoint(
+            checkpoint,
+            model=model,
+            optimizer=optimizer,
+            device=torch.device("cpu"),
+            total_steps=4,
+            learning_rate=1.0e-3,
+        )
+
+
 def test_storage_policy_is_applied_to_routers(tiny_proxy, tmp_path: Path):
     """Routers must reach FP32 storage; a silent BF16 router would only show up
     as slightly noisier routing, which no loss curve would reveal."""
