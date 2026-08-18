@@ -4136,15 +4136,75 @@ class NGramConditionalMemory(nn.Module):
         paying the synchronization once.
         """
 
-        if not self._sync_enabled or _group_world_size(self._sync_group) <= 1:
+        if not self._sync_enabled:
             return
-        for table in self.tables.values():
+        tables = list(self.tables.values())
+        if _group_world_size(self._sync_group) <= 1:
+            for table in tables:
+                weight = table.embedding.weight
+                if weight.grad is not None and weight.grad.is_sparse:
+                    weight.grad = weight.grad.coalesce()
+            return
+
+        encoded_indices: list[Tensor] = []
+        encoded_values: list[Tensor] = []
+        offsets = [0]
+        value_dim: int | None = None
+        template: Tensor | None = None
+        for table in tables:
             weight = table.embedding.weight
-            if weight.grad is not None:
-                weight.grad = _sync_sparse_gradient(
-                    weight.grad,
-                    group=self._sync_group,
-                )
+            offsets.append(offsets[-1] + int(weight.shape[0]))
+            gradient = weight.grad
+            if gradient is None:
+                continue
+            if not gradient.is_sparse:
+                raise RuntimeError("N-gram table produced a dense gradient")
+            gradient = gradient.coalesce()
+            template = gradient.values()
+            value_dim = int(weight.shape[1])
+            encoded_indices.append(gradient.indices() + offsets[-2])
+            encoded_values.append(gradient.values())
+
+        if value_dim is None or template is None:
+            return
+        if encoded_indices:
+            indices = torch.cat(encoded_indices, dim=1)
+            values = torch.cat(encoded_values, dim=0)
+        else:  # pragma: no cover - guarded by template being set above
+            indices = torch.empty(
+                (1, 0), device=template.device, dtype=torch.long
+            )
+            values = template.new_empty((0, value_dim))
+        combined = torch.sparse_coo_tensor(
+            indices,
+            values,
+            size=(offsets[-1], value_dim),
+            device=values.device,
+            dtype=values.dtype,
+        ).coalesce()
+        synchronized = _sync_sparse_gradient(
+            combined,
+            group=self._sync_group,
+        ).coalesce()
+        global_rows = synchronized.indices()[0]
+        global_values = synchronized.values()
+        for table, lower, upper in zip(
+            tables,
+            offsets[:-1],
+            offsets[1:],
+            strict=True,
+        ):
+            weight = table.embedding.weight
+            selected = (global_rows >= lower) & (global_rows < upper)
+            local_rows = global_rows.masked_select(selected) - lower
+            local_values = global_values[selected]
+            weight.grad = torch.sparse_coo_tensor(
+                local_rows.unsqueeze(0),
+                local_values,
+                size=weight.shape,
+                device=weight.device,
+                dtype=weight.dtype,
+            ).coalesce()
 
     @property
     def sparse_sync_enabled(self) -> bool:

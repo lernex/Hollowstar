@@ -343,10 +343,14 @@ def test_sparse_table_sync_runs_once_after_gradient_accumulation(
         )
         output.loss.backward()
 
-    table_count = len(model.ngram_memory.tables)
     assert calls == []
     model.synchronize_sparse_gradients()
-    assert len(calls) == table_count
+    assert len(calls) == 1
+    for table in model.ngram_memory.tables.values():
+        gradient = table.embedding.weight.grad
+        assert gradient is not None
+        assert gradient.is_sparse
+        assert tuple(gradient.shape) == tuple(table.embedding.weight.shape)
 
 
 def test_document_reset_prevents_cross_document_state_leakage() -> None:
