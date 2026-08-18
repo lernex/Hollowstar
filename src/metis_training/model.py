@@ -30,7 +30,11 @@ from .context_parallel import (
     reference_context_parallel_attention,
 )
 from .mhc_kernels import mhc_masked_write, mhc_read_mix
-from .routing_kernels import stream_gate_logits
+from .routing_kernels import (
+    memory_attention_combine,
+    memory_attention_scores,
+    stream_gate_logits,
+)
 from .model_config import Metis16Config, load_family_config
 
 
@@ -2531,13 +2535,13 @@ def _memory_attention_scores(query: Tensor, key: Tensor) -> Tensor:
     :func:`_stream_gate_logits`.
     """
 
-    return (query.unsqueeze(-2) * key.unsqueeze(-3)).sum(dim=-1)
+    return memory_attention_scores(query, key)
 
 
 def _memory_attention_combine(weights: Tensor, value: Tensor) -> Tensor:
     """Blend memory entries by their weights: ``...sm,...mh->...sh``."""
 
-    return (weights.unsqueeze(-1) * value.unsqueeze(-3)).sum(dim=-2)
+    return memory_attention_combine(weights, value)
 
 
 class BudgetController(nn.Module):
