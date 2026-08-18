@@ -420,6 +420,11 @@ each is the kind of thing a loss curve cannot reveal.
   to 4.12 by step eight; weighting k at 1.0 slowed the language-model objective
   because that loss is evaluated once per MoE layer and pass.
   (`test_exact_budget_calibration_teaches_the_selected_depth_and_width`)
+- **The aux-loss-free expert bias was too slow for the routing transient.**
+  At `1e-3`, expert-load CV still exceeded 2.4 after twenty steps; raising the
+  non-gradient sign update to `0.05` reduced it to 1.64 at the same point while
+  depth, k, and loss stayed on their calibrated trajectories. The bias changes
+  expert identity only, never combination affinity or executed assignments.
 - **Expert transitions were compared positionally across packed passes.** A
   packed pass is a *subsequence* of its predecessor, not a prefix, so pairing by
   position matched unrelated tokens and manufactured off-diagonal mass out of

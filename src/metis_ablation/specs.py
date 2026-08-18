@@ -232,7 +232,7 @@ def proxy_config(
         "continuation_gate_init": 0.0,
         "router_z_loss_coefficient": 0.001,
         "expert_balance_coefficient": 0.0,
-        "expert_balance_bias_update_rate": 0.001,
+        "expert_balance_bias_update_rate": 0.05,
         "k_budget_coefficient": 1.0,
         "depth_budget_coefficient": 1.0,
         "budgeted_k_calibration_coefficient": 0.1,
