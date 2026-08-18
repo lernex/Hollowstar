@@ -653,7 +653,12 @@ def test_grouped_gemm_seeds_each_expert_the_same_way_the_loop_does():
 
 
 def test_grouped_gemm_backward_matches_the_loop():
-    """Gradients too -- a forward-only check would miss a wrong scatter."""
+    """Gradients too -- a forward-only check would miss a wrong scatter.
+
+    The grouped contraction can accumulate products in a different order from
+    the expert loop, so pin it at near-roundoff rather than requiring bitwise
+    identity. The exact assignment test above still catches a moved row.
+    """
 
     torch.manual_seed(7)
     loop_model = Metis16ForCausalLM(_tiny())
@@ -675,8 +680,8 @@ def test_grouped_gemm_backward_matches_the_loop():
         torch.testing.assert_close(
             expert.gate_up.weight.grad,
             grouped_bank.gate_up.weight.grad[index],
-            rtol=0.0,
-            atol=0.0,
+            rtol=2.0e-4,
+            atol=2.0e-9,
         )
     torch.testing.assert_close(
         loop_model.embedding.weight.grad,
