@@ -385,11 +385,15 @@ def _all_reduce_buckets(
     pending: list[tuple[object, torch.Tensor, list[nn.Parameter]]] = []
     for parameters in buckets:
         flattened = _flatten_dense_tensors([parameter.grad for parameter in parameters])
+        # Gradients are token sums, so a wide data-parallel reduction can
+        # overflow BF16 before the mathematically cancelling replica average
+        # is applied. Pre-dividing is algebraically identical and keeps every
+        # intermediate representable.
+        flattened.div_(float(divisor))
         work = dist.all_reduce(flattened, group=group, async_op=True)
         pending.append((work, flattened, parameters))
     for work, flattened, parameters in pending:
         work.wait()
-        flattened.div_(float(divisor))
         for parameter, reduced in zip(
             parameters,
             _unflatten_dense_tensors(flattened, [parameter.grad for parameter in parameters]),
@@ -497,13 +501,14 @@ class OverlappedGradientReducer:
             self._next += 1
 
     def _issue(self, slot: int) -> None:
-        bucket, group, _divisor = self._buckets[slot]
+        bucket, group, divisor = self._buckets[slot]
         for parameter in bucket:
             if parameter.grad is None:
                 parameter.grad = torch.zeros_like(parameter)
             if parameter.grad.is_sparse:
                 raise RuntimeError("Sparse gradient reached the dense gradient synchronizer")
         flattened = _flatten_dense_tensors([parameter.grad for parameter in bucket])
+        flattened.div_(float(divisor))
         work = dist.all_reduce(flattened, group=group, async_op=True)
         self._inflight.append((work, flattened, slot))
 
@@ -516,10 +521,9 @@ class OverlappedGradientReducer:
             self._issue(self._next)
             self._next += 1
         for work, flattened, slot in self._inflight:
-            bucket, _group, divisor = self._buckets[slot]
+            bucket, _group, _divisor = self._buckets[slot]
             if work is not None:
                 work.wait()
-            flattened.div_(float(divisor))
             for parameter, reduced in zip(
                 bucket,
                 _unflatten_dense_tensors(

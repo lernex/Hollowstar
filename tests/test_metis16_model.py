@@ -1193,6 +1193,30 @@ def test_overlapped_reduction_matches_the_synchronous_path(
         torch.testing.assert_close(parameter.grad, expected[name], msg=name)
 
 
+def test_gradient_reduction_predivides_before_bf16_sum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from metis_training.distributed import _all_reduce_buckets
+
+    parameter = torch.nn.Parameter(torch.zeros(1, dtype=torch.bfloat16))
+    parameter.grad = torch.full_like(parameter, 1.0e38)
+    _loopback_all_reduce(monkeypatch)
+
+    _all_reduce_buckets(
+        [[parameter]],
+        group=object(),
+        divisor=_LOOPBACK_RANKS,
+    )
+
+    assert torch.isfinite(parameter.grad).all()
+    torch.testing.assert_close(
+        parameter.grad.float(),
+        torch.tensor([1.0e38]),
+        rtol=0.01,
+        atol=0.0,
+    )
+
+
 def test_reducer_fires_during_backward_and_only_when_armed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
