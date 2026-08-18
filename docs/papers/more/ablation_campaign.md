@@ -399,6 +399,12 @@ each is the kind of thing a loss curve cannot reveal.
   something narrower than it claims. The gate now applies to the summary as
   well; at the production scale of 1.0 the change is exactly a no-op.
   (`test_disabling_depth_memory_also_silences_the_routing_path`)
+- **The same gate accidentally disabled shared N-gram memory.** N-gram retrieval
+  is common to every Wave-1 row; only route-typed recurrent depth memory differs
+  between MoRE-Core and MoRE-RM. The curriculum now carries independent depth
+  and N-gram gate scales, and the production token schedule keeps its previous
+  joint annealing while both ablation rows keep N-gram injection at 1.0.
+  (`test_more_core_keeps_shared_ngram_memory_enabled`)
 - **Expert transitions were compared positionally across packed passes.** A
   packed pass is a *subsequence* of its predecessor, not a prefix, so pairing by
   position matched unrelated tokens and manufactured off-diagonal mass out of

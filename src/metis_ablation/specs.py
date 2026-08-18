@@ -354,9 +354,10 @@ class AblationSpec:
         """Training-time routing policy for this row.
 
         ``memory_gate_scale=0`` is how MoRE-Core is separated from MoRE-RM: the
-        memory module keeps its parameters, so the two rows stay
-        parameter-matched, but nothing it retrieves reaches the streams or the
-        routers.
+        recurrent depth-memory module keeps its parameters, so the two rows
+        stay parameter-matched, but nothing it retrieves reaches the streams
+        or routers. N-gram memory is a separate shared component and remains
+        enabled in both rows.
         """
 
         return CurriculumState(
@@ -366,6 +367,7 @@ class AblationSpec:
             pathway_mode=self.pathway_mode,
             max_passes=self.curriculum_max_passes,
             memory_gate_scale=1.0 if self.depth_memory else 0.0,
+            ngram_gate_scale=1.0,
             stochastic_routing=True,
             temperature=1.0,
             target_mean_depth=2.0,

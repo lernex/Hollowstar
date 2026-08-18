@@ -38,6 +38,7 @@ class ScheduleState:
             "target_mean_depth": self.target_mean_depth,
             "target_mean_routed_k": self.target_mean_routed_k,
             "memory_gate_scale": self.memory_gate_scale,
+            "ngram_gate_scale": self.memory_gate_scale,
             "max_passes": self.max_passes,
             "stochastic_routing": True,
             "temperature": 1.0,

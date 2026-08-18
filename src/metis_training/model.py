@@ -368,6 +368,7 @@ class CurriculumState:
     fixed_routed_k: int = 4
     max_passes: int | None = None
     memory_gate_scale: float = 1.0
+    ngram_gate_scale: float = 1.0
     stochastic_routing: bool = True
     temperature: float = 1.0
     target_mean_depth: float | None = None
@@ -434,6 +435,8 @@ class CurriculumState:
             raise ValueError("curriculum max_passes is outside [1, config.max_passes].")
         if self.memory_gate_scale < 0.0:
             raise ValueError("memory_gate_scale cannot be negative.")
+        if self.ngram_gate_scale < 0.0:
+            raise ValueError("ngram_gate_scale cannot be negative.")
         if self.temperature <= 0.0:
             raise ValueError("curriculum temperature must be positive.")
         if self.target_mean_depth is not None and not (
@@ -5449,7 +5452,7 @@ class Metis16ForCausalLM(nn.Module):
                 layer_index=layer_index,
                 pass_index=pass_index,
                 active_mask=active_mask,
-                gate_scale=curriculum.memory_gate_scale,
+                gate_scale=curriculum.ngram_gate_scale,
             )
 
         new_entries = tuple(bank.entries[memory_entry_count:])

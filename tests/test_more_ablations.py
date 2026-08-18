@@ -1543,6 +1543,52 @@ def test_depth_memory_summary_is_untouched_at_full_gate():
     )
 
 
+def test_more_core_keeps_shared_ngram_memory_enabled():
+    torch.manual_seed(38)
+    config = _tiny()
+    model = Metis16ForCausalLM(config)
+    model.eval()
+    input_ids, labels = _tiny_batch(config, batch=2, length=16)
+
+    scales: list[float] = []
+    original = model.ngram_memory.inject
+
+    def spy(
+        streams,
+        cached_memory,
+        *,
+        layer_index,
+        pass_index,
+        active_mask,
+        gate_scale,
+    ):
+        scales.append(float(gate_scale))
+        return original(
+            streams,
+            cached_memory,
+            layer_index=layer_index,
+            pass_index=pass_index,
+            active_mask=active_mask,
+            gate_scale=gate_scale,
+        )
+
+    model.ngram_memory.inject = spy  # type: ignore[method-assign]
+    with torch.no_grad():
+        model(
+            input_ids,
+            labels,
+            curriculum=_curriculum(
+                continuation_mode="fixed_max",
+                memory_gate_scale=0.0,
+                ngram_gate_scale=1.0,
+            ),
+        )
+    model.ngram_memory.inject = original  # type: ignore[method-assign]
+
+    assert scales
+    assert set(scales) == {1.0}
+
+
 def test_more_core_and_more_rm_specs_actually_differ():
     from metis_ablation.specs import spec_by_name
 
@@ -1550,6 +1596,8 @@ def test_more_core_and_more_rm_specs_actually_differ():
     memory = spec_by_name("more-rm").curriculum()
     assert core.memory_gate_scale == 0.0
     assert memory.memory_gate_scale == 1.0
+    assert core.ngram_gate_scale == 1.0
+    assert memory.ngram_gate_scale == 1.0
     assert core.continuation_mode == memory.continuation_mode
     assert core.routed_k_mode == memory.routed_k_mode
 

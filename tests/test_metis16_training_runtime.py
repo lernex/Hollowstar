@@ -106,6 +106,7 @@ def test_token_schedule_is_continuous_and_model_curriculum_is_typed() -> None:
         "routed_k_mode",
         "fixed_routed_k",
         "memory_gate_scale",
+        "ngram_gate_scale",
         "max_passes",
         "stochastic_routing",
         "temperature",
