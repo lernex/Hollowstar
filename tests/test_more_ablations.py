@@ -1560,6 +1560,18 @@ def test_trainer_runs_every_row_of_every_wave(tiny_proxy, tmp_path: Path):
             assert (tmp_path / spec.name / "run.json").exists()
 
 
+def test_throughput_canary_can_skip_the_terminal_checkpoint(
+    tiny_proxy,
+    tmp_path: Path,
+):
+    spec = _smoke_spec("more-core")
+    _train(spec, tmp_path, max_steps=1, final_checkpoint=False)
+
+    manifest = json.loads((tmp_path / spec.name / "run.json").read_text())
+    assert manifest["final_checkpoint"] is False
+    assert list((tmp_path / spec.name / "checkpoints").iterdir()) == []
+
+
 def test_resume_picks_up_where_it_stopped(tiny_proxy, tmp_path: Path):
     spec = _smoke_spec("more-rm")
     first = _train(spec, tmp_path, checkpoint_every=2, max_steps=4)

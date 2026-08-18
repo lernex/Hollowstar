@@ -339,6 +339,7 @@ def train_row(
     device_override: str | None,
     synthetic: bool,
     resume: bool = True,
+    final_checkpoint: bool = True,
 ) -> dict[str, Any]:
     runtime = initialize_runtime(device=device_override)
     try:
@@ -356,6 +357,7 @@ def train_row(
             max_steps=max_steps,
             synthetic=synthetic,
             resume=resume,
+            final_checkpoint=final_checkpoint,
         )
     finally:
         destroy_runtime()
@@ -376,6 +378,7 @@ def _train_row_inner(
     max_steps: int | None,
     synthetic: bool,
     resume: bool = True,
+    final_checkpoint: bool = True,
 ) -> dict[str, Any]:
     if runtime.distributed and runtime.world_size != spec.apus:
         raise RuntimeError(
@@ -538,6 +541,7 @@ def _train_row_inner(
             "resumed_from": resumed_from,
             "world_size": runtime.world_size,
             "precision_profile": policy.requested_profile,
+            "final_checkpoint": bool(final_checkpoint),
             "sampler": sample_stream.describe() if sample_stream else {"synthetic": True},
         }
         (paths.root / "run.json").write_text(
@@ -817,17 +821,18 @@ def _train_row_inner(
             summary["steps"] = step + 1
             summary["final_loss"] = step_loss
 
-    _save_checkpoint(
-        paths,
-        model=model,
-        optimizer=optimizer,
-        step=total_steps,
-        spec=spec,
-        rank=runtime.rank,
-        device=runtime.device,
-        total_steps=total_steps,
-        learning_rate=base_lr,
-    )
+    if final_checkpoint:
+        _save_checkpoint(
+            paths,
+            model=model,
+            optimizer=optimizer,
+            step=total_steps,
+            spec=spec,
+            rank=runtime.rank,
+            device=runtime.device,
+            total_steps=total_steps,
+            learning_rate=base_lr,
+        )
     summary["fp8_parity_relative_error"] = fp8_parity_error
     summary["tokens"] = summary["steps"] * GLOBAL_BATCH_TOKENS
     summary["wall_clock_s"] = time.perf_counter() - started
@@ -935,6 +940,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Ignore existing checkpoints and start from step zero",
     )
     parser.add_argument(
+        "--no-final-checkpoint",
+        action="store_true",
+        help="Skip the terminal checkpoint for disposable throughput canaries",
+    )
+    parser.add_argument(
         "--synthetic",
         action="store_true",
         help="Random tokens instead of the release; smoke tests only",
@@ -958,6 +968,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         device_override=args.device,
         synthetic=args.synthetic,
         resume=not args.no_resume,
+        final_checkpoint=not args.no_final_checkpoint,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
