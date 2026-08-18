@@ -442,6 +442,7 @@ class _StrictRepeatedModulePrecisionPolicy:
         self.active_region: int | None = None
         self.next_region = 0
         self.region_modules: dict[int, set[int]] = {}
+        self.requires_synchronized_execution_schedule = True
 
     def linear(
         self,
@@ -588,6 +589,81 @@ def test_empty_act_rank_executes_world_aligned_lm_head_dummy_chunks() -> None:
     # Two aligned LM-head chunks execute once in the forward and once during
     # non-reentrant activation recomputation.
     assert policy.next_region - before == 4
+
+
+def test_stateless_precision_skips_world_lm_head_alignment() -> None:
+    policy = _StrictRepeatedModulePrecisionPolicy()
+    policy.requires_synchronized_execution_schedule = False
+    config = replace(Metis16Config.tiny_for_tests(), lm_head_chunk_size=3)
+    model = Metis16ForCausalLM(
+        config,
+        precision_policy=policy,
+        dtype=torch.float32,
+    )
+    world = mock.sentinel.world
+    model.process_groups = MetisProcessGroups(world=world)
+    hidden = torch.randn(1, 8, config.d_model, requires_grad=True)
+    labels = torch.full((1, 8), -100, dtype=torch.long)
+    weights = torch.zeros((1, 8))
+    compute_mask = torch.zeros((1, 8), dtype=torch.bool)
+    before = policy.next_region
+
+    with (
+        mock.patch.object(
+            model_module,
+            "_group_world_size",
+            side_effect=lambda group=None: 2 if group is world else 1,
+        ),
+        mock.patch.object(
+            model_module.dist,
+            "all_reduce",
+            side_effect=AssertionError("stateless precision issued a world collective"),
+        ),
+    ):
+        loss = model._chunked_weighted_causal_loss_sum(
+            hidden,
+            labels,
+            weights,
+            compute_mask=compute_mask,
+        )
+    loss.backward()
+    assert float(loss.detach()) == 0.0
+    assert policy.next_region == before
+
+
+def test_stateless_precision_skips_world_pass_votes() -> None:
+    policy = _RecordingPrecisionPolicy()
+    policy.requires_synchronized_execution_schedule = False
+    config = Metis16Config.tiny_for_tests()
+    model = Metis16ForCausalLM(
+        config,
+        precision_policy=policy,
+        dtype=torch.float32,
+    )
+    world = mock.sentinel.world
+    model.process_groups = MetisProcessGroups(world=world)
+    input_ids, _labels, _reset_mask = _batch(config, batch=1)
+
+    with (
+        mock.patch.object(
+            model_module,
+            "_group_world_size",
+            side_effect=lambda group=None: 2 if group is world else 1,
+        ),
+        mock.patch.object(
+            model_module,
+            "_group_any_active",
+            side_effect=AssertionError("stateless precision issued a pass vote"),
+        ),
+    ):
+        output = model(
+            input_ids,
+            labels=None,
+            force_depth=1,
+            curriculum=_fixed_curriculum(1, target_depth=1.0),
+            return_logits=False,
+        )
+    assert int(output.chosen_depths.max()) == 1
 
 
 def test_storage_policy_keeps_router_and_mamba_sensitive_state_fp32() -> None:
@@ -830,6 +906,8 @@ def test_zero_local_active_rank_keeps_ep_pass_sequence_without_dummy_accounting(
     reference = Metis16ForCausalLM(config, dtype=torch.float32).eval()
     sentinel = Metis16ForCausalLM(config, dtype=torch.float32).eval()
     sentinel.load_state_dict(reference.state_dict())
+    expert_group = mock.sentinel.expert_group
+    sentinel.process_groups = MetisProcessGroups(expert=expert_group)
     input_ids, labels, _reset_mask = _batch(config, batch=1, length=6)
     kwargs = {
         "labels": labels,
@@ -852,6 +930,11 @@ def test_zero_local_active_rank_keeps_ep_pass_sequence_without_dummy_accounting(
         model_module,
         "_group_any_active",
         lambda _active_mask, *, group, groups=(): True,
+    )
+    monkeypatch.setattr(
+        model_module,
+        "_group_world_size",
+        lambda group=None: 2 if group is expert_group else 1,
     )
     try:
         sentinel_output = sentinel(input_ids, **kwargs)

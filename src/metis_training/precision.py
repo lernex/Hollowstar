@@ -400,6 +400,12 @@ class PrecisionPolicy:
     def fp8_enabled(self) -> bool:
         return self.effective_profile == "fp8"
 
+    @property
+    def requires_synchronized_execution_schedule(self) -> bool:
+        """Whether FP8 regions must execute in identical order on every rank."""
+
+        return self.fp8_enabled and self.config.fp8_scaling == "delayed"
+
     def is_fp8_role(self, role: str) -> bool:
         if self._measured_role_dtypes is not None:
             if role not in self._measured_role_dtypes:

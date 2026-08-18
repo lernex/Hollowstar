@@ -146,6 +146,17 @@ def _execution_context(
     return context_factory()
 
 
+def _precision_requires_synchronized_schedule(precision_policy: Any) -> bool:
+    explicit = getattr(
+        precision_policy,
+        "requires_synchronized_execution_schedule",
+        None,
+    )
+    if explicit is not None:
+        return bool(explicit)
+    return bool(getattr(precision_policy, "fp8_enabled", False))
+
+
 def _activation_checkpoint_context_fn(precision_policy: Any) -> Callable[[], tuple[Any, Any]]:
     factory = getattr(
         precision_policy,
@@ -173,8 +184,9 @@ def _fp32_linear(module: nn.Module, values: Tensor) -> Tensor:
 class MetisProcessGroups:
     """Distributed groups used by the model core.
 
-    ``world`` is the full family job and fixes the collective FP8-autocast
-    schedule across expert replicas. ``expert`` is one EP group.
+    ``world`` is the full family job and fixes delayed-scaling FP8 execution
+    order across expert replicas. Stateless current/blockwise FP8 does not need
+    that lockstep. ``expert`` is one EP group.
     ``table_lookup`` owns the deterministic row
     partition for row-sharded N-gram tables. ``table_gradient`` contains
     replicas of the same table (or same local table shard) and is the group
@@ -5651,7 +5663,10 @@ class Metis16ForCausalLM(nn.Module):
             device=hidden_states.device,
             dtype=torch.long,
         )
-        if _group_world_size(self.process_groups.world) > 1:
+        if (
+            _precision_requires_synchronized_schedule(self.precision_policy)
+            and _group_world_size(self.process_groups.world) > 1
+        ):
             dist.all_reduce(
                 global_selected,
                 op=dist.ReduceOp.MAX,
@@ -5924,19 +5939,30 @@ class Metis16ForCausalLM(nn.Module):
             (), device=input_ids.device, dtype=torch.long
         )
         packed_passes = torch.zeros((), device=input_ids.device, dtype=torch.long)
+        synchronize_pass_schedule = (
+            _precision_requires_synchronized_schedule(self.precision_policy)
+            or _group_world_size(self.process_groups.expert) > 1
+            or _group_world_size(self.process_groups.table_lookup) > 1
+            or _group_world_size(self.process_groups.context) > 1
+        )
 
         for pass_index in range(effective_passes):
             active_masks.append(active_mask)
             local_has_active = bool(active_mask.any().item())
-            if not _group_any_active(
-                active_mask,
-                group=(
-                    self.process_groups.world
-                    if self.process_groups.world is not None
-                    else self.process_groups.expert
-                ),
-                groups=(self.process_groups.context,),
-            ):
+            any_active = (
+                _group_any_active(
+                    active_mask,
+                    group=(
+                        self.process_groups.world
+                        if self.process_groups.world is not None
+                        else self.process_groups.expert
+                    ),
+                    groups=(self.process_groups.context,),
+                )
+                if synchronize_pass_schedule
+                else local_has_active
+            )
+            if not any_active:
                 active_masks.extend(
                     active_mask.clone()
                     for _ in range(pass_index + 1, effective_passes)
