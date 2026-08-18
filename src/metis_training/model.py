@@ -2153,6 +2153,7 @@ class SwiGLUExpert(nn.Module):
         intermediate_dim: int,
         *,
         precision_policy: Any,
+        weight_chunks: int = 1,
         device: torch.device | str | None,
         dtype: torch.dtype | None,
     ) -> None:
@@ -2218,6 +2219,7 @@ class _StackedGroupedLinear(nn.Module):
         in_features: int,
         out_features: int,
         *,
+        weight_chunks: int = 1,
         device: torch.device | str | None,
         dtype: torch.dtype | None,
     ) -> None:
@@ -2225,15 +2227,30 @@ class _StackedGroupedLinear(nn.Module):
         self.num_gemms = int(num_gemms)
         self.in_features = int(in_features)
         self.out_features = int(out_features)
-        self.weight = nn.Parameter(
-            torch.empty(
-                self.num_gemms,
+        self.weight_chunk_count = int(weight_chunks)
+        if self.num_gemms % self.weight_chunk_count:
+            raise ValueError("Grouped-linear expert count must divide its weight chunks.")
+        self._materialized_weight: Tensor | None = None
+        if self.weight_chunk_count == 1:
+            self.weight = nn.Parameter(
+                torch.empty(
+                    self.num_gemms,
+                    self.out_features,
+                    self.in_features,
+                    device=device,
+                    dtype=dtype,
+                )
+            )
+        else:
+            chunk_shape = (
+                self.num_gemms // self.weight_chunk_count,
                 self.out_features,
                 self.in_features,
-                device=device,
-                dtype=dtype,
             )
-        )
+            self.weight_chunks = nn.ParameterList(
+                nn.Parameter(torch.empty(chunk_shape, device=device, dtype=dtype))
+                for _ in range(self.weight_chunk_count)
+            )
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -2244,10 +2261,28 @@ class _StackedGroupedLinear(nn.Module):
     def reset_expert_parameters(self, index: int) -> None:
         """Initialize one expert exactly as ``nn.Linear`` would have."""
 
-        nn.init.kaiming_uniform_(self.weight[index], a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.expert_weight(index), a=math.sqrt(5))
 
     def expert_weight(self, index: int) -> Tensor:
-        return self.weight[index]
+        if self.weight_chunk_count == 1:
+            return self.weight[index]
+        chunk_size = self.num_gemms // self.weight_chunk_count
+        return self.weight_chunks[index // chunk_size][index % chunk_size]
+
+    def _forward_weight(self) -> Tensor:
+        if self.weight_chunk_count == 1:
+            return self.weight
+        if self._materialized_weight is None:
+            materialized = torch.cat(tuple(self.weight_chunks), dim=0)
+            if materialized.requires_grad:
+
+                def clear(gradient: Tensor) -> Tensor:
+                    self._materialized_weight = None
+                    return gradient
+
+                materialized.register_hook(clear)
+            self._materialized_weight = materialized
+        return self._materialized_weight
 
     def forward(self, values: Tensor, m_splits: Tensor) -> Tensor:
         """Contract every expert's segment against its own weight.
@@ -2259,13 +2294,14 @@ class _StackedGroupedLinear(nn.Module):
         """
 
         grouped = getattr(torch, "_grouped_mm", None)
+        weight = self._forward_weight()
         if grouped is not None and values.is_cuda:
             offsets = torch.cumsum(m_splits, 0).to(torch.int32)
-            return grouped(values, self.weight.transpose(1, 2), offs=offsets)
+            return grouped(values, weight.transpose(1, 2), offs=offsets)
         segments = torch.split(values, [int(size) for size in m_splits.tolist()])
         return torch.cat(
             [
-                F.linear(segment, self.weight[index])
+                F.linear(segment, weight[index])
                 for index, segment in enumerate(segments)
             ],
             dim=0,
@@ -2279,6 +2315,7 @@ def _make_grouped_linear(
     out_features: int,
     *,
     role: str,
+    weight_chunks: int = 1,
     device: torch.device | str | None,
     dtype: torch.dtype | None,
 ) -> nn.Module:
@@ -2298,6 +2335,7 @@ def _make_grouped_linear(
         num_gemms,
         in_features,
         out_features,
+        weight_chunks=weight_chunks,
         device=device,
         dtype=dtype,
     )
@@ -2332,6 +2370,7 @@ class GroupedSwiGLUExperts(nn.Module):
         intermediate_dim: int,
         *,
         precision_policy: Any,
+        weight_chunks: int = 1,
         device: torch.device | str | None,
         dtype: torch.dtype | None,
     ) -> None:
@@ -2345,6 +2384,7 @@ class GroupedSwiGLUExperts(nn.Module):
             latent_dim,
             2 * intermediate_dim,
             role="expert_gate_up_projection",
+            weight_chunks=weight_chunks,
             device=device,
             dtype=dtype,
         )
@@ -2354,6 +2394,7 @@ class GroupedSwiGLUExperts(nn.Module):
             intermediate_dim,
             latent_dim,
             role="expert_down_projection",
+            weight_chunks=weight_chunks,
             device=device,
             dtype=dtype,
         )
@@ -2867,6 +2908,7 @@ class AdaptiveDroplessMoE(nn.Module):
                 config.latent_dim,
                 config.expert_intermediate_dim,
                 precision_policy=precision_policy,
+                weight_chunks=config.expert_weight_chunks,
                 device=device,
                 dtype=dtype,
             )

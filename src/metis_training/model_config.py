@@ -473,6 +473,7 @@ class Metis16Config:
     # the dispatch count stops scaling with the expert count -- the only viable
     # path when every rank replicates all routed experts.
     expert_execution: str = "loop"
+    expert_weight_chunks: int = 1
     world_size: int = 128
     expert_parallel_size: int = 128
     expert_replicas: int = 1
@@ -607,6 +608,20 @@ class Metis16Config:
             raise ValueError("ffn_mode must be moe or dense.")
         if self.expert_execution not in _EXPERT_EXECUTIONS:
             raise ValueError("expert_execution must be loop, grouped, or grouped_gemm.")
+        if self.expert_weight_chunks < 1:
+            raise ValueError("expert_weight_chunks must be positive.")
+        if self.n_routed_experts and self.n_routed_experts % self.expert_weight_chunks:
+            raise ValueError("n_routed_experts must be divisible by expert_weight_chunks.")
+        if self.expert_weight_chunks > 1:
+            if self.expert_execution != "grouped_gemm":
+                raise ValueError(
+                    "expert_weight_chunks above one require grouped_gemm execution."
+                )
+            if self.activation_recompute_policy != "none":
+                raise ValueError(
+                    "expert_weight_chunks above one currently require no activation "
+                    "recompute so one materialized bank can be shared across passes."
+                )
         if self.ffn_mode == "dense" and self.family not in _RELAXED_FAMILIES:
             raise ValueError(
                 "A dense feed-forward sublayer is an ablation control; production "

@@ -32,6 +32,7 @@ from metis_training.model import (
     BudgetController,
     CurriculumState,
     Metis16ForCausalLM,
+    _StackedGroupedLinear,
     _memory_attention_combine,
     _memory_attention_scores,
     _stream_gate_logits,
@@ -974,6 +975,48 @@ def test_muon_steps_a_stacked_expert_bank_like_separate_experts():
     optimizer_for([stacked]).step()
     for index, parameter in enumerate(reference):
         torch.testing.assert_close(stacked[index], parameter, rtol=1e-5, atol=1e-6)
+
+
+def test_chunked_expert_weights_match_one_stacked_parameter():
+    torch.manual_seed(13)
+    experts, in_features, out_features = 6, 16, 24
+    reference = _StackedGroupedLinear(
+        experts,
+        in_features,
+        out_features,
+        weight_chunks=1,
+        device=None,
+        dtype=torch.float32,
+    )
+    chunked = _StackedGroupedLinear(
+        experts,
+        in_features,
+        out_features,
+        weight_chunks=3,
+        device=None,
+        dtype=torch.float32,
+    )
+    with torch.no_grad():
+        for index in range(experts):
+            chunked.expert_weight(index).copy_(reference.expert_weight(index))
+
+    splits = torch.tensor([3, 2, 4, 1, 3, 2], dtype=torch.long)
+    left_input = torch.randn(int(splits.sum()), in_features, requires_grad=True)
+    right_input = left_input.detach().clone().requires_grad_(True)
+    left = reference(left_input, splits)
+    right = chunked(right_input, splits)
+    torch.testing.assert_close(right, left)
+
+    gradient = torch.randn_like(left)
+    left.backward(gradient)
+    right.backward(gradient)
+    torch.testing.assert_close(right_input.grad, left_input.grad)
+    chunked_grad = torch.cat(
+        [parameter.grad for parameter in chunked.weight_chunks],
+        dim=0,
+    )
+    torch.testing.assert_close(chunked_grad, reference.weight.grad)
+    assert chunked._materialized_weight is None
 
 
 def test_blockwise_int8_muon_state_respects_its_error_bound():
