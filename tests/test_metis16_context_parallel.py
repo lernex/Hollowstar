@@ -447,6 +447,76 @@ def test_context_parallel_forward_matches_the_unsharded_model(world, tmp_path) -
     assert (observed - reference).abs().max().item() / scale < 1e-5
 
 
+def _sparse_sync_worker(rank: int, world: int, port: int, path: str) -> None:
+    from metis_training.model import _sync_sparse_gradient_by_row_owner
+
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = str(port)
+    dist.init_process_group("gloo", rank=rank, world_size=world)
+    group = dist.new_group(ranks=list(range(world)), backend="gloo")
+    rows_by_rank = (
+        torch.tensor([0, 1, 3]),
+        torch.tensor([1, 2, 3]),
+    )
+    values_by_rank = (
+        torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]),
+        torch.tensor([[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]]),
+    )
+    gradient = torch.sparse_coo_tensor(
+        rows_by_rank[rank].unsqueeze(0),
+        values_by_rank[rank],
+        size=(5, 2),
+    ).coalesce()
+    synchronized = _sync_sparse_gradient_by_row_owner(
+        gradient,
+        group=group,
+    ).coalesce()
+    if rank == 0:
+        torch.save(
+            {
+                "dense": synchronized.to_dense(),
+                "rows": synchronized.indices()[0],
+            },
+            path,
+        )
+    dist.barrier(group=group)
+    dist.destroy_process_group()
+
+
+@pytest.mark.skipif(not _gloo_available(), reason="gloo is required for sparse sync")
+def test_row_owner_sparse_sync_matches_global_average(tmp_path) -> None:
+    path = str(tmp_path / "sparse-gradient.pt")
+    context = mp.get_context("spawn")
+    world = 2
+    processes = [
+        context.Process(
+            target=_sparse_sync_worker,
+            args=(rank, world, 29_650, path),
+        )
+        for rank in range(world)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=120)
+    assert all(process.exitcode == 0 for process in processes), [
+        process.exitcode for process in processes
+    ]
+    observed = torch.load(path, weights_only=False)
+    expected = torch.tensor(
+        [
+            [0.5, 1.0],
+            [5.0, 6.0],
+            [4.5, 5.0],
+            [8.0, 9.0],
+            [0.0, 0.0],
+        ]
+    )
+    torch.testing.assert_close(observed["dense"], expected)
+    rows = observed["rows"].tolist()
+    assert rows == sorted(set(rows))
+
+
 def _batch_guard_worker(rank: int, world: int, port: int, path: str) -> None:
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = str(port)
