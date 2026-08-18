@@ -576,6 +576,48 @@ def test_replicated_dispatch_matches_the_general_path():
     assert torch.equal(fast[1], general[1]), "processed-assignment count moved"
 
 
+def test_ep_drop_accounting_uses_returned_source_assignments(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Receive-side EP load is not a source-side drop count."""
+
+    import metis_training.model as model_module
+
+    model = Metis16ForCausalLM(_tiny())
+    moe = model.layers[0].moe
+    moe.world_size = 4
+    monkeypatch.setattr(model_module.dist, "all_reduce", lambda *args, **kwargs: None)
+
+    def imbalanced_dispatch(
+        hidden_states,
+        expert_indices,
+        weights,
+        token_indices,
+        token_count,
+    ):
+        del expert_indices, weights, token_indices
+        return (
+            hidden_states.new_zeros(token_count, hidden_states.shape[-1]),
+            torch.tensor(1, device=hidden_states.device),
+            torch.zeros((), device=hidden_states.device, dtype=torch.long),
+            torch.zeros((), device=hidden_states.device),
+        )
+
+    monkeypatch.setattr(moe, "_dispatch", imbalanced_dispatch)
+    batch, length = 2, 6
+    hidden = torch.randn(batch, length, moe.config.d_model)
+    route_features = torch.randn(batch, length, moe.config.route_feature_dim)
+    active = torch.ones(batch, length, dtype=torch.bool)
+    _output, state = moe(
+        hidden,
+        route_features=route_features,
+        active_mask=active,
+        curriculum=_curriculum(),
+    )
+    assert int(state.assignments) > 1
+    assert torch.equal(state.processed_assignments, state.assignments)
+
+
 def test_packed_buffer_size_does_not_depend_on_where_the_routing_went():
     """The packed buffer must be sized from shapes, not from the counts.
 

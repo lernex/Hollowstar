@@ -3714,13 +3714,18 @@ class AdaptiveDroplessMoE(nn.Module):
             self._shared_compute_stream.wait_stream(current_stream)
             with torch.cuda.stream(self._shared_compute_stream):
                 shared = self._execute_shared(flat_latent, active_flat_mask)
-        routed, processed, all_to_all_bytes, all_to_all_seconds = self._dispatch(
+        routed, _received, all_to_all_bytes, all_to_all_seconds = self._dispatch(
             assignment_hidden,
             assignment_experts,
             assignment_weights,
             assignment_tokens,
             batch * seq_len,
         )
+        # ``processed`` counts rows received and computed by this EP rank. It
+        # intentionally differs from this rank's sent count under an imbalanced
+        # route. Successful combine returns one result for every source
+        # assignment, so source-side dropless accounting is the sent count.
+        source_processed = selected.sum()
         if overlap_shared:
             assert self._shared_compute_stream is not None
             torch.cuda.current_stream(flat_latent.device).wait_stream(self._shared_compute_stream)
@@ -3800,7 +3805,7 @@ class AdaptiveDroplessMoE(nn.Module):
             confidence=confidence,
             token_difficulty=token_difficulty,
             assignments=selected.sum(),
-            processed_assignments=processed,
+            processed_assignments=source_processed,
             expert_counts=expert_counts,
             expert_load_cv=expert_load_cv,
             all_to_all_bytes=all_to_all_bytes,
