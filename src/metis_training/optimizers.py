@@ -210,17 +210,29 @@ class WorldShardedOptimizerBundle:
                     if owners[id(parameter)] == rank
                 ]
 
-        buckets: dict[tuple[int, torch.dtype], list[Tensor]] = {}
+        buckets: dict[tuple[torch.dtype, int], list[Tensor]] = {}
         for _name, parameter in named:
-            key = (owners[id(parameter)], parameter.dtype)
+            key = (parameter.dtype, owners[id(parameter)])
             buckets.setdefault(key, []).append(parameter)
-        self._broadcast_buckets = tuple(
-            (owner, dtype, tuple(parameters))
-            for (owner, dtype), parameters in sorted(
-                buckets.items(),
-                key=lambda item: (str(item[0][1]), item[0][0]),
+        dtypes = sorted({dtype for dtype, _owner in buckets}, key=str)
+        self._gather_buckets = tuple(
+            (
+                dtype,
+                tuple(
+                    tuple(buckets.get((dtype, owner), ()))
+                    for owner in range(world_size)
+                ),
+                max(
+                    sum(
+                        parameter.numel()
+                        for parameter in buckets.get((dtype, owner), ())
+                    )
+                    for owner in range(world_size)
+                ),
             )
+            for dtype in dtypes
         )
+        self._device = named[0][1].device
 
     @property
     def dense(self) -> Optimizer:
@@ -239,24 +251,49 @@ class WorldShardedOptimizerBundle:
 
     def step(self) -> None:
         self.bundle.step()
-        for owner, _dtype, parameters in self._broadcast_buckets:
-            flat = _flatten_dense_tensors(
-                [parameter.data for parameter in parameters]
+        for dtype, parameters_by_owner, padded_elements in self._gather_buckets:
+            local_parameters = parameters_by_owner[self.shard_rank]
+            if local_parameters:
+                local = _flatten_dense_tensors(
+                    [parameter.data for parameter in local_parameters]
+                )
+            else:
+                local = torch.empty(0, device=self._device, dtype=dtype)
+            if local.numel() < padded_elements:
+                padded = torch.zeros(
+                    padded_elements,
+                    device=self._device,
+                    dtype=dtype,
+                )
+                if local.numel():
+                    padded[: local.numel()].copy_(local)
+                local = padded
+            gathered = torch.empty(
+                self.shard_world_size * padded_elements,
+                device=self._device,
+                dtype=dtype,
             )
-            dist.broadcast(
-                flat,
-                src=owner,
+            dist.all_gather_into_tensor(
+                gathered,
+                local,
                 group=self.process_group,
             )
-            for parameter, value in zip(
-                parameters,
-                _unflatten_dense_tensors(
-                    flat,
-                    [parameter.data for parameter in parameters],
-                ),
-                strict=True,
-            ):
-                parameter.data.copy_(value)
+            for owner, parameters in enumerate(parameters_by_owner):
+                if not parameters:
+                    continue
+                elements = sum(parameter.numel() for parameter in parameters)
+                flat = gathered[
+                    owner * padded_elements : owner * padded_elements + elements
+                ]
+                for parameter, value in zip(
+                    parameters,
+                    _unflatten_dense_tensors(
+                        flat,
+                        [parameter.data for parameter in parameters],
+                    ),
+                    strict=True,
+                ):
+                    parameter.data.copy_(value)
 
     def state_dict(self) -> dict[str, Any]:
         return {
