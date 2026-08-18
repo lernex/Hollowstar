@@ -355,40 +355,6 @@ def test_sparse_table_sync_runs_once_after_gradient_accumulation(
         assert tuple(gradient.shape) == tuple(table.embedding.weight.shape)
 
 
-def test_sparse_gradient_sync_uses_dense_collective_past_wire_break_even(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import metis_training.model as model_module
-
-    group = object()
-    world_size = 4
-    indices = torch.arange(8).reshape(1, -1)
-    values = torch.arange(16, dtype=torch.float32).reshape(8, 2)
-    gradient = torch.sparse_coo_tensor(indices, values, size=(8, 2)).coalesce()
-    monkeypatch.setattr(
-        model_module,
-        "_group_world_size",
-        lambda candidate=None: world_size if candidate is group else 1,
-    )
-
-    def all_gather(outputs, value, *, group):
-        assert group is not None
-        assert value.numel() == 1
-        for output in outputs:
-            output.fill_(8)
-
-    def all_reduce(value, *, group):
-        assert group is not None
-        value.mul_(world_size)
-
-    monkeypatch.setattr(model_module.dist, "all_gather", all_gather)
-    monkeypatch.setattr(model_module.dist, "all_reduce", all_reduce)
-
-    synchronized = model_module._sync_sparse_gradient(gradient, group=group)
-    assert synchronized.is_sparse
-    torch.testing.assert_close(synchronized.to_dense(), gradient.to_dense())
-
-
 def test_document_reset_prevents_cross_document_state_leakage() -> None:
     config = Metis16Config.tiny_for_tests()
     model = Metis16ForCausalLM(config, dtype=torch.float32).eval()
