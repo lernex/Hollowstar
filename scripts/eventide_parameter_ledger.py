@@ -42,6 +42,20 @@ class EventideDimensions:
     index_heads: int = 32
     index_head_dim: int = 128
     first_attention_layer_index: int = 7
+    partial_rope_dim: int = 32
+    local_attention_window: int = 128
+    main_cache_scale_metadata_bytes: int = 2
+    index_cache_scale_group_size: int = 16
+    mamba_expand: int = 2
+    mamba_head_dim: int = 64
+    mamba_state_dim: int = 128
+    mamba_conv_kernel: int = 4
+    mamba_state_value_bytes: int = 2
+    ngram_orders: int = 2
+    ngram_tables_per_order: int = 8
+    ngram_value_dim: int = 64
+    ngram_injection_sites: int = 4
+    ngram_logical_parameters: int = 200_000_000_000
 
 
 def calculate(d: EventideDimensions = EventideDimensions()) -> dict[str, object]:
@@ -137,6 +151,19 @@ def calculate(d: EventideDimensions = EventideDimensions()) -> dict[str, object]
     }
     continuation = sum(continuation_detail.values())
 
+    ngram_retrieved_rows = d.ngram_orders * d.ngram_tables_per_order
+    ngram_concatenated_dim = ngram_retrieved_rows * d.ngram_value_dim
+    ngram_projection = ngram_concatenated_dim * d.d_model + d.d_model
+    ngram_injection_gates = (
+        d.ngram_injection_sites
+        * d.max_passes
+        * d.n_streams
+        * (d.d_model + 1)
+    )
+    ngram_active_gates_per_pass = (
+        d.ngram_injection_sites * d.n_streams * (d.d_model + 1)
+    )
+
     stored = {
         "routed_expert_bank": d.n_blocks
         * d.n_experts
@@ -154,6 +181,8 @@ def calculate(d: EventideDimensions = EventideDimensions()) -> dict[str, object]
         "mhc": mhc,
         "depth_memory": depth_memory,
         "continuation_controller": continuation,
+        "ngram_projection": ngram_projection,
+        "ngram_injection_gates": ngram_injection_gates,
         "block_norms": d.n_blocks * 2 * d.d_model,
         "token_embedding": d.vocab_size * d.d_model,
         "final_norm": d.d_model,
@@ -205,6 +234,7 @@ def calculate(d: EventideDimensions = EventideDimensions()) -> dict[str, object]
         + mhc_active_per_pass
         + memory_active_unique
         + stored["continuation_controller"]
+        + ngram_active_gates_per_pass
         + stored["block_norms"]
     )
     active_per_k = (
@@ -252,6 +282,8 @@ def calculate(d: EventideDimensions = EventideDimensions()) -> dict[str, object]
         + d.d_model  # one token-embedding row
         + d.d_model  # final norm
         + d.n_streams * d.d_model  # stream seeds
+        + ngram_projection
+        + ngram_concatenated_dim  # 16 selected table rows, once per token
     )
     applications = {
         "depth_memory_first_pass": memory_applications_first_pass,
@@ -282,12 +314,96 @@ def calculate(d: EventideDimensions = EventideDimensions()) -> dict[str, object]
         "k_budget_multiplier_fp32_bytes": d.n_blocks * 4,
         "depth_budget_multiplier_fp32_bytes": 4,
     }
+    ngram_rows = d.ngram_logical_parameters // d.ngram_value_dim
+    ngram_storage = {
+        "logical_parameters": d.ngram_logical_parameters,
+        "retrieved_values_per_token": ngram_concatenated_dim,
+        "radix3_payload_bytes": d.ngram_logical_parameters * 32 // 20 // 8,
+        "bf16_row_scale_bytes": ngram_rows * 2,
+    }
+    ngram_storage["radix3_plus_row_scales_bytes"] = (
+        ngram_storage["radix3_payload_bytes"]
+        + ngram_storage["bf16_row_scale_bytes"]
+    )
+
     totals = {
         "stored_tied": sum(stored.values()),
         "stored_untied": sum(stored.values()) + untied_head,
         "untied_head": untied_head,
     }
 
+    # Decode-residency estimate for the standard B32 x 262K target. Main
+    # compressed-KV rows keep 32 partial-RoPE dimensions in BF16, the other
+    # 224 in FP8, plus two bytes of scale metadata. Index rows use FP4 with
+    # one byte of scale per 16 values.
+    batch = 32
+    context = 262_144
+    main_cache_row_bytes = (
+        (c - d.partial_rope_dim)
+        + 2 * d.partial_rope_dim
+        + d.main_cache_scale_metadata_bytes
+    )
+    index_cache_row_bytes = (
+        ci // 2 + ci // d.index_cache_scale_group_size
+    )
+    attention_cache_bytes = (
+        d.n_csa * batch * (context // d.csa_compress_rate) * main_cache_row_bytes
+        + d.n_csa * batch * (context // d.csa_compress_rate) * index_cache_row_bytes
+        + d.n_hca * batch * (context // d.hca_compress_rate) * main_cache_row_bytes
+        + (d.n_hca + d.n_csa)
+        * batch
+        * d.local_attention_window
+        * main_cache_row_bytes
+    )
+    mamba_inner = d.d_model * d.mamba_expand
+    mamba_heads = mamba_inner // d.mamba_head_dim
+    mamba_ssm_state_bytes = (
+        d.n_mamba
+        * batch
+        * mamba_heads
+        * d.mamba_head_dim
+        * d.mamba_state_dim
+        * d.mamba_state_value_bytes
+    )
+    mamba_conv_state_bytes = (
+        d.n_mamba
+        * batch
+        * (mamba_inner + 2 * d.mamba_state_dim)
+        * d.mamba_conv_kernel
+        * d.mamba_state_value_bytes
+    )
+    # 1.725 bpw = radix-3 payload plus one BF16 scale per 128 weights.
+    # The mixed scenario deliberately reserves 1% of parameters for NVFP4
+    # and 1% for FP8 rather than pretending all validation islands are known.
+    all_ternary_payload_bytes = totals["stored_untied"] * 1.6 / 8
+    all_ternary_scaled_bytes = totals["stored_untied"] * 1.725 / 8
+    conservative_mixed_weight_bytes = totals["stored_untied"] * (
+        0.98 * 1.725 + 0.01 * 4.5 + 0.01 * 8.0
+    ) / 8
+    sequence_state_bytes = (
+        attention_cache_bytes + mamba_ssm_state_bytes + mamba_conv_state_bytes
+    )
+    deployment = {
+        "batch": batch,
+        "context_per_sequence": context,
+        "main_cache_row_bytes": main_cache_row_bytes,
+        "index_cache_row_bytes": index_cache_row_bytes,
+        "all_ternary_payload_gib": all_ternary_payload_bytes / (1 << 30),
+        "all_ternary_with_bf16_scale_per_128_gib": all_ternary_scaled_bytes
+        / (1 << 30),
+        "98pct_ternary_1pct_nvfp4_1pct_fp8_gib": conservative_mixed_weight_bytes
+        / (1 << 30),
+        "attention_cache_gib": attention_cache_bytes / (1 << 30),
+        "mamba_state_gib": (mamba_ssm_state_bytes + mamba_conv_state_bytes)
+        / (1 << 30),
+        "sequence_state_gib": sequence_state_bytes / (1 << 30),
+        "gib_left_after_conservative_weights_and_sequence_state": 16
+        - (conservative_mixed_weight_bytes + sequence_state_bytes) / (1 << 30),
+        "b16_sequence_state_gib": sequence_state_bytes / 2 / (1 << 30),
+        "b16_gib_left_after_conservative_weights_and_sequence_state": 16
+        - (conservative_mixed_weight_bytes + sequence_state_bytes / 2)
+        / (1 << 30),
+    }
     control_experts = d.n_experts // 2
     control_ffn = d.expert_ffn * 2
     control_max_k = d.max_k // 2
@@ -337,12 +453,14 @@ def calculate(d: EventideDimensions = EventideDimensions()) -> dict[str, object]
     assert mhc == 12_692_992
     assert depth_memory == 3_423_236
     assert continuation == 1_638_913
-    assert totals["stored_untied"] == 50_129_021_989
+    assert ngram_projection == 2_099_200
+    assert ngram_injection_gates == 163_920
+    assert totals["stored_untied"] == 50_131_285_109
     assert active["mean_per_pass"] == 2_000_000_000
     assert memory_active_unique == 3_422_212
     assert memory_applications_first_pass == 86_801_508
     assert memory_applications_later_pass == 96_326_788
-    assert control["stored_untied"] == 50_111_834_661
+    assert control["stored_untied"] == 50_114_097_781
 
     return {
         "dimensions": asdict(d),
@@ -367,6 +485,8 @@ def calculate(d: EventideDimensions = EventideDimensions()) -> dict[str, object]
         "active_parameters": active,
         "parameter_applications": applications,
         "runtime_nonparameter_buffers": runtime_buffers,
+        "external_ngram_memory": ngram_storage,
+        "b32_262k_decode_residency_estimate": deployment,
         "totals": totals,
         "matched_512_expert_control": control,
     }
