@@ -39,8 +39,8 @@ packed ternary kernels are ingredients, not a stack of independently multiplicat
 | Residual topology | four-stream, recursion-aware mHC | Working default |
 | Routed experts per expert-bearing block | **1,024 logical micro-experts** | Preferred candidate; see section 2 |
 | Physical expert packing | 512 adjacent two-micro-expert groups, independently addressable | Preferred engine layout |
-| Routed K | integer `K in [0, 32]`, target `E[K] = 15` | Preferred candidate |
-| Shared path | one always-on shared expert per block | Working default; dimensions open |
+| Routed K | integer `K in [0, 32]`, target `E[K] = 16.5` | Working default |
+| Shared path | one full-width shared expert per block, `d_model=2048`, `d_ff=1536` | Working default |
 | Vocabulary | 131,072 | Working default |
 | Embedding/head | untied candidate; ternary head if it passes parity gates | Open ablation |
 | Weight storage | packed ternary target for large matrices, approximately 1.6 bpw | Target, not measured execution rate |
@@ -51,8 +51,8 @@ packed ternary kernels are ingredients, not a stack of independently multiplicat
 | MTP | CALM-style training signal and proposal feature | Exact-serving integration open |
 | Serving | batch-32 exact tree speculation with durable multi-tier state cache | Custom implementation required |
 
-The earlier **512 experts at average K 7.5** remains the mandatory system baseline. It is no
-longer the presumed final quality configuration.
+The matched system control is **512 double-width experts at average K 8.25**. The earlier
+512/7.5 and 1,024/15 pair remains a historical throughput reference, not the current A2B ledger.
 
 ## 2. Expert-count decision
 
@@ -61,13 +61,13 @@ longer the presumed final quality configuration.
 Let a 512-expert baseline expert contain `P_e` parameters. Then:
 
 ```text
-512 experts, mean K = 7.5:
+512 experts, mean K = 8.25:
   stored routed bank per layer = 512 * P_e
-  active routed parameters     = 7.5 * P_e
+  active routed parameters     = 8.25 * P_e
 
-1024 half-sized experts, mean K = 15:
+1024 half-sized experts, mean K = 16.5:
   stored routed bank per layer = 1024 * (P_e / 2) = 512 * P_e
-  active routed parameters     = 15 * (P_e / 2)   = 7.5 * P_e
+  active routed parameters     = 16.5 * (P_e / 2) = 8.25 * P_e
 ```
 
 Therefore the exact iso-total, iso-active conversion is:
@@ -75,23 +75,23 @@ Therefore the exact iso-total, iso-active conversion is:
 ```text
 N:       512 -> 1024
 size:    P_e -> P_e / 2
-mean K:  7.5 -> 15
+mean K:  8.25 -> 16.5
 max K:   16 -> 32
 ```
 
-Mean `K = 7.5` never means executing half an expert. K is integer for every token at every pass;
-7.5 is the mean over routed token-pass decisions. It could arise from half of decisions selecting
-7 experts and half selecting 8, or from a learned wider distribution with the same budget.
+Mean `K = 16.5` never means executing half an expert. K is integer for every token at every pass;
+16.5 is the mean over routed token-pass decisions. It could arise from half of decisions selecting
+16 experts and half selecting 17, or from a learned wider distribution with the same budget.
 
-Mean `K = 16` on the 1,024-half-expert design is **not** iso-active:
+Relative to the historical 1,024/15 design, the new mean raises routed activity by 10%:
 
 ```text
-16 * (P_e / 2) = 8 * P_e
-8 / 7.5 - 1 = 6.6667% more routed expert parameters and compute
+16.5 / 15 - 1 = 10%
 ```
 
-That may ultimately be worth buying, but it must be called an increase to the routed share of the
-A2B budget rather than a free consequence of finer granularity.
+This is paid for by shrinking the full-width shared expert from `d_ff=2048` to `d_ff=1536`, a 25%
+reduction. It is a deliberate transfer of the A2B budget from universal computation into routed
+specialization, not free compute.
 
 ### 2.2 Why 512 was chosen originally
 
@@ -101,7 +101,7 @@ The 512 configuration was the conservative single-GPU systems point:
    nonlinear transform and maps to healthier GEMM tiles.
 2. It halves router logits, top-k work, assignment descriptors, expert groups, and load-balancing
    targets relative to 1,024 logical experts.
-3. It halves average dispatch fan-out: 7.5 selections instead of 15.
+3. It halves average dispatch fan-out: 8.25 selections instead of 16.5.
 4. It lowers the risk that tiny per-expert token counts turn the MoE into hundreds of inefficient
    GEMVs or very small grouped GEMMs during decode.
 5. It was enough specialization to make the 50B/A2B ledger plausible while leaving the custom
@@ -113,9 +113,9 @@ quality at equal total and active parameters.
 ### 2.3 Why more logical experts can still be better
 
 At an equal budget, 1,024 half-experts do not create more stored capacity. They partition the same
-capacity more finely. The possible benefit is greater routing granularity: a token composes 15
-smaller nonlinear pieces instead of roughly 7 or 8 larger pieces, allowing more combinations and
-more precise allocation.
+capacity more finely. The possible benefit is greater routing granularity: a token composes roughly
+16 or 17 smaller nonlinear pieces instead of roughly 8 or 9 larger pieces, allowing more
+combinations and more precise allocation.
 
 Recent evidence supports taking that possibility seriously:
 
@@ -143,14 +143,14 @@ estimate of the number of unique experts touched is:
 U(N, k, n) = N * (1 - (1 - k/N)^n)
 ```
 
-The 512/7.5 and 1,024/15 configurations have identical `k/N`. Because the latter expert is half the
+The 512/8.25 and 1,024/16.5 configurations have identical `k/N`. Because the latter expert is half the
 size, their expected unique expert **bytes** are identical under this approximation:
 
-| Verification load at one expert layer | 512 full, K=7.5 | 1,024 half, K=15 | 1,024 half, K=16 |
-|---|---:|---:|---:|
-| `n=32` unique experts | 192.708 full | 385.415 half = 192.708 full-equivalent | 405.359 half = 202.680 full-equivalent |
-| `n=512` unique experts | 511.732 full | 1,023.464 half = 511.732 full-equivalent | 1,023.678 half = 511.839 full-equivalent |
-| Active expert size/token | `7.5 P_e` | `7.5 P_e` | `8 P_e` |
+| Verification load at one expert layer | 512 full, K=8.25 | 1,024 half, K=16.5 |
+|---|---:|---:|
+| `n=32` unique experts | 207.552 full | 415.104 half = 207.552 full-equivalent |
+| `n=512` unique experts | 511.875 full | 1,023.750 half = 511.875 full-equivalent |
+| Active expert size/token | `8.25 P_e` | `8.25 P_e` |
 
 So doubling logical expert count is not a bandwidth magic trick, but neither does it inherently
 double ideal expert-weight bytes. It primarily increases routing, dispatch, metadata, and small-GEMM
@@ -164,7 +164,7 @@ whose weights are half as large.
 
 ### 2.5 Current recommendation
 
-Prototype **1,024 logical micro-experts at `E[K] = 15`** as the preferred Eventide candidate, but
+Prototype **1,024 logical micro-experts at `E[K] = 16.5`** as the preferred Eventide candidate, but
 co-design the engine around them:
 
 - store them in 512 adjacent two-micro-expert groups while preserving independent addressing;
@@ -177,7 +177,7 @@ co-design the engine around them:
 - retain dropless routing and measure specialization, imbalance, expert starvation, route entropy,
   and tokens per launched tile.
 
-Train a matched **512 experts / `E[K]=7.5` / double-width expert** control. Freeze the winner only
+Train a matched **512 experts / `E[K]=8.25` / double-width expert** control. Freeze the winner only
 after comparing held-out loss and downstream quality at matched total parameters, active parameters,
 tokens, data order, optimizer, and wall-clock serving measurements.
 
@@ -186,9 +186,10 @@ tokens, data order, optimizer, and wall-clock serving measurements.
 `K=0` is coherent only because the shared path remains active. It lets easy token-pass decisions
 skip routed experts. It should be available, but rare unless evidence says otherwise.
 
-The budget distribution matters more than the range printed in a config. If half of token-pass
-decisions use `K=0`, maintaining mean 15 forces the remaining half to average 30. Maintaining mean
-16 forces every remaining decision to use 32. That creates an unnecessarily bimodal policy and
+The budget distribution matters more than the range printed in a config. With maximum K=32, a mean
+of 16.5 makes it mathematically impossible for half the token-pass decisions to use K=0: even if
+every remaining decision used K=32, the maximum zero fraction would be 48.4375%. The desired zero
+fraction should be far smaller so the controller does not create a gratuitously bimodal policy and
 large hard-token working sets. The controller therefore needs:
 
 - an explicit mean routed-parameter constraint, not merely a maximum K;
@@ -209,12 +210,12 @@ With `d_latent=512` and 32 expert-bearing blocks:
 
 | Configuration | `d_ff_expert` | Parameters/expert | Routed bank | Mean routed/pass |
 |---|---:|---:|---:|---:|
-| 512 full experts, K=7.5 | 1,792 | 2,752,512 | 45.097B | 0.661B |
-| 1,024 half experts, K=15 | 896 | 1,376,256 | 45.097B | 0.661B |
-| 512 full experts, K=7.5 | 1,856 | 2,850,816 | 46.708B | 0.684B |
-| 1,024 half experts, K=15 | 928 | 1,425,408 | 46.708B | 0.684B |
-| 512 full experts, K=7.5 | 1,920 | 2,949,120 | 48.318B | 0.708B |
-| 1,024 half experts, K=15 | 960 | 1,474,560 | 48.318B | 0.708B |
+| 512 full experts, K=8.25 | 1,792 | 2,752,512 | 45.097B | 0.727B |
+| 1,024 half experts, K=16.5 | 896 | 1,376,256 | 45.097B | 0.727B |
+| 512 full experts, K=8.25 | 1,856 | 2,850,816 | 46.708B | 0.753B |
+| 1,024 half experts, K=16.5 | 928 | 1,425,408 | 46.708B | 0.753B |
+| 512 full experts, K=8.25 | 1,920 | 2,949,120 | 48.318B | 0.779B |
+| 1,024 half experts, K=16.5 | 960 | 1,474,560 | 48.318B | 0.779B |
 
 The 896/1,792, 928/1,856, and 960/1,920 pairs leave approximately 4.903B, 3.292B, and 1.682B
 respectively below a nominal 50B ceiling for the shared experts, latent projections, 28 Mamba-3
@@ -224,7 +225,7 @@ close the active-pass ledger below.
 
 ### 3.1 What A2B counts
 
-The `0.684B` figure for the 928-wide candidate is **routed experts only**. A2B is the complete set of
+The `0.753B` figure for the 928-wide candidate is **routed experts only**. A2B is the complete set of
 weights applied during one recurrent body pass:
 
 ```text
@@ -248,24 +249,45 @@ Eventide-scaled HCA/CSA definitions.
 
 | Per-pass component | Provisional parameters |
 |---|---:|
-| Routed micro-experts, `d_ff=928`, `E[K]=15` | 684,195,840 |
-| 32 full-width shared SwiGLU experts, `d_ff=2048` | 402,653,184 |
+| Routed micro-experts, `d_ff=928`, `E[K]=16.5` | 752,615,424 |
+| 32 full-width shared SwiGLU experts, `d_ff=1536` | 301,989,888 |
 | 28 Mamba-3 SISO mixers | 732,637,696 |
 | Four attention projection placeholders | 67,108,864 |
 | 32 latent down/up projection pairs | 67,108,864 |
 | 32 hidden-to-1,024 expert routers | 67,108,864 |
-| **Bridge subtotal** | **2,020,813,312** |
+| **Bridge subtotal** | **1,988,569,600** |
 | mHC, depth/K controllers, memory, norms, exact HCA/CSA delta | **not yet included** |
 
-Therefore 928-wide micro-experts do **not** create an A0.684B model. They already produce an
-approximately A2.021B recurrent body before the remaining small and HCA/CSA-specific terms. The
-current candidate is likely modestly **over** A2B once those terms are added.
+The new bridge subtotal leaves 11,430,400 parameters below A2B for mHC, depth/K controllers,
+memory, norms, and the difference between the attention placeholder and exact HCA/CSA definitions.
+If those terms exceed that envelope, lower the learned K budget slightly rather than silently
+exceeding A2B. At the current dimensions, each `+1.0` in mean K adds exactly 45,613,056 active
+parameters per pass.
 
-Changing only the micro-expert width to 896 lowers the same bridge subtotal to 1,997,220,352 before
-the omitted terms. That makes 896 the stronger active-budget starting point, but it reduces the
-routed bank from 46.708B to 45.097B and may leave the whole model below 50B unless the exact
-non-routed and once-per-token components use the remaining capacity. Freeze neither 896 nor 928
-until one ledger simultaneously satisfies total parameters and active parameters.
+The routed bank contains 46,707,769,344 stored parameters and the 32 shared experts contain
+301,989,888, leaving 2,990,240,768 below a nominal 50B ceiling for every other stored component.
+The final ledger must close both the stored and active budgets simultaneously.
+
+The shared expert now consumes 15.10% of the A2B target, while routed experts consume 37.63% at
+mean K=16.5. Shared-to-routed active FFN parameters are 40.13%, down from 58.85% in the former
+`d_ff=2048`, K=15 design. This retains a full-width path around the 4x latent bottleneck without
+letting universal computation dominate MoRE's specialization budget.
+
+### 3.2 Dynamic active-pass envelope
+
+Using the bridge ledger's fixed 1,235,954,176 non-routed parameters, the current K envelope is:
+
+| Routed K | Routed parameters | Bridge active/pass |
+|---:|---:|---:|
+| 0 | 0 | 1,235,954,176 |
+| 16.5 mean | 752,615,424 | 1,988,569,600 |
+| 32 | 1,459,617,792 | 2,695,571,968 |
+
+These values still exclude the explicitly open mHC/controller/memory/norm/HCA/CSA delta. At mean
+depth 2, the bridge body applies 3,977,139,200 parameters per generated token on average. At the
+absolute `K=32`, depth-5 corner it applies 13,477,859,840, before once-per-token head and CALM
+correction work. Recurrence may reuse the same unique weights, but every pass is another parameter
+application.
 
 The ledger must separately report:
 
@@ -322,6 +344,11 @@ micro-expert design must rerun the ledger with measured router, top-k, dispatch,
 GEMM, state-scan, and output-head kernels. Thirteen thousand accepted tokens/s remains a target
 until those measurements and end-to-end acceptance traces exist.
 
+The routing input to that rerun is now `E[K]=16.5`: under independent routing, B32 touches an
+expected 415.104 half-experts per layer, while a 512-node verification load touches 1,023.750 and
+therefore nearly saturates the bank. The smaller shared expert saves deterministic weight traffic,
+but ordinary B32 autoregression touches more routed expert weights than the historical K=15 model.
+
 ## 6. Cache contract
 
 Conversation state is durable and multi-entry, not limited to the most recent call:
@@ -340,12 +367,14 @@ precision recipe, and tenant/user salt.
 
 ## 7. Decision gates before the architecture is frozen
 
-1. Produce an executable parameter/byte ledger for both 1,024/15 and 512/7.5.
+1. Produce an executable parameter/byte ledger for both 1,024/16.5 and the matched 512/8.25 control,
+   with `d_ff=1536` full-width shared experts in both.
 2. Benchmark representative ternary expert GEMV and grouped-GEMM shapes on the actual RTX 5070 Ti.
 3. Benchmark router + top-k + dispatch separately at N=512 and N=1,024.
 4. Run matched small-scale pretraining canaries for 512/full and 1,024/half, including K/depth joint
    routing stability.
-5. Compare 928 and 960 micro-expert widths after the non-routed parameter ledger is exact.
+5. Reconcile `d_ff=928`, shared `d_ff=1536`, and the learned K target against the exact non-routed
+   ledger; adjust mean K before changing the stored expert bank.
 6. Ablate tied versus untied embedding/head and ternary versus NVFP4 head on identical held-out data.
 7. Validate every proposed ternary tensor family independently before setting the final precision
    allowlist.
