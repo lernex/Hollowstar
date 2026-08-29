@@ -90,8 +90,8 @@ Mean `K = 16` on the 1,024-half-expert design is **not** iso-active:
 8 / 7.5 - 1 = 6.6667% more routed expert parameters and compute
 ```
 
-That may ultimately be worth buying, but it must be called an A2B-budget increase rather than a
-free consequence of finer granularity.
+That may ultimately be worth buying, but it must be called an increase to the routed share of the
+A2B budget rather than a free consequence of finer granularity.
 
 ### 2.2 Why 512 was chosen originally
 
@@ -209,16 +209,63 @@ With `d_latent=512` and 32 expert-bearing blocks:
 
 | Configuration | `d_ff_expert` | Parameters/expert | Routed bank | Mean routed/pass |
 |---|---:|---:|---:|---:|
+| 512 full experts, K=7.5 | 1,792 | 2,752,512 | 45.097B | 0.661B |
+| 1,024 half experts, K=15 | 896 | 1,376,256 | 45.097B | 0.661B |
 | 512 full experts, K=7.5 | 1,856 | 2,850,816 | 46.708B | 0.684B |
 | 1,024 half experts, K=15 | 928 | 1,425,408 | 46.708B | 0.684B |
 | 512 full experts, K=7.5 | 1,920 | 2,949,120 | 48.318B | 0.708B |
 | 1,024 half experts, K=15 | 960 | 1,474,560 | 48.318B | 0.708B |
 
-The 928/1,856 pair leaves approximately 3.292B parameters below a nominal 50B ceiling for the
-shared experts, latent projections, 28 Mamba-3 blocks, four attention blocks, routers/controllers,
-mHC, recurrent memory, normalization, CALM/MTP, and embeddings/head. The 960/1,920 pair leaves only
-approximately 1.682B. Therefore **928 is the safer current micro-expert width**, while 960 is the
-hardware-friendlier challenger. Neither is locked until the whole-model ledger exists.
+The 896/1,792, 928/1,856, and 960/1,920 pairs leave approximately 4.903B, 3.292B, and 1.682B
+respectively below a nominal 50B ceiling for the shared experts, latent projections, 28 Mamba-3
+blocks, four attention blocks, routers/controllers, mHC, recurrent memory, normalization, CALM/MTP,
+and embeddings/head. The expert width cannot be selected from total parameters alone; it must also
+close the active-pass ledger below.
+
+### 3.1 What A2B counts
+
+The `0.684B` figure for the 928-wide candidate is **routed experts only**. A2B is the complete set of
+weights applied during one recurrent body pass:
+
+```text
+active/pass = routed experts
+            + always-on shared experts
+            + sequence mixers
+            + latent down/up projections
+            + expert routers and K/depth controls
+            + recurrent mHC and memory machinery
+            + normalization and other per-pass weights
+```
+
+The embedding lookup, final output head, and any truly once-per-generated-token CALM/correction
+module are reported separately and are not multiplied by MoRE depth.
+
+The following is a **bridge ledger**, not the final HCA/CSA/mHC ledger. It uses the official
+Mamba-3 SISO defaults `expand=2`, `d_state=128`, `headdim=64`, and `ngroups=1`. From the official
+March 2026 implementation, one `d_model=2048` SISO mixer has 26,165,632 parameters. The
+attention line temporarily uses `4*d_model^2` per attention block and must be replaced by the actual
+Eventide-scaled HCA/CSA definitions.
+
+| Per-pass component | Provisional parameters |
+|---|---:|
+| Routed micro-experts, `d_ff=928`, `E[K]=15` | 684,195,840 |
+| 32 full-width shared SwiGLU experts, `d_ff=2048` | 402,653,184 |
+| 28 Mamba-3 SISO mixers | 732,637,696 |
+| Four attention projection placeholders | 67,108,864 |
+| 32 latent down/up projection pairs | 67,108,864 |
+| 32 hidden-to-1,024 expert routers | 67,108,864 |
+| **Bridge subtotal** | **2,020,813,312** |
+| mHC, depth/K controllers, memory, norms, exact HCA/CSA delta | **not yet included** |
+
+Therefore 928-wide micro-experts do **not** create an A0.684B model. They already produce an
+approximately A2.021B recurrent body before the remaining small and HCA/CSA-specific terms. The
+current candidate is likely modestly **over** A2B once those terms are added.
+
+Changing only the micro-expert width to 896 lowers the same bridge subtotal to 1,997,220,352 before
+the omitted terms. That makes 896 the stronger active-budget starting point, but it reduces the
+routed bank from 46.708B to 45.097B and may leave the whole model below 50B unless the exact
+non-routed and once-per-token components use the remaining capacity. Freeze neither 896 nor 928
+until one ledger simultaneously satisfies total parameters and active parameters.
 
 The ledger must separately report:
 
@@ -309,9 +356,10 @@ precision recipe, and tenant/user salt.
 
 - **May 2025:** Boix-Adsera and Rigollet, [The Power of Fine-Grained Experts](https://arxiv.org/abs/2505.06839).
 - **December 2025 / January 2026:** NVIDIA, [Nemotron 3 white paper](https://research.nvidia.com/labs/nemotron/files/NVIDIA-Nemotron-3-White-Paper.pdf) and [LatentMoE](https://research.nvidia.com/labs/nemotron/LatentMoE/).
+- **March 2026:** [Mamba-3 paper](https://arxiv.org/abs/2603.15569) and
+  [official SISO implementation](https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/mamba3.py).
 - **May 2026:** Li et al., [Slicing and Dicing: Configuring Optimal Mixtures of Experts](https://arxiv.org/abs/2605.11689).
 - **February 2026:** [DFlash](https://arxiv.org/abs/2602.06036).
 - **June 2026:** [CaDDTree](https://arxiv.org/abs/2606.01813).
 - **July 2026:** [EcoSpec](https://arxiv.org/abs/2607.12696).
 - **August 2026:** [DARTree](https://arxiv.org/abs/2608.13524).
-
