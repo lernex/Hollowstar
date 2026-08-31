@@ -518,6 +518,22 @@ downstream accuracy 58.30 versus 58.12 for BitNet b1.58, while perplexity moved 
 relative to BitNet-v2 A8, average accuracy moved from 58.73 to 58.30. That is small, not literally
 zero, and the largest experiment was 7B rather than a recurrent 50B hybrid.
 
+An **August 2026** literature check finds an active ternary field, but the newer work is centered on
+post-training quantization and inference rather than native pretraining at Eventide's scale:
+
+- **February 2026:** TernaryLM trains ternary weights natively, but only in a 132M-parameter
+  TinyStories-scale Transformer.
+- **June 2026:** TWLA reports W1.58A4 through post-training quantization, orthogonal distribution
+  shaping, and activation mixed precision; it does not establish native NVFP4 training.
+- **June 2026:** CAT-Q ternarizes pretrained 14B-to-235B models, but its result is post-training
+  conversion from higher-precision checkpoints rather than ternary pretraining.
+- **August 2026:** ScaleQ-1.58 extends ternary post-training quantization to reasoning and MoE models
+  up to 235B, again without validating a native ternary recurrent model.
+
+BitNet-v2 therefore remains the closest published precedent for native A4 continuation despite its
+age. None of these results closes the Eventide-specific gate for NVFP4 activations, a recurrent
+LatentMoE body, 50B-scale native training, or fused execution on an RTX 5070 Ti.
+
 Therefore Eventide should include the Hadamard-aware topology from the beginning, retain A8 for the
 main training phase, then run an NVFP4-QAT continuation phase over at least the final 5% of training
 tokens. INT4 and NVFP4 must be evaluated separately. The fallback checkpoint remains A8 until the
@@ -670,6 +686,10 @@ precision recipe, and tenant/user salt.
 - **June 2025, retained by Microsoft's current July 2026 BitNet index:**
   [BitNet v2 native A4](https://arxiv.org/abs/2504.18415) and the
   [current official BitNet repository](https://github.com/microsoft/BitNet).
+- **February 2026:** [TernaryLM native 1.5-bit training](https://arxiv.org/abs/2602.07374).
+- **June 2026:** [TWLA W1.58A4 post-training quantization](https://arxiv.org/abs/2606.13054) and
+  [CAT-Q ternary post-training quantization](https://arxiv.org/abs/2606.26650).
+- **August 2026:** [ScaleQ-1.58 reasoning-model post-training quantization](https://arxiv.org/abs/2608.01078).
 - **May 2025:** Boix-Adsera and Rigollet, [The Power of Fine-Grained Experts](https://arxiv.org/abs/2505.06839).
 - **December 2025 / January 2026:** NVIDIA, [Nemotron 3 white paper](https://research.nvidia.com/labs/nemotron/files/NVIDIA-Nemotron-3-White-Paper.pdf) and [LatentMoE](https://research.nvidia.com/labs/nemotron/LatentMoE/).
 - **March 2026:** [Mamba-3 paper](https://arxiv.org/abs/2603.15569) and
