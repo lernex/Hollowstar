@@ -41,6 +41,7 @@ class EventideDimensions:
     hca_compress_rate: int = 128
     index_heads: int = 32
     index_head_dim: int = 128
+    csa_attention_top_k: int = 512
     first_attention_layer_index: int = 7
     partial_rope_dim: int = 32
     local_attention_window: int = 128
@@ -56,6 +57,9 @@ class EventideDimensions:
     ngram_value_dim: int = 64
     ngram_injection_sites: int = 4
     ngram_logical_parameters: int = 200_000_000_000
+    prefill_batch: int = 32
+    prefill_context: int = 262_144
+    dense_fp4_tflops: float = 703.0
 
 
 def calculate(d: EventideDimensions = EventideDimensions()) -> dict[str, object]:
@@ -404,6 +408,144 @@ def calculate(d: EventideDimensions = EventideDimensions()) -> dict[str, object]
         - (conservative_mixed_weight_bytes + sequence_state_bytes / 2)
         / (1 << 30),
     }
+
+    # Uncached causal prefill roofline for W1.58A4-NVFP4 execution. Large
+    # affine weights remain packed ternary in VRAM and expand into FP4 tiles;
+    # this count uses NVIDIA's dense FP4 rate rather than the 2:4 sparse rate.
+    # The output head and final norm are amortized across a full prefix because
+    # inference needs logits only for the final input position.
+    prefill_depth = 2.0
+    body_applications_first_pass = (
+        active["mean_per_pass"]
+        + memory_applications_first_pass
+        - memory_active_unique
+    )
+    body_applications_later_pass = (
+        active["mean_per_pass"]
+        + memory_applications_later_pass
+        - memory_active_unique
+    )
+    prefill_body_applications = (
+        body_applications_first_pass
+        + (prefill_depth - 1) * body_applications_later_pass
+    )
+    prefill_interface_applications = (
+        d.d_model
+        + d.n_streams * d.d_model
+        + ngram_projection
+        + ngram_concatenated_dim
+        + (untied_head + d.d_model) / d.prefill_context
+    )
+    prefill_parameter_flops = 2 * (
+        prefill_body_applications + prefill_interface_applications
+    )
+
+    # QK dot products and weighted-value reductions each cost one MAC, hence
+    # four FLOPs per head dimension for every attended key. Causal prefill sees
+    # half of the final compressed history on average. The CSA indexer scans
+    # compressed candidates even though core attention retains only top-k.
+    core_attention_flops_per_key = 4 * nh * c
+    mean_hca_compressed_keys = d.prefill_context / (2 * d.hca_compress_rate)
+    hca_attention_flops = (
+        prefill_depth
+        * d.n_hca
+        * core_attention_flops_per_key
+        * (mean_hca_compressed_keys + d.local_attention_window)
+    )
+    mean_csa_index_candidates = d.prefill_context / (2 * d.csa_compress_rate)
+    csa_index_flops = (
+        prefill_depth
+        * d.n_csa
+        * (2 * d.index_heads * d.index_head_dim)
+        * mean_csa_index_candidates
+    )
+    csa_attention_flops = (
+        prefill_depth
+        * d.n_csa
+        * core_attention_flops_per_key
+        * (d.csa_attention_top_k + d.local_attention_window)
+    )
+
+    # First-order selective-scan arithmetic: state decay, input update, and
+    # output reduction. Online Hadamard transforms, activation quantization,
+    # ternary unpack, softmax, top-k, and launch costs remain in the utilization
+    # discount instead of being mislabeled as tensor-core FLOPs.
+    mamba_scan_flops_estimate = (
+        prefill_depth
+        * d.n_mamba
+        * 5
+        * mamba_inner
+        * d.mamba_state_dim
+    )
+    prefill_counted_flops_per_token = (
+        prefill_parameter_flops
+        + hca_attention_flops
+        + csa_index_flops
+        + csa_attention_flops
+        + mamba_scan_flops_estimate
+    )
+    dense_fp4_flops_per_second = d.dense_fp4_tflops * 1e12
+
+    def throughput_at_utilization(utilization: float) -> dict[str, float]:
+        aggregate = (
+            dense_fp4_flops_per_second
+            * utilization
+            / prefill_counted_flops_per_token
+        )
+        per_stream = aggregate / d.prefill_batch
+        return {
+            "aggregate_tokens_per_second": aggregate,
+            "per_stream_tokens_per_second": per_stream,
+            "seconds_for_b32_full_262k_prefixes": (
+                d.prefill_batch * d.prefill_context / aggregate
+            ),
+        }
+
+    non_parameter_flops_per_pass = (
+        hca_attention_flops
+        + csa_index_flops
+        + csa_attention_flops
+        + mamba_scan_flops_estimate
+    ) / prefill_depth
+
+    def throughput_at_depth(depth: float) -> dict[str, float]:
+        body_applications = (
+            body_applications_first_pass
+            + (depth - 1) * body_applications_later_pass
+        )
+        flops_per_token = (
+            2 * (body_applications + prefill_interface_applications)
+            + depth * non_parameter_flops_per_pass
+        )
+        aggregate = 0.98 * dense_fp4_flops_per_second / flops_per_token
+        return {
+            "counted_flops_per_token": flops_per_token,
+            "aggregate_tokens_per_second_at_98pct": aggregate,
+            "per_stream_tokens_per_second_at_98pct": aggregate / d.prefill_batch,
+        }
+
+    prefill_roofline = {
+        "batch": d.prefill_batch,
+        "context_per_sequence": d.prefill_context,
+        "mean_more_depth": prefill_depth,
+        "dense_fp4_peak_tflops": d.dense_fp4_tflops,
+        "body_parameter_applications_first_pass": body_applications_first_pass,
+        "body_parameter_applications_later_pass": body_applications_later_pass,
+        "parameter_matmul_flops_per_token": prefill_parameter_flops,
+        "hca_attention_flops_per_token": hca_attention_flops,
+        "csa_index_flops_per_token": csa_index_flops,
+        "csa_attention_flops_per_token": csa_attention_flops,
+        "mamba_scan_flops_per_token_estimate": mamba_scan_flops_estimate,
+        "counted_flops_per_token": prefill_counted_flops_per_token,
+        "throughput_by_equivalent_end_to_end_fp4_utilization": {
+            f"{int(utilization * 100)}pct": throughput_at_utilization(utilization)
+            for utilization in (1.0, 0.98, 0.85, 0.75, 0.60, 0.50)
+        },
+        "depth_sensitivity_at_98pct": {
+            f"mean_depth_{depth:g}": throughput_at_depth(depth)
+            for depth in (1.0, 1.5, 2.0)
+        },
+    }
     control_experts = d.n_experts // 2
     control_ffn = d.expert_ffn * 2
     control_max_k = d.max_k // 2
@@ -461,6 +603,7 @@ def calculate(d: EventideDimensions = EventideDimensions()) -> dict[str, object]
     assert memory_applications_first_pass == 86_801_508
     assert memory_applications_later_pass == 96_326_788
     assert control["stored_untied"] == 50_114_097_781
+    assert abs(prefill_counted_flops_per_token - 10_047_095_232.015625) < 1e-6
 
     return {
         "dimensions": asdict(d),
@@ -487,6 +630,7 @@ def calculate(d: EventideDimensions = EventideDimensions()) -> dict[str, object]
         "runtime_nonparameter_buffers": runtime_buffers,
         "external_ngram_memory": ngram_storage,
         "b32_262k_decode_residency_estimate": deployment,
+        "b32_262k_w1_58a4_prefill_roofline": prefill_roofline,
         "totals": totals,
         "matched_512_expert_control": control,
     }

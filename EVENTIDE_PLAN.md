@@ -46,6 +46,7 @@ packed ternary kernels are ingredients, not a stack of independently multiplicat
 | Vocabulary | 131,072 | Working default |
 | Embedding/head | untied working default; ternary head if it passes parity gates | Quality/storage ablation remains required |
 | Weight storage | packed ternary target for large matrices, approximately 1.6 bpw | Target, not measured execution rate |
+| Prefill matrix activations | **NVFP4 A4 target** with Hadamard outlier control and BF16 state boundaries | Preferred candidate; Eventide QAT gate required |
 | Higher-precision islands | smallest validated type for state, scales, reductions, normalization, and fragile controls | Tensor-by-tensor gate |
 | Standard context | 262,144 original tokens | Working default |
 | Extended context | 524,288 and 1,048,576 evaluation tiers | Open release gate |
@@ -490,6 +491,9 @@ runtime while passing quality and stability gates.” The working order is:
    fragile controller logits at their lowest validated higher precision.
 4. Report effective whole-model bits/weight including scales, packing slack, alignment, and every
    non-ternary tensor. “98% ternary” is not a byte ledger.
+5. Target W1.58A4-NVFP4 for large prefill GEMMs: keep weights packed as ternary in VRAM, expand
+   them losslessly into FP4 tensor-core tiles, quantize the corresponding matrix activation to
+   block-scaled NVFP4, accumulate in FP32, and return to a BF16 state boundary.
 
 Packed radix-3 storage at 20 trits per 32 bits is approximately 1.6 payload bits/weight. This is a
 storage fact, not a claim of native 1.6-bit arithmetic. The RTX 5070 Ti has native FP4 paths, not a
@@ -499,6 +503,25 @@ Untied embedding/head weights are the working default, not a frozen conclusion. 
 additional vocabulary matrix in storage, but the output head must still execute whether the weights
 are tied or untied. The release decision remains a quality/storage ablation; it is not a reason to
 remove the head from throughput accounting.
+
+The A4 decision does **not** make every live value four-bit. mHC residual streams, Mamba recurrent
+state, recurrent depth memory, normalization and softmax reductions, controller logits, and other
+stateful feedback remain BF16/FP32 until individual evidence supports promotion. A4 describes the
+operands of the large matrix multiplications; those operands are transient tiles rather than the
+authoritative residual representation.
+
+Microsoft's **June 2025** BitNet-v2 evidence supports the direction but not an unconditional
+NVFP4-quality claim. It tested ternary weights with **INT4** activations, per-token absmean scaling,
+and online Hadamard transforms for outlier-prone attention-output and FFN-down inputs. Models were
+trained for 95B tokens in A8 and continue-trained for 5B tokens in A4. At 7B, A4 reported average
+downstream accuracy 58.30 versus 58.12 for BitNet b1.58, while perplexity moved from 9.09 to 9.24;
+relative to BitNet-v2 A8, average accuracy moved from 58.73 to 58.30. That is small, not literally
+zero, and the largest experiment was 7B rather than a recurrent 50B hybrid.
+
+Therefore Eventide should include the Hadamard-aware topology from the beginning, retain A8 for the
+main training phase, then run an NVFP4-QAT continuation phase over at least the final 5% of training
+tokens. INT4 and NVFP4 must be evaluated separately. The fallback checkpoint remains A8 until the
+paired loss, long-context retrieval, routing/depth calibration, and downstream suite pass.
 
 ### 4.1 B32 x 262K decode-residency estimate
 
@@ -534,6 +557,52 @@ it remains tight and may fail on a display-attached GPU or with fragmentation. B
 sequence-state portion to 1.179 GiB and leaves 4.226 GiB before auxiliary/workspace allocations, so
 it is the required fallback. The 200B N-gram table stays in system RAM/NVMe;
 placing it in VRAM would make this configuration impossible.
+
+### 4.2 B32 x 262K W1.58A4 prefill roofline
+
+The RTX 5070 Ti's official dense peak is **703 FP4 TFLOP/s with FP32 accumulation**; the advertised
+1,406 AI TOPS is the 2:4 sparse figure. Ordinary ternary zeros are not automatically structured 2:4
+sparsity, so this ledger uses 703 and gives no sparse credit.
+
+For one completely uncached 262,144-token prefix in each of 32 streams, mean MoRE depth 2, and
+inference logits computed only at the final prompt position, the counted work per input token is:
+
+| Work per input token | GFLOP |
+|---|---:|
+| Recurrent body and once-per-token learned projections | 8.357 |
+| HCA compressed plus local attention | 0.302 |
+| CSA Lightning Indexer scan | 1.074 |
+| CSA selected plus local core attention | 0.168 |
+| Mamba selective-scan estimate | 0.147 |
+| **Counted total** | **10.047** |
+
+The vocabulary head is not applied to every prompt token during serving, which is why the prefill
+count is lower than the decode head-inclusive invocation count. The attention terms include causal
+average history at 262K: HCA compression 128, CSA compression 4, CSA top-k 512, and local window
+128. The executable ledger deliberately leaves online Hadamard transforms, NVFP4 quantization,
+ternary tile expansion, softmax, top-k, synchronization, and kernel launches in the end-to-end
+utilization discount instead of pretending they are FP4 tensor-core work.
+
+| Equivalent end-to-end share of dense FP4 peak | B32 aggregate input tok/s | Fair-share tok/s per stream | Time for 32 full 262K prefixes |
+|---:|---:|---:|---:|
+| 100% mathematical ceiling | 69,970 | 2,187 | 119.9 s |
+| 98% optimistic ceiling | **68,571** | **2,143** | **122.3 s** |
+| 85% exceptional engine target | **59,475** | **1,859** | **141.0 s** |
+| 75% strong engine target | 52,478 | 1,640 | 159.9 s |
+| 60% conservative target | 41,982 | 1,312 | 199.8 s |
+| 50% | 34,985 | 1,093 | 239.8 s |
+
+The honest target band is **52K–59K aggregate raw prefill tok/s**, or **1.64K–1.86K per stream at
+B32**, until the fused kernel is measured. The 68.6K result is a roofline, not a forecast. Prefix
+cache hits can avoid most of this work; CALM/DFlash do not multiply prompt-prefill throughput.
+A4 halves transient matrix-activation tile bytes relative to A8 and should improve batched kernel
+occupancy, but it does not halve the persistent HCA/CSA or Mamba sequence state. Consequently, it
+does not make B64 x 262K fit in 16 GiB under the current state layout.
+
+MoRE depth remains a first-order sensitivity: at the same artificial 98% equivalent utilization,
+mean prefill depth 1.5 gives approximately 91.5K aggregate / 2.86K per stream, and depth 1 gives
+137.3K / 4.29K. These are not the working forecast; depth 2 remains the budget until real routing
+traces prove prompt tokens exit earlier.
 
 ## 5. Exact custom serving stack
 
@@ -598,6 +667,9 @@ precision recipe, and tenant/user salt.
 
 ## 8. Primary research anchors
 
+- **June 2025, retained by Microsoft's current July 2026 BitNet index:**
+  [BitNet v2 native A4](https://arxiv.org/abs/2504.18415) and the
+  [current official BitNet repository](https://github.com/microsoft/BitNet).
 - **May 2025:** Boix-Adsera and Rigollet, [The Power of Fine-Grained Experts](https://arxiv.org/abs/2505.06839).
 - **December 2025 / January 2026:** NVIDIA, [Nemotron 3 white paper](https://research.nvidia.com/labs/nemotron/files/NVIDIA-Nemotron-3-White-Paper.pdf) and [LatentMoE](https://research.nvidia.com/labs/nemotron/LatentMoE/).
 - **March 2026:** [Mamba-3 paper](https://arxiv.org/abs/2603.15569) and
@@ -612,3 +684,4 @@ precision recipe, and tenant/user salt.
 - **July 2026:** [EcoSpec](https://arxiv.org/abs/2607.12696).
 - **August 2026:** [DARTree](https://arxiv.org/abs/2608.13524).
 - **RTX 5070 Ti hardware:** [NVIDIA reference specifications](https://www.nvidia.com/en-us/geforce/graphics-cards/50-series/rtx-5070-family/).
+- **RTX 5070 Ti precision peaks:** [NVIDIA RTX Blackwell architecture](https://images.nvidia.com/aem-dam/Solutions/geforce/blackwell/nvidia-rtx-blackwell-gpu-architecture.pdf).
