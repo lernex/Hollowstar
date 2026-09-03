@@ -102,7 +102,8 @@ def estimate_train_flop_terms(
       run once per mHC stream on top of that;
     * the tied ``lm_head``, whose weights the audit attributes to
       ``embedding`` and therefore excludes from ``active_per_pass``, and which
-      executes exactly once per token because ACT gives each token one exit;
+      executes once on every active token-pass so straight-through ACT can
+      assign credit to each possible exit;
     * work with no parameters at all -- attention's quadratic score/value
       GEMMs and the Mamba-2 chunked-scan einsums.
 
@@ -168,8 +169,9 @@ def estimate_train_flop_terms(
         - (stream_projections + route_projection + bank_projections),
     )
 
-    # One ACT exit per token, so the vocabulary projection runs once per token
-    # regardless of depth.  Tied or not, it is real executed work.
+    # The hard-forward exit mass is zero/one, but the vocabulary projection
+    # still runs on every active token-pass so the straight-through continuation
+    # policy receives credit at every possible exit.
     head_parameters = config.vocab_size * d
 
     mamba_inner = d * config.mamba_expand
@@ -186,7 +188,7 @@ def estimate_train_flop_terms(
     return {
         "active_parameters": 6.0 * tokens * active_per_pass * passes,
         "repeated_depth_memory": 6.0 * tokens * repeated_memory_parameters * passes,
-        "lm_head": 6.0 * tokens * head_parameters,
+        "lm_head": 6.0 * tokens * head_parameters * passes,
         # Causal attention halves the dense score/value product.  Later passes
         # attend only over the packed active subset, so this is an upper bound.
         "attention_scores": (
@@ -210,9 +212,11 @@ def estimate_hardware_flops(
 ) -> float:
     """Return the FLOPs the accelerators actually issue.
 
-    ``activation_recompute_policy: pass`` replays a whole physical pass before
-    its backward, so the hardware performs two forwards per backward instead of
-    one.  Model FLOPs are 2F + 4F; executed FLOPs are 2F + 2F + 4F.
+    The chunked LM head is always activation-checkpointed, so even policy
+    ``none`` replays that projection once during backward. Policy ``pass``
+    replays a whole physical pass before its backward, so the hardware performs
+    two forwards per backward instead of one. Model FLOPs are 2F + 4F; executed
+    FLOPs are 2F + 2F + 4F for every checkpointed region.
 
     ``layer`` replays one block at a time instead of one pass at a time.  Every
     block is still replayed exactly once, so the executed total is identical --
@@ -230,7 +234,11 @@ def estimate_hardware_flops(
     )
     if config.activation_recompute_policy in {"pass", "layer"}:
         return model_flops * 8.0 / 6.0
-    return model_flops
+    passes = float(observed_mean_passes or config.target_mean_passes)
+    lm_head_forward_replay = (
+        2.0 * tokens * config.vocab_size * config.d_model * passes
+    )
+    return model_flops + lm_head_forward_replay
 
 
 def estimated_mfu(

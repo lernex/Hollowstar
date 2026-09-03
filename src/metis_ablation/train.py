@@ -527,6 +527,8 @@ def _train_row_inner(
         if learning_rate is not None
         else float(config.autotune.preferred_learning_rate)
     )
+    if not math.isfinite(base_lr) or base_lr <= 0:
+        raise ValueError("learning_rate must be finite and positive")
     optimizer, optimizer_summary = build_training_optimizers(
         model,
         learning_rate=base_lr,

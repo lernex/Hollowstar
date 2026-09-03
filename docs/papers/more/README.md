@@ -120,15 +120,15 @@ and untyped perform identically, we built an expensive MeSH and should say so.
 
 - [x] Naming boundary (contribution vs integration) — criterion fixed in `main.tex` §5
 - [x] Ablation ladder — 11 rows + 2 random-policy controls
-- [x] Compute plan — sizing, 50B budget, 384-APU allocation, DP strategy
+- [x] Compute plan — sizing, 50B budget, measured two-batch 384-APU schedule, DP strategy
 - [x] MeSH read; MoRE-RM distinction written (`main.tex` §4.2)
 - [x] Title chosen
 - [x] `ablation` model family, dense-FFN path, pathway-frozen mode, random-policy controls
 - [x] Grouped expert GEMM (numerically identical to the loop; test asserts it)
 - [x] `metis_ablation` package: specs, strided sampler, DP trainer, routing analyzer, campaign planner
-- [x] Slurm launchers for the 13-row wave (`slurm/ablation/`)
+- [x] Slurm launchers for the 13-row Wave 1, split into safe 1a/1b batches (`slurm/ablation/`)
 - [ ] Resolve `[CHECK]` citations in `references.bib`
-- [x] Wave 2 (scaling ladder, 8 rows) and wave 3 (paired seeds, 3 rows)
+- [x] Wave 2 (scaling ladder, 8 rows) and wave 3 (paired seeds, 5 rows)
 - [x] Archetype learning-rate sweep generator
 - [x] Checkpoint resume with atomic writes and a schedule-change guard
 - [x] FP8-vs-BF16 parity check per run
@@ -144,4 +144,4 @@ and untyped perform identically, we built an expensive MeSH and should say so.
 | `src/metis_ablation/train.py` | Data-parallel trainer with replicated experts. Separate from `metis_training.train` so the 1T runs are not destabilized. |
 | `src/metis_ablation/analysis.py` | Hook-based routing analyzer: depth/width distributions, depth–width correlation, expert transition matrices, halt calibration. |
 | `src/metis_ablation/campaign.py` | `plan` prints the wave and cost model; `slurm` emits the launchers. |
-| `tests/test_more_ablations.py` | 51 tests, including "production audits must not move", "iso-FLOP rows really are iso-FLOP", and end-to-end trainer runs for all 24 rows. |
+| `tests/test_more_ablations.py` | Tests for production immutability, iso-FLOP model work, measured launch geometry, safe execution batches, and end-to-end trainer runs for all 26 rows. |

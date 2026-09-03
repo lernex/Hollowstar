@@ -33,19 +33,19 @@ from metis_training.model_config import (
 )
 
 
-# 448 = 2^6 * 7, so it divides every APU count in the campaign (16, 28, 32, 64)
-# and the per-rank sequence count is always an integer.  At 4096 tokens that is
-# a 1,835,008-token optimizer step -- large enough to hide the gradient
-# all-reduce behind compute (see ablation_campaign.md section 5).
-GLOBAL_BATCH_SEQUENCES = 448
+# The accepted Portage lanes all use 480 sequences per optimizer step.  Its
+# factors cover the measured 20/24/40/80-APU Wave-1 allocations while keeping
+# every row on the identical token stream.  At 4096 tokens this is a
+# 1,966,080-token optimizer step.
+GLOBAL_BATCH_SEQUENCES = 480
 SEQUENCE_LENGTH = 4_096
 GLOBAL_BATCH_TOKENS = GLOBAL_BATCH_SEQUENCES * SEQUENCE_LENGTH
 
 # Total APUs released to the campaign once Praxis and Logos drop to 64 each for
 # continued pretraining and post-training.
 CAMPAIGN_APUS = 384
-# One node held back for evaluation, canaries, and restarts.
-CAMPAIGN_SPARE_APUS = 4
+CAMPAIGN_SPARE_APUS = 0
+
 
 def _is_prime(value: int) -> bool:
     if value < 2:
@@ -132,8 +132,8 @@ def _proxy_ngram_injection_layers(n_layers: int) -> tuple[int, ...]:
 
 def _autotune() -> AutotuneConfig:
     return AutotuneConfig(
-        micro_batch_sizes=(4, 2, 1),
-        grad_accum_steps=(1, 2, 4, 7, 8),
+        micro_batch_sizes=(12, 10, 8, 6, 5, 4, 3, 2, 1),
+        grad_accum_steps=(1, 2, 4, 5, 6, 7, 8),
         global_token_batch=GlobalTokenBatchBounds(
             GLOBAL_BATCH_TOKENS, GLOBAL_BATCH_TOKENS, GLOBAL_BATCH_TOKENS
         ),
@@ -143,10 +143,33 @@ def _autotune() -> AutotuneConfig:
     )
 
 
+def _ablation_precision(*, dense_gate_up_bf16: bool) -> PrecisionConfig:
+    precision = PrecisionConfig()
+    fp8_roles = tuple(
+        role for role in precision.fp8_roles if role != "mhc_controller"
+    )
+    bf16_roles = precision.bf16_roles + ("mhc_controller",)
+    if dense_gate_up_bf16:
+        fp8_roles = tuple(
+            role for role in fp8_roles if role != "expert_gate_up_projection"
+        )
+        bf16_roles += ("expert_gate_up_projection",)
+    return replace(
+        precision,
+        fp8_scaling="blockwise",
+        fp8_roles=fp8_roles,
+        bf16_roles=bf16_roles,
+        expert_collective_wire="bfloat16",
+        require_fp8_validation=True,
+        allow_bf16_fallback=True,
+    )
+
+
 def proxy_config(
     *,
     world_size: int,
     ffn_mode: str = "moe",
+    dense_gate_up_bf16: bool = False,
     mhc_backend: str = "fused_required",
     mamba_backend: str = "fused_required",
     attention_backend: str = "varlen_fused_required",
@@ -162,18 +185,7 @@ def proxy_config(
     wall-clock differences partly an artifact of routing skew.
     """
 
-    precision = PrecisionConfig()
-    precision = replace(
-        precision,
-        fp8_scaling="blockwise",
-        fp8_roles=tuple(
-            role for role in precision.fp8_roles if role != "mhc_controller"
-        ),
-        bf16_roles=precision.bf16_roles + ("mhc_controller",),
-        expert_collective_wire="bfloat16",
-        require_fp8_validation=True,
-        allow_bf16_fallback=True,
-    )
+    precision = _ablation_precision(dense_gate_up_bf16=dense_gate_up_bf16)
     base: dict[str, Any] = {
         "schema": "metis.model-family/v1",
         "family": "ablation",
@@ -219,6 +231,7 @@ def proxy_config(
         "expert_parallel_size": 1,
         "expert_replicas": int(world_size),
         "expert_execution": "grouped_gemm",
+        "expert_weight_chunks": 4,
         "max_passes": 5,
         "target_mean_passes": 2.0,
         # The trained policy uses easy / medium / hard depth levels. All three
@@ -264,6 +277,7 @@ def proxy_config(
         "continuation_entropy_coefficient": 0.001,
         "tie_embeddings": True,
         "moe_dispatch_chunks": 1,
+        "lm_head_chunk_size": 8_192,
         "activation_recompute_policy": "layer",
         "ffn_mode": ffn_mode,
         "ngram_memory": _ngram_config(ngram_slots_per_head),
@@ -323,10 +337,12 @@ class AblationSpec:
     pathway_mode: str = "per_pass"
     curriculum_max_passes: int | None = None
     depth_memory: bool = True
+    dense_gate_up_bf16: bool = False
     iso_flop: bool = True
-    muon_state_bits: int = 32
+    muon_state_bits: int = 8
     muon_ns_steps: int = 5
-    optimizer_sharding: str = "none"
+    optimizer_sharding: str = "world"
+    measured_tokens_per_second: float | None = None
     notes: str = ""
     config_overrides: Mapping[str, Any] = field(default_factory=dict)
 
@@ -338,6 +354,13 @@ class AblationSpec:
         if self.optimizer_sharding not in {"none", "world"}:
             raise ValueError(
                 f"{self.name}: optimizer_sharding must be none or world."
+            )
+        if (
+            self.measured_tokens_per_second is not None
+            and self.measured_tokens_per_second <= 0
+        ):
+            raise ValueError(
+                f"{self.name}: measured_tokens_per_second must be positive."
             )
         product = self.apus * self.micro_batch * self.grad_accum
         if product != GLOBAL_BATCH_SEQUENCES:
@@ -361,6 +384,7 @@ class AblationSpec:
         return proxy_config(
             world_size=self.apus,
             ffn_mode=self.ffn_mode,
+            dense_gate_up_bf16=self.dense_gate_up_bf16,
             ngram_slots_per_head=slots,
             overrides=fields,
             **kwargs,
@@ -559,22 +583,31 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         name="dense-flop-matched",
         title="Dense, FLOP-matched",
         isolates="dense reference at MoRE's executed compute",
-        apus=28, micro_batch=4, grad_accum=4,
+        apus=24, micro_batch=10, grad_accum=2,
         ffn_mode="dense",
         dense_ffn_intermediate_dim=_DENSE_FLOP_MATCHED_INTERMEDIATE,
         continuation_mode="depth_one",
-        notes="No recursion, no experts. The frontier point a reviewer expects.",
+        dense_gate_up_bf16=True,
+        config_overrides={"activation_recompute_policy": "none"},
+        notes=(
+            "No recursion, no experts. The frontier point a reviewer expects. "
+            "Its measured lane must be refreshed after per-pass LM-head FLOP "
+            "accounting widened the dense control."
+        ),
     ),
     AblationSpec(
         index=2,
         name="dense-param-matched",
         title="Dense, parameter-matched",
         isolates="dense reference at MoRE's stored parameters",
-        apus=56, micro_batch=2, grad_accum=4,
+        apus=80, micro_batch=6, grad_accum=1,
         ffn_mode="dense",
         dense_ffn_intermediate_dim=_DENSE_PARAM_MATCHED_INTERMEDIATE,
         continuation_mode="depth_one",
+        dense_gate_up_bf16=True,
         iso_flop=False,
+        measured_tokens_per_second=664_770,
+        config_overrides={"activation_recompute_policy": "none"},
         notes="Deliberately expensive per token; report against FLOPs, not steps.",
     ),
     AblationSpec(
@@ -582,22 +615,26 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         name="moe-k4",
         title="MoE k=4",
         isolates="sparse routing without recursion",
-        apus=16, micro_batch=4, grad_accum=7,
+        apus=20, micro_batch=12, grad_accum=2,
         continuation_mode="depth_one",
         routed_k_mode="fixed", fixed_routed_k=4,
         depth_memory=False,
         iso_flop=False,
+        measured_tokens_per_second=574_808,
+        config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
         index=4,
         name="moe-k8",
         title="MoE k=8",
         isolates="wider single-pass MoE reference",
-        apus=16, micro_batch=4, grad_accum=7,
+        apus=20, micro_batch=12, grad_accum=2,
         continuation_mode="depth_one",
         routed_k_mode="fixed", fixed_routed_k=8,
         depth_memory=False,
         iso_flop=False,
+        measured_tokens_per_second=635_051,
+        config_overrides={"activation_recompute_policy": "none"},
         notes=(
             "Not a compute match: k=4->8 adds 0.29 GFLOP/token while a second "
             "pass adds 1.76. Expert GEMMs are a minority of the block."
@@ -608,10 +645,12 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         name="loop-fixed",
         title="Fixed LoopMoE",
         isolates="recursion at fixed depth and fixed k",
-        apus=28, micro_batch=4, grad_accum=4,
+        apus=40, micro_batch=12, grad_accum=1,
         continuation_mode="fixed_max", curriculum_max_passes=2,
         routed_k_mode="fixed", fixed_routed_k=4,
         depth_memory=False,
+        measured_tokens_per_second=680_845,
+        config_overrides={"activation_recompute_policy": "layer"},
         notes="Reimplements the published fixed-loop MoE design point in our backbone.",
     ),
     AblationSpec(
@@ -619,11 +658,13 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         name="loop-pathway-frozen",
         title="Loop, pathway frozen",
         isolates="PATHWAY: identical to row 5 except experts are chosen once",
-        apus=28, micro_batch=4, grad_accum=4,
+        apus=40, micro_batch=12, grad_accum=1,
         continuation_mode="fixed_max", curriculum_max_passes=2,
         routed_k_mode="fixed", fixed_routed_k=4,
         pathway_mode="frozen",
         depth_memory=False,
+        measured_tokens_per_second=569_067,
+        config_overrides={"activation_recompute_policy": "layer"},
         notes="Exactly iso-FLOP with row 5. The only evidence for axis three.",
     ),
     AblationSpec(
@@ -631,64 +672,73 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         name="mor-dense-ffn",
         title="MoR + dense FFN",
         isolates="adaptive depth without sparse experts",
-        apus=28, micro_batch=4, grad_accum=4,
+        apus=80, micro_batch=6, grad_accum=1,
         ffn_mode="dense",
         dense_ffn_intermediate_dim=_DENSE_RECURSIVE_INTERMEDIATE,
         continuation_mode="budgeted",
         depth_memory=False,
+        measured_tokens_per_second=651_111,
+        config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
         index=8,
         name="mor-fixed-k",
         title="MoR + fixed-k MoE",
         isolates="DEPTH: adaptive depth against row 5's fixed depth",
-        apus=28, micro_batch=4, grad_accum=4,
+        apus=80, micro_batch=6, grad_accum=1,
         continuation_mode="budgeted",
         routed_k_mode="fixed", fixed_routed_k=4,
         depth_memory=False,
+        measured_tokens_per_second=693_859,
+        config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
         index=9,
         name="fixed-depth-adaptive-k",
         title="Fixed depth, adaptive k",
         isolates="WIDTH: adaptive k against row 5's fixed k",
-        apus=28, micro_batch=4, grad_accum=4,
+        apus=40, micro_batch=12, grad_accum=1,
         continuation_mode="fixed_max", curriculum_max_passes=2,
         routed_k_mode="budgeted",
         depth_memory=False,
+        measured_tokens_per_second=567_609,
+        config_overrides={"activation_recompute_policy": "layer"},
     ),
     AblationSpec(
         index=10,
         name="more-core",
         title="MoRE-Core",
         isolates="all three axes together",
-        # The proxy fits eight 4K sequences per MI300A at the target depth.
-        # Holding the global batch fixed while halving accumulation amortizes
-        # Python, recompute setup, and loader overhead over twice the tokens.
-        apus=28, micro_batch=8, grad_accum=2,
+        apus=80, micro_batch=6, grad_accum=1,
         continuation_mode="budgeted",
         routed_k_mode="budgeted",
         depth_memory=False,
+        measured_tokens_per_second=512_083,
+        config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
         index=11,
         name="more-rm",
         title="MoRE-RM",
         isolates="route-typed recurrent depth memory",
-        apus=32, micro_batch=2, grad_accum=7,
+        apus=80, micro_batch=6, grad_accum=1,
         continuation_mode="budgeted",
         routed_k_mode="budgeted",
         depth_memory=True,
+        measured_tokens_per_second=695_082,
+        config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
         index=12,
         name="random-k",
         title="Random-k control",
         isolates="is the LEARNED width policy doing anything?",
-        apus=28, micro_batch=4, grad_accum=4,
+        apus=80, micro_batch=6, grad_accum=1,
         continuation_mode="budgeted",
         routed_k_mode="random",
         depth_memory=False,
+        measured_tokens_per_second=686_428,
+        config_overrides={"activation_recompute_policy": "none"},
         notes="Maximum-entropy width distribution at the same mean budget.",
     ),
     AblationSpec(
@@ -696,10 +746,12 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         name="random-depth",
         title="Random-depth control",
         isolates="is the LEARNED depth policy doing anything?",
-        apus=28, micro_batch=4, grad_accum=4,
+        apus=80, micro_batch=6, grad_accum=1,
         continuation_mode="random",
         routed_k_mode="budgeted",
         depth_memory=False,
+        measured_tokens_per_second=705_660,
+        config_overrides={"activation_recompute_policy": "none"},
         notes="Memoryless halt tuned to the same mean depth.",
     ),
 )
@@ -794,6 +846,7 @@ def scaled_ablation_ladder(scale: str) -> tuple[AblationSpec, ...]:
             replace(
                 spec,
                 dense_ffn_intermediate_dim=dense_intermediate,
+                measured_tokens_per_second=None,
                 config_overrides=overrides,
                 notes=f"{spec.notes} Run at the {scale.upper()} geometry.",
             )
@@ -820,18 +873,18 @@ def _scaled_dense_intermediate(scale: str, objective: str, passes: int) -> int:
 
 
 # Allocation per (scale, archetype), chosen so every wave-2 row finishes within
-# about half an hour of the others.  Each count divides 448, so the global batch
+# about half an hour of the others.  Each tuple multiplies to 480, so the global batch
 # is identical to wave 1 and the scaling curve is directly comparable to the main
 # ladder rather than merely similar.  ``(apus, micro_batch, grad_accum)``.
 _SCALING_ALLOCATION: dict[tuple[str, str], tuple[int, int, int]] = {
-    ("xs", "dense-param-matched"): (64, 1, 7),
-    ("xs", "moe-k4"): (32, 2, 7),
-    ("xs", "more-core"): (56, 8, 1),
-    ("xs", "more-rm"): (56, 2, 4),
-    ("xxs", "dense-param-matched"): (28, 4, 4),
-    ("xxs", "moe-k4"): (16, 4, 7),
-    ("xxs", "more-core"): (28, 8, 2),
-    ("xxs", "more-rm"): (28, 4, 4),
+    ("xs", "dense-param-matched"): (60, 1, 8),
+    ("xs", "moe-k4"): (40, 2, 6),
+    ("xs", "more-core"): (60, 8, 1),
+    ("xs", "more-rm"): (60, 2, 4),
+    ("xxs", "dense-param-matched"): (24, 5, 4),
+    ("xxs", "moe-k4"): (16, 5, 6),
+    ("xxs", "more-core"): (24, 10, 2),
+    ("xxs", "more-rm"): (24, 5, 4),
 }
 
 
@@ -843,7 +896,8 @@ def _scaling_specs() -> tuple[AblationSpec, ...]:
         for archetype in _SCALING_ARCHETYPES:
             apus, micro_batch, grad_accum = _SCALING_ALLOCATION[(scale, archetype)]
             base = spec_by_name(archetype, ladder=ABLATION_LADDER)
-            overrides = dict(geometry)
+            overrides = dict(base.config_overrides)
+            overrides.update(geometry)
             dense_intermediate = base.dense_ffn_intermediate_dim
             if base.ffn_mode == "dense":
                 dense_intermediate = _scaled_dense_intermediate(
@@ -866,7 +920,11 @@ def _scaling_specs() -> tuple[AblationSpec, ...]:
                     pathway_mode=base.pathway_mode,
                     curriculum_max_passes=base.curriculum_max_passes,
                     depth_memory=base.depth_memory,
+                    dense_gate_up_bf16=base.dense_gate_up_bf16,
                     iso_flop=False,
+                    muon_state_bits=base.muon_state_bits,
+                    muon_ns_steps=base.muon_ns_steps,
+                    optimizer_sharding=base.optimizer_sharding,
                     notes=f"Scaling ladder point at {scale}; pairs with {archetype}.",
                     config_overrides=overrides,
                 )
@@ -879,7 +937,7 @@ def _scaling_specs() -> tuple[AblationSpec, ...]:
 # Wave 3 -- paired seeds
 #
 # A second seed is insurance against one lucky headline result, not a different
-# model design.  Only the three rows the abstract quotes need it.
+# model design. The three headline rows and the pathway pair receive it.
 
 _SEEDED_ROWS = (
     "dense-param-matched",
@@ -897,36 +955,20 @@ _SEEDED_ROWS = (
 )
 SECOND_SEED = 27_182_818
 
-# Sequences per global batch are fixed campaign-wide, so apus x micro x accum
-# must come to 448 for every row. dense-param-matched keeps the wide allocation
-# because it is by far the most expensive row -- 12.96 GF/tok against 7.30 --
-# and it is the one that would run out of wall clock first at low MFU. The rest
-# take half of it, which keeps the wave inside the campaign's APU budget.
-# micro_batch follows each row's wave-1 choice: more-rm carries depth memory and
-# was given the smaller micro batch there.
-_SEED_ALLOCATION: dict[str, tuple[int, int, int]] = {
-    "dense-param-matched": (112, 1, 4),
-    "more-core": (56, 8, 1),
-    "more-rm": (56, 2, 4),
-    "loop-fixed": (56, 4, 2),
-    "loop-pathway-frozen": (56, 4, 2),
-}
-
 
 def _seed_specs() -> tuple[AblationSpec, ...]:
     specs: list[AblationSpec] = []
     for offset, name in enumerate(_SEEDED_ROWS):
         base = spec_by_name(name, ladder=ABLATION_LADDER)
-        apus, micro, accum = _SEED_ALLOCATION[name]
         specs.append(
             AblationSpec(
                 index=40 + offset,
                 name=f"{name}-seed2",
                 title=f"{base.title} (seed 2)",
                 isolates=f"paired repeat of {name}",
-                apus=apus,
-                micro_batch=micro,
-                grad_accum=accum,
+                apus=base.apus,
+                micro_batch=base.micro_batch,
+                grad_accum=base.grad_accum,
                 ffn_mode=base.ffn_mode,
                 dense_ffn_intermediate_dim=base.dense_ffn_intermediate_dim,
                 continuation_mode=base.continuation_mode,
@@ -935,7 +977,11 @@ def _seed_specs() -> tuple[AblationSpec, ...]:
                 pathway_mode=base.pathway_mode,
                 curriculum_max_passes=base.curriculum_max_passes,
                 depth_memory=base.depth_memory,
+                dense_gate_up_bf16=base.dense_gate_up_bf16,
                 iso_flop=base.iso_flop,
+                muon_state_bits=base.muon_state_bits,
+                muon_ns_steps=base.muon_ns_steps,
+                optimizer_sharding=base.optimizer_sharding,
                 notes=(
                     f"Second seed for {name}; identical data order, different "
                     "initialization. Launch with --seed "
@@ -974,7 +1020,6 @@ ALL_SPECS: tuple[AblationSpec, ...] = (
 )
 
 
-
 def wave_for_row(name: str) -> str:
     for wave, specs in WAVES.items():
         if any(spec.name == name for spec in specs):
@@ -982,15 +1027,41 @@ def wave_for_row(name: str) -> str:
     raise KeyError(f"Unknown ablation row {name!r}")
 
 
+WAVE_1_BATCHES: dict[str, tuple[AblationSpec, ...]] = {
+    "1a": tuple(
+        spec_by_name(name, ladder=ABLATION_LADDER)
+        for name in (
+            "dense-flop-matched",
+            "moe-k4",
+            "moe-k8",
+            "more-core",
+            "more-rm",
+            "random-k",
+            "random-depth",
+        )
+    ),
+    "1b": tuple(
+        spec_by_name(name, ladder=ABLATION_LADDER)
+        for name in (
+            "dense-param-matched",
+            "loop-fixed",
+            "loop-pathway-frozen",
+            "mor-dense-ffn",
+            "mor-fixed-k",
+            "fixed-depth-adaptive-k",
+        )
+    ),
+}
+
+
 def validate_allocation(
-    specs: tuple[AblationSpec, ...] | None = None,
+    specs: tuple[AblationSpec, ...],
     *,
     total_apus: int = CAMPAIGN_APUS,
     spare_apus: int = CAMPAIGN_SPARE_APUS,
 ) -> dict[str, int]:
     """Fail loudly if a wave does not fit, rather than at submission time."""
 
-    specs = ABLATION_LADDER if specs is None else specs
     allocated = sum(spec.apus for spec in specs)
     budget = total_apus - spare_apus
     if allocated > budget:
@@ -1024,6 +1095,7 @@ __all__ = [
     "GLOBAL_BATCH_SEQUENCES",
     "GLOBAL_BATCH_TOKENS",
     "SEQUENCE_LENGTH",
+    "WAVE_1_BATCHES",
     "proxy_config",
     "spec_by_name",
     "validate_allocation",

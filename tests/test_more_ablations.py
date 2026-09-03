@@ -14,6 +14,7 @@ from metis_ablation.specs import (
     ABLATION_LADDER,
     GLOBAL_BATCH_SEQUENCES,
     GLOBAL_BATCH_TOKENS,
+    WAVE_1_BATCHES,
     AblationSpec,
     dense_control_report,
     spec_by_name,
@@ -27,7 +28,7 @@ from metis_mamba.optim import (
     _zeropower_via_newton_schulz5,
 )
 from metis_training.data import PHASE_STARTS, PHASE_TOKENS
-from metis_training.metrics import estimate_hardware_flops
+from metis_training.metrics import estimate_hardware_flops, estimate_train_flops
 from metis_training.model import (
     BudgetController,
     CurriculumState,
@@ -99,13 +100,21 @@ def test_every_row_consumes_an_identical_global_batch():
         assert spec.apus * spec.micro_batch * spec.grad_accum == GLOBAL_BATCH_SEQUENCES
 
 
-def test_more_core_uses_the_measured_eight_sequence_micro_batch():
+def test_more_core_uses_the_measured_portage_lane():
     primary = spec_by_name("more-core")
-    assert (primary.apus, primary.micro_batch, primary.grad_accum) == (28, 8, 2)
-    for name in ("more-core-xs", "more-core-xxs", "more-core-seed2"):
-        spec = spec_by_name(name)
-        assert spec.micro_batch == 8
-        assert spec.apus * spec.micro_batch * spec.grad_accum == GLOBAL_BATCH_SEQUENCES
+    assert (primary.apus, primary.micro_batch, primary.grad_accum) == (80, 6, 1)
+    assert primary.measured_tokens_per_second == 512_083
+    assert primary.muon_state_bits == 8
+    assert primary.muon_ns_steps == 5
+    assert primary.optimizer_sharding == "world"
+    config = primary.model_config(
+        mhc_backend="torch_reference",
+        mamba_backend="torch_reference",
+        attention_backend="torch_reference",
+    )
+    assert config.activation_recompute_policy == "none"
+    assert config.expert_weight_chunks == 4
+    assert config.lm_head_chunk_size == 8_192
 
 
 def test_primary_proxy_is_the_parameter_matched_shallow_recurrent_block():
@@ -141,16 +150,23 @@ def test_primary_proxy_is_the_parameter_matched_shallow_recurrent_block():
 
 
 def test_rank_counts_are_whole_nodes_and_fit_the_allocation():
-    report = validate_allocation()
-    assert report["rows"] == 13
-    assert report["spare_apus"] >= 4
+    assert sum(len(specs) for specs in WAVE_1_BATCHES.values()) == 13
+    assert {
+        spec.name for specs in WAVE_1_BATCHES.values() for spec in specs
+    } == {spec.name for spec in ABLATION_LADDER}
+    for specs in WAVE_1_BATCHES.values():
+        report = validate_allocation(specs)
+        assert report["spare_apus"] >= 0
     for spec in ABLATION_LADDER:
         assert spec.apus % 4 == 0, f"{spec.name} is not a whole number of nodes"
 
 
 def test_iso_flop_rows_really_are_iso_flop():
-    """Rows 1 and 5-13 must land within a percent of each other, or the paper's
-    matched-compute claim is decoration."""
+    """Rows 1 and 5-13 must match in model work.
+
+    Checkpoint replay is a systems choice and is reported separately as
+    hardware FLOPs; it must not redefine the scientific compute budget.
+    """
 
     costs = {}
     for spec in ABLATION_LADDER:
@@ -165,7 +181,7 @@ def test_iso_flop_rows_really_are_iso_flop():
         width = (
             float(spec.fixed_routed_k) if spec.routed_k_mode == "fixed" else 4.0
         )
-        costs[spec.name] = estimate_hardware_flops(
+        costs[spec.name] = estimate_train_flops(
             config, tokens=1, observed_mean_passes=depth, observed_mean_routed_k=width
         )
     assert len(costs) >= 10
@@ -323,7 +339,7 @@ def test_identical_token_windows_across_different_world_sizes():
     read the same tokens for the same optimizer step."""
 
     windows = {}
-    for apus, micro, accum in ((16, 4, 7), (28, 4, 4), (56, 2, 4)):
+    for apus, micro, accum in ((20, 12, 2), (24, 10, 2), (80, 6, 1)):
         sampler = _sampler()
         covered: set[int] = set()
         for rank in range(apus):
@@ -341,7 +357,7 @@ def test_identical_token_windows_across_different_world_sizes():
             base = cursor + rank * span
             covered.update(range(base, base + span, sampler.stream.sequence_length))
         windows[apus] = covered
-    reference = windows[16]
+    reference = windows[20]
     assert len(reference) == GLOBAL_BATCH_SEQUENCES
     for apus, covered in windows.items():
         assert covered == reference, f"world size {apus} read a different window"
@@ -1401,11 +1417,13 @@ def test_schedule_is_identical_across_rows():
 
 
 def test_every_wave_allocation_fits_and_uses_whole_nodes():
-    from metis_ablation.specs import WAVES
+    from metis_ablation.specs import WAVES, WAVE_1_BATCHES
 
     for wave, specs in WAVES.items():
-        report = validate_allocation(specs)
-        assert report["spare_apus"] >= 0, wave
+        batches = WAVE_1_BATCHES.values() if wave == "1" else (specs,)
+        for batch in batches:
+            report = validate_allocation(batch)
+            assert report["spare_apus"] >= 0, wave
         for spec in specs:
             assert spec.apus % 4 == 0, (wave, spec.name)
             assert (
@@ -1485,6 +1503,10 @@ def test_seed_wave_mirrors_its_parents_and_changes_only_the_seed(tmp_path: Path)
         assert spec.continuation_mode == parent.continuation_mode
         assert spec.routed_k_mode == parent.routed_k_mode
         assert spec.depth_memory == parent.depth_memory
+        assert spec.apus == parent.apus
+        assert spec.micro_batch == parent.micro_batch
+        assert spec.grad_accum == parent.grad_accum
+        assert spec.config_overrides == parent.config_overrides
 
     emit_slurm(
         tmp_path,
@@ -1513,8 +1535,16 @@ def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
     )
     body = (tmp_path / "wave1" / "10-more-core.sbatch").read_text()
     assert "--seed 1234" in body
-    assert "export WORLD_SIZE=28" in body
+    assert "export WORLD_SIZE=80" in body
     assert "srun --kill-on-bad-exit=1 --network=disable_rdzv_get" in body
+    assert "METIS_ABLATION_LR_MORE_CORE" in body
+    assert not (tmp_path / "wave1" / "launch-wave.sh").exists()
+    batch_a = (tmp_path / "wave1" / "launch-wave-1a.sh").read_text()
+    batch_b = (tmp_path / "wave1" / "launch-wave-1b.sh").read_text()
+    assert "384 APUs" in batch_a
+    assert "360 APUs" in batch_b
+    assert "10-more-core.sbatch" in batch_a
+    assert "10-more-core.sbatch" not in batch_b
 
 
 def test_every_task_in_a_launcher_gets_its_own_rank_and_apu(tmp_path: Path):
@@ -1570,6 +1600,7 @@ def test_every_task_in_a_launcher_gets_its_own_rank_and_apu(tmp_path: Path):
         env={
             "PATH": f"{bin_dir}:/usr/bin:/bin",
             "METIS_ABLATION_RUNTIME": str(runtime),
+            "METIS_ABLATION_LR_MORE_CORE": "0.00018",
             "SLURM_JOB_NODELIST": "node[0-6]",
         },
         capture_output=True,
@@ -1638,6 +1669,17 @@ def test_sweep_covers_every_archetype_at_every_rate(tmp_path: Path):
         assert f"--learning-rate {rate:g}" in bodies
     # A sweep must not resume a previous sweep's checkpoint.
     assert bodies.count("--no-resume") == len(scripts)
+    assert not (tmp_path / "sweep" / "launch-sweep.sh").exists()
+    batch_a = (tmp_path / "sweep" / "launch-sweep-1a.sh").read_text()
+    batch_b = (tmp_path / "sweep" / "launch-sweep-1b.sh").read_text()
+    assert "360 APUs" in batch_a
+    assert "300 APUs" in batch_b
+    assert "dense-param-matched" in batch_a
+    assert "loop-fixed" in batch_a
+    assert "moe-k4" not in batch_a
+    assert "moe-k4" in batch_b
+    assert "more-core" in batch_b
+    assert "dense-param-matched" not in batch_b
 
 
 def test_campaign_plan_runs_for_every_wave():
@@ -1647,6 +1689,60 @@ def test_campaign_plan_runs_for_every_wave():
         payload = plan(wave=wave)
         assert payload["rows"], wave
         assert payload["campaign_exaflops"] > 0, wave
+
+
+def test_wave_one_plan_uses_the_measured_two_batch_schedule():
+    from metis_ablation.campaign import plan
+
+    payload = plan(wave="1")
+    assert payload["allocation"]["lane_apus"] == 744
+    assert payload["allocation"]["allocated_apus"] == 384
+    assert set(payload["allocation"]["execution_batches"]) == {"1a", "1b"}
+    assert payload["measured_wall_clock_hours"] is None
+    batch_b = set(payload["allocation"]["execution_batches"]["1b"]["rows"])
+    assert {
+        "loop-fixed",
+        "loop-pathway-frozen",
+        "mor-fixed-k",
+        "fixed-depth-adaptive-k",
+    } <= batch_b
+
+
+def test_selected_learning_rates_are_applied_by_archetype(tmp_path: Path):
+    from metis_ablation.campaign import emit_slurm
+
+    rates = {
+        "dense-param-matched": 1.2e-4,
+        "moe-k4": 1.8e-4,
+        "loop-fixed": 2.6e-4,
+        "more-core": 1.2e-4,
+    }
+    emit_slurm(
+        tmp_path,
+        wave="1",
+        repo_root="/repo",
+        output_root="/out",
+        release_root="/release",
+        learning_rates=rates,
+    )
+    assert "--learning-rate 0.00018" in (
+        tmp_path / "wave1" / "04-moe-k8.sbatch"
+    ).read_text()
+    assert "--learning-rate 0.00026" in (
+        tmp_path / "wave1" / "06-loop-pathway-frozen.sbatch"
+    ).read_text()
+    assert "--learning-rate 0.00012" in (
+        tmp_path / "wave1" / "11-more-rm.sbatch"
+    ).read_text()
+    with pytest.raises(ValueError, match="finite and positive"):
+        emit_slurm(
+            tmp_path / "bad",
+            wave="1",
+            repo_root="/repo",
+            output_root="/out",
+            release_root="/release",
+            learning_rates={**rates, "more-core": float("nan")},
+        )
 
 
 # --------------------------------------------------------------------------
@@ -1830,8 +1926,13 @@ def _smoke_spec(name: str):
 
     base = spec_by_name(name)
     spec = AblationSpec(
-        **{**base.__dict__, "apus": 1, "micro_batch": GLOBAL_BATCH_SEQUENCES,
-           "grad_accum": 1}
+        **{
+            **base.__dict__,
+            "apus": 1,
+            "micro_batch": GLOBAL_BATCH_SEQUENCES,
+            "grad_accum": 1,
+            "optimizer_sharding": "none",
+        }
     )
     object.__setattr__(spec, "micro_batch", 1)
     object.__setattr__(spec, "grad_accum", 2)
@@ -1907,6 +2008,12 @@ def test_throughput_canary_can_skip_the_terminal_checkpoint(
     manifest = json.loads((tmp_path / spec.name / "run.json").read_text())
     assert manifest["final_checkpoint"] is False
     assert list((tmp_path / spec.name / "checkpoints").iterdir()) == []
+
+
+def test_trainer_rejects_a_nonfinite_learning_rate(tiny_proxy, tmp_path: Path):
+    spec = _smoke_spec("more-core")
+    with pytest.raises(ValueError, match="finite and positive"):
+        _train(spec, tmp_path, max_steps=1, learning_rate=float("nan"))
 
 
 def test_resume_picks_up_where_it_stopped(tiny_proxy, tmp_path: Path):

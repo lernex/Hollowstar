@@ -330,10 +330,21 @@ def test_layer_recompute_is_priced_like_pass_recompute() -> None:
 
     base = Metis16Config.tiny_for_tests()
     model_flops = estimate_train_flops(base, tokens=4096)
-    for policy, factor in (("none", 1.0), ("pass", 8 / 6), ("layer", 8 / 6)):
+    lm_head_replay = (
+        2
+        * 4096
+        * base.vocab_size
+        * base.d_model
+        * base.target_mean_passes
+    )
+    for policy, expected in (
+        ("none", model_flops + lm_head_replay),
+        ("pass", model_flops * 8 / 6),
+        ("layer", model_flops * 8 / 6),
+    ):
         config = replace(base, activation_recompute_policy=policy)
         assert estimate_hardware_flops(config, tokens=4096) == pytest.approx(
-            model_flops * factor
+            expected
         )
 
 
