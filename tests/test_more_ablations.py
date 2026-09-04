@@ -1818,6 +1818,7 @@ def test_sweep_covers_every_archetype_at_every_rate(tmp_path: Path):
     bodies = "\n".join(path.read_text() for path in scripts)
     for rate in SWEEP_LEARNING_RATES:
         assert f"--learning-rate {rate:g}" in bodies
+    assert bodies.count("--schedule-total-steps 25431") == len(scripts)
     # A sweep must not resume a previous sweep's checkpoint.
     assert bodies.count("--no-resume") == len(scripts)
     assert not (tmp_path / "sweep" / "launch-sweep.sh").exists()
@@ -2172,7 +2173,7 @@ def _train(spec, root: Path, **kwargs):
     defaults = dict(
         release_root=None, budget_tokens=20_000_000, learning_rate=1.0e-4,
         seed=1, telemetry_every=100, analysis_every=0, checkpoint_every=0,
-        device_override="cpu", synthetic=True,
+        schedule_total_steps=None, device_override="cpu", synthetic=True,
     )
     defaults.update(kwargs)
     return train_row(spec, output_root=root, **defaults)

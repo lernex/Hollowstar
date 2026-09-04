@@ -736,6 +736,7 @@ def train_row(
     analysis_every: int,
     telemetry_every: int,
     max_steps: int | None,
+    schedule_total_steps: int | None,
     device_override: str | None,
     synthetic: bool,
     resume: bool = True,
@@ -760,6 +761,7 @@ def train_row(
             analysis_every=analysis_every,
             telemetry_every=telemetry_every,
             max_steps=max_steps,
+            schedule_total_steps=schedule_total_steps,
             synthetic=synthetic,
             resume=resume,
             final_checkpoint=final_checkpoint,
@@ -782,6 +784,7 @@ def _train_row_inner(
     analysis_every: int,
     telemetry_every: int,
     max_steps: int | None,
+    schedule_total_steps: int | None,
     synthetic: bool,
     resume: bool = True,
     final_checkpoint: bool = True,
@@ -932,7 +935,17 @@ def _train_row_inner(
     if max_steps is not None:
         total_steps = min(total_steps, max_steps)
 
-    schedule = AblationSchedule(total_steps=total_steps, base_learning_rate=base_lr)
+    resolved_schedule_steps = (
+        total_steps if schedule_total_steps is None else int(schedule_total_steps)
+    )
+    if resolved_schedule_steps < total_steps:
+        raise ValueError(
+            "schedule_total_steps cannot be shorter than the executed run"
+        )
+    schedule = AblationSchedule(
+        total_steps=resolved_schedule_steps,
+        base_learning_rate=base_lr,
+    )
     analyzer = RoutingAnalyzer(config, max_passes=config.max_passes)
     source_revision: str | None = (
         _source_revision(require_clean=not synthetic)
@@ -1288,7 +1301,10 @@ def _train_row_inner(
             # gate exists to catch divergence later in the run, and aborting a
             # 20-hour row on a step-zero transient would be the gate causing the
             # failure it is meant to detect.
-            warmup_steps = max(100, int(total_steps * schedule.warmup_fraction))
+            warmup_steps = max(
+                100,
+                int(schedule.total_steps * schedule.warmup_fraction),
+            )
             enforce_health_gates(
                 loss=step_loss,
                 grad_norm_value=grad_norm,
@@ -1487,6 +1503,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--analysis-every", type=int, default=1_000)
     parser.add_argument("--telemetry-every", type=int, default=10)
     parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument(
+        "--schedule-total-steps",
+        type=int,
+        default=None,
+        help=(
+            "Use a longer reference schedule while executing a short canary; "
+            "the LR sweep uses the full 50B horizon"
+        ),
+    )
     parser.add_argument("--device", default=None)
     parser.add_argument(
         "--no-resume",
@@ -1519,6 +1544,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         analysis_every=args.analysis_every,
         telemetry_every=args.telemetry_every,
         max_steps=args.max_steps,
+        schedule_total_steps=args.schedule_total_steps,
         device_override=args.device,
         synthetic=args.synthetic,
         resume=not args.no_resume,

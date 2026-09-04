@@ -326,7 +326,7 @@ exec python -m metis_ablation.train \\
   --release-root "$METIS_ABLATION_RELEASE" \\
   --budget-tokens {budget_tokens} \\
   --seed {seed} \\
-{learning_rate_arg}  --checkpoint-every {checkpoint_every} \\
+{learning_rate_arg}{schedule_total_steps_arg}  --checkpoint-every {checkpoint_every} \\
   --analysis-every {analysis_every} \\
   --telemetry-every {telemetry_every}
 ' &
@@ -448,6 +448,7 @@ def emit_slurm(
             budget_tokens=budget_tokens,
             seed=row_seed,
             learning_rate_arg=learning_rate_arg,
+            schedule_total_steps_arg="",
             checkpoint_every=checkpoint_every,
             analysis_every=analysis_every,
             telemetry_every=telemetry_every,
@@ -574,6 +575,10 @@ def emit_sweep(
                 budget_tokens=budget_tokens,
                 seed=seed,
                 learning_rate_arg=f"  --learning-rate {rate:g} \\\n",
+                schedule_total_steps_arg=(
+                    "  --schedule-total-steps "
+                    f"{DEFAULT_BUDGET_TOKENS // GLOBAL_BATCH_TOKENS} \\\n"
+                ),
                 checkpoint_every=0,
                 analysis_every=0,
                 telemetry_every=10,
