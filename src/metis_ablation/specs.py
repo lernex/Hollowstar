@@ -1042,7 +1042,7 @@ WAVE_1_BATCHES: dict[str, tuple[AblationSpec, ...]] = {
             "more-core",
             "more-rm",
             "random-k",
-            "random-depth",
+            "mor-fixed-k",
         )
     ),
     "1b": tuple(
@@ -1052,8 +1052,8 @@ WAVE_1_BATCHES: dict[str, tuple[AblationSpec, ...]] = {
             "loop-fixed",
             "loop-pathway-frozen",
             "mor-dense-ffn",
-            "mor-fixed-k",
             "fixed-depth-adaptive-k",
+            "random-depth",
         )
     ),
 }
