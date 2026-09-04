@@ -1549,6 +1549,8 @@ def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
     assert "--seed 1234" in body
     assert "export WORLD_SIZE=80" in body
     assert "srun --kill-on-bad-exit=1 --network=disable_rdzv_get" in body
+    assert "METIS_ABLATION_STALL_TIMEOUT_SECONDS" in body
+    assert "no rank-zero telemetry progress" in body
     assert "METIS_ABLATION_LR_MORE_CORE" in body
     assert not (tmp_path / "wave1" / "launch-wave.sh").exists()
     batch_a = (tmp_path / "wave1" / "launch-wave-1a.sh").read_text()
@@ -1613,6 +1615,7 @@ def test_every_task_in_a_launcher_gets_its_own_rank_and_apu(tmp_path: Path):
             "PATH": f"{bin_dir}:/usr/bin:/bin",
             "METIS_ABLATION_RUNTIME": str(runtime),
             "METIS_ABLATION_LR_MORE_CORE": "0.00018",
+            "METIS_ABLATION_STALL_POLL_SECONDS": "1",
             "SLURM_JOB_NODELIST": "node[0-6]",
         },
         capture_output=True,

@@ -255,6 +255,10 @@ the same measurement to **52.3 GB/s** over
 launches therefore request `--network=disable_rdzv_get` and fail closed unless
 the pinned `librccl-net.so` is present. Single-node probes deliberately keep
 RCCL's native transport because forcing OFI there allocates an unnecessary VNI.
+Generated jobs also terminate a step after twenty minutes without rank-zero
+telemetry progress. This catches the Portage failure mode where a compute node
+reboots, its four ranks disappear, and the surviving ranks otherwise remain at
+100% GPU in collectives indefinitely.
 
 The plugin's hwloc dependency is built without ROCm device discovery. The
 PyTorch wheel already carries ROCm-SMI, while a ROCm-enabled external hwloc
