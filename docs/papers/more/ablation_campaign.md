@@ -374,12 +374,13 @@ Rank-zero training-batch routing captures at step five show that the exact
 means are not hiding constant decisions. Both learned rows populated depths
 1/2/3 in exact thirds and populated the complete k=1..8 support. Depth and
 width remained distinct axes (Pearson r = 0.003 for Core and -0.018 for RM).
-The top-1 expert winner changed between recurrent stages: Core's off-diagonal
-winner-transition mass was 0.805 from pass 1→2 and 0.485 from pass 2→3; RM
-measured 0.676 and 0.549. This proves the winner is not frozen, but it does not
-by itself measure full top-k coalition overlap. Active-token ratios were
-exactly 1, 2/3, and 1/3 across the three trained passes. Thus the policies are
-neither all-depth-2 nor fixed-k-4.
+The full top-k coalition also changed substantially. Core's mean Jaccard
+overlap was 0.196 from pass 1→2 and 0.456 from pass 2→3, with exact-set matches
+of only 2.5% and 9.7%; RM measured 0.211/0.458 Jaccard and 4.3%/8.7% exact
+matches. The corresponding top-1 winner off-diagonal masses were 0.805/0.487
+for Core and 0.673/0.548 for RM. Active-token ratios were exactly 1, 2/3, and
+1/3 across the three trained passes. Thus the policies are neither
+all-depth-2, fixed-k-4, nor a replay of the same expert coalition.
 
 The rates are individual lane measurements. A 440-APU combined canary reduced
 the adaptive rows to 474-486k through cross-job collective contention, which is

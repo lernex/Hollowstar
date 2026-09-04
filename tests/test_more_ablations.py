@@ -1643,6 +1643,56 @@ def test_every_task_in_a_launcher_gets_its_own_rank_and_apu(tmp_path: Path):
     assert activations == ["0", "1", "2", "3"], activations
 
 
+def test_launcher_stops_before_python_when_runtime_activation_fails(
+    tmp_path: Path,
+):
+    import subprocess
+
+    from metis_ablation.campaign import emit_slurm
+
+    emit_slurm(
+        tmp_path,
+        wave="1",
+        repo_root="/repo",
+        output_root=str(tmp_path / "out"),
+        release_root="/release",
+    )
+    body = (tmp_path / "wave1" / "10-more-core.sbatch").read_text()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    invoked = tmp_path / "python-invoked"
+    (bin_dir / "scontrol").write_text("#!/bin/bash\necho node0\n")
+    (bin_dir / "srun").write_text(
+        "#!/bin/bash\n"
+        "while [[ \"$1\" == -* ]]; do shift; done\n"
+        "SLURM_PROCID=0 SLURM_LOCALID=0 \"$@\"\n"
+    )
+    (bin_dir / "python").write_text(
+        f"#!/bin/bash\ntouch {invoked}\n"
+    )
+    for stub in bin_dir.iterdir():
+        stub.chmod(0o755)
+
+    runtime = tmp_path / "runtime.sh"
+    runtime.write_text("return 1\n")
+    script = tmp_path / "row.sbatch"
+    script.write_text(body)
+    result = subprocess.run(
+        ["bash", str(script)],
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "METIS_ABLATION_RUNTIME": str(runtime),
+            "METIS_ABLATION_LR_MORE_CORE": "0.00018",
+            "METIS_ABLATION_STALL_POLL_SECONDS": "1",
+            "SLURM_JOB_NODELIST": "node[0-6]",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert not invoked.exists()
+
+
 def test_launchers_do_not_request_a_gpu_gres(tmp_path: Path):
     """Portage's parry partition defines no GPU gres; asking for one is fatal.
 
