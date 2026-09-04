@@ -8,8 +8,7 @@ Praxis/Logos runs must not be destabilized by research plumbing.  What is shared
 is everything that matters for comparability -- the model, the release stream,
 the optimizer, the precision policy, and the FLOP accounting.
 
-The campaign runs during Metis-1.6 continued pretraining, when Praxis and Logos
-release all but 128 of the 512 Portage APUs.
+Wave 1 runs after Praxis and Logos release the full 512-APU Portage machine.
 """
 
 from .specs import (

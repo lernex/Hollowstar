@@ -120,7 +120,7 @@ and untyped perform identically, we built an expensive MeSH and should say so.
 
 - [x] Naming boundary (contribution vs integration) — criterion fixed in `main.tex` §5
 - [x] Ablation ladder — 11 rows + 2 random-policy controls
-- [x] Compute plan — sizing, 50B budget, measured two-batch 384-APU schedule, DP strategy
+- [x] Compute plan — sizing, 50B budget, measured full-machine two-batch schedule, DP strategy
 - [x] MeSH read; MoRE-RM distinction written (`main.tex` §4.2)
 - [x] Title chosen
 - [x] `ablation` model family, dense-FFN path, pathway-frozen mode, random-policy controls

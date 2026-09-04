@@ -7,17 +7,14 @@ recorded in §5.
 
 ## 0. Window and available hardware
 
-The campaign runs **after Metis-1.6 pretraining completes**, during Praxis/Logos
-continued pretraining (context extension) and post-training. At that point the
-family releases most of Portage:
+Wave 1 runs **after the Praxis and Logos jobs release Portage**, so it may use
+the full 512-APU machine:
 
 | Consumer | APUs | Notes |
 |---|---:|---|
-| Metis-1.6 Logos CPT / post-training | 64 | |
-| Metis-1.6 Praxis CPT / post-training | 64 | |
-| **MoRE ablation campaign** | **384** | 96 nodes at 4 APUs/node |
+| **MoRE ablation campaign** | **up to 512** | 128 nodes at 4 APUs/node |
 
-MI300A peak: **1961 TFLOP/s FP8 dense** per APU → 384 APUs = **753 PFLOP/s peak**.
+MI300A peak: **1961 TFLOP/s FP8 dense** per APU → 512 APUs = **1.004 EFLOP/s peak**.
 Planning MFU band: **5% / 10% / 15%** (conservative / planning / good). The 10%
 column is the one to plan against; treat 15% as reachable only after the grouped
 expert GEMM in §5 lands.
@@ -45,7 +42,8 @@ better matched to MI300A matrix dimensions than ten launch-bound narrow layers.
 Audited primary-proxy parameter categories:
 
 - Routed experts: 1.019B stored.
-- Embedding / tied head: 0.268B stored, executed once per token.
+- Embedding / tied head: 0.268B stored; embedding runs once per token and the
+  tied head runs once per active token-pass.
 - Mamba + attention mixers: 0.160B stored.
 - N-gram tables: 0.300B stored.
 - **Active/pass @ k=4 = 0.279B**, @ k=8 = 0.336B.
@@ -133,8 +131,8 @@ initialization policy.
 | 7 | MoR + dense FFN | 1b | 0.85B / 0.278B | 7.08 / 8.15 | 80 | 20 | 22.1 |
 | 8 | MoR + fixed-k MoE | 1b | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.4 |
 | 9 | Fixed depth, adaptive k | 1b | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 20.5 |
-| 10 | MoRE-Core | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.5 |
-| 11 | MoRE-RM | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.7 |
+| 10 | MoRE-Core | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 23.9 |
+| 11 | MoRE-RM | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.4 |
 | 12 | Random-k control | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.4 |
 | 13 | Random-depth control | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 11.5 |
 | | **Batch 1a total** | | | | **440** | **110** | **24.4** |

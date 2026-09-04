@@ -413,38 +413,40 @@ depth of MoRE-Core; fixed-$k$ rows use $k=4$.
 \setlength{\tabcolsep}{3.5pt}
 \begin{tabular}{clccccccr}
 \toprule
-\# & Model & Recur. & Depth & Width $k$ & Pathway & Mem. & Stored/Active & GF/tok \\
+\# & Model & Recur. & Depth & Width $k$ & Pathway & Mem. & Stored/Active & GF/tok M/E \\
 \midrule
-1 & Dense, FLOP-matched & -- & 1 & -- & dense & -- & 1.17B / 0.60B & 7.30 \\
-2 & Dense, parameter-matched & -- & 1 & -- & dense & -- & 1.81B / 1.24B & 12.42 \\
-3 & MoE, $k{=}4$ & -- & 1 & fixed & routed & -- & 1.81B / 0.279B & 4.73 \\
-4 & MoE, $k{=}8$ & -- & 1 & fixed & routed & -- & 1.81B / 0.336B & 5.18 \\
-5 & Fixed LoopMoE & yes & fixed 2 & fixed & re-routed & -- & 1.81B / 0.279B & 7.31 \\
-6 & Loop, pathway frozen & yes & fixed 2 & fixed & frozen & -- & 1.81B / 0.279B & 7.31 \\
-7 & MoR + dense FFN & yes & adaptive & -- & dense & -- & 0.85B / 0.278B & 7.29 \\
-8 & MoR + fixed-$k$ MoE & yes & adaptive & fixed & re-routed & -- & 1.81B / 0.279B & 7.31 \\
-9 & Fixed-depth, adaptive $k$ & yes & fixed 2 & adaptive & re-routed & -- & 1.81B / 0.279B & 7.31 \\
-10 & \textbf{MoRE-Core} & yes & adaptive & adaptive & re-routed & -- & 1.81B / 0.279B & 7.31 \\
-11 & \textbf{MoRE-RM} & yes & adaptive & adaptive & re-routed & yes & 1.81B / 0.279B & 7.31 \\
+1 & Dense, FLOP-matched & -- & 1 & -- & dense & -- & 1.44B / 0.87B & 7.09 / 7.62 \\
+2 & Dense, parameter-matched & -- & 1 & -- & dense & -- & 1.81B / 1.24B & 9.31 / 9.85 \\
+3 & MoE, $k{=}4$ & -- & 1 & fixed & routed & -- & 1.81B / 0.279B & 3.54 / 4.08 \\
+4 & MoE, $k{=}8$ & -- & 1 & fixed & routed & -- & 1.81B / 0.336B & 3.88 / 4.42 \\
+5 & Fixed LoopMoE & yes & fixed 2 & fixed & re-routed & -- & 1.81B / 0.279B & 7.09 / 9.45 \\
+6 & Loop, pathway frozen & yes & fixed 2 & fixed & frozen & -- & 1.81B / 0.279B & 7.09 / 9.45 \\
+7 & MoR + dense FFN & yes & adaptive & -- & dense & -- & 0.85B / 0.278B & 7.08 / 8.15 \\
+8 & MoR + fixed-$k$ MoE & yes & adaptive & fixed & re-routed & -- & 1.81B / 0.279B & 7.09 / 8.16 \\
+9 & Fixed-depth, adaptive $k$ & yes & fixed 2 & adaptive & re-routed & -- & 1.81B / 0.279B & 7.09 / 9.45 \\
+10 & \textbf{MoRE-Core} & yes & adaptive & adaptive & re-routed & -- & 1.81B / 0.279B & 7.09 / 8.16 \\
+11 & \textbf{MoRE-RM} & yes & adaptive & adaptive & re-routed & yes & 1.81B / 0.279B & 7.09 / 8.16 \\
 \midrule
-12 & Random-$k$ control & yes & adaptive & random & re-routed & -- & 1.81B / 0.279B & 7.31 \\
-13 & Random-depth control & yes & random & adaptive & re-routed & -- & 1.81B / 0.279B & 7.31 \\
+12 & Random-$k$ control & yes & adaptive & random & re-routed & -- & 1.81B / 0.279B & 7.09 / 8.16 \\
+13 & Random-depth control & yes & random & adaptive & re-routed & -- & 1.81B / 0.279B & 7.09 / 8.16 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 Active parameters are per pass; rows with mean depth 2 execute them roughly
-twice. GFLOP/token is \emph{executed} work at the planned policy, including the
-pass-level recompute replay, from the same accounting the trainer reports
-against. Each row differs from a neighbour in exactly one factor.
+twice. GFLOP/token reports model work / issued hardware work. The scientific
+iso-FLOP comparison uses model work; issued work additionally includes the
+checkpoint replay required by each measured memory lane. Each row differs from
+a neighbour in exactly one factor.
 
 \begin{itemize}
 \item \textbf{Rows 5 vs 6} isolate pathway: identical FLOPs, identical depth and
 width, differing only in whether the expert coalition is re-decided after pass~1
 or frozen. Row~5 reimplements the fixed-loop MoE design point
 \CITE{loopmoe2026} in our backbone.
-\item \textbf{Rows 8, 9, 10} isolate depth and width against each other, all at
-matched executed FLOPs.
+\item \textbf{Rows 8, 9, 10} isolate depth and width against each other at
+matched model FLOPs. Row~9 issues more hardware work because its measured
+40-APU lane uses layer checkpointing.
 \item \textbf{Rows 12, 13} hold the compute budget fixed and randomize the
 policy. To our knowledge this control is absent from the adaptive-compute
 literature, and it is the experiment most capable of embarrassing us, which is
@@ -455,11 +457,11 @@ flaw in the control, it is precisely what the sparse-expert axis buys, and we
 report both numbers rather than picking the flattering one.
 \end{itemize}
 
-Rows 1 and 5--13 are iso-FLOP by construction. Rows 2, 3, 4 are deliberate
+Rows 1 and 5--13 are iso-model-FLOP by construction. Rows 2, 3, 4 are deliberate
 off-frontier reference points. Note that a wider single-pass MoE \emph{cannot} be
 made iso-FLOP with a recursive model by raising $k$ alone: going $k{=}4 \to 8$
-adds about 0.4 GFLOP/token because expert GEMMs are a minority of the block,
-while a second pass adds roughly 3.2. Row~4 is a reference, not a match, and we say so before
+adds about 0.34 model GFLOP/token because expert GEMMs are a minority of the
+block, while a second pass adds roughly 3.55. Row~4 is a reference, not a match, and we say so before
 someone assumes we tried and failed.
 
 \subsection{Configuration}

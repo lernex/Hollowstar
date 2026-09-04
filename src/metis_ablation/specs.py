@@ -641,8 +641,8 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         measured_tokens_per_second=776_634,
         config_overrides={"activation_recompute_policy": "none"},
         notes=(
-            "Not a compute match: k=4->8 adds 0.29 GFLOP/token while a second "
-            "pass adds 1.76. Expert GEMMs are a minority of the block."
+            "Not a compute match: k=4->8 adds about 0.34 GFLOP/token while a "
+            "second pass adds about 3.55. Expert GEMMs are a minority of the block."
         ),
     ),
     AblationSpec(
