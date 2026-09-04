@@ -592,6 +592,43 @@ def assign_budgeted_categories(
     return output
 
 
+def _budget_tangent(soft_values: Tensor, active_mask: Tensor) -> Tensor:
+    """Project soft routing values onto the active fixed-budget tangent."""
+
+    if soft_values.shape != active_mask.shape:
+        raise ValueError("soft_values and active_mask must have the same shape")
+    active_weights = active_mask.to(dtype=soft_values.dtype)
+    active_count = active_weights.sum().clamp_min(1.0)
+    active_mean = (soft_values * active_weights).sum() / active_count
+    return (soft_values - active_mean) * active_weights
+
+
+def _budgeted_binary_straight_through(
+    hard_decision: Tensor,
+    soft_probability: Tensor,
+    active_mask: Tensor,
+) -> tuple[Tensor, Tensor]:
+    """Return the exact binary gate and its valid soft survival factor."""
+
+    if hard_decision.shape != soft_probability.shape:
+        raise ValueError("hard_decision and soft_probability must have the same shape")
+    if active_mask.shape != soft_probability.shape:
+        raise ValueError("active_mask and soft_probability must have the same shape")
+    active_weights = active_mask.to(dtype=soft_probability.dtype)
+    hard = hard_decision.to(dtype=soft_probability.dtype) * active_weights
+    active_count = active_weights.sum()
+    selected_count = hard.sum()
+    has_allocation_choice = (
+        (selected_count > 0) & (selected_count < active_count)
+    ).to(dtype=soft_probability.dtype)
+    tangent = _budget_tangent(soft_probability, active_mask) * has_allocation_choice
+    gate = hard + tangent - tangent.detach()
+    soft_survival = hard + has_allocation_choice * (
+        soft_probability * active_weights - hard
+    )
+    return gate, soft_survival
+
+
 def geometric_continue_probability(max_passes: int, mean_depth: float) -> float:
     """Per-pass continuation probability giving ``mean_depth`` under a cap.
 
@@ -3828,11 +3865,17 @@ class AdaptiveDroplessMoE(nn.Module):
         # envelope is numerically one in the forward pass, but lets downstream
         # task loss teach the K router whether the routed update was useful.
         learned_width = curriculum.routed_k_mode not in {"fixed", "random"}
-        straight_through_k = (
-            chosen_k.float() + expected_k - expected_k.detach()
-            if learned_width
-            else chosen_k.float()
-        )
+        if curriculum.routed_k_mode == "budgeted":
+            budget_tangent = _budget_tangent(expected_k, active_mask)
+            straight_through_k = (
+                chosen_k.float() + budget_tangent - budget_tangent.detach()
+            )
+        elif learned_width:
+            straight_through_k = (
+                chosen_k.float() + expected_k - expected_k.detach()
+            )
+        else:
+            straight_through_k = chosen_k.float()
         routed_credit = (
             straight_through_k / chosen_k.detach().float().clamp_min(1.0)
         ).reshape(batch * seq_len, 1)
@@ -6612,6 +6655,16 @@ class Metis16ForCausalLM(nn.Module):
                     # gradient that cannot affect execution would train a
                     # second hidden policy and confound learned-vs-random.
                     local_continue_gate = next_active.float()
+                    soft_survival = next_active.float()
+                elif curriculum_state.continuation_mode == "budgeted":
+                    (
+                        local_continue_gate,
+                        soft_survival,
+                    ) = _budgeted_binary_straight_through(
+                        next_active,
+                        continuation_probability,
+                        active_mask,
+                    )
                 else:
                     soft_continue = continuation_probability * active_mask.float()
                     local_continue_gate = (
@@ -6619,13 +6672,10 @@ class Metis16ForCausalLM(nn.Module):
                         + soft_continue
                         - soft_continue.detach()
                     )
+                    soft_survival = soft_continue
                 exit_gate = pass_survival_gate * (1.0 - local_continue_gate)
                 next_survival_gate = pass_survival_gate * local_continue_gate
-                survival = survival * (
-                    next_active.float()
-                    if not learned_depth
-                    else continuation_probability * active_mask.float()
-                )
+                survival = survival * soft_survival
                 expected_depth = expected_depth + survival
                 valid_probability = continuation_probability.masked_select(active_mask)
                 if valid_probability.numel() and learned_depth:

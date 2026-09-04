@@ -34,6 +34,8 @@ from metis_training.model import (
     CurriculumState,
     Metis16ForCausalLM,
     _StackedGroupedLinear,
+    _budget_tangent,
+    _budgeted_binary_straight_through,
     _memory_attention_combine,
     _memory_attention_scores,
     _stream_gate_logits,
@@ -637,6 +639,83 @@ def test_exact_budget_calibration_teaches_the_selected_depth_and_width():
 
     torch.testing.assert_close(baseline_output.loss, calibrated_output.loss)
     assert calibrated_output.auxiliary_loss > baseline_output.auxiliary_loss
+
+
+def test_exact_budget_tangent_removes_infeasible_common_mode():
+    soft = torch.tensor(
+        [[0.1, 0.4, 0.8, 0.9]],
+        dtype=torch.float64,
+        requires_grad=True,
+    )
+    active = torch.tensor([[True, True, True, False]])
+    tangent = _budget_tangent(soft, active)
+
+    common_gradient = torch.autograd.grad(tangent.sum(), soft, retain_graph=True)[0]
+    torch.testing.assert_close(common_gradient, torch.zeros_like(common_gradient))
+
+    credit = torch.tensor([[3.0, -2.0, 1.0, 100.0]], dtype=torch.float64)
+    relative_gradient = torch.autograd.grad((tangent * credit).sum(), soft)[0]
+    assert torch.count_nonzero(relative_gradient[:, :3])
+    torch.testing.assert_close(
+        relative_gradient[:, :3].sum(),
+        torch.zeros((), dtype=torch.float64),
+    )
+    assert relative_gradient[0, 3] == 0.0
+
+
+@pytest.mark.parametrize("continue_all", [False, True])
+def test_exact_budget_boundary_has_no_phantom_continuation_gradient(continue_all):
+    soft = torch.tensor(
+        [[0.2, 0.7, 0.9, 0.6]],
+        dtype=torch.float64,
+        requires_grad=True,
+    )
+    active = torch.tensor([[True, True, True, False]])
+    hard = active.clone() if continue_all else torch.zeros_like(active)
+
+    gate, soft_survival = _budgeted_binary_straight_through(
+        hard,
+        soft,
+        active,
+    )
+    torch.testing.assert_close(gate, hard.to(dtype=soft.dtype))
+    torch.testing.assert_close(soft_survival, hard.to(dtype=soft.dtype))
+
+    gradient = torch.autograd.grad(
+        (gate + soft_survival).sum(),
+        soft,
+    )[0]
+    torch.testing.assert_close(gradient, torch.zeros_like(gradient))
+
+
+def test_exact_budget_interior_gate_keeps_only_relative_task_credit():
+    soft = torch.tensor(
+        [[0.2, 0.7, 0.9, 0.6]],
+        dtype=torch.float64,
+        requires_grad=True,
+    )
+    active = torch.tensor([[True, True, True, False]])
+    hard = torch.tensor([[False, True, False, False]])
+
+    gate, soft_survival = _budgeted_binary_straight_through(
+        hard,
+        soft,
+        active,
+    )
+    torch.testing.assert_close(gate, hard.to(dtype=soft.dtype))
+    torch.testing.assert_close(
+        soft_survival,
+        soft * active.to(dtype=soft.dtype),
+    )
+
+    credit = torch.tensor([[3.0, -2.0, 1.0, 100.0]], dtype=torch.float64)
+    gradient = torch.autograd.grad((gate * credit).sum(), soft)[0]
+    assert torch.count_nonzero(gradient[:, :3])
+    torch.testing.assert_close(
+        gradient[:, :3].sum(),
+        torch.zeros((), dtype=torch.float64),
+    )
+    assert gradient[0, 3] == 0.0
 
 
 def test_replicated_dispatch_matches_the_general_path():
