@@ -3043,6 +3043,8 @@ class AdaptiveDroplessMoE(nn.Module):
         expected = torch.sum(probabilities * choices, dim=-1)
         if curriculum.routed_k_mode == "fixed":
             chosen = torch.full_like(expected, curriculum.fixed_routed_k, dtype=torch.long)
+            expected = torch.full_like(expected, float(curriculum.fixed_routed_k))
+            probabilities = probabilities.detach()
         elif curriculum.routed_k_mode == "budgeted":
             target = (
                 curriculum.target_mean_routed_k
@@ -3824,8 +3826,11 @@ class AdaptiveDroplessMoE(nn.Module):
         # Hard K controls the exact packed dispatch above. This straight-through
         # envelope is numerically one in the forward pass, but lets downstream
         # task loss teach the K router whether the routed update was useful.
+        learned_width = curriculum.routed_k_mode not in {"fixed", "random"}
         straight_through_k = (
             chosen_k.float() + expected_k - expected_k.detach()
+            if learned_width
+            else chosen_k.float()
         )
         routed_credit = (
             straight_through_k / chosen_k.detach().float().clamp_min(1.0)
@@ -3895,7 +3900,7 @@ class AdaptiveDroplessMoE(nn.Module):
                 + k_calibration
                 * self.config.budgeted_k_calibration_coefficient
             ) * has_active
-        elif curriculum.routed_k_mode == "random":
+        elif curriculum.routed_k_mode in {"fixed", "random"}:
             k_budget = mean_expected_k * 0.0
         else:
             k_budget = self.k_budget.penalty(
@@ -6491,10 +6496,15 @@ class Metis16ForCausalLM(nn.Module):
                     state_difference,
                     continuation_route_features,
                 )
-            if curriculum_state.continuation_mode == "random":
+            learned_depth = (
+                curriculum_state.continuation_mode not in
+                {"random", "fixed_max", "depth_one"}
+                and force_depth is None
+            )
+            if not learned_depth:
                 # Preserve the controller's forward compute for a matched-cost
-                # control, but detach every downstream use. The random ranking,
-                # not this unused learned head, determines execution.
+                # control, but detach every downstream use. The fixed/random
+                # rule, not this unused learned head, determines execution.
                 continuation_probability = continuation_probability.detach()
             continuation_confidence = torch.where(
                 active_mask,
@@ -6594,8 +6604,7 @@ class Metis16ForCausalLM(nn.Module):
                             calibration_loss
                             * self.config.budgeted_depth_calibration_coefficient,
                         )
-                random_depth = curriculum_state.continuation_mode == "random"
-                if random_depth:
+                if not learned_depth:
                     # The hard ranking is the control. A learned continuation
                     # gradient that cannot affect execution would train a
                     # second hidden policy and confound learned-vs-random.
@@ -6611,12 +6620,12 @@ class Metis16ForCausalLM(nn.Module):
                 next_survival_gate = pass_survival_gate * local_continue_gate
                 survival = survival * (
                     next_active.float()
-                    if random_depth
+                    if not learned_depth
                     else continuation_probability * active_mask.float()
                 )
                 expected_depth = expected_depth + survival
                 valid_probability = continuation_probability.masked_select(active_mask)
-                if valid_probability.numel() and not random_depth:
+                if valid_probability.numel() and learned_depth:
                     entropy = -(
                         valid_probability * valid_probability.clamp_min(1.0e-8).log()
                         + (1.0 - valid_probability)
@@ -6664,7 +6673,11 @@ class Metis16ForCausalLM(nn.Module):
                 mean_expected_depth,
                 target=target_mean_depth,
             )
-        elif curriculum_state.continuation_mode == "random":
+        elif curriculum_state.continuation_mode in {
+            "random",
+            "fixed_max",
+            "depth_one",
+        }:
             depth_budget = mean_expected_depth * 0.0
         else:
             depth_budget = self.depth_budget.penalty(

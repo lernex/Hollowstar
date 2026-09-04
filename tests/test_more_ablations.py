@@ -1431,6 +1431,34 @@ def test_random_depth_does_not_train_a_hidden_continuation_policy():
     )
 
 
+def test_fixed_controls_do_not_train_hidden_depth_or_width_policies():
+    torch.manual_seed(23)
+    config = _tiny()
+    model = Metis16ForCausalLM(config)
+    input_ids, labels = _tiny_batch(config)
+    output = model(
+        input_ids,
+        labels,
+        curriculum=_curriculum(
+            continuation_mode="fixed_max",
+            max_passes=2,
+            routed_k_mode="fixed",
+            fixed_routed_k=2,
+        ),
+    )
+    (output.loss + output.auxiliary_loss).backward()
+    hidden_policy_gradients = [
+        parameter.grad
+        for name, parameter in model.named_parameters()
+        if name.startswith("continuation.") or ".k_router." in name
+    ]
+    assert hidden_policy_gradients
+    assert all(
+        gradient is None or not bool(torch.count_nonzero(gradient))
+        for gradient in hidden_policy_gradients
+    )
+
+
 # --------------------------------------------------------------------------
 # schedule
 
@@ -2171,6 +2199,25 @@ def test_resume_picks_up_where_it_stopped(tiny_proxy, tmp_path: Path):
         _train(spec, tmp_path, checkpoint_every=2, max_steps=4, resume=False)
 
 
+def test_row_output_lease_rejects_a_concurrent_writer(tmp_path: Path):
+    from metis_ablation.train import (
+        RunPaths,
+        _acquire_row_lease,
+        _release_row_lease,
+    )
+
+    runtime = SimpleNamespace(rank=0, distributed=False)
+    paths = RunPaths(tmp_path / "row")
+    first = _acquire_row_lease(paths, runtime)
+    try:
+        with pytest.raises(RuntimeError, match="already leased"):
+            _acquire_row_lease(paths, runtime)
+    finally:
+        _release_row_lease(first)
+    second = _acquire_row_lease(paths, runtime)
+    _release_row_lease(second)
+
+
 def test_resume_refuses_a_changed_schedule(tiny_proxy, tmp_path: Path):
     """Resuming a cosine decay against a different horizon would silently train
     a different model, so it is an error rather than a warning."""
@@ -2268,6 +2315,7 @@ def test_intermediate_checkpoint_resumes_at_the_next_unexecuted_step(
         checkpoint_every=2,
         max_steps=3,
         final_checkpoint=False,
+        telemetry_every=1,
     )
     assert first["steps"] == 3
     checkpoint = tmp_path / spec.name / "checkpoints" / "step-0000002"
@@ -2285,9 +2333,15 @@ def test_intermediate_checkpoint_resumes_at_the_next_unexecuted_step(
         checkpoint_every=2,
         max_steps=3,
         final_checkpoint=False,
+        telemetry_every=1,
     )
     assert resumed["start_step"] == 2
     assert resumed["steps"] == 3
+    telemetry = (
+        tmp_path / spec.name / "telemetry" / "rank-00000.jsonl"
+    ).read_text()
+    steps = [json.loads(line)["step"] for line in telemetry.splitlines() if line]
+    assert steps == [0, 1, 2]
 
 
 def test_world_sharded_checkpoint_hashes_and_restores_rank_state(tmp_path: Path):
@@ -2419,11 +2473,13 @@ def test_run_manifest_records_everything_needed_to_reproduce(tiny_proxy, tmp_pat
     for key in (
         "spec", "model", "optimizer", "parameters", "schedule", "curriculum",
         "global_batch_tokens", "total_steps", "world_size", "precision_profile",
-        "sampler",
+        "sampler", "run_identity", "run_identity_sha256",
     ):
         assert key in manifest, key
     assert manifest["global_batch_tokens"] == GLOBAL_BATCH_TOKENS
     assert manifest["curriculum"]["memory_gate_scale"] == 1.0
+    assert manifest["run_identity"]["source_revision"]
+    assert "runtime" in manifest["run_identity"]
 
 
 def test_telemetry_carries_the_paper_axes(tiny_proxy, tmp_path: Path):

@@ -17,7 +17,9 @@ differences partly an artifact of routing skew.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
+import importlib.metadata
 import itertools
 import json
 import queue
@@ -224,6 +226,149 @@ def _run_identity(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
         default=str,
     ).encode("utf-8")
     return payload, hashlib.sha256(encoded).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _runtime_fingerprint(
+    runtime: Runtime,
+    *,
+    require_complete: bool,
+) -> dict[str, Any]:
+    script_raw = os.environ.get("METIS_ABLATION_RUNTIME")
+    script = Path(script_raw).expanduser().resolve() if script_raw else None
+    if require_complete and (script is None or not script.is_file()):
+        raise RuntimeError("A real run requires a readable METIS_ABLATION_RUNTIME")
+    plugin_raw = os.environ.get("NCCL_NET_PLUGIN")
+    plugin = Path(plugin_raw).expanduser().resolve() if plugin_raw else None
+    if (
+        require_complete
+        and runtime.world_size > 4
+        and (plugin is None or not plugin.is_file())
+    ):
+        raise RuntimeError("A multi-node real run requires a readable RCCL plugin")
+
+    packages: dict[str, str | None] = {}
+    for distribution in (
+        "torch",
+        "transformer-engine",
+        "transformer-engine-torch",
+        "triton",
+        "aiter",
+        "flash-attn",
+    ):
+        try:
+            packages[distribution] = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            packages[distribution] = None
+    interpreter = Path(os.path.realpath(os.sys.executable))
+    return {
+        "runtime_script": (
+            {
+                "path": str(script),
+                "sha256": _sha256_file(script),
+            }
+            if script is not None and script.is_file()
+            else None
+        ),
+        "interpreter": {
+            "path": str(interpreter),
+            "sha256": (
+                _sha256_file(interpreter) if interpreter.is_file() else None
+            ),
+        },
+        "torch_version": torch.__version__,
+        "torch_hip_version": torch.version.hip,
+        "packages": packages,
+        "rccl_plugin": (
+            {
+                "path": str(plugin),
+                "sha256": _sha256_file(plugin),
+            }
+            if plugin is not None and plugin.is_file()
+            else None
+        ),
+        "environment": {
+            name: os.environ.get(name)
+            for name in (
+                "ROCM_PATH",
+                "PYTORCH_ROCM_ARCH",
+                "TORCH_BLAS_PREFER_HIPBLASLT",
+                "NVTE_USE_CK_GROUPED_GEMM",
+                "NCCL_ALGO",
+                "NCCL_NET",
+                "FI_PROVIDER",
+            )
+        },
+    }
+
+
+def _acquire_row_lease(paths: RunPaths, runtime: Runtime) -> Any | None:
+    handle = None
+    error = None
+    if runtime.rank == 0:
+        try:
+            paths.root.mkdir(parents=True, exist_ok=True)
+            handle = (paths.root / ".active-run.lock").open("a+", encoding="utf-8")
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            handle.seek(0)
+            handle.truncate()
+            handle.write(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "job_id": os.environ.get("SLURM_JOB_ID"),
+                        "host": os.uname().nodename,
+                        "acquired_unix": time.time(),
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        except (OSError, BlockingIOError) as exc:
+            error = f"Row output directory is already leased: {paths.root}: {exc}"
+    if runtime.distributed:
+        status = [error]
+        dist.broadcast_object_list(status, src=0, group=dist.group.WORLD)
+        error = status[0]
+    if error is not None:
+        if handle is not None:
+            handle.close()
+        raise RuntimeError(error)
+    return handle
+
+
+def _release_row_lease(handle: Any | None) -> None:
+    if handle is None:
+        return
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    handle.close()
+
+
+def _truncate_telemetry(path: Path, *, start_step: int) -> None:
+    if not path.is_file():
+        return
+    retained = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        if int(record.get("step", -1)) < start_step:
+            retained.append(json.dumps(record, sort_keys=True))
+    staging = path.with_suffix(path.suffix + ".partial")
+    staging.write_text(
+        "\n".join(retained) + ("\n" if retained else ""),
+        encoding="utf-8",
+    )
+    staging.replace(path)
 
 
 def _assert_storage_policy(model: Any) -> None:
@@ -505,7 +650,12 @@ def train_row(
     final_checkpoint: bool = True,
 ) -> dict[str, Any]:
     runtime = initialize_runtime(device=device_override)
+    lease = None
     try:
+        lease = _acquire_row_lease(
+            RunPaths(Path(output_root).expanduser().resolve() / spec.name),
+            runtime,
+        )
         return _train_row_inner(
             spec,
             runtime=runtime,
@@ -523,6 +673,7 @@ def train_row(
             final_checkpoint=final_checkpoint,
         )
     finally:
+        _release_row_lease(lease)
         destroy_runtime()
 
 
@@ -689,16 +840,23 @@ def _train_row_inner(
         if runtime.rank == 0
         else None
     )
+    runtime_fingerprint: dict[str, Any] | None = (
+        _runtime_fingerprint(runtime, require_complete=not synthetic)
+        if runtime.rank == 0
+        else None
+    )
     if runtime.distributed:
-        source_payload = [source_revision]
+        source_payload = [source_revision, runtime_fingerprint]
         dist.broadcast_object_list(
             source_payload,
             src=0,
             group=topology.dense_data_group,
         )
-        source_revision = source_payload[0]
+        source_revision, runtime_fingerprint = source_payload
     if not isinstance(source_revision, str) or not source_revision:
         raise RuntimeError("Ablation source revision could not be established")
+    if not isinstance(runtime_fingerprint, dict):
+        raise RuntimeError("Ablation runtime fingerprint could not be established")
     sampler_manifest = (
         sample_stream.describe() if sample_stream else {"synthetic": True}
     )
@@ -725,6 +883,7 @@ def _train_row_inner(
                 else {"synthetic": True}
             ),
             "source_revision": source_revision,
+            "runtime": runtime_fingerprint,
         }
     )
 
@@ -763,6 +922,21 @@ def _train_row_inner(
                     "Ranks disagree about the resume step; the shared checkpoint "
                     "directory is inconsistent."
                 )
+
+    _truncate_telemetry(
+        paths.telemetry / f"rank-{runtime.rank:05d}.jsonl",
+        start_step=start_step,
+    )
+    if runtime.rank == 0 and paths.analysis.exists():
+        for path in paths.analysis.glob("routing-step-*.json"):
+            try:
+                analyzed_step = int(path.stem.removeprefix("routing-step-"))
+            except ValueError:
+                continue
+            if analyzed_step >= start_step:
+                path.unlink()
+    if runtime.distributed:
+        dist.barrier()
 
     gradient_reducer = (
         OverlappedGradientReducer(model, topology) if topology.distributed else None
