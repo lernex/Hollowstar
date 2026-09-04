@@ -2851,7 +2851,7 @@ class AdaptiveDroplessMoE(nn.Module):
         # Off by default and read only by the ablation routing analyzer, which
         # turns it on for a single forward.  Training never pays for it.
         self.capture_selection = False
-        self._analysis_last_selection: tuple[Tensor, Tensor] | None = None
+        self._analysis_last_selection: tuple[Tensor, Tensor, Tensor] | None = None
         # Dispatch payloads are about to be cast to E4M3 by the expert
         # ``gate_up`` GEMM anyway, and combine payloads by ``latent_up``, so an
         # FP8 wire mostly relocates a quantisation that already happens.  It is
@@ -3766,9 +3766,15 @@ class AdaptiveDroplessMoE(nn.Module):
             active_mask,
         )
         if self.capture_selection:
+            selected_experts = top_indices.masked_fill(
+                torch.arange(top_indices.shape[-1], device=top_indices.device)
+                >= chosen_k.unsqueeze(-1),
+                -1,
+            )
             self._analysis_last_selection = (
                 top_indices[..., 0].detach(),
                 chosen_k.detach(),
+                selected_experts.detach(),
             )
 
         flat_latent = latent.reshape(batch * seq_len, self.config.latent_dim)

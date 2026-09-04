@@ -115,7 +115,7 @@ def test_every_row_consumes_an_identical_global_batch():
 def test_more_core_uses_the_measured_portage_lane():
     primary = spec_by_name("more-core")
     assert (primary.apus, primary.micro_batch, primary.grad_accum) == (80, 6, 1)
-    assert primary.measured_tokens_per_second == 568_594
+    assert primary.measured_tokens_per_second == 572_970
     assert primary.muon_state_bits == 8
     assert primary.muon_ns_steps == 5
     assert primary.optimizer_sharding == "world"
@@ -1721,6 +1721,7 @@ def test_wave_one_plan_uses_the_measured_two_batch_schedule():
     payload = plan(wave="1")
     assert payload["allocation"]["lane_apus"] == 800
     assert payload["allocation"]["allocated_apus"] == 360
+    assert payload["allocation"]["spare_apus"] == 24
     assert set(payload["allocation"]["execution_batches"]) == {
         "1a",
         "1b",
@@ -1944,6 +1945,16 @@ def test_transitions_are_aligned_when_later_passes_are_packed():
             "frozen pathways produced off-diagonal transitions, so packed passes "
             "are being compared positionally"
         )
+    mean_jaccard, exact_match, comparisons = analyzer.coalition_overlap()
+    for overlap, exact, count in zip(
+        mean_jaccard,
+        exact_match,
+        comparisons,
+        strict=True,
+    ):
+        if count:
+            assert overlap == pytest.approx(1.0, abs=1e-12)
+            assert exact == pytest.approx(1.0, abs=1e-12)
 
 
 # --------------------------------------------------------------------------

@@ -8,8 +8,7 @@ push on hardest:
 * the depth-width correlation -- if the two axes move together perfectly, one
   is redundant and the three-dial framing is overstated, so this is reported
   whatever it says
-* expert coalition transition matrices between consecutive passes, which is the
-  only direct evidence for stage specialization (parse to manipulate to verify)
+* top-1 transition matrices and full top-k coalition overlap between passes
 * halt calibration: predicted continuation probability against realized
   continuation
 * per-pass active-token ratios
@@ -38,12 +37,13 @@ Tensor = torch.Tensor
 
 @dataclass
 class _PassRecord:
-    """Top-1 expert per token for one (layer, pass), in the packed layout."""
+    """Expert selection for one (layer, pass), in the packed layout."""
 
     layer_index: int
     pass_index: int
     top_expert: Tensor
     chosen_k: Tensor
+    selected_experts: Tensor
 
 
 class RoutingAnalyzer:
@@ -69,6 +69,10 @@ class RoutingAnalyzer:
         self.transitions = torch.zeros(
             max(self.max_passes - 1, 1), experts, experts, dtype=torch.float64
         )
+        transition_count = max(self.max_passes - 1, 1)
+        self.coalition_jaccard_sum = torch.zeros(transition_count, dtype=torch.float64)
+        self.coalition_exact_matches = torch.zeros(transition_count, dtype=torch.float64)
+        self.coalition_comparisons = torch.zeros(transition_count, dtype=torch.float64)
         self.calibration_bins = 20
         self.calibration_predicted = torch.zeros(self.calibration_bins, dtype=torch.float64)
         self.calibration_realized = torch.zeros(self.calibration_bins, dtype=torch.float64)
@@ -124,13 +128,14 @@ class RoutingAnalyzer:
             state = getattr(mod, "_analysis_last_selection", None)
             if state is None:
                 return
-            top_expert, chosen_k = state
+            top_expert, chosen_k, selected_experts = state
             self._records.append(
                 _PassRecord(
                     layer_index=layer_index,
                     pass_index=pass_index,
                     top_expert=top_expert.detach().to("cpu"),
                     chosen_k=chosen_k.detach().to("cpu"),
+                    selected_experts=selected_experts.detach().to("cpu"),
                 )
             )
 
@@ -237,6 +242,27 @@ class RoutingAnalyzer:
             full[index] = values
             return full
 
+        def unpack_selected(record: _PassRecord) -> Tensor | None:
+            """Place packed top-k sets into the absolute token layout."""
+
+            index = absolute_index.get(record.pass_index)
+            values = record.selected_experts.reshape(
+                -1, record.selected_experts.shape[-1]
+            )
+            if index is None:
+                return None
+            if values.shape[0] == token_total:
+                return values
+            if values.shape[0] != index.numel():
+                return None
+            full = torch.full(
+                (token_total, values.shape[-1]),
+                -1,
+                dtype=values.dtype,
+            )
+            full[index] = values
+            return full
+
         for pass_index in range(self.max_passes - 1):
             current = by_pass.get(pass_index)
             following = by_pass.get(pass_index + 1)
@@ -249,7 +275,14 @@ class RoutingAnalyzer:
                     continue
                 source = unpack(before)
                 target = unpack(after)
-                if source is None or target is None:
+                source_set = unpack_selected(before)
+                target_set = unpack_selected(after)
+                if (
+                    source is None
+                    or target is None
+                    or source_set is None
+                    or target_set is None
+                ):
                     continue
                 # Only tokens that survived into the later pass have a
                 # transition; a halted token has no successor coalition.
@@ -259,6 +292,25 @@ class RoutingAnalyzer:
                 flat = source[both] * experts + target[both]
                 counts = torch.bincount(flat, minlength=experts * experts).double()
                 self.transitions[pass_index] += counts.reshape(experts, experts)
+                before_sets = source_set[both]
+                after_sets = target_set[both]
+                intersection = (
+                    (
+                        before_sets.unsqueeze(-1) == after_sets.unsqueeze(-2)
+                    )
+                    & (before_sets.unsqueeze(-1) >= 0)
+                    & (after_sets.unsqueeze(-2) >= 0)
+                ).any(dim=-1).sum(dim=-1)
+                before_count = (before_sets >= 0).sum(dim=-1)
+                after_count = (after_sets >= 0).sum(dim=-1)
+                union = before_count + after_count - intersection
+                jaccard = intersection.double() / union.clamp_min(1).double()
+                self.coalition_jaccard_sum[pass_index] += jaccard.sum()
+                self.coalition_exact_matches[pass_index] += (
+                    (intersection == before_count)
+                    & (intersection == after_count)
+                ).double().sum()
+                self.coalition_comparisons[pass_index] += float(jaccard.numel())
 
     def observe_calibration(
         self,
@@ -302,10 +354,11 @@ class RoutingAnalyzer:
         return covariance / ((depth_var ** 0.5) * (width_var ** 0.5))
 
     def transition_off_diagonal_mass(self) -> list[float]:
-        """Fraction of coalition transitions that actually change expert.
+        """Fraction of top-1 transitions whose winning expert changes.
 
-        Zero means the pathway axis is doing nothing: the same expert wins at
-        every pass, and row 6 of the ladder should show no gap against row 5.
+        Zero means the same expert wins at every pass. Full top-k overlap is
+        reported separately because a changed winner does not prove that the
+        selected coalition itself changed.
         """
 
         out: list[float] = []
@@ -317,6 +370,23 @@ class RoutingAnalyzer:
                 continue
             out.append(1.0 - float(matrix.diagonal().sum()) / total)
         return out
+
+    def coalition_overlap(self) -> tuple[list[float], list[float], list[float]]:
+        """Mean Jaccard, exact-match fraction, and comparisons by pass pair."""
+
+        mean_jaccard: list[float] = []
+        exact_match: list[float] = []
+        comparisons: list[float] = []
+        for index in range(self.coalition_comparisons.numel()):
+            count = float(self.coalition_comparisons[index])
+            comparisons.append(count)
+            if count <= 0:
+                mean_jaccard.append(0.0)
+                exact_match.append(0.0)
+                continue
+            mean_jaccard.append(float(self.coalition_jaccard_sum[index]) / count)
+            exact_match.append(float(self.coalition_exact_matches[index]) / count)
+        return mean_jaccard, exact_match, comparisons
 
     def calibration_curve(self) -> list[dict[str, float]]:
         rows: list[dict[str, float]] = []
@@ -336,6 +406,9 @@ class RoutingAnalyzer:
 
     def report(self) -> dict[str, Any]:
         depth_total = float(self.depth_histogram.sum()) or 1.0
+        coalition_jaccard, coalition_exact, coalition_comparisons = (
+            self.coalition_overlap()
+        )
         return {
             "observations": self.observations,
             "depth_distribution": (self.depth_histogram / depth_total).tolist(),
@@ -350,6 +423,9 @@ class RoutingAnalyzer:
             "joint_depth_width": self.joint_depth_width.tolist(),
             "depth_width_correlation": self.depth_width_correlation(),
             "transition_off_diagonal_mass": self.transition_off_diagonal_mass(),
+            "coalition_mean_jaccard": coalition_jaccard,
+            "coalition_exact_match_fraction": coalition_exact,
+            "coalition_comparisons": coalition_comparisons,
             "active_token_ratio_by_pass": (
                 self.active_ratio_sum / max(self.active_ratio_count, 1)
             ).tolist(),
