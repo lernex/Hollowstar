@@ -201,9 +201,9 @@ class PortageAutonomyTests(unittest.TestCase):
         executable.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
         executable.chmod(0o750)
         record = {
-            "schema": "metis.external-dpd-data/v1",
+            "schema": "metis.rlvr-data/v2",
             "state": "deferred",
-            "manifest": "generated/deepseek_dpd_pilot/data/MANIFEST.json",
+            "manifest": "generated/hybrid_mode_gspo/data/MANIFEST.json",
             "generation_hook": {
                 "executable": "hooks/generate.py",
                 "executable_sha256": file_sha256(executable),
@@ -216,10 +216,10 @@ class PortageAutonomyTests(unittest.TestCase):
                     "gpus_per_task": 0,
                 },
                 "receipt": (
-                    "generated/deepseek_dpd_pilot/data/REDUCER.json"
+                    "generated/hybrid_mode_gspo/data/REDUCER.json"
                 ),
                 "rank_receipts": (
-                    "generated/deepseek_dpd_pilot/data/ranks"
+                    "generated/hybrid_mode_gspo/data/ranks"
                 ),
             },
         }
@@ -229,8 +229,8 @@ class PortageAutonomyTests(unittest.TestCase):
             "pipeline_sha256": "1" * 64,
             "tokenizer_manifest": {},
             "requirements": {
-                "deepseek_dpd_pilot": {
-                    "deepseek_dpd_pilot_data": record
+                "hybrid_mode_gspo": {
+                    "hybrid_mode_rl_data": record
                 }
             },
         }
@@ -339,22 +339,21 @@ class PortageAutonomyTests(unittest.TestCase):
             "checkpoint_contract": checkpoint_contract,
         }
         request_path = request_root / (
-            "deepseek_dpd_pilot--deepseek_dpd_pilot_data--"
+            "hybrid_mode_gspo--hybrid_mode_rl_data--"
             + checkpoint_manifest["checkpoint_sha256"][:16]
             + ".json"
         )
         request = {
             "schema": "metis.deferred-materialization-request/v1",
             "family": family.name,
-            "stage": "deepseek_dpd_pilot",
-            "requirement": "deepseek_dpd_pilot_data",
+            "stage": "hybrid_mode_gspo",
+            "requirement": "hybrid_mode_rl_data",
             "requirement_schema": record["schema"],
             "parent_checkpoint_sha256": checkpoint_manifest[
                 "checkpoint_sha256"
             ],
             "stage_bindings": {
                 "parent_policy_checkpoint": checkpoint_binding,
-                "dpd_reference_checkpoint": checkpoint_binding,
             },
             "release_index_path": str(index_path),
             "release_index_file_sha256": file_sha256(index_path),
@@ -369,21 +368,21 @@ class PortageAutonomyTests(unittest.TestCase):
                 "output_manifest": str(
                     family_root
                     / "generated"
-                    / "deepseek_dpd_pilot"
+                    / "hybrid_mode_gspo"
                     / "data"
                     / "MANIFEST.json"
                 ),
                 "reducer_receipt": str(
                     family_root
                     / "generated"
-                    / "deepseek_dpd_pilot"
+                    / "hybrid_mode_gspo"
                     / "data"
                     / "REDUCER.json"
                 ),
                 "rank_receipts": str(
                     family_root
                     / "generated"
-                    / "deepseek_dpd_pilot"
+                    / "hybrid_mode_gspo"
                     / "data"
                     / "ranks"
                 ),
@@ -1330,7 +1329,7 @@ class PortageAutonomyTests(unittest.TestCase):
                 ).glob("*.json")
             )
             tampered = dict(request)
-            tampered["stage"] = "dpd"
+            tampered["stage"] = "wrong-stage"
             atomic_write_json(request_path, tampered)
             with self.assertRaisesRegex(RuntimeError, "lineage is invalid"):
                 validate_deferred_materialization_request(
@@ -1518,7 +1517,6 @@ class PortageAutonomyTests(unittest.TestCase):
                 "campaign_token_cursor": active[
                     "campaign_token_cursor"
                 ],
-                "reward_model_manifest": None,
                 "evaluation_receipt": None,
                 "completed": [],
                 "active": active,
@@ -2126,8 +2124,8 @@ receipt_path.write_text(
             assert loaded is not None
             assert praxis_family_index_path is not None
             self.assertEqual(loaded[1], praxis_family_index_path.resolve())
-            deferred = loaded[0]["requirements"]["deepseek_dpd_pilot"][
-                "deepseek_dpd_pilot_data"
+            deferred = loaded[0]["requirements"]["hybrid_mode_gspo"][
+                "hybrid_mode_rl_data"
             ]
             output_root = temporary / "trainer-output" / "posttraining" / "praxis"
             with mock.patch.dict(
@@ -2137,20 +2135,13 @@ receipt_path.write_text(
                     release_index=loaded,
                     record=deferred,
                     family="praxis",
-                    stage_id="deepseek_dpd_pilot",
-                    requirement_name="deepseek_dpd_pilot_data",
+                    stage_id="hybrid_mode_gspo",
+                    requirement_name="hybrid_mode_rl_data",
                     parent_checkpoint_sha256="f" * 64,
                     topology=topology,
                     output_root=output_root,
                     stage_bindings={
                         "parent_policy_checkpoint": {
-                            "stage_id": "overall_sft",
-                            "checkpoint_path": "/sealed/parent",
-                            "checkpoint_sha256": "f" * 64,
-                            "checkpoint_receipt": "/sealed/parent-receipt",
-                            "checkpoint_contract": {},
-                        },
-                        "dpd_reference_checkpoint": {
                             "stage_id": "overall_sft",
                             "checkpoint_path": "/sealed/parent",
                             "checkpoint_sha256": "f" * 64,

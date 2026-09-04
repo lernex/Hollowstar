@@ -52,16 +52,13 @@ _POSTTRAINING_STAGE_IDS = (
     "context_extension",
     "cold_start_sft",
     "overall_sft",
-    "deepseek_dpd_pilot",
-    "deepseek_dpd",
+    "hybrid_mode_gspo",
     "specialist_reasoning",
     "specialist_code",
     "specialist_knowledge",
     "specialist_writing",
     "specialist_agentic",
     "opd_consolidation",
-    "pairwise_reward_model",
-    "preference_alignment",
     "evaluation",
     "publish_gate",
 )
@@ -73,12 +70,10 @@ _SPECIALIST_STAGE_IDS = (
     "specialist_agentic",
 )
 _POSTTRAINING_PARENT_STAGE = {
-    "deepseek_dpd_pilot": "overall_sft",
-    "deepseek_dpd": "deepseek_dpd_pilot",
-    **{stage_id: "deepseek_dpd" for stage_id in _SPECIALIST_STAGE_IDS},
-    "opd_consolidation": "deepseek_dpd",
-    "preference_alignment": "pairwise_reward_model",
-    "evaluation": "preference_alignment",
+    "hybrid_mode_gspo": "overall_sft",
+    **{stage_id: "hybrid_mode_gspo" for stage_id in _SPECIALIST_STAGE_IDS},
+    "opd_consolidation": "hybrid_mode_gspo",
+    "evaluation": "opd_consolidation",
     "publish_gate": "evaluation",
 }
 
@@ -552,55 +547,6 @@ def validate_posttraining_state_for_requeue(
                 "stage": active.get("stage_id"),
                 "checkpoint": policy_summary,
             }
-        elif kind == "reward_model":
-            reward_path = Path(
-                str(active.get("reward_checkpoint_path", ""))
-            ).expanduser().resolve()
-            reward_root = (post_root / "reward_model" / "training").resolve()
-            try:
-                reward_path.relative_to(reward_root)
-            except ValueError as exc:
-                raise RuntimeError(
-                    "Active reward-model checkpoint escapes output"
-                ) from exc
-            if (
-                not reward_path.is_file()
-                or reward_path.is_symlink()
-                or file_sha256(reward_path)
-                != active.get("reward_checkpoint_sha256")
-            ):
-                raise RuntimeError("Active reward-model checkpoint bytes changed")
-            import torch
-
-            payload = torch.load(reward_path, map_location="cpu", weights_only=False)
-            if (
-                not isinstance(payload, Mapping)
-                or payload.get("schema")
-                != "metis.reward-model-training-checkpoint/v1"
-                or payload.get("family") != family.name
-                or payload.get("stage") != active.get("stage_id")
-                or payload.get("stage_config_sha256")
-                != active.get("stage_config_sha256")
-                or payload.get("parent_checkpoint_sha256")
-                != active.get("parent_checkpoint_sha256")
-                or payload.get("precision_role_plan_sha256")
-                != active.get("precision_role_plan_sha256")
-                or payload.get("bundle_sha256") != active.get("bundle_sha256")
-                or payload.get("runtime_batch") != active.get("runtime_batch")
-                or payload.get("epoch") != active.get("epoch")
-                or payload.get("next_global_batch")
-                != active.get("next_global_batch")
-                or payload.get("optimizer_step") != active.get("optimizer_step")
-            ):
-                raise RuntimeError("Active reward-model checkpoint lineage is invalid")
-            active_summary = {
-                "kind": kind,
-                "stage": active.get("stage_id"),
-                "checkpoint": {
-                    "path": str(reward_path),
-                    "file_sha256": file_sha256(reward_path),
-                },
-            }
         else:
             raise RuntimeError("Post-training active-stage kind is unsupported")
     elif state.get("policy_checkpoint_contract") is not None:
@@ -764,17 +710,10 @@ def validate_deferred_materialization_request(
         return checkpoint
 
     expected_binding_names = {"parent_policy_checkpoint"}
-    if request.get("stage") in {
-        "deepseek_dpd_pilot",
-        "deepseek_dpd",
-    }:
-        expected_binding_names.add("dpd_reference_checkpoint")
     if request.get("stage") == "opd_consolidation":
         expected_binding_names.update(
             {"specialist_checkpoints", "unified_student_checkpoint"}
         )
-    if request.get("stage") == "preference_alignment":
-        expected_binding_names.add("reward_model_manifest")
     if set(stage_bindings) != expected_binding_names:
         raise RuntimeError(
             "Deferred materialization stage bindings do not match the stage"
@@ -797,33 +736,6 @@ def validate_deferred_materialization_request(
         ),
     )
 
-    if request.get("stage") in {
-        "deepseek_dpd_pilot",
-        "deepseek_dpd",
-    }:
-        reference = stage_bindings.get("dpd_reference_checkpoint")
-        if (
-            not isinstance(reference, Mapping)
-            or reference.get("stage_id") != "overall_sft"
-        ):
-            raise RuntimeError(
-                "DPD materialization omits its frozen overall-SFT reference"
-            )
-        validate_checkpoint_binding(
-            reference,
-            label="DPD frozen overall-SFT reference",
-            expected_phase="overall_sft",
-        )
-        if request.get("stage") == "deepseek_dpd_pilot" and (
-            reference.get("checkpoint_sha256")
-            != request["parent_checkpoint_sha256"]
-            or reference.get("checkpoint_path")
-            != parent_binding.get("checkpoint_path")
-        ):
-            raise RuntimeError(
-                "DPD pilot reference differs from its overall-SFT parent"
-            )
-
     if request.get("stage") == "opd_consolidation":
         specialists = stage_bindings.get("specialist_checkpoints")
         unified = stage_bindings.get("unified_student_checkpoint")
@@ -831,7 +743,7 @@ def validate_deferred_materialization_request(
             not isinstance(specialists, Mapping)
             or set(specialists) != set(_SPECIALIST_STAGE_IDS)
             or not isinstance(unified, Mapping)
-            or unified.get("stage_id") != "deepseek_dpd"
+            or unified.get("stage_id") != "hybrid_mode_gspo"
         ):
             raise RuntimeError(
                 "OPD materialization omits the unified student or a specialist"
@@ -842,7 +754,7 @@ def validate_deferred_materialization_request(
             expected_checkpoint_sha256=str(
                 request["parent_checkpoint_sha256"]
             ),
-            expected_phase="deepseek_dpd",
+            expected_phase="hybrid_mode_gspo",
         )
         if (
             unified.get("checkpoint_path")
@@ -862,46 +774,6 @@ def validate_deferred_materialization_request(
                 expected_phase=specialist_id,
             )
 
-    if request.get("stage") == "preference_alignment":
-        if not isinstance(
-            stage_bindings.get("reward_model_manifest"), Mapping
-        ):
-            raise RuntimeError(
-                "Preference materialization omits its frozen reward model"
-            )
-        reward = stage_bindings["reward_model_manifest"]
-        reward_path = Path(str(reward.get("path", ""))).expanduser().resolve()
-        expected_reward = (
-            output_root
-            / "posttraining"
-            / family.name
-            / "reward_model"
-            / "MANIFEST.json"
-        ).resolve()
-        if (
-            reward_path != expected_reward
-            or not reward_path.is_file()
-            or reward_path.is_symlink()
-            or file_sha256(reward_path) != reward.get("file_sha256")
-        ):
-            raise RuntimeError(
-                "Preference materialization reward-model bytes changed"
-            )
-        reward_manifest = read_json(reward_path)
-        if (
-            reward_manifest.get("schema") != "metis.pairwise-reward-model/v1"
-            or reward_manifest.get("family") != family.name
-            or reward_manifest.get("parent_checkpoint_sha256")
-            != request["parent_checkpoint_sha256"]
-            or reward_manifest.get("manifest_sha256")
-            != json_sha256(reward_manifest, omit=("manifest_sha256",))
-            or reward_manifest.get("manifest_sha256")
-            != reward.get("manifest_sha256")
-            or reward_manifest.get("complete") is not True
-        ):
-            raise RuntimeError(
-                "Preference materialization reward-model lineage changed"
-            )
     observed_deep = posttraining_preflight.get("deep_verification")
     if not isinstance(observed_deep, Mapping) or dict(deep) != {
         "path": str(observed_deep.get("path", "")),
@@ -1910,23 +1782,6 @@ class FamilySupervisor:
                 "METIS_DEFERRED_RECORD_SHA256": str(request["record_sha256"]),
             }
         )
-        reward_binding = request["stage_bindings"].get(
-            "reward_model_manifest"
-        )
-        if isinstance(reward_binding, Mapping):
-            environment.update(
-                {
-                    "METIS_REWARD_MODEL_MANIFEST": str(
-                        reward_binding["path"]
-                    ),
-                    "METIS_REWARD_MODEL_MANIFEST_FILE_SHA256": str(
-                        reward_binding["file_sha256"]
-                    ),
-                    "METIS_REWARD_MODEL_MANIFEST_SHA256": str(
-                        reward_binding["manifest_sha256"]
-                    ),
-                }
-            )
         last_error = "not attempted"
         while len(attempts["attempts"]) < maximum_attempts:
             if self.signal_requested.is_set():

@@ -74,27 +74,28 @@ class _BiasUpdateModel(nn.Module):
         self.bias_updates.append(counts.clone())
 
 
-def test_live_dpd_trials_restore_parent_and_resume_from_self_hashed_receipt() -> None:
+def test_live_gspo_trials_restore_parent_and_resume_from_self_hashed_receipt() -> None:
     default = {
-        "beta": 0.1,
-        "token_distillation_weight": 1.0,
-        "sequence_preference_weight": 1.0,
-        "temperature": 1.0,
+        "clip_low": 0.0003,
+        "clip_high": 0.0004,
+        "length_coefficient": 0.0,
     }
-    winner = {**default, "beta": 0.2}
+    winner = {**default, "length_coefficient": 0.05}
     first_metrics = {
-        "primary_regression": 0.0,
-        "reasoning_gain": 0.1,
-        "self_correction_gain": 0.1,
-        "loss_nonfinite_steps": 0.0,
+        "reward_gain": 0.1,
+        "entropy_delta": 0.0,
+        "evaluation_regression": 0.0,
+        "nonfinite_steps": 0.0,
         "evaluation_records": 3.0,
+        "rollout_prompts": 3.0,
     }
     winner_metrics = {
-        "primary_regression": 0.0,
-        "reasoning_gain": 0.2,
-        "self_correction_gain": 0.2,
-        "loss_nonfinite_steps": 0.0,
+        "reward_gain": 0.2,
+        "entropy_delta": 0.0,
+        "evaluation_regression": 0.0,
+        "nonfinite_steps": 0.0,
         "evaluation_records": 3.0,
+        "rollout_prompts": 3.0,
     }
     evaluator = {
         "records": 3,
@@ -121,7 +122,7 @@ def test_live_dpd_trials_restore_parent_and_resume_from_self_hashed_receipt() ->
     )
     bundle = SimpleNamespace(
         family="praxis",
-        stage_id="deepseek_dpd_pilot",
+        stage_id="hybrid_mode_gspo",
         manifest={"profile_selection": evidence},
         manifest_sha256="b" * 64,
         records=2,
@@ -135,25 +136,28 @@ def test_live_dpd_trials_restore_parent_and_resume_from_self_hashed_receipt() ->
         working_set={"token_chunk_size": 1},
     )
     stage = {
-        "id": "deepseek_dpd_pilot",
+        "id": "hybrid_mode_gspo",
         "autotune": {
             "live_canary": {
                 "schema": "metis.posttraining-live-canary-policy/v1",
                 "training_optimizer_steps": 1,
-                "evaluator_implementation": (
-                    "metis.dpd-preference-replay/v1"
-                ),
+                "evaluator_implementation": "metis.rlvr-offline-policy-replay/v1",
                 "minimum_evaluation_records": 3,
                 "maximum_reproduction_tolerance": 1.0e-8,
                 "restore_parent_between_trials": True,
                 "restore_rng_between_trials": True,
             }
         },
-        "promotion_gate": {
-            "require_no_primary_regression": True,
-            "minimum_reasoning_gain": 0.0,
-            "minimum_self_correction_gain": 0.0,
-            "maximum_loss_nonfinite_steps": 0,
+        "objective": {
+            "clip_low": default["clip_low"],
+            "clip_high": default["clip_high"],
+        },
+        "reward": {"length_coefficient": 0.0},
+        "autotune_gate": {
+            "minimum_reward_gain": 0.0,
+            "maximum_entropy_delta": 0.25,
+            "maximum_evaluation_regression": 0.0,
+            "maximum_nonfinite_steps": 0,
         },
     }
     model = _ModeModel()
@@ -174,38 +178,46 @@ def test_live_dpd_trials_restore_parent_and_resume_from_self_hashed_receipt() ->
     def train_candidate(**kwargs: object) -> dict[str, object]:
         selection = kwargs["selection_override"]
         assert isinstance(selection, ProfileSelection)
-        model.mode = f"{selection.profile['beta']:.1f}"
+        model.mode = f"{selection.profile['length_coefficient']:.2f}"
         return {}
 
     def evaluate(**_kwargs: object) -> dict[str, float]:
-        score = {"parent": 0.5, "0.1": 0.6, "0.2": 0.7}[model.mode]
+        score = {"parent": 0.5, "0.00": 0.6, "0.05": 0.7}[model.mode]
         return {
-            "primary_score": 0.5,
-            "reasoning_score": score,
-            "self_correction_score": score,
+            "expected_reward": score,
+            "entropy": 1.0,
+            "correct_response_nll": 0.5,
             "evaluation_records": 3.0,
+            "rollout_prompts": 3.0,
         }
 
     with tempfile.TemporaryDirectory() as raw, mock.patch.multiple(
         "metis_training.stage_backend",
-        _selected_dpd_profile=mock.DEFAULT,
-        _dpd_profile_candidates=mock.DEFAULT,
-        _run_dpd_stage=mock.DEFAULT,
-        _evaluate_live_dpd_profile=mock.DEFAULT,
+        _selected_gspo_profile=mock.DEFAULT,
+        _gspo_profile_candidates=mock.DEFAULT,
+        _run_gspo_stage=mock.DEFAULT,
+        _evaluate_live_gspo_profile=mock.DEFAULT,
         _profile_trial_state_fingerprint=mock.DEFAULT,
         _runtime_rank_inventory=mock.DEFAULT,
         _apply_optimizer_state_transition=mock.DEFAULT,
     ) as patches:
-        patches["_selected_dpd_profile"].return_value = ProfileSelection(
+        patches["_selected_gspo_profile"].return_value = ProfileSelection(
             default, _canonical_hash(default), "s" * 64, {}, "external"
         )
-        patches["_dpd_profile_candidates"].return_value = (
+        gate = {
+            "name": "stable_reward",
+            "minimum_reward_gain": 0.0,
+            "maximum_entropy_delta": 0.25,
+            "maximum_evaluation_regression": 0.0,
+            "maximum_nonfinite_steps": 0,
+        }
+        patches["_gspo_profile_candidates"].return_value = (
             default,
-            tuple(default),
             [default, winner],
+            gate,
         )
-        patches["_run_dpd_stage"].side_effect = train_candidate
-        patches["_evaluate_live_dpd_profile"].side_effect = evaluate
+        patches["_run_gspo_stage"].side_effect = train_candidate
+        patches["_evaluate_live_gspo_profile"].side_effect = evaluate
         patches["_profile_trial_state_fingerprint"].side_effect = (
             lambda *_args, **_kwargs: _canonical_hash({"mode": model.mode})
         )
@@ -235,7 +247,7 @@ def test_live_dpd_trials_restore_parent_and_resume_from_self_hashed_receipt() ->
             signal_coordinator=None,
         )
         assert selected.profile == winner
-        receipt_path = output / "autotune" / "deepseek_dpd_pilot.json"
+        receipt_path = output / "autotune" / "hybrid_mode_gspo.json"
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         assert receipt["schema"] == LIVE_PROFILE_AUTOTUNE_RECEIPT_SCHEMA
         assert receipt["complete"] is True

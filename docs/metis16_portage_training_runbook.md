@@ -40,14 +40,13 @@ The launcher then verifies the cluster identity, `parry` partition, 128-node/512
 five-day wall limit, Lustre mount, clean Git commit, base-data release, and post-training release
 umbrella. The umbrella hash-pins one backend-native index per family. Static artifacts must already
 be sealed. The release builder installs the repository's single byte-pinned distributed
-materialization hook; it executes only stage adapters already sealed inside a DeepSeek capability,
-verifier, OPD capability, preference, or evaluation artifact. Generated
-output is bound to the live parent and, where applicable, the frozen
-overall-SFT reference, all five specialist checkpoints, or the frozen reward
-model. Missing static data, adapter bytes, or lineage fails before the
+materialization hook; it executes only stage adapters already sealed inside a verifier, OPD
+capability, or evaluation artifact. Generated output is bound to the live parent and, for OPD,
+all five specialist checkpoints plus the shared hybrid-mode student. Missing static data, adapter
+bytes, or lineage fails before the
 expensive stage.
 The benchmark suite is static, but its result bundle is generated only after
-preference alignment and is hash-bound to that exact family checkpoint.
+OPD consolidation and is hash-bound to that exact family checkpoint.
 
 The login preflight also runs `sbatch --test-only` with the exact 128-node,
 512-task production envelope. This validates the current user's account,
@@ -180,11 +179,11 @@ other profile field and the parameter/optimizer layout are unchanged. Context-ex
 post-training batches use an analogous stage-bound override receipt; sealed dataset manifests are
 never edited. Automatic restarts are capped; unknown trainer failures stop closed.
 
-Before DPD-pilot and every RLVR stage, the live family allocation also replays every bounded
+Before every GSPO stage, the live family allocation also replays every bounded
 quality candidate from the same parent checkpoint and RNG state against separately sealed held-out
 arrays. Claimed profile metrics alone are rejected. The trainer first benchmarks the
 manifest-bounded micro-batch/token-chunk/group candidates, preserving effective batch and token
-budget, then records the fastest safe working set. It next runs the two-step DPD or GSPO trials,
+budget, then records the fastest safe working set. It next runs the two-step GSPO trials,
 recomputes evaluator accumulators, and promotes only a gate-passing reproduced result. Both
 decisions are atomic, self-hashed, topology/runtime/precision-bound, and safe to reuse after
 requeue; an active stage without its complete matching receipts stops closed.
@@ -199,12 +198,11 @@ records, and restores the highest-scoring passing checkpoint. Its source
 mixture and Rhea build are documented in
 [`metis16_context_extension_data.md`](metis16_context_extension_data.md).
 
-Post-training then runs mixed-length cold SFT, mixed-length overall SFT,
-cross-tokenizer DeepSeek sequence DPD, five independent Metis specialist
-branches, same-tokenizer OPD consolidation, pairwise reward modeling,
-preference GSPO, evaluation, and a local publish gate. Reasoning specialists
-use 60% correctness-only optimization before enabling the two-sided adaptive
-thinking budget for the final 40%.
+Post-training then runs three-mode cold SFT, three-mode overall SFT, shared
+hybrid-mode GSPO, five independent capability-specialist GSPO branches,
+same-tokenizer OPD consolidation, evaluation, and a local publish gate. All
+GSPO branches train `direct`, `think`, and `think_max`; only `think` receives
+difficulty-aware length shaping.
 
 ## Telemetry and completion
 

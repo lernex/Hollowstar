@@ -1,305 +1,212 @@
-# Metis-1.6 context extension and post-training contract
+# Metis-1.6 post-training contract
 
-`configs/metis16/posttraining.yaml` is the immutable stage contract.
-`metis_training.posttraining` supplies the loss functions, artifact verification,
-checkpoint lineage, resume logic, and backend orchestration. It deliberately
-does not claim that unavailable post-training data, teachers, or reward
-environments exist.
+Status: locked for Metis-1.6
+Last revised: September 2026
 
-## Locked sequence
+The executable source of truth is `configs/metis16/posttraining.yaml`. This
+document explains the decisions that the manifest and validators enforce.
 
-For Praxis and Logos independently:
+## Final sequence
 
-1. direct 4,096 -> 163,840-token continued-pretraining jump over exactly 18B
-   active tokens, deploying at 131,072 tokens;
-2. cold-start SFT with 92% of examples in 8K-32K and a deliberately small 8%
-   in 32K-64K;
-3. overall SFT with a 65% 8K-32K, 25% 32K-64K, and 10% 64K-131K mix;
-4. a 10% cross-tokenizer DeepSeek-DPD pilot and live promotion gate;
-5. full cross-tokenizer DeepSeek-DPD;
-6. five independent GSPO specialist branches from that same unified
-   checkpoint: reasoning, code, knowledge, writing, and agentic;
-7. same-tokenizer OPD that consolidates all five specialists into the
-   untouched unified student;
-8. a side-branch pairwise reward model;
-9. frozen-reward GSPO preference alignment;
-10. evaluation and a local publish-readiness gate.
+```text
+context extension
+  -> cold-start SFT
+  -> overall SFT
+  -> shared hybrid-mode GSPO
+  -> five parallel capability GSPO specialists
+  -> same-tokenizer OPD consolidation
+  -> evaluation
+  -> local publish gate
+```
 
-The reward-model checkpoint never replaces the policy checkpoint in lineage.
-Likewise, specialist branches never become the unified policy directly. OPD
-starts from the exact DeepSeek-DPD checkpoint and sees all five specialist
-checkpoint hashes at once.
-The final gate creates a sealed local candidate only; it does not upload model
-weights.
+The five specialists are reasoning, code, knowledge, writing, and agentic
+tool use. They are capability specialists, not reasoning-mode specialists.
+Every specialist trains all three reasoning modes.
 
-## Production in-process backend
+DeepSeek preference distillation is not part of Metis-1.6. The external
+teacher and Metis use different tokenizers, making aligned token-level
+distillation unnecessarily complex for this generation. There is also no
+standalone scalar reward model or terminal general-preference stage. Verifiable
+and rubric-scored GSPO supplies the reinforcement signal, and the release ends
+on the consolidated policy.
 
-`metis-posttrain run` launches the Portage campaign. After base pre-training,
-every initialized family rank enters
-`metis_training.stage_backend.run_posttraining_campaign` from `train.py` with
-the live model, optimizer, parallel topology, signal coordinator, and
-`CheckpointManager`. There is no nested trainer command and no rank-zero-only
-model update: policy forwards, backwards, expert-parallel collectives, gradient
-synchronization, and distributed checkpoint writes remain collective across
-the family allocation.
+## Public reasoning modes
 
-Checkpoint-producing stages write native
-`metis.distributed-checkpoint/v1` manifests. Their `extra_state` binds
-`posttraining_stage`, `parent_checkpoint_sha256`, and
-`stage_config_sha256`; campaign state and receipts also bind the pipeline,
-family manifest, tokenizer, canonical-ID sidecar, measured autotune selection,
-precision-role plan, and optimizer-state policy. Resume rehashes those
-contracts and refuses lineage or byte drift. Evaluation and publish stages
-write sealed `metis.evaluation-results/v1` and
-`metis.publish-candidate/v1` artifacts.
+The tokenizer reserves three immutable control tokens:
 
-### Explicit legacy interface
+| Public mode | Token | Required response |
+|---|---|---|
+| `direct` | `<|direct|>` | Answer immediately; no visible reasoning trace |
+| `think` | `<|think|>` | Use a normal, efficient reasoning trace |
+| `think_max` | `<|think_max|>` | Use the largest useful reasoning budget; optimize correctness, not verbosity |
 
-Only `metis-posttrain legacy-run` uses the deprecated external-backend
-orchestrator. That compatibility path invokes `METIS_POSTTRAIN_BACKEND` with
-`--runtime-spec /absolute/path/to/RUNTIME.json` and expects a self-hashed
-`metis.stage-output/v1` receipt. It is not used by the autonomous production
-campaign.
+The mode is an explicit prompt/data attribute. Unknown or ambiguous mode labels
+are quarantined rather than guessed.
 
-## Required inputs
+Mode does not control MoRE compute. The routed architecture keeps the same
+targets in every mode:
 
-The environment variables in the YAML must point to complete, hash-sealed
-manifests. Among other checks, the contract requires:
+| Mode | Target mean depth | Target mean routed k |
+|---|---:|---:|
+| `direct` | 2.0 | 4.0 |
+| `think` | 2.0 | 4.0 |
+| `think_max` | 2.0 | 4.0 |
 
-- both direct and `<think>` answer modes in both SFT stages;
-- identity, safety, abstention, deduplication, and contamination audits;
-- DeepSeek positives, fresh Metis negatives, a verified sequence-preference
-  margin, and log probabilities from the frozen overall-SFT reference;
-- strict 10%-90% avg@16 prompt filtering before each RLVR domain;
-- deterministic sandboxed STEM/code verifiers, source-pinned knowledge and
-  writing judges, and a pinned agent environment;
-- single-use unified-student OPD trajectories plus reverse-KL logits over the
-  union of the student and routed specialist top-32 token sets;
-- human-preference provenance and position-balanced reward-model pairs;
-- per-candidate preference-alignment scores produced once by the frozen
-  pairwise reward backbone and head at the exact parent policy checkpoint;
-- a sealed evaluation suite with thresholds and holdouts.
+The difference between modes is the response contract and generation budget,
+not a hidden depth or expert-routing contract. Evaluation records depth and k
+per mode and fails if this invariance drifts.
 
-The orchestrator refuses missing inputs even in dry-run mode. This is
-intentional: a training process cannot autonomously manufacture trustworthy
-teachers, private tests, human preferences, licenses, or benchmark holdouts.
+## Data construction
 
-Context-extension and SFT artifacts are shared by Praxis and Logos. DPD
-negatives, specialist avg@16 selections, OPD trajectories, preference
-candidates, and final evaluation results are not: each generated manifest
-names its family and exact generating checkpoint hash. The static evaluation
-suite is shared, but its sealed adapter runs only after preference alignment
-and emits results bound to that live family checkpoint. The two
-families may share the underlying prompt pool, but cannot share policy-dependent
-negative samples or filtered selections.
+Standard datasets do not need to use Metis names. Raw examples remain
+immutable; a versioned transformation layer emits `metis.sft-data/v2` or
+`metis.rlvr-data/v2` records with an explicit `reasoning_mode` field and the
+matching control token.
 
-The Portage one-command path packages those inputs as one
-`metis.posttraining-release-umbrella/v1`. The umbrella self-hash and exact
-post-training YAML file hash pin separate Praxis and Logos
-`metis.posttraining-release-index/v1` files. Each family index contains a
-structured, file-hashed tokenizer manifest entry and stage/name requirement
-records. A requirement is either:
+The transformation pipeline must:
 
-- `state: sealed`, with its manifest file hash and sealed-envelope self-hash; or
-- `state: deferred`, with a safe future manifest path and a generation hook
-  whose executable SHA-256, arguments, timeout, and receipt path are pinned.
+1. classify or deliberately assign a mode using provenance-backed rules;
+2. render the Metis chat template and mode token;
+3. validate the trace-format contract;
+4. retain same-prompt examples across all three modes for a measured overlap
+   subset;
+5. deduplicate and decontaminate after rendering;
+6. audit prompt share and target-token share by domain and mode;
+7. quarantine uncertain labels instead of silently mapping them.
 
-All paths are relative to the family index root; absolute paths, `..`, and
-symlinks are rejected. The release builder installs one byte-pinned
-`metis16-posttraining-materialize` hook for every production deferred stage.
-That hook will execute only a `metis.generation-adapter/v1` executable already
-contained in, hashed by, and marked executable in a static sealed requirement.
-This makes the DeepSeek endpoint client, verifier code, prompt source,
-same-tokenizer OPD router, reward scorer, and final evaluator part of the Rhea
-audit surface instead of an
-untracked command supplied on Portage.
+Prompt counts alone are not a sufficient balance metric because `think_max`
+targets are much longer. Manifests therefore seal actual target-token share by
+mode. Same-prompt overlap is also mandatory: it gives training and evaluation a
+controlled test of whether the mode token changes behavior without changing
+the task.
 
-The trainer never starts a nested generator while its
-family allocation is occupied. Instead, every rank collectively seals one
-`metis.deferred-materialization-request/v1`, exits with the supervisor handoff
-status, and `FamilySupervisor` runs the hash-pinned hook after the trainer step
-has released the nodes. `distributed_family_v1` launches one task per family
-rank; `rank0_only_v1` launches exactly one task with its declared GPU count.
+## SFT
 
-Every hook task writes a self-hashed
-`metis.generation-hook-rank-receipt/v1`. The supervisor reducer requires exact,
-duplicate-free rank coverage and writes
-`metis.generation-hook-receipt/v2`. The request, rank receipts, reducer receipt,
-and sealed output all bind the family, stage, requirement, parent-checkpoint
-SHA-256, immutable `stage_bindings`, release-index file and self hashes,
-requirement-record hash, deep-verification receipt, executable hash, execution
-protocol, world size, sealed adapter contract, and output file and self
-hashes. Every generated stage binds `parent_policy_checkpoint`. DPD also binds
-`dpd_reference_checkpoint` to overall SFT. OPD additionally binds
-`unified_student_checkpoint` and all five `specialist_checkpoints`.
-Preference alignment binds `reward_model_manifest`. The supervisor
-deep-verifies all those distributed checkpoints and receipts before allocating
-the adapter step. This is how on-policy DPD, specialist RL, OPD, and
-reward-scored artifacts are created at the correct point in lineage without
-pretending that a future checkpoint exists. The family process receives only
-the validated umbrella through `METIS_POSTTRAINING_RELEASE_INDEX`; direct
-artifact environment variables are not the autonomous production path.
+Cold-start SFT installs correct reasoning, self-correction, and trace
+boundaries. Its target mix is reasoning-heavy:
 
-The tokenizer entry is not accepted on a claimed hash alone. Its sealed
-`tokenizer_file` bytes must hash-identically match the tokenizer artifact in
-the verified 1T base-data release. Metadata also binds the base release hash,
-the tokenizer and canonical-sidecar paths relative to that release, and both
-canonical-sidecar hashes. Portage recomputes the canonical map semantics from
-the live base tokenizer before post-training begins.
+- `direct`: 15%
+- `think`: 60%
+- `think_max`: 25%
 
-`./metis-posttrain` is the repository-local operator surface for this production path:
-`release-build` seals the Rhea handoff, `release-status` verifies it without an
-allocation, `status` inspects the campaign, and `run` launches or resumes the
-Portage campaign whose family trainers call the in-process backend. The older
-external-backend orchestrator is retained only as the explicitly named
-`legacy-run` command; it is not the default execution path.
+Overall SFT broadens chat, knowledge, code, writing, safety, abstention, and
+tool use while keeping mode switching reliable:
 
-Preference-alignment rewards are never recomputed through the policy being
-optimized. Its mmap bundle carries a `metis.frozen-reward-scores/v1` contract
-that self-hashes the score array and candidate IDs, the pairwise reward-model
-manifest, its frozen parent policy checkpoint, and the canonical-ID sidecar.
-The backend verifies those bytes before GSPO and consumes the immutable
-`reward_scores` array. Any score, candidate, checkpoint, or reward-model drift
-fails before the first optimizer step.
+- `direct`: 45%
+- `think`: 40%
+- `think_max`: 15%
 
-The cold-start SFT floor is 30 million source QA instructions, not 30 million
-fully padded tensors. Its sealed metadata therefore proves
-`source_instruction_count` separately, declares document-isolated packing,
-and proves the 92%/8% length-bucket mass. Overall SFT separately proves its
-65%/25%/10% mix, including genuine 64K-131K examples. Shorter SFT examples are
-intentional: a 131K-capable model still needs far more ordinary conversations
-than exceptionally long ones, while the 10% long bucket teaches the chat and
-tool formats at the deployed limit.
+These are prompt-share targets. Target-token share is measured separately.
+Both SFT stages require identity scrub, safety calibration, abstention,
+deduplication, contamination checks, mode balance, explicit mode labels, and
+same-prompt overlap.
 
-## Important DPD and OPD boundary
+## Shared hybrid-mode GSPO
 
-Nanbeige DPD includes token-level probability distillation, which assumes a
-shared token probability space. DeepSeek-V4-Flash and Metis do not share a
-tokenizer, so the production YAML explicitly does **not** claim token KD:
-both token-distillation weights are zero. The local DeepSeek service generates
-verified positive sequences; the frozen Metis policy generates negatives and
-scores both sides after Metis retokenization; training uses the sequence-level
-preference margin. This is cross-tokenizer sequence DPD, not fake vocabulary
-alignment.
+A short shared GSPO stage follows overall SFT. It reinforces mode selection,
+trace format, termination, repetition control, and general behavior before any
+capability branch diverges.
 
-Dense probability distillation happens later where it is valid. All five
-Metis specialists share the Metis tokenizer and architecture. OPD samples
-single-use trajectories from the current unified Metis student, routes each
-prompt to its sealed domain specialist, and computes reverse KL over the union
-of the student and teacher top-32 token sets (up to 64 unique IDs). The
-trainer validates the student and every specialist checkpoint hash before the
-first OPD update.
+Each prompt produces 16 on-policy candidates from the exact parent checkpoint.
+Prompts pass only when avg@16 correctness is strictly between 10% and 90%.
+Rollouts are single-use and checkpoint-bound. The objective is sequence-ratio
+GSPO with no KL penalty and masked truncated samples.
 
-## Research-to-code mapping
+Reward is composed from task correctness or a calibrated rubric judge plus
+strict mode compliance. A standalone learned scalar reward model is forbidden.
+Length shaping applies only to `think`. `direct` receives no trace-length
+reward, and `think_max` receives no positive reward for being longer.
 
-- [Nanbeige4-3B](https://arxiv.org/abs/2512.06266): two-stage SFT, DPD,
-  strict avg@16 filtering, STEM -> code -> preference RL, and the dedicated
-  pairwise reward model.
-- [Nanbeige4.1-3B](https://arxiv.org/abs/2602.13367): turn-level agent credit,
-  correctness-gated code-efficiency rewards, and swap consistency.
-- [GSPO](https://arxiv.org/abs/2507.18071): length-normalized sequence
-  likelihood ratio, sequence clipping, GSPO-token, and the MoE stability
-  rationale. The 3e-4/4e-4 clips are paper starting values, not guaranteed
-  optima for Metis.
-- [DAPO](https://arxiv.org/abs/2503.14476): no KL, asymmetric clipping,
-  dynamic sampling, and masking truncated responses. Metis uses Nanbeige's
-  stricter 10%-90% band rather than DAPO's exact-zero/exact-one filter.
-- [DAST](https://arxiv.org/abs/2503.04472): the difficulty-adaptive token
-  budget. Metis adapts that budget into a two-sided,
-  correctness-dominant reward: correct answers too far below or above the
-  difficulty-conditioned budget are penalized, while wrong answers receive no
-  length shaping. This adaptation is not attributed to DAST.
-- [MiniCPM5-1B](https://github.com/OpenBMB/MiniCPM): independent
-  domain-specialist RL, same-tokenizer top-k-union reverse-KL OPD, reuse of
-  specialist prompt domains, and a two-stage reasoning-length schedule.
-- [DeepSeek-V4-Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash):
-  local high-capability bootstrap teacher and the independent-specialist ->
-  unified-OPD structure. Metis does not copy its tokenizer or treat a
-  generation endpoint as token-level logits.
-- [Nemotron Nano 2](https://arxiv.org/abs/2508.14444) and
-  [Nemotron 3](https://arxiv.org/abs/2512.20856): direct NoPE context
-  extension, overshoot, synthetic long-context data, and concurrent
-  short-context replay.
+## Parallel capability specialists
 
-The context data rationale and exact source table are in
-[`metis16_context_extension_data.md`](metis16_context_extension_data.md).
-The 163,840-token train length is the conservative 1.25x overshoot for a
-131,072-token deployment target. The 18B budget has durable 6B/12B/18B
-checkpoints, each scored on 384 disjoint 131K records; after the final gate,
-the trainer restores the best passing checkpoint rather than automatically
-using 18B. Portage memory and throughput probes may still reject the shape; no
-paper result substitutes for a real Metis/MI300A canary.
+All five specialists branch independently from the sealed shared
+`hybrid_mode_gspo` checkpoint. Optimizer state resets for each branch, and the
+live unified policy is restored after each specialist finishes.
 
-Reasoning, code, knowledge, and agentic specialists spend the first 60% of
-their optimizer steps on correctness only. The last 40% enables the selected
-difficulty-adaptive coefficient. This prevents early length shaping from
-teaching short wrong answers, while the two-sided target prevents both
-underthinking on hard prompts and overthinking on easy prompts. Writing keeps
-the coefficient at zero and relies on its calibrated judge and deterministic
-style constraints.
+Each specialist sees all three modes, including a same-prompt overlap subset:
 
-The papers do not establish optimal DPD beta/loss weights, GSPO clips, or
-length-shaping coefficients for a small recursive MoE. The YAML treats its
-listed values as bounded candidates: the DPD pilot selects its full-stage
-profile, and each RLVR stage runs a short stability/quality selection before
-committing. A failed or non-finite candidate cannot be promoted. The backend
-must put the passing selection and its `selected_profile_sha256` in the stage
-output receipt; resume rejects a missing or changed selection.
+| Specialist | `direct` | `think` | `think_max` |
+|---|---:|---:|---:|
+| Reasoning | 15% | 50% | 35% |
+| Code | 25% | 45% | 30% |
+| Knowledge | 60% | 30% | 10% |
+| Writing | 70% | 25% | 5% |
+| Agentic | 20% | 50% | 30% |
 
-Those selections are live Portage trials, not trusted numbers copied into a
-data manifest. Every DPD-pilot and RLVR mmap bundle must seal a
-`profile_selection.live_autotune` contract and held-out arrays. The contract
-is self-hashed, bound by the profile-selection receipt, and must use the
-pipeline's exact two-step canary policy. The family ranks restore the same
-parent distributed checkpoint, optimizer transition, and RNG seed before
-every candidate; run the candidate update on the ordinary EP graph; replay
-the held-out evaluator; compare its accumulators with the independently
-sealed evaluator receipt within the pipeline tolerance; and restore the
-parent again before the promoted stage starts. An atomic, self-hashed receipt
-under `posttraining/<family>/autotune/` binds the candidate set, parent,
-bundle, evaluator arrays, precision-role plan, base autotune profile, rank
-topology, runtime inventory, timings, peak HBM, and selected profile. A
-complete matching receipt is reusable after requeue. A partial receipt can
-continue only before policy training starts; an active policy checkpoint
-without a complete matching receipt fails closed.
+These are prompt mixtures, not independent models per mode. The code branch
+first optimizes verified correctness and only then adds correctness-gated
+efficiency. Agentic training can use turn-level credit. Knowledge and writing
+may use calibrated rubric or pairwise judges, but judge scores remain data-side
+rewards; they do not create a standalone RM stage.
 
-The DPD replay implementation is
-`metis.dpd-preference-replay/v1`. Its separate evaluation arrays are:
+## OPD consolidation
 
-- `autotune_evaluation_{positive,negative}_input_ids`
-- `autotune_evaluation_{positive,negative}_attention_mask`
-- `autotune_evaluation_{positive,negative}_response_mask`
-- `autotune_evaluation_role`, with all three sealed roles represented:
-  primary, reasoning, and self-correction
+OPD starts from the same shared hybrid-mode checkpoint and consumes all five
+same-origin specialist checkpoints. It is same-tokenizer distillation using
+the union of student and teacher top-k support.
 
-It compares length-normalized positive-versus-negative preference scores from
-the parent and candidate. The RLVR replay implementation is
-`metis.rlvr-offline-policy-replay/v1`. It seals candidate IDs, attention and
-response masks, verifier `correctness`, and truncation arrays (plus
-`efficiency_reward` for code). It recomputes the policy distribution over the
-16 fixed verified candidates, expected reward, entropy, and correct-response
-NLL. Truncated candidates are excluded. Thus no new quality labels are
-invented inside the trainer: preference roles and verifier results originate
-in the sealed evaluator payload, while the live policy probabilities are
-recomputed on the exact family ranks.
+Capability is the teacher-selection axis. Reasoning mode is preserved from the
+prompt and may not select a different specialist or a different MoRE depth.
+The OPD bundle seals specialist checkpoint hashes, the unified student hash,
+reasoning mode per row, and domain-by-mode target-token balance.
 
-DPD and RLVR training bundles must also contain `split_fingerprint`, and their
-live evaluator must contain `autotune_evaluation_split_fingerprint`. Each is an
-`[records, 32]` uint8 array of unique SHA-256 rows. The trainer does not trust
-those rows as labels: for DPD it recomputes each hash from the complete
-positive/negative token, attention, and response-mask record; for RLVR it
-recomputes each hash from the prompt prefix shared by all 16 candidates. It
-then rejects any training/evaluator intersection. Forged fingerprints,
-duplicate prompts, or held-out leakage therefore fail before a candidate
-update.
+## Evaluation and release
 
-Each mmap `working_set` must also carry a self-hashed
-`metis.posttraining-working-set-autotune/v1` candidate list. Candidates may
-change `micro_batch_size`, `token_chunk_size`, and, for grouped RLVR,
-`candidate_micro_group_size`; they must preserve the sealed effective local
-batch through compensating gradient accumulation and preserve the exact
-record/token budget. One warmup and three measured live forward/backward
-canaries run on every family rank. Candidates that exceed recomputed
-HBM/host limits or actually OOM are rejected, and the fastest safe median
-throughput wins with p95 and canary hashes recorded. A later measured stage
-OOM still uses the existing checkpoint-safe downward migration path.
+Evaluation runs against the exact OPD checkpoint and gates:
+
+- `direct`, `think`, and `think_max` format compliance;
+- direct-mode trace leakage;
+- hard-task gain from `think_max`;
+- quality and safety by mode and capability;
+- mean MoRE depth and routed k for every mode;
+- standard capability, agentic, grounding, abstention, and safety metrics.
+
+The publish gate only seals a local release candidate after evaluation passes.
+It performs no external upload and carries no reward-model artifact.
+
+## Executable artifact contracts
+
+- SFT data: `metis.sft-data/v2`
+- GSPO data: `metis.rlvr-data/v2`
+- OPD data: `metis.opd-data/v1`
+- Evaluation results: `metis.evaluation-results/v1`
+- Control tokens: declared in both the tokenizer manifest and post-training
+  pipeline
+- Deferred generation bindings: exact parent checkpoint for GSPO; exact shared
+  student plus all five specialist checkpoints for OPD
+
+Every split fingerprint must cover each unit exactly once. GSPO overlap groups
+must contain exactly one row for each mode and one shared base-prompt
+fingerprint. Manifests self-hash, seal array hashes, and bind tokenizer, family,
+checkpoint, and generation lineage.
+
+## Research basis
+
+The recipe is a synthesis; no source discloses this exact Metis sequence.
+
+- MiniCPM5 (May 2026) publishes deep-then-hybrid SFT, capability RL specialists,
+  and same-origin OPD:
+  https://github.com/OpenBMB/MiniCPM
+- UltraData-SFT-2605 (May 2026) publishes explicit thinking/non-thinking
+  partitions and mode-aware domain data:
+  https://huggingface.co/datasets/openbmb/UltraData-SFT-2605
+- A.X K1 (January 2026) reports same-prompt mode overlap, paired-mode SFT/GSPO,
+  and format rewards:
+  https://arxiv.org/abs/2601.09200
+- Nanbeige4.1-3B (February 2026) reports correctness-first,
+  correctness-gated code efficiency and agentic RL:
+  https://arxiv.org/abs/2602.13367
+- Nanbeige4.2-3B (July 2026) reports hybrid-mode RL followed by reasoning RL
+  with length control:
+  https://arxiv.org/abs/2607.22083
+- MOPD (June 2026) reports parallel same-origin capability specialists and
+  consolidation:
+  https://arxiv.org/abs/2606.30406
+- Open-MOPD (August 2026) reports explicit token-share balancing during
+  multi-specialist distillation:
+  https://arxiv.org/abs/2608.19098
+
+What remains undisclosed by these sources includes Metis-specific mode
+mixtures, exact token budgets, and the transfer behavior of these recipes to a
+small recursive MoE. Those values are contracts to measure, not claims of
+published consensus.

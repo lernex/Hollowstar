@@ -35,21 +35,17 @@ BASE_MODEL_STAGE_IDS = ("context_extension",)
 ALIGNMENT_STAGE_IDS = (
     "cold_start_sft",
     "overall_sft",
-    "deepseek_dpd_pilot",
-    "deepseek_dpd",
+    "hybrid_mode_gspo",
     "specialist_reasoning",
     "specialist_code",
     "specialist_knowledge",
     "specialist_writing",
     "specialist_agentic",
     "opd_consolidation",
-    "pairwise_reward_model",
-    "preference_alignment",
     "evaluation",
     "publish_gate",
 )
 EXPECTED_STAGE_IDS = BASE_MODEL_STAGE_IDS + ALIGNMENT_STAGE_IDS
-DPD_STAGE_IDS = ("deepseek_dpd_pilot", "deepseek_dpd")
 SPECIALIST_STAGE_IDS = (
     "specialist_reasoning",
     "specialist_code",
@@ -57,6 +53,8 @@ SPECIALIST_STAGE_IDS = (
     "specialist_writing",
     "specialist_agentic",
 )
+RLVR_GSPO_STAGE_IDS = ("hybrid_mode_gspo", *SPECIALIST_STAGE_IDS)
+REASONING_MODES = ("direct", "think", "think_max")
 EXPECTED_FAMILIES = ("praxis", "logos")
 REQUIRED_SFT_AUDITS = (
     "identity_scrub",
@@ -179,6 +177,23 @@ def _validate_mix(mix: Mapping[str, Any], expected: Mapping[str, float], label: 
             )
 
 
+def _validate_reasoning_mode_mix(mix: Mapping[str, Any], label: str) -> None:
+    observed = {
+        str(key): _require_number(value, f"{label}.{key}")
+        for key, value in mix.items()
+    }
+    if set(observed) != set(REASONING_MODES):
+        raise PipelineContractError(
+            f"{label} must contain direct, think, and think_max"
+        )
+    if any(value <= 0 for value in observed.values()):
+        raise PipelineContractError(f"{label} modes must all have positive mass")
+    if not math.isclose(
+        sum(observed.values()), 1.0, rel_tol=0.0, abs_tol=1.0e-9
+    ):
+        raise PipelineContractError(f"{label} fractions must sum to 1")
+
+
 def _stages_by_id(pipeline: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     stages = _require_list(pipeline.get("stages"), "stages")
     result: dict[str, Mapping[str, Any]] = {}
@@ -255,11 +270,94 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
         raise PipelineContractError("pipeline must fail closed")
 
     tokenizer = _require_mapping(pipeline.get("tokenizer"), "tokenizer")
+    mode_tokens = _require_mapping(
+        tokenizer.get("reasoning_mode_tokens"),
+        "tokenizer.reasoning_mode_tokens",
+    )
     if (
         int(tokenizer.get("vocabulary_size", -1)) != 65_536
         or tokenizer.get("manifest_env") != "METIS_TOKENIZER_MANIFEST"
+        or dict(mode_tokens)
+        != {
+            "direct": "<|direct|>",
+            "think": "<|think|>",
+            "think_max": "<|think_max|>",
+        }
     ):
-        raise PipelineContractError("tokenizer must require the sealed 65,536-vocabulary manifest")
+        raise PipelineContractError(
+            "tokenizer must seal the 65,536-vocabulary manifest and all three "
+            "reasoning-mode control tokens"
+        )
+
+    reasoning_modes = _require_mapping(
+        pipeline.get("reasoning_modes"), "reasoning_modes"
+    )
+    if tuple(reasoning_modes.get("names", ())) != REASONING_MODES:
+        raise PipelineContractError(
+            "reasoning modes must be ordered as direct, think, think_max"
+        )
+    response_contract = _require_mapping(
+        reasoning_modes.get("response_contract"),
+        "reasoning_modes.response_contract",
+    )
+    if (
+        set(response_contract) != set(REASONING_MODES)
+        or _require_mapping(
+            response_contract["direct"], "reasoning_modes.direct"
+        ).get("visible_reasoning_trace")
+        != "forbidden"
+        or _require_mapping(
+            response_contract["think"], "reasoning_modes.think"
+        ).get("reasoning_length_shaping")
+        != "difficulty_aware_efficiency"
+        or _require_mapping(
+            response_contract["think_max"], "reasoning_modes.think_max"
+        ).get("positive_length_reward")
+        is not False
+    ):
+        raise PipelineContractError(
+            "reasoning-mode response behavior must keep direct trace-free, "
+            "think efficient, and think_max correctness-only"
+        )
+    data_contract = _require_mapping(
+        reasoning_modes.get("data_contract"), "reasoning_modes.data_contract"
+    )
+    required_data_guards = (
+        "immutable_raw_sources",
+        "explicit_mode_label_required",
+        "same_prompt_mode_overlap_required",
+        "prompt_share_audited",
+        "target_token_share_audited",
+        "unknown_mode_quarantined",
+    )
+    if any(data_contract.get(field) is not True for field in required_data_guards):
+        raise PipelineContractError(
+            "reasoning-mode data must be explicit, overlap-validated, token-audited, "
+            "and derived from immutable sources"
+        )
+    more_invariance = _require_mapping(
+        reasoning_modes.get("more_invariance"),
+        "reasoning_modes.more_invariance",
+    )
+    if more_invariance.get("mode_conditioned_depth_or_k") is not False:
+        raise PipelineContractError("reasoning modes may not condition MoRE depth or k")
+    for field, target in (
+        ("target_mean_depth_per_mode", 2.0),
+        ("target_mean_routed_k_per_mode", 4.0),
+    ):
+        values = _require_mapping(more_invariance.get(field), field)
+        if set(values) != set(REASONING_MODES) or any(
+            not math.isclose(
+                _require_number(values[mode], f"{field}.{mode}"),
+                target,
+                rel_tol=0.0,
+                abs_tol=1.0e-9,
+            )
+            for mode in REASONING_MODES
+        ):
+            raise PipelineContractError(
+                f"{field} must stay {target} for direct, think, and think_max"
+            )
 
     boundary = pipeline.get("base_model_boundary")
     if boundary != BASE_MODEL_STAGE_IDS[-1]:
@@ -320,13 +418,10 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
         "context_extension": "base_pretraining",
         "cold_start_sft": "context_extension",
         "overall_sft": "cold_start_sft",
-        "deepseek_dpd_pilot": "overall_sft",
-        "deepseek_dpd": "deepseek_dpd_pilot",
-        **{stage_id: "deepseek_dpd" for stage_id in SPECIALIST_STAGE_IDS},
-        "opd_consolidation": "deepseek_dpd",
-        "pairwise_reward_model": "opd_consolidation",
-        "preference_alignment": "pairwise_reward_model",
-        "evaluation": "preference_alignment",
+        "hybrid_mode_gspo": "overall_sft",
+        **{stage_id: "hybrid_mode_gspo" for stage_id in SPECIALIST_STAGE_IDS},
+        "opd_consolidation": "hybrid_mode_gspo",
+        "evaluation": "opd_consolidation",
         "publish_gate": "evaluation",
     }
     requirements_by_stage: dict[
@@ -341,8 +436,17 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
             )
         if stage.get("enabled") is not True:
             raise PipelineContractError(f"{stage_id} may not be silently disabled")
-        if stage.get("output_kind") not in {"checkpoint", "reward_model", "evaluation", "publish"}:
-            raise PipelineContractError(f"{stage_id}.output_kind is invalid")
+        expected_output_kind = (
+            "evaluation"
+            if stage_id == "evaluation"
+            else "publish"
+            if stage_id == "publish_gate"
+            else "checkpoint"
+        )
+        if stage.get("output_kind") != expected_output_kind:
+            raise PipelineContractError(
+                f"{stage_id}.output_kind must be {expected_output_kind}"
+            )
         requirements = _require_list(stage.get("requirements"), f"{stage_id}.requirements")
         named_requirements: dict[str, Mapping[str, Any]] = {}
         for requirement_index, raw_requirement in enumerate(requirements):
@@ -445,56 +549,41 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
     for stage_id in ("cold_start_sft", "overall_sft"):
         stage = stages[stage_id]
         modes = _require_mapping(stage.get("answer_modes"), f"{stage_id}.answer_modes")
-        if set(modes) != {"direct", "think"}:
-            raise PipelineContractError(f"{stage_id} must include direct and think answer modes")
-        if min(_require_number(value, f"{stage_id}.answer_modes") for value in modes.values()) <= 0:
-            raise PipelineContractError(f"{stage_id} answer modes must both have positive mass")
+        _validate_reasoning_mode_mix(modes, f"{stage_id}.answer_modes")
         if tuple(stage.get("required_audits", ())) != REQUIRED_SFT_AUDITS:
             raise PipelineContractError(
                 f"{stage_id} must require every Metis-1.5 remediation audit"
             )
 
-    dpd = _require_mapping(
-        stages["deepseek_dpd"].get("objective"),
-        "deepseek_dpd.objective",
-    )
-    if (
-        dpd.get("name") != "dual_preference_distillation"
-        or dpd.get("teacher_interface")
-        != "cross_tokenizer_sequence_preferences"
-        or dpd.get("positive_token_distillation") is not False
-        or dpd.get("negative_token_distillation") is not False
-        or dpd.get("sequence_preference") != "dpo_margin"
-        or float(dpd.get("token_distillation_weight", -1)) != 0.0
-    ):
-        raise PipelineContractError(
-            "DeepSeek bootstrap must use cross-tokenizer sequence DPD; "
-            "fabricated token-logit alignment is forbidden"
+        requirements = requirements_by_stage[stage_id]
+        data_requirement = requirements.get(f"{stage_id}_data")
+        if stage_id == "cold_start_sft":
+            data_requirement = requirements.get("cold_start_sft_data")
+        elif stage_id == "overall_sft":
+            data_requirement = requirements.get("overall_sft_data")
+        if (
+            not isinstance(data_requirement, Mapping)
+            or data_requirement.get("schema") != "metis.sft-data/v2"
+        ):
+            raise PipelineContractError(
+                f"{stage_id} must use the explicit three-mode SFT data schema"
+            )
+        metadata = _require_mapping(
+            data_requirement.get("required_metadata"),
+            f"{stage_id} SFT metadata",
         )
-    pilot = stages["deepseek_dpd_pilot"]
-    if pilot.get("promotion_gate") is None:
-        raise PipelineContractError("DPD pilot requires an explicit promotion gate")
-    pilot_autotune = _require_mapping(
-        pilot.get("autotune"), "deepseek_dpd_pilot.autotune"
-    )
-    if (
-        int(pilot_autotune.get("maximum_candidates", 0)) < 1
-        or int(pilot_autotune.get("maximum_candidates", 0)) > 12
-        or pilot_autotune.get("fail_on_nonfinite") is not True
-        or not pilot_autotune.get("beta_candidates")
-        or not pilot_autotune.get("token_distillation_weight_candidates")
-        or not pilot_autotune.get("sequence_preference_weight_candidates")
-    ):
-        raise PipelineContractError("DPD pilot must use a bounded, fail-closed hyperparameter search")
-    _validate_live_canary_policy(
-        pilot_autotune,
-        stage_id="deepseek_dpd_pilot",
-        evaluator_implementation="metis.dpd-preference-replay/v1",
-    )
-    if dpd.get("hyperparameters_from") != "deepseek_dpd_pilot":
-        raise PipelineContractError("full DPD must consume the promoted pilot hyperparameters")
+        if (
+            tuple(metadata.get("reasoning_modes", ())) != REASONING_MODES
+            or metadata.get("explicit_mode_labels_present") is not True
+            or metadata.get("same_prompt_mode_overlap_validated") is not True
+            or metadata.get("target_token_share_by_mode_audited") is not True
+        ):
+            raise PipelineContractError(
+                f"{stage_id} must seal explicit, overlap-validated three-mode data"
+            )
 
     for stage_id, domain in (
+        ("hybrid_mode_gspo", "general_behavior"),
         ("specialist_reasoning", "stem"),
         ("specialist_code", "code"),
         ("specialist_knowledge", "knowledge"),
@@ -504,13 +593,39 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
         stage = stages[stage_id]
         if stage.get("domain") != domain:
             raise PipelineContractError(f"{stage_id}.domain must be {domain}")
+        if stage_id == "hybrid_mode_gspo":
+            lineage_ok = (
+                stage.get("input_stage") == "overall_sft"
+                and stage.get("preserves_unified_policy") is True
+            )
+        else:
+            lineage_ok = (
+                stage.get("branch_from") == "hybrid_mode_gspo"
+                and stage.get("preserves_unified_policy") is True
+            )
+        if not lineage_ok or stage.get("optimizer_state") != "reset":
+            raise PipelineContractError(
+                f"{stage_id} must be an independent reset from the shared "
+                "hybrid-mode policy"
+            )
+        mode_policy = _require_mapping(
+            stage.get("mode_policy"), f"{stage_id}.mode_policy"
+        )
         if (
-            stage.get("branch_from") != "deepseek_dpd"
-            or stage.get("preserves_unified_policy") is not True
-            or stage.get("optimizer_state") != "reset"
+            tuple(mode_policy.get("modes", ())) != REASONING_MODES
+            or mode_policy.get("same_prompt_mode_overlap_required") is not True
+            or mode_policy.get("target_token_share_balancing") is not True
+            or mode_policy.get("think_max_positive_length_reward") is not False
         ):
             raise PipelineContractError(
-                f"{stage_id} must be an independent reset branch from deepseek_dpd"
+                f"{stage_id} must train all three modes with overlap and token balancing"
+            )
+        if stage_id != "hybrid_mode_gspo":
+            _validate_reasoning_mode_mix(
+                _require_mapping(
+                    mode_policy.get("prompt_mix"), f"{stage_id}.mode_policy.prompt_mix"
+                ),
+                f"{stage_id}.mode_policy.prompt_mix",
             )
         objective = _require_mapping(stage.get("objective"), f"{stage_id}.objective")
         if (
@@ -590,6 +705,58 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
             or float(on_policy.get("strict_max_pass_rate", -1)) != 0.90
         ):
             raise PipelineContractError(f"{stage_id} must use strict 10%-90% avg@16 filtering")
+        expected_generation_parent = (
+            "overall_sft" if stage_id == "hybrid_mode_gspo" else "hybrid_mode_gspo"
+        )
+        if on_policy.get("generated_by_stage") != expected_generation_parent:
+            raise PipelineContractError(
+                f"{stage_id} rollouts must be generated by {expected_generation_parent}"
+            )
+        reward = _require_mapping(stage.get("reward"), f"{stage_id}.reward")
+        if (
+            reward.get("mode_compliance") != "strict_control_and_trace_format"
+            or reward.get("standalone_scalar_reward_model") is not False
+            or _require_number(
+                reward.get("mode_compliance_weight"),
+                f"{stage_id}.reward.mode_compliance_weight",
+            )
+            <= 0
+        ):
+            raise PipelineContractError(
+                f"{stage_id} must apply a strict reasoning-mode format penalty"
+            )
+        data_names = {
+            "hybrid_mode_gspo": "hybrid_mode_rl_data",
+            "specialist_reasoning": "stem_rlvr_data",
+            "specialist_code": "code_rlvr_data",
+            "specialist_knowledge": "knowledge_rl_data",
+            "specialist_writing": "writing_rl_data",
+            "specialist_agentic": "agentic_rlvr_data",
+        }
+        data_requirement = requirements_by_stage[stage_id].get(data_names[stage_id])
+        if (
+            not isinstance(data_requirement, Mapping)
+            or data_requirement.get("schema") != "metis.rlvr-data/v2"
+            or data_requirement.get("generated_from_stage")
+            != expected_generation_parent
+        ):
+            raise PipelineContractError(
+                f"{stage_id} must consume checkpoint-bound three-mode RLVR data"
+            )
+        metadata = _require_mapping(
+            data_requirement.get("required_metadata"),
+            f"{stage_id} RLVR metadata",
+        )
+        if (
+            tuple(metadata.get("reasoning_modes", ())) != REASONING_MODES
+            or metadata.get("explicit_mode_labels_present") is not True
+            or metadata.get("same_prompt_mode_overlap_validated") is not True
+            or metadata.get("target_token_share_by_mode_audited") is not True
+            or metadata.get("mode_compliance_scores_present") is not True
+        ):
+            raise PipelineContractError(
+                f"{stage_id} must seal mode labels, overlap, compliance, and token share"
+            )
 
     length_reward = _require_mapping(
         pipeline.get("dynamic_thinking_length"),
@@ -597,10 +764,14 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
     )
     if (
         length_reward.get("enabled") is not True
+        or length_reward.get("applies_to_mode") != "think"
+        or tuple(length_reward.get("excluded_modes", ()))
+        != ("direct", "think_max")
         or length_reward.get("difficulty_signal") != "avg_at_16_pass_rate"
         or length_reward.get("formula")
         != "two_sided_proximity_to_difficulty_budget"
         or length_reward.get("wrong_response_shaping") != 0
+        or length_reward.get("think_max_positive_length_reward") is not False
         or not 0 < float(length_reward.get("lambda", 0)) < 0.5
         or not 0 < float(length_reward.get("deadband_fraction", 0)) < 0.5
     ):
@@ -618,6 +789,10 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
         or opd_objective.get("divergence") != "reverse_kl"
         or opd_objective.get("trajectory_source")
         != "current_unified_student"
+        or opd_objective.get("teacher_specialization_axis")
+        != "capability_not_reasoning_mode"
+        or opd_objective.get("preserve_prompt_reasoning_mode") is not True
+        or opd_objective.get("domain_mode_target_token_share_audited") is not True
         or int(opd_objective.get("top_k_per_model", 0)) != 32
         or opd_objective.get("union_student_and_teacher_top_k") is not True
         or opd_objective.get("one_epoch_single_use") is not True
@@ -629,6 +804,22 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
     opd_requirements = requirements_by_stage["opd_consolidation"]
     opd_rollouts = opd_requirements.get("specialist_opd_rollouts")
     opd_adapter = opd_requirements.get("opd_generation_adapter")
+    opd_rollout_metadata = (
+        _require_mapping(
+            opd_rollouts.get("required_metadata"),
+            "specialist_opd_rollouts.required_metadata",
+        )
+        if isinstance(opd_rollouts, Mapping)
+        else {}
+    )
+    opd_adapter_metadata = (
+        _require_mapping(
+            opd_adapter.get("required_metadata"),
+            "opd_generation_adapter.required_metadata",
+        )
+        if isinstance(opd_adapter, Mapping)
+        else {}
+    )
     if (
         not isinstance(opd_rollouts, Mapping)
         or opd_rollouts.get("schema") != "metis.opd-data/v1"
@@ -638,10 +829,14 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
         or opd_adapter.get("schema")
         != "metis.opd-generation-capabilities/v1"
         or opd_adapter.get("checkpoint_bound") is True
-        or _require_mapping(
-            opd_adapter.get("required_metadata"),
-            "opd_generation_adapter.required_metadata",
-        ).get("generation_adapter_present")
+        or tuple(opd_rollout_metadata.get("reasoning_modes", ()))
+        != REASONING_MODES
+        or opd_rollout_metadata.get("prompt_mode_preserved_for_teacher_prefill")
+        is not True
+        or opd_rollout_metadata.get("domain_mode_target_token_share_audited")
+        is not True
+        or opd_adapter_metadata.get("generation_adapter_present") is not True
+        or opd_adapter_metadata.get("prompt_mode_preserved_for_teacher_prefill")
         is not True
     ):
         raise PipelineContractError(
@@ -649,29 +844,32 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
             "same-tokenizer generation adapter"
         )
 
-    pairwise = stages["pairwise_reward_model"]
-    if (
-        pairwise.get("loss") != "bradley_terry_with_swap_consistency"
-        or pairwise.get("preserves_policy_checkpoint") is not True
-    ):
-        raise PipelineContractError("pairwise reward model must include swap-consistency")
-    alignment = stages["preference_alignment"]
-    if (
-        alignment.get("reward_source") != "pairwise_reward_model"
-        or alignment.get("reward_scoring")
-        != "frozen_parent_checkpoint_offline"
-        or alignment.get("reward_score_contract")
-        != "metis.frozen-reward-scores/v1"
-    ):
-        raise PipelineContractError(
-            "final preference alignment must consume hash-bound offline scores "
-            "from the dedicated frozen pairwise RM"
-        )
-
     evaluation = stages["evaluation"]
     gate = _require_mapping(evaluation.get("gate"), "evaluation.gate")
     if gate.get("fail_on_missing_metric") is not True or not gate.get("metrics"):
         raise PipelineContractError("evaluation must fail closed on a non-empty metric gate")
+    metric_names = {
+        str(_require_mapping(rule, "evaluation metric rule").get("name", ""))
+        for rule in _require_list(gate.get("metrics"), "evaluation.gate.metrics")
+    }
+    required_mode_metrics = {
+        "direct_mode_compliance",
+        "think_mode_compliance",
+        "think_max_mode_compliance",
+        "direct_trace_leakage_rate",
+        "think_max_hard_task_gain",
+        "mean_depth_direct",
+        "mean_depth_think",
+        "mean_depth_think_max",
+        "mean_routed_k_direct",
+        "mean_routed_k_think",
+        "mean_routed_k_think_max",
+    }
+    if not required_mode_metrics.issubset(metric_names):
+        raise PipelineContractError(
+            "evaluation must gate three-mode compliance, think_max gain, and "
+            "per-mode MoRE invariance"
+        )
     evaluation_requirements = requirements_by_stage["evaluation"]
     evaluation_results = evaluation_requirements.get("evaluation_results")
     evaluation_suite = evaluation_requirements.get("evaluation_suite")
@@ -682,7 +880,7 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
         or evaluation_results.get("checkpoint_bound") is not True
         or evaluation_results.get("family_bound") is not True
         or evaluation_results.get("generated_from_stage")
-        != "preference_alignment"
+        != "opd_consolidation"
         or not isinstance(evaluation_suite, Mapping)
         or evaluation_suite.get("schema")
         != "metis.evaluation-suite/v1"
@@ -695,7 +893,7 @@ def validate_pipeline(pipeline: Mapping[str, Any]) -> Mapping[str, Any]:
     ):
         raise PipelineContractError(
             "evaluation requires a static sealed suite and results generated "
-            "against the exact preference-aligned checkpoint"
+            "against the exact consolidated checkpoint"
         )
     publish = stages["publish_gate"]
     if (
@@ -847,92 +1045,6 @@ def masked_causal_cross_entropy(
         ignore_index=ignore_index,
     ).reshape_as(labels)
     return token_losses.masked_select(valid).mean()
-
-
-def _masked_token_kd(
-    student_logits: torch.Tensor,
-    teacher_logits: torch.Tensor,
-    mask: torch.Tensor,
-    *,
-    temperature: float,
-) -> torch.Tensor:
-    if student_logits.shape != teacher_logits.shape:
-        raise ValueError("student and teacher logits must have identical shapes")
-    if student_logits.ndim < 2 or mask.shape != student_logits.shape[:-1]:
-        raise ValueError("mask must match logits without the vocabulary dimension")
-    if temperature <= 0:
-        raise ValueError("temperature must be positive")
-    valid = mask.to(dtype=torch.bool)
-    if not torch.any(valid):
-        raise ValueError("token distillation mask contains no valid tokens")
-    student_log_probs = F.log_softmax(student_logits.float() / temperature, dim=-1)
-    teacher_probs = F.softmax(teacher_logits.float() / temperature, dim=-1)
-    token_loss = -(teacher_probs * student_log_probs).sum(dim=-1) * (temperature**2)
-    return token_loss.masked_select(valid).mean()
-
-
-def _sequence_log_prob(
-    token_log_probs: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor:
-    if token_log_probs.shape != mask.shape:
-        raise ValueError("token_log_probs and mask must have identical shapes")
-    return (token_log_probs.float() * mask.to(token_log_probs.dtype)).sum(dim=-1)
-
-
-def dual_preference_distillation_loss(
-    *,
-    positive_student_logits: torch.Tensor,
-    positive_teacher_logits: torch.Tensor,
-    positive_mask: torch.Tensor,
-    negative_student_logits: torch.Tensor,
-    negative_teacher_logits: torch.Tensor,
-    negative_mask: torch.Tensor,
-    policy_positive_token_log_probs: torch.Tensor,
-    policy_negative_token_log_probs: torch.Tensor,
-    reference_positive_token_log_probs: torch.Tensor,
-    reference_negative_token_log_probs: torch.Tensor,
-    beta: float = 0.1,
-    token_distillation_weight: float = 1.0,
-    sequence_preference_weight: float = 1.0,
-    temperature: float = 1.0,
-) -> dict[str, torch.Tensor]:
-    """Nanbeige DPD: token KD on both samples plus a sequence DPO margin."""
-
-    if beta <= 0:
-        raise ValueError("beta must be positive")
-    if token_distillation_weight < 0 or sequence_preference_weight < 0:
-        raise ValueError("loss weights must be non-negative")
-    positive_kd = _masked_token_kd(
-        positive_student_logits,
-        positive_teacher_logits,
-        positive_mask,
-        temperature=temperature,
-    )
-    negative_kd = _masked_token_kd(
-        negative_student_logits,
-        negative_teacher_logits,
-        negative_mask,
-        temperature=temperature,
-    )
-    policy_margin = _sequence_log_prob(
-        policy_positive_token_log_probs, positive_mask
-    ) - _sequence_log_prob(policy_negative_token_log_probs, negative_mask)
-    reference_margin = _sequence_log_prob(
-        reference_positive_token_log_probs, positive_mask
-    ) - _sequence_log_prob(reference_negative_token_log_probs, negative_mask)
-    dpo_logits = beta * (policy_margin - reference_margin.detach())
-    dpo = -F.logsigmoid(dpo_logits).mean()
-    kd = 0.5 * (positive_kd + negative_kd)
-    total = token_distillation_weight * kd + sequence_preference_weight * dpo
-    return {
-        "loss": total,
-        "token_distillation": kd.detach(),
-        "positive_token_distillation": positive_kd.detach(),
-        "negative_token_distillation": negative_kd.detach(),
-        "sequence_preference": dpo.detach(),
-        "preference_margin": policy_margin.detach().mean(),
-    }
 
 
 def gspo_loss(
@@ -1239,60 +1351,6 @@ def thinking_length_diagnostics(
     }
 
 
-def bradley_terry_pairwise_loss(
-    preferred_scores: torch.Tensor,
-    rejected_scores: torch.Tensor,
-    *,
-    swapped_preferred_scores: torch.Tensor | None = None,
-    swapped_rejected_scores: torch.Tensor | None = None,
-    swap_consistency_weight: float = 0.1,
-    margin: float = 0.0,
-) -> dict[str, torch.Tensor]:
-    """Position-balanced pairwise loss with an explicit swapped presentation.
-
-    ``swapped_preferred_scores`` is the score of the *same preferred response*
-    after moving it to the opposite pair slot (and likewise for rejected).
-    The semantic preference margin should therefore be unchanged by the swap.
-    """
-
-    if preferred_scores.shape != rejected_scores.shape:
-        raise ValueError("preferred and rejected scores must share shape")
-    if swap_consistency_weight < 0 or margin < 0:
-        raise ValueError("weights and margin must be non-negative")
-    difference = preferred_scores.float() - rejected_scores.float()
-    primary_ranking = -F.logsigmoid(difference - margin).mean()
-    ranking = primary_ranking
-    consistency = torch.zeros((), device=ranking.device, dtype=ranking.dtype)
-    swapped_difference: torch.Tensor | None = None
-    if (swapped_preferred_scores is None) != (swapped_rejected_scores is None):
-        raise ValueError("both swapped score tensors must be supplied together")
-    if swapped_preferred_scores is not None and swapped_rejected_scores is not None:
-        if (
-            swapped_preferred_scores.shape != preferred_scores.shape
-            or swapped_rejected_scores.shape != rejected_scores.shape
-        ):
-            raise ValueError("swapped score tensors must match original score shapes")
-        swapped_difference = (
-            swapped_preferred_scores.float() - swapped_rejected_scores.float()
-        )
-        swapped_ranking = -F.logsigmoid(swapped_difference - margin).mean()
-        ranking = 0.5 * (primary_ranking + swapped_ranking)
-        consistency = F.mse_loss(swapped_difference, difference.detach())
-    total = ranking + swap_consistency_weight * consistency
-    accuracy_difference = (
-        0.5 * (difference + swapped_difference)
-        if swapped_difference is not None
-        else difference
-    )
-    return {
-        "loss": total,
-        "ranking": ranking.detach(),
-        "swap_consistency": consistency.detach(),
-        "accuracy": (accuracy_difference > 0).float().mean().detach(),
-        "margin": accuracy_difference.mean().detach(),
-    }
-
-
 def evaluate_metric_gate(
     metrics: Mapping[str, float],
     gate: Mapping[str, Any],
@@ -1545,19 +1603,14 @@ def _validate_stage_output_metadata(
     output: Mapping[str, Any],
 ) -> None:
     stage_id = str(stage["id"])
-    if stage_id != "deepseek_dpd_pilot" and "autotune" not in stage:
+    if "autotune" not in stage:
         return
     metadata = _require_mapping(
         output.get("metadata"),
         f"{stage_id} output metadata",
     )
     if (
-        stage_id == "deepseek_dpd_pilot"
-        and metadata.get("promotion_gate_passed") is not True
-    ):
-        raise PipelineContractError("DPD pilot did not pass its promotion gate")
-    if (
-        stage_id in SPECIALIST_STAGE_IDS
+        stage_id in RLVR_GSPO_STAGE_IDS
         and metadata.get("autotune_gate_passed") is not True
     ):
         raise PipelineContractError(f"{stage_id} did not pass its bounded autotune gate")
@@ -1983,7 +2036,7 @@ class PostTrainingOrchestrator:
                 output_receipt_sha256 = _file_hash(output_receipt)
                 checkpoint_receipt_raw = output.get("checkpoint_receipt")
                 checkpoint_sha256: str | None = None
-                if stage["output_kind"] in {"checkpoint", "reward_model"}:
+                if stage["output_kind"] == "checkpoint":
                     if not checkpoint_receipt_raw:
                         raise PipelineContractError(
                             f"{stage_id} must return a checkpoint receipt"

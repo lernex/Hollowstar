@@ -42,7 +42,7 @@ payload = output.parent / "payload.bin"
 payload.write_bytes(b"sealed generated payload")
 manifest = {
     "envelope_schema": "metis.sealed-artifact/v1",
-    "schema": "metis.external-dpd-data/v1",
+    "schema": "metis.rlvr-data/v2",
     "complete": True,
     "metadata": {
         "family": os.environ["METIS_FAMILY"],
@@ -72,14 +72,14 @@ temporary.replace(output)
         "executable": adapter_executable.name,
         "executable_sha256": file_sha256(adapter_executable),
         "args": [],
-        "stages": ["deepseek_dpd_pilot"],
-        "requirements": ["deepseek_dpd_pilot_data"],
+        "stages": ["hybrid_mode_gspo"],
+        "requirements": ["hybrid_mode_rl_data"],
         "output_envelope_schema": "metis.sealed-artifact/v1",
     }
     adapter_contract["adapter_sha256"] = json_sha256(adapter_contract)
     adapter_manifest = {
         "envelope_schema": "metis.sealed-artifact/v1",
-        "schema": "metis.teacher-capabilities/v1",
+        "schema": "metis.verifier-bundle/v1",
         "complete": True,
         "metadata": {
             "generation_adapter_present": True,
@@ -98,7 +98,7 @@ temporary.replace(output)
     atomic_write_json(adapter_manifest_path, adapter_manifest)
 
     target_record = {
-        "schema": "metis.external-dpd-data/v1",
+        "schema": "metis.rlvr-data/v2",
         "state": "deferred",
         "manifest": "generated/MANIFEST.json",
         "generation_hook": {},
@@ -107,15 +107,15 @@ temporary.replace(output)
         "schema": "metis.posttraining-release-index/v1",
         "family": "praxis",
         "requirements": {
-            "deepseek_dpd_pilot": {
-                "deepseek_teacher": {
-                    "schema": "metis.teacher-capabilities/v1",
+            "hybrid_mode_gspo": {
+                "hybrid_mode_verifier": {
+                    "schema": "metis.verifier-bundle/v1",
                     "state": "sealed",
                     "path": adapter_manifest_path.relative_to(root).as_posix(),
                     "sha256": file_sha256(adapter_manifest_path),
                     "manifest_sha256": adapter_manifest["manifest_sha256"],
                 },
-                "deepseek_dpd_pilot_data": target_record,
+                "hybrid_mode_rl_data": target_record,
             }
         },
     }
@@ -136,9 +136,9 @@ temporary.replace(output)
     request = {
         "schema": "metis.deferred-materialization-request/v1",
         "family": "praxis",
-        "stage": "deepseek_dpd_pilot",
-        "requirement": "deepseek_dpd_pilot_data",
-        "requirement_schema": "metis.external-dpd-data/v1",
+        "stage": "hybrid_mode_gspo",
+        "requirement": "hybrid_mode_rl_data",
+        "requirement_schema": "metis.rlvr-data/v2",
         "parent_checkpoint_sha256": "a" * 64,
         "stage_bindings": {"fixture": True},
         "release_index_path": str(index_path),
@@ -155,9 +155,9 @@ temporary.replace(output)
             "executable_sha256": file_sha256(HOOK),
             "args": [
                 "--adapter-stage",
-                "deepseek_dpd_pilot",
+                "hybrid_mode_gspo",
                 "--adapter-requirement",
-                "deepseek_teacher",
+                "hybrid_mode_verifier",
             ],
             "timeout_seconds": 60,
             "output_manifest": str(output),
@@ -182,8 +182,8 @@ temporary.replace(output)
         "METIS_GENERATION_REQUEST_SHA256": request["request_sha256"],
         "METIS_GENERATION_REQUEST_FILE_SHA256": file_sha256(request_path),
         "METIS_FAMILY": "praxis",
-        "METIS_STAGE_ID": "deepseek_dpd_pilot",
-        "METIS_REQUIREMENT_NAME": "deepseek_dpd_pilot_data",
+        "METIS_STAGE_ID": "hybrid_mode_gspo",
+        "METIS_REQUIREMENT_NAME": "hybrid_mode_rl_data",
         "METIS_PARENT_CHECKPOINT_SHA256": "a" * 64,
         "METIS_OUTPUT_MANIFEST": str(output),
         "METIS_GENERATION_RECEIPT": str(reducer),
@@ -195,9 +195,9 @@ temporary.replace(output)
             sys.executable,
             str(HOOK),
             "--adapter-stage",
-            "deepseek_dpd_pilot",
+            "hybrid_mode_gspo",
             "--adapter-requirement",
-            "deepseek_teacher",
+            "hybrid_mode_verifier",
             "--reducer-timeout-seconds",
             "5",
         ],

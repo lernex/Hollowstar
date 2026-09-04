@@ -426,9 +426,24 @@ proportionally from the Metis-1.6 1T mixture including its phase structure, so
 data order is not a confound for anyone. Fixed-depth rows use the measured mean
 depth of MoRE-Core; fixed-$k$ rows use $k=4$.
 
+Every row also includes the same $n$-gram conditional memory: a learned lookup
+table indexed by recent token pairs and triples, following the Engram line
+\CITE{engram}. Its 0.300B stored values and its injection path are held fixed
+across the primary ladder; they are part of the shared backbone, not a variable
+in the MoRE ablation. The stored-parameter figures include this table. A token
+retrieves only its keyed rows once and caches the result across recurrent passes,
+so there is no corresponding 0.300B of active model weights.
+
+The table reports model parameters in billions as stored/active (S/A).
+``Active'' is the physical model subnetwork used on one routed path, including
+the embedding and tied output head. Recurrent passes reuse the same physical
+weights, so repeated execution appears in GFLOP/token rather than multiplying
+the active count. Dense rows therefore have equal stored and active model
+parameters; sparse rows separate the full expert bank from the selected path.
+
 \begin{center}
 \footnotesize
-\setlength{\tabcolsep}{3.5pt}
+\setlength{\tabcolsep}{3pt}
 \begin{tabular}{clccccccr}
 \toprule
 \# & Model & Recur. & Depth & Width $k$ & Pathway & Mem. & Stored/Active & GF/tok M/E \\
@@ -469,10 +484,10 @@ matched model FLOPs. Row~9 issues more hardware work because its measured
 policy. To our knowledge this control is absent from the adaptive-compute
 literature, and it is the experiment most capable of embarrassing us, which is
 why it is in the required set rather than the appendix.
-\item \textbf{Row 7} is necessarily smaller in stored parameters: a dense-FFN
-recursive model cannot hold 1.8B stored at 0.279B active. That asymmetry is not a
-flaw in the control, it is precisely what the sparse-expert axis buys, and we
-report both numbers rather than picking the flattering one.
+\item \textbf{Row 7} isolates adaptive depth without sparse experts. It is
+matched to MoRE-Core on model FLOPs, not on total stored capacity; its lower
+stored count is a deliberate compute-match choice, while row~2 is the separate
+dense stored-parameter control.
 \end{itemize}
 
 Rows 1 and 5--13 are iso-model-FLOP by construction. Rows 2, 3, 4 are deliberate

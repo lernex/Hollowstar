@@ -1450,9 +1450,6 @@ def _run(args: argparse.Namespace) -> int:
                 "policy_checkpoint_receipt": posttraining_result.get(
                     "policy_checkpoint_receipt"
                 ),
-                "reward_model_manifest": posttraining_result.get(
-                    "reward_model_manifest"
-                ),
                 "evaluation_receipt": posttraining_result.get("evaluation_receipt"),
                 "release_candidate": posttraining_result.get("release_candidate"),
             }

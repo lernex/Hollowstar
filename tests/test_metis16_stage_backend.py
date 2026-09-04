@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-import io
 import json
 import tempfile
 import unittest
@@ -32,19 +31,16 @@ from metis_training.stage_backend import (
     _align_supervised_labels,
     _apply_optimizer_state_transition,
     _context_gate_decision,
-    _dpd_content_fingerprints,
     _load_release_index,
     _load_canonical_lookup,
     _load_stage_batch_migration,
     _reconcile_active_policy_checkpoint_state,
     _resume_global_batch,
+    _rlvr_rewards,
     _rlvr_prompt_fingerprints,
-    _selected_dpd_profile,
     _selected_token_log_probs_from_hidden,
-    _streaming_teacher_kd_backward,
     _validate_runtime_working_set,
     _write_stage_oom_request,
-    _run_pairwise_stage,
     _run_supervised_stage,
 )
 
@@ -64,23 +60,6 @@ def _canonical_hash(value: object, *, omit: str) -> str:
 
 def _file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _npy_hash(array: np.ndarray) -> str:
-    buffer = io.BytesIO()
-    np.save(buffer, array, allow_pickle=False)
-    return hashlib.sha256(buffer.getvalue()).hexdigest()
-
-
-def _json_hash(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")
-    ).hexdigest()
 
 
 def _canonical_lookup(vocabulary_size: int) -> np.ndarray:
@@ -118,9 +97,6 @@ def _sealed_bundle(
     parent_checkpoint_sha256: str,
     training: dict[str, object] | None = None,
     bundle_metadata: dict[str, object] | None = None,
-    teacher_logits: dict[str, np.ndarray] | None = None,
-    teacher_vocab_chunk: int = 3,
-    reward_model_manifest_sha256: str = "e" * 64,
 ) -> SealedRequirement:
     root.mkdir(parents=True)
     arrays = dict(arrays)
@@ -145,23 +121,35 @@ def _sealed_bundle(
         reset[:, 0] = True
         arrays.setdefault("reset_mask", reset)
         arrays.setdefault("canonical_ids", np.array(input_ids, copy=True))
-    if stage in {"deepseek_dpd", "deepseek_dpd_pilot"}:
-        for prefix in ("positive", "negative"):
-            arrays.setdefault(
-                f"{prefix}_attention_mask",
-                np.ones_like(arrays[f"{prefix}_input_ids"], dtype=np.bool_),
-            )
-    if stage.startswith("specialist_") or stage == "preference_alignment":
+    is_gspo = stage == "hybrid_mode_gspo" or stage.startswith("specialist_")
+    if is_gspo:
         arrays.setdefault(
             "candidate_attention_mask",
             np.ones_like(arrays["candidate_input_ids"], dtype=np.bool_),
         )
-    if stage in {"deepseek_dpd", "deepseek_dpd_pilot"}:
-        arrays.setdefault(
-            "split_fingerprint",
-            _dpd_content_fingerprints(arrays),
+        records = int(arrays["candidate_input_ids"].shape[0])
+        if records % 3:
+            raise AssertionError("GSPO test fixtures must contain full three-mode groups")
+        modes = np.tile(np.arange(3, dtype=np.int8), records // 3)
+        arrays["candidate_input_ids"] = np.array(
+            arrays["candidate_input_ids"], copy=True
         )
-    elif stage.startswith("specialist_"):
+        arrays["candidate_input_ids"][:, :, 0] = modes[:, None]
+        arrays.setdefault("reasoning_mode", modes)
+        arrays.setdefault(
+            "mode_overlap_id",
+            np.repeat(np.arange(records // 3, dtype=np.int32), 3),
+        )
+        base_fingerprints = np.zeros((records, 32), dtype=np.uint8)
+        for group_index in range(records // 3):
+            base_fingerprints[group_index * 3 : group_index * 3 + 3, 0] = (
+                group_index + 1
+            )
+        arrays.setdefault("base_prompt_fingerprint", base_fingerprints)
+        arrays.setdefault(
+            "mode_compliance",
+            np.ones_like(arrays["correctness"], dtype=np.float32),
+        )
         arrays.setdefault(
             "split_fingerprint",
             _rlvr_prompt_fingerprints(arrays),
@@ -201,10 +189,7 @@ def _sealed_bundle(
         bundle["training_tokens"] = unique_active_tokens * int(
             bundle["training"]["epochs"]  # type: ignore[index]
         )
-    if (
-        stage in {"deepseek_dpd", "deepseek_dpd_pilot", "preference_alignment"}
-        or stage.startswith("specialist_")
-    ):
+    if is_gspo:
         bundle["working_set"] = {
             "token_chunk_size": 2,
             "candidate_micro_group_size": 4,
@@ -212,67 +197,34 @@ def _sealed_bundle(
             "maximum_host_bytes": 1_000_000,
             "headroom_fraction": 0.5,
         }
-    if stage == "preference_alignment":
-        reward_contract: dict[str, object] = {
-            "schema": "metis.frozen-reward-scores/v1",
-            "reward_model_manifest_sha256": reward_model_manifest_sha256,
-            "reward_model_parent_checkpoint_sha256": parent_checkpoint_sha256,
-            "scoring_backbone_checkpoint_sha256": parent_checkpoint_sha256,
-            "scoring_mode": "frozen_backbone_and_pairwise_head",
-            "policy_updates_during_scoring": 0,
-            "canonical_map_self_sha256": "d" * 64,
-            "canonical_ids_sha256": _canonical_ids_sha256(vocabulary_size),
-            "array_sha256": {
-                name: _file_hash(root / f"{name}.npy")
-                for name in (
-                    "candidate_input_ids",
-                    "candidate_attention_mask",
-                    "reward_scores",
-                )
-            },
-            "contract_sha256": "",
-        }
-        reward_contract["contract_sha256"] = _canonical_hash(
-            reward_contract, omit="contract_sha256"
-        )
-        bundle["reward_score_contract"] = reward_contract
-    if (
-        stage in {"deepseek_dpd", "deepseek_dpd_pilot", "preference_alignment"}
-        or stage.startswith("specialist_")
-    ):
-        bundle["document_layout"] = "single_prompt_response_per_record"
-    if teacher_logits is not None:
-        distributions: dict[str, object] = {}
-        for distribution_name, logits in teacher_logits.items():
-            chunks: list[object] = []
-            for vocab_start in range(0, logits.shape[-1], teacher_vocab_chunk):
-                vocab_end = min(
-                    logits.shape[-1], vocab_start + teacher_vocab_chunk
-                )
-                path = root / (
-                    f"{distribution_name}-teacher-"
-                    f"{vocab_start:05d}-{vocab_end:05d}.npy"
-                )
-                np.save(
-                    path,
-                    logits[..., vocab_start:vocab_end],
-                    allow_pickle=False,
-                )
-                payload_files.append(path)
-                chunks.append(
-                    {
-                        "path": path.name,
-                        "vocab_start": vocab_start,
-                        "vocab_end": vocab_end,
-                    }
-                )
-            distributions[distribution_name] = {
-                "records": records,
-                "tokens": sequence_length - 1,
-                "vocabulary_size": vocabulary_size,
-                "chunks": chunks,
+        response_tokens = np.asarray(
+            arrays["candidate_response_mask"]
+        ).sum(axis=(1, 2), dtype=np.int64)
+        total_tokens = int(response_tokens.sum())
+        bundle.update(
+            {
+                "reasoning_mode_ids": {
+                    "direct": 0,
+                    "think": 1,
+                    "think_max": 2,
+                },
+                "response_token_share_by_mode": {
+                    mode: float(response_tokens[modes == mode_id].sum())
+                    / total_tokens
+                    for mode_id, mode in enumerate(
+                        ("direct", "think", "think_max")
+                    )
+                },
+                "target_token_share_by_mode_audited": True,
+                "on_policy": True,
+                "single_use_rollouts": True,
+                "rollout_policy": "parent_checkpoint",
+                "policy_updates_before_generation": 0,
+                "samples_per_prompt": 16,
+                "mode_overlap_validated": True,
             }
-        bundle["teacher_distributions"] = distributions
+        )
+        bundle["document_layout"] = "single_prompt_response_per_record"
     if bundle_metadata:
         bundle.update(bundle_metadata)
     bundle["bundle_sha256"] = _canonical_hash(bundle, omit="bundle_sha256")
@@ -281,13 +233,10 @@ def _sealed_bundle(
     payload_files.append(bundle_path)
     schema = {
         "context_extension": "metis.context-extension-data/v1",
-        "cold_start_sft": "metis.sft-data/v1",
-        "overall_sft": "metis.sft-data/v1",
-        "deepseek_dpd": "metis.external-dpd-data/v1",
-        "deepseek_dpd_pilot": "metis.external-dpd-data/v1",
-        "specialist_reasoning": "metis.rlvr-data/v1",
-        "pairwise_reward_model": "metis.preference-data/v1",
-        "preference_alignment": "metis.preference-prompts/v1",
+        "cold_start_sft": "metis.sft-data/v2",
+        "overall_sft": "metis.sft-data/v2",
+        "hybrid_mode_gspo": "metis.rlvr-data/v2",
+        "specialist_reasoning": "metis.rlvr-data/v2",
     }[stage]
     envelope: dict[str, object] = {
         "envelope_schema": "metis.sealed-artifact/v1",
@@ -412,214 +361,6 @@ class MMapContractTests(unittest.TestCase):
         )
         self.assertFalse(failing["passed"])
         self.assertFalse(failing["needle_validation_passed"])
-
-    def test_live_evaluator_rejects_training_split_overlap(self) -> None:
-        tokenizer = "a" * 64
-        parent = "b" * 64
-        records, evaluation_records, sequence, vocabulary = 2, 3, 4, 20
-        arrays = {
-            "positive_input_ids": np.repeat(
-                np.array([[1], [3]], dtype=np.int32), sequence, axis=1
-            ),
-            "positive_attention_mask": np.ones(
-                (records, sequence), dtype=np.bool_
-            ),
-            "positive_response_mask": np.ones(
-                (records, sequence - 1), dtype=np.bool_
-            ),
-            "positive_reference_token_log_probs": np.zeros(
-                (records, sequence - 1), dtype=np.float32
-            ),
-            "negative_input_ids": np.repeat(
-                np.array([[2], [4]], dtype=np.int32), sequence, axis=1
-            ),
-            "negative_attention_mask": np.ones(
-                (records, sequence), dtype=np.bool_
-            ),
-            "negative_response_mask": np.ones(
-                (records, sequence - 1), dtype=np.bool_
-            ),
-            "negative_reference_token_log_probs": np.zeros(
-                (records, sequence - 1), dtype=np.float32
-            ),
-            "autotune_evaluation_positive_input_ids": np.repeat(
-                np.array([[1], [5], [7]], dtype=np.int32),
-                sequence,
-                axis=1,
-            ),
-            "autotune_evaluation_positive_attention_mask": np.ones(
-                (evaluation_records, sequence), dtype=np.bool_
-            ),
-            "autotune_evaluation_positive_response_mask": np.ones(
-                (evaluation_records, sequence - 1), dtype=np.bool_
-            ),
-            "autotune_evaluation_negative_input_ids": np.repeat(
-                np.array([[2], [6], [8]], dtype=np.int32),
-                sequence,
-                axis=1,
-            ),
-            "autotune_evaluation_negative_attention_mask": np.ones(
-                (evaluation_records, sequence), dtype=np.bool_
-            ),
-            "autotune_evaluation_negative_response_mask": np.ones(
-                (evaluation_records, sequence - 1), dtype=np.bool_
-            ),
-            "autotune_evaluation_role": np.array(
-                [1, 2, 3], dtype=np.int32
-            ),
-        }
-        arrays["split_fingerprint"] = _dpd_content_fingerprints(arrays)
-        arrays["autotune_evaluation_split_fingerprint"] = (
-            _dpd_content_fingerprints(
-                arrays,
-                prefix="autotune_evaluation_",
-            )
-        )
-        evaluation_names = {
-            name for name in arrays if name.startswith("autotune_evaluation_")
-        }
-        hashes = {
-            name: _npy_hash(arrays[name]) for name in evaluation_names
-        }
-        evaluator: dict[str, object] = {
-            "schema": "metis.posttraining-offline-policy-evaluator/v1",
-            "implementation": "metis.dpd-preference-replay/v1",
-            "records": evaluation_records,
-            "reproduction_tolerance": 1.0e-8,
-            "array_sha256": hashes,
-            "dataset_sha256": _json_hash(
-                {
-                    "stage": "deepseek_dpd_pilot",
-                    "records": evaluation_records,
-                    "arrays": hashes,
-                }
-            ),
-            "evaluator_sha256": "",
-        }
-        evaluator["evaluator_sha256"] = _canonical_hash(
-            evaluator,
-            omit="evaluator_sha256",
-        )
-        live: dict[str, object] = {
-            "schema": "metis.posttraining-live-profile-autotune/v1",
-            "stage": "deepseek_dpd_pilot",
-            "training_optimizer_steps": 1,
-            "evaluator": evaluator,
-            "live_autotune_sha256": "",
-        }
-        live["live_autotune_sha256"] = _canonical_hash(
-            live,
-            omit="live_autotune_sha256",
-        )
-        with tempfile.TemporaryDirectory() as raw:
-            requirement = _sealed_bundle(
-                Path(raw) / "dpd-overlap",
-                stage="deepseek_dpd_pilot",
-                arrays=arrays,
-                sequence_length=sequence,
-                vocabulary_size=vocabulary,
-                tokenizer_sha256=tokenizer,
-                parent_checkpoint_sha256=parent,
-                bundle_metadata={
-                    "full_teacher_distribution": True,
-                    "profile_selection": {"live_autotune": live},
-                },
-                teacher_logits={
-                    "positive": np.zeros(
-                        (records, sequence - 1, vocabulary), dtype=np.float32
-                    ),
-                    "negative": np.zeros(
-                        (records, sequence - 1, vocabulary), dtype=np.float32
-                    ),
-                },
-            )
-            with self.assertRaisesRegex(StageBackendError, "overlaps"):
-                MMapStageBundle.load(
-                    requirement,
-                    stage_id="deepseek_dpd_pilot",
-                    family="praxis",
-                    tokenizer_sha256=tokenizer,
-                    parent_checkpoint_sha256=parent,
-                    vocabulary_size=vocabulary,
-                    canonical_id_lookup=_canonical_lookup(vocabulary),
-                    canonical_map_self_sha256="d" * 64,
-                    canonical_ids_sha256=_canonical_ids_sha256(vocabulary),
-                )
-
-        forged_arrays = {
-            name: np.array(value, copy=True) for name, value in arrays.items()
-        }
-        forged_arrays[
-            "autotune_evaluation_split_fingerprint"
-        ][0, 0] ^= np.uint8(1)
-        forged_hashes = {
-            name: _npy_hash(forged_arrays[name])
-            for name in evaluation_names
-        }
-        forged_evaluator = {
-            **evaluator,
-            "array_sha256": forged_hashes,
-            "dataset_sha256": _json_hash(
-                {
-                    "stage": "deepseek_dpd_pilot",
-                    "records": evaluation_records,
-                    "arrays": forged_hashes,
-                }
-            ),
-            "evaluator_sha256": "",
-        }
-        forged_evaluator["evaluator_sha256"] = _canonical_hash(
-            forged_evaluator,
-            omit="evaluator_sha256",
-        )
-        forged_live = {
-            **live,
-            "evaluator": forged_evaluator,
-            "live_autotune_sha256": "",
-        }
-        forged_live["live_autotune_sha256"] = _canonical_hash(
-            forged_live,
-            omit="live_autotune_sha256",
-        )
-        with tempfile.TemporaryDirectory() as raw:
-            requirement = _sealed_bundle(
-                Path(raw) / "dpd-forged-split",
-                stage="deepseek_dpd_pilot",
-                arrays=forged_arrays,
-                sequence_length=sequence,
-                vocabulary_size=vocabulary,
-                tokenizer_sha256=tokenizer,
-                parent_checkpoint_sha256=parent,
-                bundle_metadata={
-                    "full_teacher_distribution": True,
-                    "profile_selection": {
-                        "live_autotune": forged_live
-                    },
-                },
-                teacher_logits={
-                    "positive": np.zeros(
-                        (records, sequence - 1, vocabulary), dtype=np.float32
-                    ),
-                    "negative": np.zeros(
-                        (records, sequence - 1, vocabulary), dtype=np.float32
-                    ),
-                },
-            )
-            with self.assertRaisesRegex(
-                StageBackendError,
-                "differs from canonical",
-            ):
-                MMapStageBundle.load(
-                    requirement,
-                    stage_id="deepseek_dpd_pilot",
-                    family="praxis",
-                    tokenizer_sha256=tokenizer,
-                    parent_checkpoint_sha256=parent,
-                    vocabulary_size=vocabulary,
-                    canonical_id_lookup=_canonical_lookup(vocabulary),
-                    canonical_map_self_sha256="d" * 64,
-                    canonical_ids_sha256=_canonical_ids_sha256(vocabulary),
-                )
 
     def test_posttraining_tokenizer_binds_actual_base_release_bytes_and_paths(
         self,
@@ -1108,90 +849,6 @@ class MMapContractTests(unittest.TestCase):
             with self.assertRaisesRegex(StageBackendError, "unique_active_tokens"):
                 load(false_unique_count)
 
-    def test_preference_rewards_are_frozen_and_hash_bound(self) -> None:
-        tokenizer = "a" * 64
-        parent = "b" * 64
-        reward_manifest = "e" * 64
-        records, group, sequence = 2, 16, 4
-        candidate_ids = (
-            np.arange(records * group * sequence, dtype=np.int32)
-            .reshape(records, group, sequence)
-            % 7
-        )
-        arrays = {
-            "candidate_input_ids": candidate_ids,
-            "candidate_attention_mask": np.ones_like(
-                candidate_ids, dtype=np.bool_
-            ),
-            "candidate_response_mask": np.ones(
-                (records, group, sequence - 1), dtype=np.bool_
-            ),
-            "old_token_log_probs": np.zeros(
-                (records, group, sequence - 1), dtype=np.float32
-            ),
-            "reward_scores": np.tile(
-                np.linspace(-1.0, 1.0, group, dtype=np.float32),
-                (records, 1),
-            ),
-            "truncated": np.zeros((records, group), dtype=np.bool_),
-            "reference_member": np.eye(1, group, dtype=np.bool_).repeat(
-                records, axis=0
-            ),
-        }
-
-        def load(
-            requirement: SealedRequirement,
-            *,
-            expected_reward_manifest: str = reward_manifest,
-        ) -> MMapStageBundle:
-            return MMapStageBundle.load(
-                requirement,
-                stage_id="preference_alignment",
-                family="praxis",
-                tokenizer_sha256=tokenizer,
-                parent_checkpoint_sha256=parent,
-                vocabulary_size=7,
-                canonical_id_lookup=_canonical_lookup(7),
-                canonical_map_self_sha256="d" * 64,
-                canonical_ids_sha256=_canonical_ids_sha256(7),
-                reward_model_manifest_sha256=expected_reward_manifest,
-            )
-
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            valid = _sealed_bundle(
-                root / "valid",
-                stage="preference_alignment",
-                arrays=arrays,
-                sequence_length=sequence,
-                vocabulary_size=7,
-                tokenizer_sha256=tokenizer,
-                parent_checkpoint_sha256=parent,
-                reward_model_manifest_sha256=reward_manifest,
-                bundle_metadata={
-                    "on_policy": True,
-                    "single_use_rollouts": True,
-                    "rollout_policy": "parent_checkpoint",
-                    "policy_updates_before_generation": 0,
-                },
-            )
-            observed = load(valid)
-            self.assertTrue(
-                np.array_equal(observed.arrays["reward_scores"], arrays["reward_scores"])
-            )
-
-            with self.assertRaisesRegex(
-                StageBackendError, "exact reward model and policy parent"
-            ):
-                load(valid, expected_reward_manifest="f" * 64)
-
-            score_path = valid.manifest_path.parent / "reward_scores.npy"
-            drifted_scores = np.array(arrays["reward_scores"], copy=True)
-            drifted_scores[0, 0] += 10.0
-            np.save(score_path, drifted_scores, allow_pickle=False)
-            with self.assertRaisesRegex(StageBackendError, "array hash changed"):
-                load(valid)
-
     def test_bound_bundle_rejects_family_or_checkpoint_mismatch(self) -> None:
         tokenizer = "a" * 64
         parent = "b" * 64
@@ -1368,164 +1025,10 @@ class MMapContractTests(unittest.TestCase):
                 6,
             )
 
-    def test_dpd_profile_winner_is_derived_from_bound_trials(self) -> None:
-        stage = {
-            "id": "deepseek_dpd_pilot",
-            "objective": {
-                "beta": 0.1,
-                "token_distillation_weight": 1.0,
-                "sequence_preference_weight": 1.0,
-            },
-            "autotune": {
-                "beta_candidates": [0.1, 0.2],
-                "token_distillation_weight_candidates": [1.0],
-                "sequence_preference_weight_candidates": [1.0],
-                "temperature_candidates": [1.0],
-                "maximum_candidates": 2,
-            },
-            "promotion_gate": {
-                "require_no_primary_regression": True,
-                "minimum_reasoning_gain": 0.0,
-                "minimum_self_correction_gain": 0.0,
-                "maximum_loss_nonfinite_steps": 0,
-            },
-        }
-        default = {
-            "beta": 0.1,
-            "token_distillation_weight": 1.0,
-            "sequence_preference_weight": 1.0,
-            "temperature": 1.0,
-        }
-        winner = {**default, "beta": 0.2}
-        candidates = [default, winner]
-
-        def trial(
-            profile: dict[str, float],
-            *,
-            reasoning: float,
-            correction: float,
-        ) -> dict[str, object]:
-            metrics = {
-                "primary_regression": 0.0,
-                "reasoning_gain": reasoning,
-                "self_correction_gain": correction,
-                "loss_nonfinite_steps": 0,
-                "evaluation_records": 100,
-            }
-            payload: dict[str, object] = {
-                "profile": profile,
-                "profile_sha256": _json_hash(profile),
-                "candidate_checkpoint_sha256": "c" * 64,
-                "evaluation_receipt_sha256": "e" * 64,
-                "metrics": metrics,
-                "metrics_sha256": _json_hash(metrics),
-                "trial_sha256": "",
-            }
-            payload["trial_sha256"] = _canonical_hash(
-                payload, omit="trial_sha256"
-            )
-            return payload
-
-        evidence: dict[str, object] = {
-            "schema": "metis.posttraining-profile-selection/v1",
-            "stage": "deepseek_dpd_pilot",
-            "parent_checkpoint_sha256": "b" * 64,
-            "candidate_set_sha256": _json_hash(candidates),
-            "evaluator_sha256": "a" * 64,
-            "evaluation_dataset_sha256": "d" * 64,
-            "trials": [
-                trial(default, reasoning=0.1, correction=0.1),
-                trial(winner, reasoning=0.3, correction=0.2),
-            ],
-            "selected_profile_sha256": _json_hash(winner),
-            "selection_sha256": "",
-        }
-        evidence["selection_sha256"] = _canonical_hash(
-            evidence, omit="selection_sha256"
-        )
-        manifest = {
-            "parent_checkpoint_sha256": "b" * 64,
-            "profile_selection": evidence,
-            "selected_profile": winner,
-            "selected_profile_sha256": _json_hash(winner),
-        }
-        selected = _selected_dpd_profile(
-            stage,
-            SimpleNamespace(manifest=manifest),  # type: ignore[arg-type]
-        )
-        self.assertEqual(selected.profile, winner)
-
-        tampered = dict(evidence)
-        tampered["selected_profile_sha256"] = _json_hash(default)
-        tampered["selection_sha256"] = _canonical_hash(
-            tampered, omit="selection_sha256"
-        )
-        with self.assertRaisesRegex(
-            StageBackendError, "derived gate winner"
-        ):
-            _selected_dpd_profile(
-                stage,
-                SimpleNamespace(
-                    manifest={**manifest, "profile_selection": tampered}
-                ),  # type: ignore[arg-type]
-            )
-
-    def test_dpd_rejects_top_k_teacher_logits(self) -> None:
-        tokenizer = "a" * 64
-        parent = "b" * 64
-        records, sequence, vocabulary = 2, 4, 7
-        arrays = {
-            "positive_input_ids": np.zeros((records, sequence), dtype=np.int32),
-            "positive_response_mask": np.ones(
-                (records, sequence - 1), dtype=np.bool_
-            ),
-            "positive_reference_token_log_probs": np.zeros(
-                (records, sequence - 1), dtype=np.float32
-            ),
-            "negative_input_ids": np.zeros((records, sequence), dtype=np.int32),
-            "negative_response_mask": np.ones(
-                (records, sequence - 1), dtype=np.bool_
-            ),
-            "negative_reference_token_log_probs": np.zeros(
-                (records, sequence - 1), dtype=np.float32
-            ),
-        }
-        with tempfile.TemporaryDirectory() as raw:
-            requirement = _sealed_bundle(
-                Path(raw) / "dpd",
-                stage="deepseek_dpd",
-                arrays=arrays,
-                sequence_length=sequence,
-                vocabulary_size=vocabulary,
-                tokenizer_sha256=tokenizer,
-                parent_checkpoint_sha256=parent,
-                bundle_metadata={"full_teacher_distribution": True},
-                teacher_logits={
-                    "positive": np.zeros(
-                        (records, sequence - 1, 3), dtype=np.float16
-                    ),
-                    "negative": np.zeros(
-                        (records, sequence - 1, 3), dtype=np.float16
-                    ),
-                },
-            )
-            with self.assertRaisesRegex(StageBackendError, "full vocabulary"):
-                MMapStageBundle.load(
-                    requirement,
-                    stage_id="deepseek_dpd",
-                    family="praxis",
-                    tokenizer_sha256=tokenizer,
-                    parent_checkpoint_sha256=parent,
-                    vocabulary_size=vocabulary,
-                    canonical_id_lookup=_canonical_lookup(vocabulary),
-                    canonical_map_self_sha256="d" * 64,
-                    canonical_ids_sha256=_canonical_ids_sha256(vocabulary),
-                )
-
     def test_rlvr_refuses_stale_or_reused_rollouts(self) -> None:
         tokenizer = "a" * 64
         parent = "b" * 64
-        records, group, sequence = 2, 16, 4
+        records, group, sequence = 3, 16, 4
         arrays = {
             "candidate_input_ids": np.zeros(
                 (records, group, sequence), dtype=np.int32
@@ -1543,7 +1046,6 @@ class MMapContractTests(unittest.TestCase):
             ),
             "truncated": np.zeros((records, group), dtype=np.bool_),
         }
-        arrays["candidate_input_ids"][1, :, 0] = 1
         with tempfile.TemporaryDirectory() as raw:
             requirement = _sealed_bundle(
                 Path(raw) / "rlvr",
@@ -1575,117 +1077,10 @@ class MMapContractTests(unittest.TestCase):
                     canonical_ids_sha256=_canonical_ids_sha256(7),
                 )
 
-    def test_dpd_streaming_kd_matches_dense_full_vocab(self) -> None:
-        torch.manual_seed(9)
-        tokenizer = "a" * 64
-        parent = "b" * 64
-        records, sequence, vocabulary = 2, 4, 7
-        arrays = {
-            "positive_input_ids": np.zeros((records, sequence), dtype=np.int32),
-            "positive_response_mask": np.array(
-                [[1, 1, 1], [1, 0, 0]], dtype=np.bool_
-            ),
-            "positive_reference_token_log_probs": np.zeros(
-                (records, sequence - 1), dtype=np.float32
-            ),
-            "negative_input_ids": np.zeros((records, sequence), dtype=np.int32),
-            "negative_response_mask": np.ones(
-                (records, sequence - 1), dtype=np.bool_
-            ),
-            "negative_reference_token_log_probs": np.zeros(
-                (records, sequence - 1), dtype=np.float32
-            ),
-        }
-        teacher = torch.randn(records, sequence - 1, vocabulary)
-        with tempfile.TemporaryDirectory() as raw:
-            requirement = _sealed_bundle(
-                Path(raw) / "dpd",
-                stage="deepseek_dpd",
-                arrays=arrays,
-                sequence_length=sequence,
-                vocabulary_size=vocabulary,
-                tokenizer_sha256=tokenizer,
-                parent_checkpoint_sha256=parent,
-                bundle_metadata={"full_teacher_distribution": True},
-                teacher_logits={
-                    "positive": teacher.numpy().astype(np.float32),
-                    "negative": teacher.numpy().astype(np.float32),
-                },
-            )
-            bundle = MMapStageBundle.load(
-                requirement,
-                stage_id="deepseek_dpd",
-                family="praxis",
-                tokenizer_sha256=tokenizer,
-                parent_checkpoint_sha256=parent,
-                vocabulary_size=vocabulary,
-                canonical_id_lookup=_canonical_lookup(vocabulary),
-                canonical_map_self_sha256="d" * 64,
-                canonical_ids_sha256=_canonical_ids_sha256(vocabulary),
-            )
-            model = TinyCausalLM(vocabulary)
-            hidden = torch.randn(
-                records, sequence - 1, 8, requires_grad=True
-            )
-            mask = torch.from_numpy(arrays["positive_response_mask"])
-            observed, _count = _streaming_teacher_kd_backward(
-                model=model,
-                hidden_states=hidden,
-                distribution=bundle.teacher_distributions["positive"],
-                record_indices=np.arange(records),
-                response_mask=mask,
-                token_chunk_size=2,
-                temperature=1.7,
-                loss_scale=1.0,
-            )
-            student = model.lm_head(hidden).float() / 1.7
-            expected_tokens = -(
-                torch.softmax(teacher / 1.7, dim=-1)
-                * torch.log_softmax(student, dim=-1)
-            ).sum(dim=-1) * (1.7**2)
-            expected = (
-                (expected_tokens * mask).sum(dim=-1)
-                / mask.sum(dim=-1)
-            ).mean()
-            self.assertAlmostEqual(observed, float(expected.item()), places=5)
-            self.assertIsNotNone(hidden.grad)
-
-            full_hidden_gradient = hidden.grad.detach().clone()
-            full_head_gradient = model.lm_head.weight.grad.detach().clone()
-            split_model = TinyCausalLM(vocabulary)
-            split_model.load_state_dict(model.state_dict())
-            split_hidden = hidden.detach().clone().requires_grad_(True)
-            split_values: list[float] = []
-            for record in range(records):
-                value, _ = _streaming_teacher_kd_backward(
-                    model=split_model,
-                    hidden_states=split_hidden[record : record + 1],
-                    distribution=bundle.teacher_distributions["positive"],
-                    record_indices=np.array([record]),
-                    response_mask=mask[record : record + 1],
-                    token_chunk_size=1 if record == 0 else 3,
-                    temperature=1.7,
-                    loss_scale=1.0,
-                )
-                split_values.append(value)
-            self.assertAlmostEqual(
-                observed,
-                sum(split_values) / len(split_values),
-                places=5,
-            )
-            torch.testing.assert_close(
-                split_hidden.grad,
-                full_hidden_gradient,
-            )
-            torch.testing.assert_close(
-                split_model.lm_head.weight.grad,
-                full_head_gradient,
-            )
-
     def test_working_set_cap_fails_before_training(self) -> None:
         tokenizer = "a" * 64
         parent = "b" * 64
-        records, group, sequence = 2, 16, 4
+        records, group, sequence = 3, 16, 4
         arrays = {
             "candidate_input_ids": np.zeros(
                 (records, group, sequence), dtype=np.int32
@@ -1701,7 +1096,6 @@ class MMapContractTests(unittest.TestCase):
             ),
             "truncated": np.zeros((records, group), dtype=np.bool_),
         }
-        arrays["candidate_input_ids"][1, :, 0] = 1
         with tempfile.TemporaryDirectory() as raw:
             requirement = _sealed_bundle(
                 Path(raw) / "rlvr",
@@ -1753,6 +1147,28 @@ class MMapContractTests(unittest.TestCase):
 
 
 class InProcessLoopTests(unittest.TestCase):
+    def test_length_shaping_applies_only_to_think_mode(self) -> None:
+        correctness = torch.tensor(
+            [[0.0] * 8 + [1.0] * 8] * 3,
+            dtype=torch.float32,
+        )
+        response_mask = torch.ones(3, 16, 4, dtype=torch.bool)
+        response_mask[1, 8:, 1:] = False
+        rewards, _rates, _lengths, _diagnostics = _rlvr_rewards(
+            "specialist_reasoning",
+            {
+                "correctness": correctness,
+                "candidate_response_mask": response_mask,
+                "reasoning_mode": torch.tensor([0, 1, 2]),
+                "mode_compliance": torch.ones_like(correctness),
+            },
+            length_coefficient=0.05,
+            mode_compliance_weight=1.0,
+        )
+        torch.testing.assert_close(rewards[0], correctness[0])
+        torch.testing.assert_close(rewards[2], correctness[2])
+        self.assertFalse(torch.equal(rewards[1], correctness[1]))
+
     def test_active_state_reconciles_same_cursor_final_promotion_hash(
         self,
     ) -> None:
@@ -2087,69 +1503,6 @@ class InProcessLoopTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 75)
             self.assertEqual(len(checkpoints), 1)
             self.assertFalse(checkpoints[0][1])
-
-    def test_pairwise_side_branch_does_not_change_policy(self) -> None:
-        tokenizer = "a" * 64
-        parent = "b" * 64
-        arrays = {
-            "preferred_input_ids": np.array(
-                [[1, 1, 1, 1], [1, 1, 1, 2]], dtype=np.int32
-            ),
-            "preferred_attention_mask": np.ones((2, 4), dtype=np.bool_),
-            "rejected_input_ids": np.array(
-                [[5, 5, 5, 5], [5, 5, 5, 4]], dtype=np.int32
-            ),
-            "rejected_attention_mask": np.ones((2, 4), dtype=np.bool_),
-        }
-        with tempfile.TemporaryDirectory() as raw:
-            requirement = _sealed_bundle(
-                Path(raw) / "rm",
-                stage="pairwise_reward_model",
-                arrays=arrays,
-                sequence_length=4,
-                vocabulary_size=7,
-                tokenizer_sha256=tokenizer,
-                parent_checkpoint_sha256=parent,
-            )
-            bundle = MMapStageBundle.load(
-                requirement,
-                stage_id="pairwise_reward_model",
-                family="praxis",
-                tokenizer_sha256=tokenizer,
-                parent_checkpoint_sha256=parent,
-                vocabulary_size=7,
-                canonical_id_lookup=_canonical_lookup(7),
-                canonical_map_self_sha256="d" * 64,
-                canonical_ids_sha256=_canonical_ids_sha256(7),
-            )
-            model = TinyCausalLM(7)
-            before = {
-                name: value.detach().clone()
-                for name, value in model.state_dict().items()
-            }
-            head, metrics = _run_pairwise_stage(
-                stage={
-                    "id": "pairwise_reward_model",
-                    "sequence_length": 4,
-                    "swap_consistency_weight": 0.1,
-                },
-                bundle=bundle,
-                model=model,
-                runtime=Runtime(
-                    device=torch.device("cpu"),
-                    rank=0,
-                    local_rank=0,
-                    world_size=1,
-                    distributed=False,
-                ),
-                topology=_topology(),
-                hidden_size=8,
-            )
-            self.assertEqual(metrics["optimizer_steps"], 1)
-            self.assertIsNotNone(head)
-            for name, value in model.state_dict().items():
-                self.assertTrue(torch.equal(before[name], value))
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,9 @@ tokenizer:
   - <|fim_suffix|>
   - <|tool_call|>
   - <|tool_result|>
+  - <|direct|>
+  - <|think|>
+  - <|think_max|>
 
 schedule:
   target_tokens: 804755808835

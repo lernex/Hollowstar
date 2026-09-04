@@ -491,11 +491,10 @@ def test_production_template_installs_one_pinned_adapter_runner(
     )
     template = posttraining_build_template(config)
     expected = {
-        "deepseek_dpd_pilot": (
-            "deepseek_dpd_pilot",
-            "deepseek_teacher",
+        "hybrid_mode_gspo": (
+            "hybrid_mode_gspo",
+            "hybrid_mode_verifier",
         ),
-        "deepseek_dpd": ("deepseek_dpd", "deepseek_teacher"),
         "specialist_reasoning": (
             "specialist_reasoning",
             "stem_verifier",
@@ -503,10 +502,6 @@ def test_production_template_installs_one_pinned_adapter_runner(
         "opd_consolidation": (
             "opd_consolidation",
             "opd_generation_adapter",
-        ),
-        "preference_alignment": (
-            "pairwise_reward_model",
-            "pairwise_preference_data",
         ),
         "evaluation": ("evaluation", "evaluation_suite"),
         "publish_gate": ("evaluation", "evaluation_suite"),

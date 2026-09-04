@@ -3,7 +3,7 @@
 
 This file is copied byte-for-byte into the Rhea post-training release.  The
 release index pins its SHA-256, so Portage never executes an unsealed ad-hoc
-generator.  Stage-specific logic (DeepSeek DPD, verifier-backed RLVR, OPD, or
+generator.  Stage-specific logic (hybrid-mode GSPO, capability RLVR, OPD, or
 reward scoring) is supplied by an executable that is itself a payload of a
 deep-verified static requirement.
 """

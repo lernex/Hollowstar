@@ -20,10 +20,8 @@ from metis_training.posttraining import (
     PipelineContractError,
     PostTrainingOrchestrator,
     avg_at_k,
-    bradley_terry_pairwise_loss,
     difficulty_adaptive_length_budget,
     difficulty_adaptive_length_reward,
-    dual_preference_distillation_loss,
     evaluate_metric_gate,
     gated_code_efficiency_reward,
     gspo_loss,
@@ -124,16 +122,13 @@ class PipelineContractTests(unittest.TestCase):
                 "context_extension",
                 "cold_start_sft",
                 "overall_sft",
-                "deepseek_dpd_pilot",
-                "deepseek_dpd",
+                "hybrid_mode_gspo",
                 "specialist_reasoning",
                 "specialist_code",
                 "specialist_knowledge",
                 "specialist_writing",
                 "specialist_agentic",
                 "opd_consolidation",
-                "pairwise_reward_model",
-                "preference_alignment",
                 "evaluation",
                 "publish_gate",
             ],
@@ -176,20 +171,32 @@ class PipelineContractTests(unittest.TestCase):
     def test_missing_direct_answer_mode_is_rejected(self) -> None:
         pipeline = copy.deepcopy(load_pipeline(PIPELINE))
         stage = next(item for item in pipeline["stages"] if item["id"] == "cold_start_sft")
-        stage["answer_modes"] = {"think": 1.0}
-        with self.assertRaisesRegex(PipelineContractError, "direct and think"):
+        stage["answer_modes"] = {"think": 0.5, "think_max": 0.5}
+        with self.assertRaisesRegex(
+            PipelineContractError, "direct, think, and think_max"
+        ):
             validate_pipeline(pipeline)
 
-    def test_preference_alignment_rejects_live_policy_reward_scoring(self) -> None:
+    def test_think_max_positive_length_reward_is_rejected(self) -> None:
         pipeline = copy.deepcopy(load_pipeline(PIPELINE))
         stage = next(
             item
             for item in pipeline["stages"]
-            if item["id"] == "preference_alignment"
+            if item["id"] == "hybrid_mode_gspo"
         )
-        stage["reward_scoring"] = "live_optimized_policy_trunk"
+        stage["mode_policy"]["think_max_positive_length_reward"] = True
         with self.assertRaisesRegex(
-            PipelineContractError, "offline scores"
+            PipelineContractError, "all three modes"
+        ):
+            validate_pipeline(pipeline)
+
+    def test_reasoning_mode_may_not_change_more_depth(self) -> None:
+        pipeline = copy.deepcopy(load_pipeline(PIPELINE))
+        pipeline["reasoning_modes"]["more_invariance"][
+            "target_mean_depth_per_mode"
+        ]["think_max"] = 2.5
+        with self.assertRaisesRegex(
+            PipelineContractError, "stay 2.0"
         ):
             validate_pipeline(pipeline)
 
@@ -208,7 +215,7 @@ class PipelineContractTests(unittest.TestCase):
         result["checkpoint_bound"] = False
         with self.assertRaisesRegex(
             PipelineContractError,
-            "exact preference-aligned checkpoint",
+            "exact consolidated checkpoint",
         ):
             validate_pipeline(pipeline)
 
@@ -309,34 +316,6 @@ class ObjectiveTests(unittest.TestCase):
         self.assertTrue(torch.all(current.grad[0, 2] == 0))
         self.assertTrue(torch.any(current.grad[0, :2] != 0))
 
-    def test_dpd_has_positive_negative_kd_and_sequence_margin(self) -> None:
-        torch.manual_seed(7)
-        shape = (2, 3, 5)
-        positive_student = torch.randn(*shape, requires_grad=True)
-        negative_student = torch.randn(*shape, requires_grad=True)
-        positive_teacher = torch.randn(*shape)
-        negative_teacher = torch.randn(*shape)
-        positive_mask = torch.tensor([[True, True, True], [True, True, False]])
-        negative_mask = torch.tensor([[True, True, False], [True, True, True]])
-        result = dual_preference_distillation_loss(
-            positive_student_logits=positive_student,
-            positive_teacher_logits=positive_teacher,
-            positive_mask=positive_mask,
-            negative_student_logits=negative_student,
-            negative_teacher_logits=negative_teacher,
-            negative_mask=negative_mask,
-            policy_positive_token_log_probs=torch.randn(2, 3, requires_grad=True),
-            policy_negative_token_log_probs=torch.randn(2, 3, requires_grad=True),
-            reference_positive_token_log_probs=torch.randn(2, 3),
-            reference_negative_token_log_probs=torch.randn(2, 3),
-        )
-        self.assertTrue(torch.isfinite(result["loss"]))
-        self.assertGreater(float(result["positive_token_distillation"]), 0)
-        self.assertGreater(float(result["negative_token_distillation"]), 0)
-        result["loss"].backward()
-        self.assertIsNotNone(positive_student.grad)
-        self.assertIsNotNone(negative_student.grad)
-
     def test_gspo_token_supports_turn_level_credit(self) -> None:
         current = torch.zeros(1, 2, 4, requires_grad=True)
         old = torch.zeros_like(current)
@@ -378,32 +357,6 @@ class ObjectiveTests(unittest.TestCase):
         )
         self.assertEqual(float(rewards[0]), 0.0)
         self.assertGreater(float(rewards[1]), float(rewards[0]))
-
-    def test_pairwise_reward_loss_penalizes_wrong_order_and_position_bias(self) -> None:
-        good = bradley_terry_pairwise_loss(
-            torch.tensor([2.0]),
-            torch.tensor([0.0]),
-            swapped_preferred_scores=torch.tensor([2.0]),
-            swapped_rejected_scores=torch.tensor([0.0]),
-        )
-        bad = bradley_terry_pairwise_loss(
-            torch.tensor([0.0]),
-            torch.tensor([2.0]),
-            swapped_preferred_scores=torch.tensor([0.0]),
-            swapped_rejected_scores=torch.tensor([2.0]),
-        )
-        position_biased = bradley_terry_pairwise_loss(
-            torch.tensor([3.0]),
-            torch.tensor([0.0]),
-            swapped_preferred_scores=torch.tensor([1.0]),
-            swapped_rejected_scores=torch.tensor([2.0]),
-        )
-        self.assertLess(float(good["loss"]), float(bad["loss"]))
-        self.assertEqual(float(good["swap_consistency"]), 0.0)
-        self.assertGreater(
-            float(position_biased["swap_consistency"]),
-            float(good["swap_consistency"]),
-        )
 
     def test_evaluation_gate_fails_missing_and_regressed_metrics(self) -> None:
         gate = {

@@ -34,8 +34,7 @@ _PHASE_TOKENS = {
 }
 _BUILTIN_HOOK_NAME = "metis16-posttraining-materialize"
 _BUILTIN_ADAPTER_SOURCES = {
-    "deepseek_dpd_pilot": ("deepseek_dpd_pilot", "deepseek_teacher"),
-    "deepseek_dpd": ("deepseek_dpd", "deepseek_teacher"),
+    "hybrid_mode_gspo": ("hybrid_mode_gspo", "hybrid_mode_verifier"),
     "specialist_reasoning": ("specialist_reasoning", "stem_verifier"),
     "specialist_code": ("specialist_code", "code_verifier"),
     "specialist_knowledge": (
@@ -50,10 +49,6 @@ _BUILTIN_ADAPTER_SOURCES = {
     "opd_consolidation": (
         "opd_consolidation",
         "opd_generation_adapter",
-    ),
-    "preference_alignment": (
-        "pairwise_reward_model",
-        "pairwise_preference_data",
     ),
     "evaluation": ("evaluation", "evaluation_suite"),
     "publish_gate": ("evaluation", "evaluation_suite"),
