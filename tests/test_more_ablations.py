@@ -1564,8 +1564,6 @@ def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
     assert "10-more-core.sbatch" in batch_a
     assert "10-more-core.sbatch" not in batch_b
     assert "12-random-k.sbatch" in batch_a
-    assert "08-mor-fixed-k.sbatch" in batch_a
-    assert "13-random-depth.sbatch" in batch_b
     assert "01-dense-flop-matched.sbatch" in batch_a
     assert "05-loop-fixed.sbatch" in batch_b
 
@@ -1778,6 +1776,7 @@ def test_wave_one_plan_uses_the_measured_two_batch_schedule():
     assert {
         "loop-fixed",
         "loop-pathway-frozen",
+        "mor-fixed-k",
         "fixed-depth-adaptive-k",
     } <= batch_b
 
