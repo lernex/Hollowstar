@@ -177,6 +177,26 @@ def test_rank_counts_are_whole_nodes_and_fit_the_allocation():
         assert spec.apus % 4 == 0, f"{spec.name} is not a whole number of nodes"
 
 
+def test_wave_1_submission_order_prioritizes_the_long_collective_rows():
+    assert tuple(spec.name for spec in WAVE_1_BATCHES["1a"]) == (
+        "random-k",
+        "more-rm",
+        "more-core",
+        "random-depth",
+        "dense-flop-matched",
+        "moe-k4",
+        "moe-k8",
+    )
+    assert tuple(spec.name for spec in WAVE_1_BATCHES["1b"]) == (
+        "mor-dense-ffn",
+        "mor-fixed-k",
+        "fixed-depth-adaptive-k",
+        "loop-pathway-frozen",
+        "loop-fixed",
+        "dense-param-matched",
+    )
+
+
 def test_iso_flop_rows_really_are_iso_flop():
     """Rows 1 and 5-13 must match in model work.
 

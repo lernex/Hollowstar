@@ -1038,28 +1038,32 @@ def wave_for_row(name: str) -> str:
     raise KeyError(f"Unknown ablation row {name!r}")
 
 
+# Slurm tends to allocate the earliest large requests onto contiguous node
+# ranges. Keep the critical collective-heavy rows first; the short dense and
+# small single-pass controls can absorb a fragmented tail allocation without
+# moving the batch makespan.
 WAVE_1_BATCHES: dict[str, tuple[AblationSpec, ...]] = {
     "1a": tuple(
         spec_by_name(name, ladder=ABLATION_LADDER)
         for name in (
+            "random-k",
+            "more-rm",
+            "more-core",
+            "random-depth",
             "dense-flop-matched",
             "moe-k4",
             "moe-k8",
-            "more-core",
-            "more-rm",
-            "random-k",
-            "random-depth",
         )
     ),
     "1b": tuple(
         spec_by_name(name, ladder=ABLATION_LADDER)
         for name in (
-            "dense-param-matched",
-            "loop-fixed",
-            "loop-pathway-frozen",
             "mor-dense-ffn",
             "mor-fixed-k",
             "fixed-depth-adaptive-k",
+            "loop-pathway-frozen",
+            "loop-fixed",
+            "dense-param-matched",
         )
     ),
 }
