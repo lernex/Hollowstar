@@ -770,6 +770,10 @@ def _train_row_inner(
                     with torch.no_grad(), policy.bf16_reference_context():
                         reference = model(batch.input_ids, batch.labels, **forward_kwargs)
                     reference_loss = float(reference.loss.detach().float().item())
+                    if not math.isfinite(reference_loss):
+                        raise FloatingPointError(
+                            "BF16 reference produced a non-finite first-batch loss"
+                        )
                     torch.set_rng_state(cpu_rng)
                     if cuda_rng is not None:
                         torch.cuda.set_rng_state(cuda_rng, runtime.device)
@@ -778,6 +782,10 @@ def _train_row_inner(
                     output = model(batch.input_ids, batch.labels, **forward_kwargs)
                 if reference_loss is not None and fp8_parity_error is None:
                     actual = float(output.loss.detach().float().item())
+                    if not math.isfinite(actual):
+                        raise FloatingPointError(
+                            "FP8 execution produced a non-finite first-batch loss"
+                        )
                     fp8_parity_error = abs(actual - reference_loss) / max(
                         abs(reference_loss), 1e-9
                     )

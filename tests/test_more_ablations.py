@@ -91,6 +91,18 @@ def test_ablation_fp8_uses_blockwise_scaling_without_moving_production():
     assert load_family_config("logos").precision.fp8_scaling == "delayed"
 
 
+def test_dense_controls_keep_the_whole_dense_ffn_in_bf16():
+    dense = spec_by_name("dense-flop-matched").model_config(
+        mhc_backend="torch_reference",
+        mamba_backend="torch_reference",
+        attention_backend="torch_reference",
+    )
+    assert "expert_gate_up_projection" not in dense.precision.fp8_roles
+    assert "expert_down_projection" not in dense.precision.fp8_roles
+    assert "expert_gate_up_projection" in dense.precision.bf16_roles
+    assert "expert_down_projection" in dense.precision.bf16_roles
+
+
 # --------------------------------------------------------------------------
 # ladder invariants
 

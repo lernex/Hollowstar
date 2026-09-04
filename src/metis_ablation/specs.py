@@ -143,17 +143,22 @@ def _autotune() -> AutotuneConfig:
     )
 
 
-def _ablation_precision(*, dense_gate_up_bf16: bool) -> PrecisionConfig:
+def _ablation_precision(*, dense_ffn_bf16: bool) -> PrecisionConfig:
     precision = PrecisionConfig()
     fp8_roles = tuple(
         role for role in precision.fp8_roles if role != "mhc_controller"
     )
     bf16_roles = precision.bf16_roles + ("mhc_controller",)
-    if dense_gate_up_bf16:
+    if dense_ffn_bf16:
         fp8_roles = tuple(
-            role for role in fp8_roles if role != "expert_gate_up_projection"
+            role
+            for role in fp8_roles
+            if role not in {"expert_gate_up_projection", "expert_down_projection"}
         )
-        bf16_roles += ("expert_gate_up_projection",)
+        bf16_roles += (
+            "expert_gate_up_projection",
+            "expert_down_projection",
+        )
     return replace(
         precision,
         fp8_scaling="blockwise",
@@ -169,7 +174,7 @@ def proxy_config(
     *,
     world_size: int,
     ffn_mode: str = "moe",
-    dense_gate_up_bf16: bool = False,
+    dense_ffn_bf16: bool = False,
     mhc_backend: str = "fused_required",
     mamba_backend: str = "fused_required",
     attention_backend: str = "varlen_fused_required",
@@ -185,7 +190,7 @@ def proxy_config(
     wall-clock differences partly an artifact of routing skew.
     """
 
-    precision = _ablation_precision(dense_gate_up_bf16=dense_gate_up_bf16)
+    precision = _ablation_precision(dense_ffn_bf16=dense_ffn_bf16)
     base: dict[str, Any] = {
         "schema": "metis.model-family/v1",
         "family": "ablation",
@@ -337,7 +342,7 @@ class AblationSpec:
     pathway_mode: str = "per_pass"
     curriculum_max_passes: int | None = None
     depth_memory: bool = True
-    dense_gate_up_bf16: bool = False
+    dense_ffn_bf16: bool = False
     iso_flop: bool = True
     muon_state_bits: int = 8
     muon_ns_steps: int = 5
@@ -384,7 +389,7 @@ class AblationSpec:
         return proxy_config(
             world_size=self.apus,
             ffn_mode=self.ffn_mode,
-            dense_gate_up_bf16=self.dense_gate_up_bf16,
+            dense_ffn_bf16=self.dense_ffn_bf16,
             ngram_slots_per_head=slots,
             overrides=fields,
             **kwargs,
@@ -587,7 +592,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         ffn_mode="dense",
         dense_ffn_intermediate_dim=_DENSE_FLOP_MATCHED_INTERMEDIATE,
         continuation_mode="depth_one",
-        dense_gate_up_bf16=True,
+        dense_ffn_bf16=True,
         config_overrides={"activation_recompute_policy": "none"},
         notes=(
             "No recursion, no experts. The frontier point a reviewer expects. "
@@ -604,7 +609,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         ffn_mode="dense",
         dense_ffn_intermediate_dim=_DENSE_PARAM_MATCHED_INTERMEDIATE,
         continuation_mode="depth_one",
-        dense_gate_up_bf16=True,
+        dense_ffn_bf16=True,
         iso_flop=False,
         measured_tokens_per_second=664_770,
         config_overrides={"activation_recompute_policy": "none"},
@@ -920,7 +925,7 @@ def _scaling_specs() -> tuple[AblationSpec, ...]:
                     pathway_mode=base.pathway_mode,
                     curriculum_max_passes=base.curriculum_max_passes,
                     depth_memory=base.depth_memory,
-                    dense_gate_up_bf16=base.dense_gate_up_bf16,
+                    dense_ffn_bf16=base.dense_ffn_bf16,
                     iso_flop=False,
                     muon_state_bits=base.muon_state_bits,
                     muon_ns_steps=base.muon_ns_steps,
@@ -977,7 +982,7 @@ def _seed_specs() -> tuple[AblationSpec, ...]:
                 pathway_mode=base.pathway_mode,
                 curriculum_max_passes=base.curriculum_max_passes,
                 depth_memory=base.depth_memory,
-                dense_gate_up_bf16=base.dense_gate_up_bf16,
+                dense_ffn_bf16=base.dense_ffn_bf16,
                 iso_flop=base.iso_flop,
                 muon_state_bits=base.muon_state_bits,
                 muon_ns_steps=base.muon_ns_steps,
