@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 # Launch execution batch 2 (8 rows, 308 APUs).
-exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak026}"
+exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026]}"
 sbatch_args=()
 if [ -n "$exclude_nodes" ]; then sbatch_args+=(--exclude="$exclude_nodes"); fi
 

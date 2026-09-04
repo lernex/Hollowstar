@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 # Learning-rate sweep batch 1b: 6 runs, 300 APUs, 1,000,000,000 tokens per run.
-exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak026}"
+exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026]}"
 sbatch_args=()
 if [ -n "$exclude_nodes" ]; then sbatch_args+=(--exclude="$exclude_nodes"); fi
 

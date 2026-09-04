@@ -330,6 +330,14 @@ that measured as almost pure launch overhead on MI300A. `max_passes=5` remains
 the architectural cap for explicit controls and later budget studies, but the
 primary 50B-token policy does not train on those two tail levels.
 
+A shared-seed 50-step test of the full `{1,2,3,4,5}` support assigned nonzero
+mass to every depth (`45.9% / 26.1% / 14.8% / 8.4% / 4.8%`, mean 2), but reduced
+the adaptive rows to **383--389k tokens/s**. That would make the measured
+two-batch Wave-1 schedule about **60.6 hours**, outside the accepted 50--52 hour
+window. The full-depth experiment is therefore rejected for the primary
+campaign rather than silently changing the time budget; the architectural cap
+remains five.
+
 ### Measured Wave-1 throughput lanes (updated 2026-09-03)
 
 The target is 500k real release-data tokens/s for every row. The table reports
@@ -408,7 +416,7 @@ export METIS_REPO=/home/users/vollmerc/Metis
 export METIS_SCRATCH=/lus/lustre1/vollmerc
 export METIS_RELEASE_ROOT=/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r2
 export METIS_ABLATION_RUNTIME="$METIS_REPO/ops/more-ablation-runtime.sh"
-export METIS_ABLATION_EXCLUDE_NODES=parrypeak026
+export METIS_ABLATION_EXCLUDE_NODES='parrypeak[020,026]'
 
 cd "$METIS_REPO"
 PYTHONPATH=src python -m metis_ablation.campaign plan --wave all
