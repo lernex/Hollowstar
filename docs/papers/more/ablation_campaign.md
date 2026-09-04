@@ -82,7 +82,7 @@ implementation choice cannot silently redefine the comparison.
 | 100B | 10,331 EFLOP | 129.6 h | 64.8 h | 43.2 h |
 
 Wall clock is the sum of the longest row in each of the two executable Wave-1
-batches. The shared-seed 50-step real-data batches predict **48.8 hours**
+batches. The hardened shared-seed 50-step real-data batches predict **50.45 hours**
 before queue and restart overhead.
 
 Three reasons 10B is the wrong choice:
@@ -122,21 +122,21 @@ initialization policy.
 
 | # | Model | Batch | Stored / active per pass | Model / executed GFLOP/tok | APUs | Nodes | Measured hours |
 |---:|---|:---:|---|---:|---:|---:|---:|
-| 1 | Dense, FLOP-matched | 1a | 1.44B / 0.87B | 7.09 / 7.62 | 80 | 20 | 6.2 |
-| 2 | Dense, parameter-matched | 1b | 1.81B / 1.24B | 9.31 / 9.85 | 80 | 20 | 8.4 |
-| 3 | MoE k=4 | 1a | 1.81B / 0.279B | 3.54 / 4.08 | 20 | 5 | 17.0 |
-| 4 | MoE k=8 | 1a | 1.81B / 0.336B | 3.88 / 4.42 | 20 | 5 | 17.9 |
-| 5 | Fixed LoopMoE | 1b | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 20.5 |
-| 6 | Loop, pathway frozen | 1b | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 20.1 |
-| 7 | MoR + dense FFN | 1b | 0.85B / 0.278B | 7.08 / 8.15 | 80 | 20 | 22.1 |
-| 8 | MoR + fixed-k MoE | 1b | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.4 |
-| 9 | Fixed depth, adaptive k | 1b | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 20.5 |
-| 10 | MoRE-Core | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 23.9 |
-| 11 | MoRE-RM | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.4 |
-| 12 | Random-k control | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.4 |
-| 13 | Random-depth control | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 11.5 |
-| | **Batch 1a total** | | | | **440** | **110** | **24.4** |
-| | **Batch 1b total** | | | | **360** | **90** | **24.4** |
+| 1 | Dense, FLOP-matched | 1a | 1.44B / 0.87B | 7.09 / 7.62 | 80 | 20 | 6.1 |
+| 2 | Dense, parameter-matched | 1b | 1.81B / 1.24B | 9.31 / 9.85 | 80 | 20 | 8.3 |
+| 3 | MoE k=4 | 1a | 1.81B / 0.279B | 3.54 / 4.08 | 20 | 5 | 23.6 |
+| 4 | MoE k=8 | 1a | 1.81B / 0.336B | 3.88 / 4.42 | 20 | 5 | 24.6 |
+| 5 | Fixed LoopMoE | 1b | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 20.1 |
+| 6 | Loop, pathway frozen | 1b | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 24.3 |
+| 7 | MoR + dense FFN | 1b | 0.85B / 0.278B | 7.08 / 8.15 | 80 | 20 | 25.9 |
+| 8 | MoR + fixed-k MoE | 1b | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.0 |
+| 9 | Fixed depth, adaptive k | 1b | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 24.2 |
+| 10 | MoRE-Core | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.1 |
+| 11 | MoRE-RM | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.5 |
+| 12 | Random-k control | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 23.6 |
+| 13 | Random-depth control | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 23.6 |
+| | **Batch 1a total** | | | | **440** | **110** | **24.6** |
+| | **Batch 1b total** | | | | **360** | **90** | **25.9** |
 
 Regenerate this table with `python -m metis_ablation.campaign plan`; it is
 computed from `metis_training.metrics.estimate_hardware_flops`, the same
@@ -149,7 +149,7 @@ it: rows 1 and 7 are dense, so stored equals active and a dense-FFN recursive
 model simply cannot hold 1.8B stored at 0.279B active. Report both numbers; the
 asymmetry is what the sparse axis buys.
 
-**Two execution batches, 48.8 measured hours before queue/restart overhead.**
+**Two execution batches, 50.45 measured hours before queue/restart overhead.**
 
 ### Wave 2 — scaling ladder
 
@@ -203,10 +203,10 @@ nothing else moved.
 
 | Wave | Rows | Executed FLOPs | Wall clock @10% MFU |
 |---|---:|---:|---:|
-| 1 — the ladder, batches 1a + 1b | 13 | 5,166 EFLOP | 32.4 h at 10% MFU / **48.8 h measured** |
+| 1 — the ladder, batches 1a + 1b | 13 | 5,166 EFLOP | 32.4 h at 10% MFU / **50.45 h measured** |
 | 2 — scaling | 8 | 926 EFLOP | 5.6 h |
 | 3 — seeds | 5 | 2,254 EFLOP | 16.7 h |
-| **Total** | **26** | **8,346 EFLOP** | **~54.7 h at 10% MFU; ~71.1 h with measured Wave 1** |
+| **Total** | **26** | **8,346 EFLOP** | **~54.7 h at 10% MFU; ~72.8 h with measured Wave 1** |
 
 Waves run one after another, so the 512-APU machine limit applies per
 batch, not to the sum. Add the archetype learning-rate sweep (12 short runs at 1B tokens,
@@ -349,21 +349,21 @@ retained row.
 
 | Row | APUs | Micro × accum | Recompute | Precision exception | Median tok/s |
 |---|---:|---:|---|---|---:|
-| dense-flop-matched | 80 | 6 × 1 | none | dense FFN BF16 | **2,227,718** |
-| dense-param-matched | 80 | 6 × 1 | none | dense FFN BF16 | **1,654,017** |
-| moe-k4 | 20 | 12 × 2 | none | — | **816,419** |
-| moe-k8 | 20 | 12 × 2 | none | — | **776,634** |
-| loop-fixed | 40 | 12 × 1 | layer | — | **677,463** |
-| loop-pathway-frozen | 40 | 12 × 1 | layer | — | **690,935** |
-| mor-dense-ffn | 80 | 6 × 1 | none | — | **627,100** |
-| mor-fixed-k | 80 | 6 × 1 | none | — | **570,256** |
-| fixed-depth-adaptive-k | 40 | 12 × 1 | layer | — | **678,299** |
-| more-core | 80 | 6 × 1 | none | — | **582,315** |
-| more-rm | 80 | 6 × 1 | none | — | **568,392** |
-| random-k | 80 | 6 × 1 | none | — | **569,222** |
-| random-depth | 80 | 6 × 1 | none | — | **1,212,482** |
+| dense-flop-matched | 80 | 6 × 1 | none | dense FFN BF16 | **2,260,487** |
+| dense-param-matched | 80 | 6 × 1 | none | dense FFN BF16 | **1,665,431** |
+| moe-k4 | 20 | 12 × 2 | none | — | **587,748** |
+| moe-k8 | 20 | 12 × 2 | none | — | **564,527** |
+| loop-fixed | 40 | 12 × 1 | layer | — | **691,789** |
+| loop-pathway-frozen | 40 | 12 × 1 | layer | — | **571,263** |
+| mor-dense-ffn | 80 | 6 × 1 | none | — | **537,280** |
+| mor-fixed-k | 80 | 6 × 1 | none | — | **577,749** |
+| fixed-depth-adaptive-k | 40 | 12 × 1 | layer | — | **573,857** |
+| more-core | 80 | 6 × 1 | none | — | **576,904** |
+| more-rm | 80 | 6 × 1 | none | — | **567,686** |
+| random-k | 80 | 6 × 1 | none | — | **587,870** |
+| random-depth | 80 | 6 × 1 | none | — | **588,719** |
 
-In the final shared-initialization 440-APU batch, Core and RM differ by 2.4% in
+In the final shared-initialization 440-APU batch, Core and RM differ by 1.6% in
 throughput.
 The earlier 512k-versus-695k comparison mixed Core's long window with RM's
 first nine warmed steps. RM does not have a magically faster kernel: Core keeps
@@ -385,8 +385,8 @@ for Core and 0.838/0.568 for RM. Active-token ratios were exactly 1, 2/3, and
 1/3 across the three trained passes. Thus the policies are neither
 all-depth-2, fixed-k-4, nor a replay of the same expert coalition.
 
-These are the rates measured in the final two execution batches, not a sum of
-isolated canaries. The slowest row is RM at 568,392 tokens/s.
+These are the rates measured in the final hardened two execution batches, not a
+sum of isolated canaries. The slowest row is MoR+dense-FFN at 537,280 tokens/s.
 
 ## 6. Learning rate and hyperparameters
 
@@ -572,7 +572,7 @@ compared against twelve rows that stayed in parity.
 2. `python -m metis_ablation.campaign plan --wave all` — allocation and cost.
 3. Sweep (12 runs in two capacity-safe batches), record the four archetype
    winners in `learning-rates.json`.
-4. Wave 1a, then Wave 1b (13 rows, about 49 measured hours before queue/restart
+4. Wave 1a, then Wave 1b (13 rows, about 50.5 measured hours before queue/restart
    overhead).
 5. Wave 2 (8 rows, estimated ~4 h at 10% MFU).
 6. Wave 3 (5 rows, estimated ~13 h at 10% MFU).

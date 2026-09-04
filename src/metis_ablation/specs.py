@@ -595,7 +595,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="depth_one",
         depth_memory=False,
         dense_ffn_bf16=True,
-        measured_tokens_per_second=2_227_718,
+        measured_tokens_per_second=2_260_487,
         config_overrides={"activation_recompute_policy": "none"},
         notes=(
             "No recursion, no experts. The frontier point a reviewer expects. "
@@ -614,7 +614,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         depth_memory=False,
         dense_ffn_bf16=True,
         iso_flop=False,
-        measured_tokens_per_second=1_654_017,
+        measured_tokens_per_second=1_665_431,
         config_overrides={"activation_recompute_policy": "none"},
         notes="Deliberately expensive per token; report against FLOPs, not steps.",
     ),
@@ -628,7 +628,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         routed_k_mode="fixed", fixed_routed_k=4,
         depth_memory=False,
         iso_flop=False,
-        measured_tokens_per_second=816_419,
+        measured_tokens_per_second=587_748,
         config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
@@ -641,7 +641,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         routed_k_mode="fixed", fixed_routed_k=8,
         depth_memory=False,
         iso_flop=False,
-        measured_tokens_per_second=776_634,
+        measured_tokens_per_second=564_527,
         config_overrides={"activation_recompute_policy": "none"},
         notes=(
             "Not a compute match: k=4->8 adds about 0.34 GFLOP/token while a "
@@ -657,7 +657,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="fixed_max", curriculum_max_passes=2,
         routed_k_mode="fixed", fixed_routed_k=4,
         depth_memory=False,
-        measured_tokens_per_second=677_463,
+        measured_tokens_per_second=691_789,
         config_overrides={"activation_recompute_policy": "layer"},
         notes="Reimplements the published fixed-loop MoE design point in our backbone.",
     ),
@@ -671,7 +671,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         routed_k_mode="fixed", fixed_routed_k=4,
         pathway_mode="frozen",
         depth_memory=False,
-        measured_tokens_per_second=690_935,
+        measured_tokens_per_second=571_263,
         config_overrides={"activation_recompute_policy": "layer"},
         notes="Exactly iso-FLOP with row 5. The only evidence for axis three.",
     ),
@@ -685,7 +685,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         dense_ffn_intermediate_dim=_DENSE_RECURSIVE_INTERMEDIATE,
         continuation_mode="budgeted",
         depth_memory=False,
-        measured_tokens_per_second=627_100,
+        measured_tokens_per_second=537_280,
         config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
@@ -697,7 +697,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="budgeted",
         routed_k_mode="fixed", fixed_routed_k=4,
         depth_memory=False,
-        measured_tokens_per_second=570_256,
+        measured_tokens_per_second=577_749,
         config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
@@ -709,7 +709,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="fixed_max", curriculum_max_passes=2,
         routed_k_mode="budgeted",
         depth_memory=False,
-        measured_tokens_per_second=678_299,
+        measured_tokens_per_second=573_857,
         config_overrides={"activation_recompute_policy": "layer"},
     ),
     AblationSpec(
@@ -721,7 +721,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="budgeted",
         routed_k_mode="budgeted",
         depth_memory=False,
-        measured_tokens_per_second=582_315,
+        measured_tokens_per_second=576_904,
         config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
@@ -733,7 +733,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="budgeted",
         routed_k_mode="budgeted",
         depth_memory=True,
-        measured_tokens_per_second=568_392,
+        measured_tokens_per_second=567_686,
         config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
@@ -745,7 +745,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="budgeted",
         routed_k_mode="random",
         depth_memory=False,
-        measured_tokens_per_second=569_222,
+        measured_tokens_per_second=587_870,
         config_overrides={"activation_recompute_policy": "none"},
         notes="Maximum-entropy width distribution at the same mean budget.",
     ),
@@ -758,7 +758,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="random",
         routed_k_mode="budgeted",
         depth_memory=False,
-        measured_tokens_per_second=1_212_482,
+        measured_tokens_per_second=588_719,
         config_overrides={"activation_recompute_policy": "none"},
         notes=(
             "Exact-budget random ranking over depth support {1,2,3}; identical "
