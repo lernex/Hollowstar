@@ -126,7 +126,7 @@ and untyped perform identically, we built an expensive MeSH and should say so.
 - [x] `ablation` model family, dense-FFN path, pathway-frozen mode, random-policy controls
 - [x] Grouped expert GEMM (numerically identical to the loop; test asserts it)
 - [x] `metis_ablation` package: specs, strided sampler, DP trainer, routing analyzer, campaign planner
-- [x] Slurm launchers for the 13-row Wave 1, split into contention-safe 1a/1b/1c/1d batches (`slurm/ablation/`)
+- [x] Slurm launchers for the 13-row Wave 1, split into measured makespan-first 1a/1b batches (`slurm/ablation/`)
 - [ ] Resolve `[CHECK]` citations in `references.bib`
 - [x] Wave 2 (scaling ladder, 8 rows) and wave 3 (paired seeds, 5 rows)
 - [x] Archetype learning-rate sweep generator

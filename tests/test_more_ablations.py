@@ -1555,19 +1555,17 @@ def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
     assert not (tmp_path / "wave1" / "launch-wave.sh").exists()
     batch_a = (tmp_path / "wave1" / "launch-wave-1a.sh").read_text()
     batch_b = (tmp_path / "wave1" / "launch-wave-1b.sh").read_text()
-    batch_c = (tmp_path / "wave1" / "launch-wave-1c.sh").read_text()
-    batch_d = (tmp_path / "wave1" / "launch-wave-1d.sh").read_text()
-    assert "160 APUs" in batch_a
-    assert "160 APUs" in batch_b
-    assert "120 APUs" in batch_c
-    assert "360 APUs" in batch_d
+    assert not (tmp_path / "wave1" / "launch-wave-1c.sh").exists()
+    assert not (tmp_path / "wave1" / "launch-wave-1d.sh").exists()
+    assert "440 APUs" in batch_a
+    assert "360 APUs" in batch_b
     assert 'METIS_ABLATION_EXCLUDE_NODES:-parrypeak026' in batch_a
     assert '"${sbatch_args[@]}"' in batch_a
     assert "10-more-core.sbatch" in batch_a
     assert "10-more-core.sbatch" not in batch_b
-    assert "12-random-k.sbatch" in batch_b
-    assert "01-dense-flop-matched.sbatch" in batch_c
-    assert "05-loop-fixed.sbatch" in batch_d
+    assert "12-random-k.sbatch" in batch_a
+    assert "01-dense-flop-matched.sbatch" in batch_a
+    assert "05-loop-fixed.sbatch" in batch_b
 
 
 def test_every_task_in_a_launcher_gets_its_own_rank_and_apu(tmp_path: Path):
@@ -1770,22 +1768,17 @@ def test_wave_one_plan_uses_the_measured_two_batch_schedule():
 
     payload = plan(wave="1")
     assert payload["allocation"]["lane_apus"] == 800
-    assert payload["allocation"]["allocated_apus"] == 360
-    assert payload["allocation"]["spare_apus"] == 24
-    assert set(payload["allocation"]["execution_batches"]) == {
-        "1a",
-        "1b",
-        "1c",
-        "1d",
-    }
+    assert payload["allocation"]["allocated_apus"] == 440
+    assert payload["allocation"]["spare_apus"] == 72
+    assert set(payload["allocation"]["execution_batches"]) == {"1a", "1b"}
     assert payload["measured_wall_clock_hours"] is not None
-    batch_d = set(payload["allocation"]["execution_batches"]["1d"]["rows"])
+    batch_b = set(payload["allocation"]["execution_batches"]["1b"]["rows"])
     assert {
         "loop-fixed",
         "loop-pathway-frozen",
         "mor-fixed-k",
         "fixed-depth-adaptive-k",
-    } <= batch_d
+    } <= batch_b
 
 
 def test_selected_learning_rates_are_applied_by_archetype(tmp_path: Path):

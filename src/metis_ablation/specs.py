@@ -41,8 +41,9 @@ GLOBAL_BATCH_SEQUENCES = 480
 SEQUENCE_LENGTH = 4_096
 GLOBAL_BATCH_TOKENS = GLOBAL_BATCH_SEQUENCES * SEQUENCE_LENGTH
 
-# Portage has 512 APUs, but the campaign reserves 128 for Praxis/Logos.
-CAMPAIGN_APUS = 384
+# Wave 1 runs after the production jobs release Portage and may use the full
+# machine. Its larger measured batch requests 440 of 512 APUs.
+CAMPAIGN_APUS = 512
 CAMPAIGN_SPARE_APUS = 0
 
 
@@ -1035,26 +1036,16 @@ WAVE_1_BATCHES: dict[str, tuple[AblationSpec, ...]] = {
     "1a": tuple(
         spec_by_name(name, ladder=ABLATION_LADDER)
         for name in (
+            "dense-flop-matched",
+            "moe-k4",
+            "moe-k8",
             "more-core",
             "more-rm",
-        )
-    ),
-    "1b": tuple(
-        spec_by_name(name, ladder=ABLATION_LADDER)
-        for name in (
             "random-k",
             "random-depth",
         )
     ),
-    "1c": tuple(
-        spec_by_name(name, ladder=ABLATION_LADDER)
-        for name in (
-            "dense-flop-matched",
-            "moe-k4",
-            "moe-k8",
-        )
-    ),
-    "1d": tuple(
+    "1b": tuple(
         spec_by_name(name, ladder=ABLATION_LADDER)
         for name in (
             "dense-param-matched",
