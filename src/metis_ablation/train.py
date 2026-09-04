@@ -923,7 +923,7 @@ def _train_row_inner(
         if spec.continuation_mode != "budgeted" or spec.routed_k_mode != "budgeted":
             raise ValueError("Joint routing must not silently replace a fixed or random control")
         config = replace(config, joint_compute_router=True, budgeted_depth_values=())
-        config.validate()
+        config._validate_tiny() if config.family == "tiny" else config.validate()
         curriculum = replace(
             curriculum,
             compute_allocation_mode="joint",
