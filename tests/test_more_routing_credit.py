@@ -207,7 +207,9 @@ class JointCreditTests(unittest.TestCase):
         config = tiny_joint_config(max_passes=5)
         model = Metis16ForCausalLM(config).eval()
         with torch.no_grad():
-            model.joint_router.output.bias[3] = 1000.0
+            model.joint_router.output.bias[:4].copy_(
+                torch.tensor([1.0, 4.0, 9.0, 16.0])
+            )
         inputs, labels = batch(config, length=18)
         mask = torch.ones_like(inputs, dtype=torch.bool)
         mask[:, -2:] = False

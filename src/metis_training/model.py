@@ -6267,7 +6267,7 @@ class Metis16ForCausalLM(nn.Module):
         )
         joint_observations: list[JointRouterObservation] = []
         joint_observation_count = torch.zeros((), device=input_ids.device, dtype=torch.long)
-        joint_utility_sum = streams.float().sum() * 0.0
+        joint_utility_sum = streams.new_zeros((), dtype=torch.float32)
         joint_spent = torch.zeros((), device=input_ids.device, dtype=torch.int64)
         joint_router_spent = torch.zeros_like(joint_spent)
         joint_budget = torch.zeros_like(joint_spent)
