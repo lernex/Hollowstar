@@ -39,6 +39,8 @@ from metis_training.model import (
     _memory_attention_combine,
     _memory_attention_scores,
     _stream_gate_logits,
+    assign_random_budgeted_categories,
+    exact_budget_counts,
     expert_segment_plan,
     packed_expert_rows,
     geometric_continue_probability,
@@ -290,6 +292,39 @@ def test_max_entropy_categorical_hits_its_mean():
     # never collapse onto a single value: that would be a fixed-k row wearing a
     # random-k label.
     assert min(weights) > 0.0
+
+
+def test_random_budgeted_categories_are_exact_and_replayable():
+    active = torch.tensor(
+        [
+            [True, True, True, True, False],
+            [True, True, True, True, True],
+        ]
+    )
+
+    def sample(seed):
+        generator = torch.Generator().manual_seed(seed)
+        return assign_random_budgeted_categories(
+            active,
+            values=range(1, 5),
+            mean=2.0,
+            generator=generator,
+        )
+
+    first = sample(17)
+    torch.testing.assert_close(first, sample(17))
+    assert not torch.equal(first, sample(19))
+    active_values = first.masked_select(active)
+    assert int(active_values.sum().item()) == 2 * int(active.sum().item())
+    expected_counts = exact_budget_counts(
+        range(1, 5),
+        2.0,
+        int(active.sum().item()),
+    )
+    assert tuple(
+        int((active_values == value).sum().item())
+        for value in range(1, 5)
+    ) == expected_counts
 
 
 def test_geometric_continue_probability_hits_its_mean_depth():

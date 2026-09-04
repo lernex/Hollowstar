@@ -592,6 +592,45 @@ def assign_budgeted_categories(
     return output
 
 
+def assign_random_budgeted_categories(
+    active_mask: Tensor,
+    *,
+    values: Sequence[int],
+    mean: float,
+    generator: torch.Generator | None,
+) -> Tensor:
+    """Assign an exact categorical budget from a uniform random permutation."""
+
+    support = tuple(int(value) for value in values)
+    positions = torch.nonzero(active_mask.reshape(-1), as_tuple=False).flatten()
+    output = torch.full(
+        active_mask.shape,
+        support[0],
+        device=active_mask.device,
+        dtype=torch.long,
+    )
+    if positions.numel() == 0:
+        return output
+    counts = exact_budget_counts(support, float(mean), int(positions.numel()))
+    permutation = torch.randperm(
+        int(positions.numel()),
+        device=positions.device,
+        generator=generator,
+    )
+    shuffled_positions = positions.index_select(0, permutation)
+    flat_output = output.reshape(-1)
+    start = 0
+    for value, count in zip(support, counts):
+        if count:
+            flat_output.index_fill_(
+                0,
+                shuffled_positions[start : start + count],
+                value,
+            )
+        start += count
+    return output
+
+
 def _budget_tangent(soft_values: Tensor, active_mask: Tensor) -> Tensor:
     """Project soft routing values onto the active fixed-budget tangent."""
 
@@ -3109,22 +3148,16 @@ class AdaptiveDroplessMoE(nn.Module):
                 else self.config.target_mean_routed_k
             )
             weights = self._random_k_weights(float(target), logits.device)
-            random_scores = torch.rand(
-                expected.shape,
-                device=expected.device,
-                dtype=torch.float32,
-                generator=self._random_policy_generator(
-                    curriculum, logits.device, pass_index
-                ),
-            )
-            chosen = assign_budgeted_categories(
-                random_scores,
+            chosen = assign_random_budgeted_categories(
                 active_mask,
                 values=range(
                     self.config.min_routed_k,
                     self.config.max_routed_k + 1,
                 ),
                 mean=float(target),
+                generator=self._random_policy_generator(
+                    curriculum, logits.device, pass_index
+                ),
             )
             expected = torch.full_like(expected, float(target))
             probabilities = weights.expand_as(probabilities)
@@ -5374,21 +5407,24 @@ class Metis16ForCausalLM(nn.Module):
             decision = torch.zeros_like(active_mask)
             if desired:
                 if curriculum.continuation_mode == "random":
-                    ranking = torch.rand(
-                        probability.shape,
-                        device=probability.device,
-                        dtype=torch.float32,
+                    permutation = torch.randperm(
+                        int(positions.numel()),
+                        device=positions.device,
                         generator=self._random_depth_generator(
                             curriculum, probability.device, pass_index
                         ),
                     )
+                    selected = positions.index_select(
+                        0,
+                        permutation[:desired],
+                    )
                 else:
                     ranking = probability.detach()
-                scores = ranking.reshape(-1).index_select(0, positions)
-                selected = positions.index_select(
-                    0,
-                    torch.topk(scores, desired, sorted=False).indices,
-                )
+                    scores = ranking.reshape(-1).index_select(0, positions)
+                    selected = positions.index_select(
+                        0,
+                        torch.topk(scores, desired, sorted=False).indices,
+                    )
                 decision.reshape(-1).index_fill_(0, selected, True)
         elif self.training and curriculum.stochastic_routing:
             decision = torch.rand_like(probability) < probability
