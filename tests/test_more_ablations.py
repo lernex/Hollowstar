@@ -115,7 +115,7 @@ def test_every_row_consumes_an_identical_global_batch():
 def test_more_core_uses_the_measured_portage_lane():
     primary = spec_by_name("more-core")
     assert (primary.apus, primary.micro_batch, primary.grad_accum) == (80, 6, 1)
-    assert primary.measured_tokens_per_second == 567_600
+    assert primary.measured_tokens_per_second == 582_315
     assert primary.muon_state_bits == 8
     assert primary.muon_ns_steps == 5
     assert primary.optimizer_sharding == "world"
