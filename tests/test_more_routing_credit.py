@@ -294,6 +294,24 @@ class JointCreditTests(unittest.TestCase):
             )
             self.assertGreater(int(state["model"]["joint_router.trained_updates"]), 0)
 
+    def test_short_diagnostic_geometry_preserves_the_real_global_batch(self):
+        from metis_ablation.train import main
+
+        arguments = [
+            "--row", "more-core", "--output", "/unused-diagnostic-output",
+            "--compute-allocation-mode", "joint", "--diagnostic-apus", "4",
+            "--max-steps", "3",
+        ]
+        with patch("metis_ablation.train.train_row", return_value={}) as run:
+            self.assertEqual(main(arguments), 0)
+        spec = run.call_args.args[0]
+        self.assertEqual((spec.apus, spec.micro_batch, spec.grad_accum), (4, 6, 20))
+        self.assertIsNone(spec.measured_tokens_per_second)
+        with self.assertRaisesRegex(ValueError, "tile"):
+            main([*arguments[:-4], "--diagnostic-apus", "7", "--max-steps", "3"])
+        with self.assertRaisesRegex(ValueError, "max_steps"):
+            main(arguments[:-2])
+
 
 if __name__ == "__main__":
     unittest.main()

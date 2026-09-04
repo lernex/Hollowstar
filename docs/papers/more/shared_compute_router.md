@@ -82,6 +82,12 @@ The flags are recorded in curriculum/model identity. They must not be
 introduced into an existing campaign by weakening its resume checks. Fixed
 and random rows cannot silently become learned joint-routing rows.
 
+`--diagnostic-apus N --max-steps M` permits a bounded, explicitly identified
+canary on spare ranks. It retains the row's micro-batch and derives accumulation
+to preserve the 480-sequence global batch exactly. The original lane's
+throughput estimate is removed; a smaller-rank canary is not an 80-APU
+throughput result.
+
 For controlled probes, `force_routed_k` has shape
 `[max_passes, physical_layers, batch, sequence]` and complements the existing
 `force_depth` override. Active widths must be valid integers. These explicit

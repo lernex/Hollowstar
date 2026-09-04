@@ -69,6 +69,7 @@ from .sampler import AblationSampleStream, build_sample_stream
 from .specs import (
     ABLATION_LADDER,
     AblationSpec,
+    GLOBAL_BATCH_SEQUENCES,
     GLOBAL_BATCH_TOKENS,
     spec_by_name,
     wave_for_row,
@@ -1680,6 +1681,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--joint-router-exploration", type=float, default=0.05)
     parser.add_argument("--joint-utility-coefficient", type=float, default=1.0)
     parser.add_argument("--joint-max-passes", type=int, default=None)
+    parser.add_argument(
+        "--diagnostic-apus", type=int, default=None,
+        help="Explicit short-canary DP size; preserve the row micro-batch and global token batch",
+    )
     parser.add_argument("--output", required=True, help="Campaign output root")
     parser.add_argument("--release-root", default=None, help="1T release inventory root")
     parser.add_argument("--budget-tokens", type=int, default=DEFAULT_BUDGET_TOKENS)
@@ -1719,8 +1724,22 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    spec = spec_by_name(args.row)
+    if args.diagnostic_apus is not None:
+        if args.max_steps is None or args.max_steps < 1:
+            raise ValueError("A diagnostic allocation requires an explicit positive max_steps")
+        denominator = args.diagnostic_apus * spec.micro_batch
+        if args.diagnostic_apus < 2 or denominator <= 0 or GLOBAL_BATCH_SEQUENCES % denominator:
+            raise ValueError("Diagnostic APUs must tile the unchanged global batch with this micro-batch")
+        spec = replace(
+            spec,
+            apus=args.diagnostic_apus,
+            grad_accum=GLOBAL_BATCH_SEQUENCES // denominator,
+            measured_tokens_per_second=None,
+            notes=spec.notes + " Explicit diagnostic DP geometry; original lane throughput does not apply.",
+        )
     summary = train_row(
-        spec_by_name(args.row),
+        spec,
         output_root=Path(args.output),
         release_root=Path(args.release_root) if args.release_root else None,
         budget_tokens=args.budget_tokens,
