@@ -1553,7 +1553,7 @@ def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
     assert not (tmp_path / "wave1" / "launch-wave.sh").exists()
     batch_a = (tmp_path / "wave1" / "launch-wave-1a.sh").read_text()
     batch_b = (tmp_path / "wave1" / "launch-wave-1b.sh").read_text()
-    assert "384 APUs" in batch_a
+    assert "440 APUs" in batch_a
     assert "360 APUs" in batch_b
     assert "10-more-core.sbatch" in batch_a
     assert "10-more-core.sbatch" not in batch_b
@@ -1707,8 +1707,8 @@ def test_wave_one_plan_uses_the_measured_two_batch_schedule():
     from metis_ablation.campaign import plan
 
     payload = plan(wave="1")
-    assert payload["allocation"]["lane_apus"] == 744
-    assert payload["allocation"]["allocated_apus"] == 384
+    assert payload["allocation"]["lane_apus"] == 800
+    assert payload["allocation"]["allocated_apus"] == 440
     assert set(payload["allocation"]["execution_batches"]) == {"1a", "1b"}
     assert payload["measured_wall_clock_hours"] is None
     batch_b = set(payload["allocation"]["execution_batches"]["1b"]["rows"])

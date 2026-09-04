@@ -41,9 +41,9 @@ GLOBAL_BATCH_SEQUENCES = 480
 SEQUENCE_LENGTH = 4_096
 GLOBAL_BATCH_TOKENS = GLOBAL_BATCH_SEQUENCES * SEQUENCE_LENGTH
 
-# Total APUs released to the campaign once Praxis and Logos drop to 64 each for
-# continued pretraining and post-training.
-CAMPAIGN_APUS = 384
+# Portage has 512 APUs. The executable batches remain below that ceiling and
+# tolerate several unavailable nodes rather than waiting for the full machine.
+CAMPAIGN_APUS = 512
 CAMPAIGN_SPARE_APUS = 0
 
 
@@ -588,7 +588,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         name="dense-flop-matched",
         title="Dense, FLOP-matched",
         isolates="dense reference at MoRE's executed compute",
-        apus=24, micro_batch=10, grad_accum=2,
+        apus=80, micro_batch=6, grad_accum=1,
         ffn_mode="dense",
         dense_ffn_intermediate_dim=_DENSE_FLOP_MATCHED_INTERMEDIATE,
         continuation_mode="depth_one",
