@@ -502,6 +502,14 @@ def _solve_dense_intermediate(
         raise ValueError("objective must be 'stored' or 'flops'")
 
     low, high = 64, 1 << 17
+    while measure(high) < target:
+        low = high
+        high *= 2
+        if high > 1 << 20:
+            raise RuntimeError(
+                "Dense matching could not bracket the target below an "
+                "intermediate width of 1,048,576"
+            )
     while low < high:
         middle = ((low + high) // 2 + 63) // 64 * 64
         if middle >= high:
@@ -771,98 +779,46 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
 # =========================================================================
 # Wave 2 -- scaling ladder
 #
-# One size is a data point, three sizes are a trend.  Running the four
-# archetypes at two smaller geometries turns "MoRE beats its baselines at 1.8B"
-# into a slope, with Praxis and Logos as the fourth and fifth points on the same
-# curve.  The geometries scale d_model, latent width, and expert count together
-# so the aspect ratio of the model is held roughly constant; scaling only one of
-# them would confound size with shape.
+# One size is a data point, three sizes are a trend. Wave 1 supplies the 1.81B
+# middle point; Wave 2 brackets it with a ~0.62B XS model and a ~4.98B XL model.
+# All three use the same two-layer recurrent block shape, while d_model, latent
+# width, expert width/count, and conditional memory scale together.
 
 _SCALE_GEOMETRIES: dict[str, dict[str, Any]] = {
-    # ~1/4 Praxis.  n_heads follows d_model at head_dim 64; n_kv_heads keeps the
-    # 4:1 GQA ratio; mamba_ngroups divides the Mamba head count.
+    # Roughly one third of Wave 1. n_heads follows d_model at head_dim 64;
+    # n_kv_heads keeps the 4:1 GQA ratio.
     "xs": {
-        "d_model": 1_280,
-        "n_heads": 20,
-        "n_kv_heads": 5,
-        "n_layers": 8,
-        "attention_indices": (2, 5),
-        "latent_dim": 640,
-        "expert_intermediate_dim": 320,
+        "d_model": 2_304,
+        "n_heads": 36,
+        "n_kv_heads": 9,
+        "n_layers": 2,
+        "attention_indices": (1,),
+        "latent_dim": 1_152,
+        "expert_intermediate_dim": 640,
         "n_routed_experts": 64,
         "mamba_ngroups": 8,
-        "_ngram_slots_per_head": 79_883,
+        "_ngram_slots_per_head": 100_003,
     },
-    # ~1/8 Praxis.
-    "xxs": {
-        "d_model": 896,
-        "n_heads": 14,
-        "n_kv_heads": 7,
-        "n_layers": 6,
-        "attention_indices": (1, 4),
-        "latent_dim": 448,
-        "expert_intermediate_dim": 224,
-        "n_routed_experts": 48,
-        "mamba_ngroups": 7,
-        "_ngram_slots_per_head": 22_013,
+    # A frontier-useful point above Wave 1. The dimensions are chosen so the
+    # audited sparse model lands at ~5B stored parameters without changing the
+    # recurrent block shape or the mean depth/k compute contract.
+    "xl": {
+        "d_model": 7_168,
+        "n_heads": 112,
+        "n_kv_heads": 28,
+        "n_layers": 2,
+        "attention_indices": (1,),
+        "latent_dim": 3_584,
+        "expert_intermediate_dim": 1_792,
+        "n_routed_experts": 80,
+        "mamba_ngroups": 16,
+        "_ngram_slots_per_head": 800_011,
     },
 }
 
 # Archetypes carried down the scaling ladder: the dense reference, the
 # single-pass sparse reference, and the two headline MoRE rows.
 _SCALING_ARCHETYPES = ("dense-param-matched", "moe-k4", "more-core", "more-rm")
-
-
-def scaled_ablation_ladder(scale: str) -> tuple[AblationSpec, ...]:
-    """The whole wave-1 ladder at one of the scaling-ladder geometries.
-
-    Wave 2 already carries four archetypes down to XS and XXS; this carries all
-    thirteen rows, which is what an allocation window too small for the primary
-    geometry needs. Every row moves together -- ``d_model``, latent width, layer
-    count, expert count and the N-gram table all come from the same geometry --
-    so the comparison between rows is untouched. Only the point on the size axis
-    moves, and the campaign already treats that axis as something to report.
-
-    The dense controls are re-solved rather than rescaled. Their whole purpose
-    is to match MoRE's stored parameters or its model FLOPs at the geometry
-    they actually run at, and a hand-scaled intermediate width would quietly
-    stop matching either.
-    """
-
-    if scale not in _SCALE_GEOMETRIES:
-        raise ValueError(f"Unknown scale {scale!r}; expected one of {sorted(_SCALE_GEOMETRIES)}.")
-    fields, _slots = _split_geometry(_SCALE_GEOMETRIES[scale])
-    geometry = dict(_SCALE_GEOMETRIES[scale])
-    dense_by_objective = {
-        ("stored", 1): _scaled_dense_intermediate(scale, "stored", 1),
-        ("flops", 1): _scaled_dense_intermediate(scale, "flops", 1),
-        ("flops", 2): _scaled_dense_intermediate(scale, "flops", 2),
-    }
-    scaled: list[AblationSpec] = []
-    for spec in ABLATION_LADDER:
-        overrides = dict(spec.config_overrides or {})
-        overrides.update(geometry)
-        dense_intermediate = spec.dense_ffn_intermediate_dim
-        if spec.ffn_mode == "dense":
-            # Which quantity this control matches is a property of the row, and
-            # it has to be re-solved at the new geometry to go on matching it.
-            if spec.name == "dense-param-matched":
-                key = ("stored", 1)
-            elif spec.continuation_mode == "depth_one":
-                key = ("flops", 1)
-            else:
-                key = ("flops", 2)
-            dense_intermediate = dense_by_objective[key]
-        scaled.append(
-            replace(
-                spec,
-                dense_ffn_intermediate_dim=dense_intermediate,
-                measured_tokens_per_second=None,
-                config_overrides=overrides,
-                notes=f"{spec.notes} Run at the {scale.upper()} geometry.",
-            )
-        )
-    return tuple(scaled)
 
 
 def _scaled_dense_intermediate(scale: str, objective: str, passes: int) -> int:
@@ -892,17 +848,17 @@ _SCALING_ALLOCATION: dict[tuple[str, str], tuple[int, int, int]] = {
     ("xs", "moe-k4"): (40, 2, 6),
     ("xs", "more-core"): (60, 8, 1),
     ("xs", "more-rm"): (60, 2, 4),
-    ("xxs", "dense-param-matched"): (24, 5, 4),
-    ("xxs", "moe-k4"): (16, 5, 6),
-    ("xxs", "more-core"): (24, 10, 2),
-    ("xxs", "more-rm"): (24, 5, 4),
+    ("xl", "dense-param-matched"): (160, 1, 3),
+    ("xl", "moe-k4"): (80, 1, 6),
+    ("xl", "more-core"): (80, 1, 6),
+    ("xl", "more-rm"): (80, 1, 6),
 }
 
 
 def _scaling_specs() -> tuple[AblationSpec, ...]:
     specs: list[AblationSpec] = []
     index = 20
-    for scale in ("xs", "xxs"):
+    for scale in ("xs", "xl"):
         geometry = dict(_SCALE_GEOMETRIES[scale])
         for archetype in _SCALING_ARCHETYPES:
             apus, micro_batch, grad_accum = _SCALING_ALLOCATION[(scale, archetype)]
@@ -1068,6 +1024,15 @@ WAVE_1_BATCHES: dict[str, tuple[AblationSpec, ...]] = {
     ),
 }
 
+WAVE_2_BATCHES: dict[str, tuple[AblationSpec, ...]] = {
+    "2a": tuple(
+        spec for spec in SCALING_LADDER if spec.name.endswith("-xs")
+    ),
+    "2b": tuple(
+        spec for spec in SCALING_LADDER if spec.name.endswith("-xl")
+    ),
+}
+
 
 def validate_allocation(
     specs: tuple[AblationSpec, ...],
@@ -1111,6 +1076,7 @@ __all__ = [
     "GLOBAL_BATCH_TOKENS",
     "SEQUENCE_LENGTH",
     "WAVE_1_BATCHES",
+    "WAVE_2_BATCHES",
     "proxy_config",
     "spec_by_name",
     "validate_allocation",

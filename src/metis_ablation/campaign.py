@@ -21,7 +21,6 @@ from metis_training.metrics import (
 )
 
 from .specs import (
-    scaled_ablation_ladder,
     ABLATION_LADDER,
     ALL_SPECS,
     SECOND_SEED,
@@ -30,6 +29,7 @@ from .specs import (
     CAMPAIGN_APUS,
     GLOBAL_BATCH_TOKENS,
     WAVE_1_BATCHES,
+    WAVE_2_BATCHES,
     dense_control_report,
     spec_by_name,
     validate_allocation,
@@ -38,6 +38,11 @@ from .specs import (
 
 
 DEFAULT_BUDGET_TOKENS = 50_000_000_000
+DEFAULT_WAVE_BUDGET_TOKENS = {
+    "1": 50_000_000_000,
+    "2": 100_000_000_000,
+    "3": 50_000_000_000,
+}
 DEFAULT_MFU_BAND = (0.05, 0.10, 0.15)
 SWEEP_ARCHETYPES = ("dense-param-matched", "moe-k4", "loop-fixed", "more-core")
 SWEEP_LEARNING_RATES = (1.2e-4, 1.8e-4, 2.6e-4)
@@ -64,15 +69,7 @@ _LEARNING_RATE_ARCHETYPE = {
 }
 
 
-def _wave_specs(wave: str, scale: str | None = None) -> tuple[AblationSpec, ...]:
-    if scale:
-        # Carrying the whole ladder to a smaller geometry is an allocation
-        # decision, not a design one: every row moves together, so what the
-        # campaign compares is unchanged and only its point on the size axis
-        # moves. Wave 2 already reports that axis.
-        if wave != "1":
-            raise SystemExit("--scale applies to wave 1, which is the ladder it rescales.")
-        return scaled_ablation_ladder(scale)
+def _wave_specs(wave: str) -> tuple[AblationSpec, ...]:
     if wave == "all":
         return ALL_SPECS
     try:
@@ -96,16 +93,31 @@ def _wave_one_batches(
     )
 
 
+def _wave_two_batches(
+    specs: tuple[AblationSpec, ...],
+) -> tuple[tuple[str, tuple[AblationSpec, ...]], ...]:
+    by_name = {spec.name: spec for spec in specs}
+    return tuple(
+        (
+            batch_name,
+            tuple(by_name[spec.name] for spec in batch_specs),
+        )
+        for batch_name, batch_specs in WAVE_2_BATCHES.items()
+    )
+
+
 def _execution_groups(
     wave: str,
     specs: tuple[AblationSpec, ...],
 ) -> tuple[tuple[str, tuple[AblationSpec, ...]], ...]:
     if wave == "1":
         return _wave_one_batches(specs)
+    if wave == "2":
+        return _wave_two_batches(specs)
     if wave == "all":
         return (
             *_wave_one_batches(WAVES["1"]),
-            ("2", WAVES["2"]),
+            *_wave_two_batches(WAVES["2"]),
             ("3", WAVES["3"]),
         )
     return ((wave, specs),)
@@ -172,12 +184,11 @@ def row_cost(spec: AblationSpec, *, budget_tokens: int) -> dict[str, Any]:
 def plan(
     *,
     wave: str = "1",
-    budget_tokens: int = DEFAULT_BUDGET_TOKENS,
+    budget_tokens: int | None = None,
     mfu_band: Sequence[float] = DEFAULT_MFU_BAND,
     total_apus: int = CAMPAIGN_APUS,
-    scale: str | None = None,
 ) -> dict[str, Any]:
-    specs = _wave_specs(wave, scale)
+    specs = _wave_specs(wave)
     execution_groups = _execution_groups(wave, specs)
     group_reports = {
         name: validate_allocation(candidate, total_apus=total_apus)
@@ -202,7 +213,18 @@ def plan(
             for name, candidate in execution_groups
         },
     }
-    rows = [row_cost(spec, budget_tokens=budget_tokens) for spec in specs]
+    row_budgets = {
+        spec.name: (
+            int(budget_tokens)
+            if budget_tokens is not None
+            else DEFAULT_WAVE_BUDGET_TOKENS[wave_for_row(spec.name)]
+        )
+        for spec in specs
+    }
+    rows = [
+        row_cost(spec, budget_tokens=row_budgets[spec.name])
+        for spec in specs
+    ]
     peak = MI300A_DENSE_PEAK_FLOPS["fp8"]
     for row in rows:
         row["hours_at_mfu"] = {
@@ -212,12 +234,25 @@ def plan(
             for mfu in mfu_band
         }
     campaign_exaflops = sum(row["total_exaflops"] for row in rows)
-    steps = budget_tokens // GLOBAL_BATCH_TOKENS
+    distinct_budgets = sorted(set(row_budgets.values()))
+    budget_payload: int | dict[str, int] = (
+        distinct_budgets[0]
+        if len(distinct_budgets) == 1
+        else dict(DEFAULT_WAVE_BUDGET_TOKENS)
+    )
+    step_payload: int | dict[str, int] = (
+        distinct_budgets[0] // GLOBAL_BATCH_TOKENS
+        if len(distinct_budgets) == 1
+        else {
+            candidate: tokens // GLOBAL_BATCH_TOKENS
+            for candidate, tokens in DEFAULT_WAVE_BUDGET_TOKENS.items()
+        }
+    )
     row_by_name = {row["row"]: row for row in rows}
     return {
         "wave": wave,
-        "budget_tokens": budget_tokens,
-        "optimizer_steps": steps,
+        "budget_tokens": budget_payload,
+        "optimizer_steps": step_payload,
         "global_batch_tokens": GLOBAL_BATCH_TOKENS,
         "allocation": allocation,
         "campaign_exaflops": round(campaign_exaflops, 1),
@@ -380,7 +415,7 @@ def emit_slurm(
     repo_root: str,
     output_root: str,
     release_root: str,
-    budget_tokens: int = DEFAULT_BUDGET_TOKENS,
+    budget_tokens: int | None = None,
     seed: int = 16_062_026,
     time_limit: str = "36:00:00",
     checkpoint_every: int = 5_000,
@@ -388,12 +423,16 @@ def emit_slurm(
     telemetry_every: int = 10,
     base_port: int = 29_500,
     cpus_per_task: int = 48,
-    scale: str | None = None,
     learning_rates: dict[str, float] | None = None,
 ) -> list[Path]:
-    specs = _wave_specs(wave, scale)
     if wave == "all":
         raise ValueError("Emit waves separately so their launch order is explicit.")
+    budget_tokens = (
+        DEFAULT_WAVE_BUDGET_TOKENS[wave]
+        if budget_tokens is None
+        else int(budget_tokens)
+    )
+    specs = _wave_specs(wave)
     execution_groups = _execution_groups(wave, specs)
     for _name, candidate in execution_groups:
         validate_allocation(candidate)
@@ -415,6 +454,10 @@ def emit_slurm(
             raise ValueError("Selected learning rates must be finite and positive.")
     destination = destination / f"wave{wave}"
     destination.mkdir(parents=True, exist_ok=True)
+    for stale in destination.glob("*.sbatch"):
+        stale.unlink()
+    for stale in destination.glob("launch-wave*.sh"):
+        stale.unlink()
     written: list[Path] = []
     for spec in specs:
         # Wave 3 is the paired-seed repeat: same data order, different
@@ -466,17 +509,13 @@ def emit_slurm(
         path.name.split("-", 1)[1].removesuffix(".sbatch"): path
         for path in written
     }
-    if wave == "1":
-        (destination / "launch-wave.sh").unlink(missing_ok=True)
-        for stale in destination.glob("launch-wave-*.sh"):
-            stale.unlink()
     for group_name, group_specs in execution_groups:
         launcher = [
             "#!/bin/bash",
             "set -euo pipefail",
             f"# Launch execution batch {group_name} ({len(group_specs)} rows, "
             f"{sum(spec.apus for spec in group_specs)} APUs).",
-            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026]}"',
+            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026,063]}"',
             "sbatch_args=()",
             'if [ -n "$exclude_nodes" ]; then sbatch_args+=(--exclude="$exclude_nodes"); fi',
             "",
@@ -503,7 +542,9 @@ def emit_slurm(
                 ),
             ]
         launcher_name = (
-            f"launch-wave-{group_name}.sh" if wave == "1" else "launch-wave.sh"
+            f"launch-wave-{group_name}.sh"
+            if len(execution_groups) > 1
+            else "launch-wave.sh"
         )
         wave_path = destination / launcher_name
         wave_path.write_text("\n".join(launcher) + "\n", encoding="utf-8")
@@ -513,7 +554,7 @@ def emit_slurm(
 
 
 def learning_rate_archetype(row: str) -> str:
-    base = row.removesuffix("-seed2").removesuffix("-xs").removesuffix("-xxs")
+    base = row.removesuffix("-seed2").removesuffix("-xs").removesuffix("-xl")
     try:
         return _LEARNING_RATE_ARCHETYPE[base]
     except KeyError:
@@ -620,7 +661,7 @@ def emit_sweep(
             "set -euo pipefail",
             f"# Learning-rate sweep batch {batch_name}: {len(batch_paths)} runs, "
             f"{batch_apus} APUs, {budget_tokens:,} tokens per run.",
-            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026]}"',
+            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026,063]}"',
             "sbatch_args=()",
             'if [ -n "$exclude_nodes" ]; then sbatch_args+=(--exclude="$exclude_nodes"); fi',
             "",
@@ -644,11 +685,29 @@ def emit_sweep(
 
 
 def _format_plan(payload: dict[str, Any]) -> str:
+    if isinstance(payload["budget_tokens"], dict):
+        budgets = ", ".join(
+            f"wave {candidate}: {tokens:,}"
+            for candidate, tokens in payload["budget_tokens"].items()
+        )
+        steps = ", ".join(
+            f"wave {candidate}: {count:,}"
+            for candidate, count in payload["optimizer_steps"].items()
+        )
+        heading = [
+            f"MoRE ablation wave {payload['wave']} - {budgets} tokens per row",
+            f"optimizer steps ({steps}) of "
+            f"{payload['global_batch_tokens']:,} tokens",
+        ]
+    else:
+        heading = [
+            f"MoRE ablation wave {payload['wave']} - "
+            f"{payload['budget_tokens']:,} tokens per row",
+            f"{payload['optimizer_steps']:,} optimizer steps of "
+            f"{payload['global_batch_tokens']:,} tokens, identical for every row",
+        ]
     lines = [
-        f"MoRE ablation wave {payload['wave']} - "
-        f"{payload['budget_tokens']:,} tokens per row",
-        f"{payload['optimizer_steps']:,} optimizer steps of "
-        f"{payload['global_batch_tokens']:,} tokens, identical for every row",
+        *heading,
         "",
         f"{'#':>2}  {'row':<24} {'APU':>4} {'nd':>3} {'stored':>9} "
         f"{'act/tok':>9} {'model':>7} {'exec':>7} {'EFLOP':>7} "
@@ -700,13 +759,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     plan_parser = sub.add_parser("plan", help="Print the wave plan and cost model")
     plan_parser.add_argument("--wave", default="1", help="1, 2, 3, or all")
-    plan_parser.add_argument("--scale", default=None, choices=("xs", "xxs"), help="run wave 1 at a scaling-ladder geometry")
-    plan_parser.add_argument("--budget-tokens", type=int, default=DEFAULT_BUDGET_TOKENS)
+    plan_parser.add_argument("--budget-tokens", type=int, default=None)
     plan_parser.add_argument("--json", action="store_true")
 
     slurm_parser = sub.add_parser("slurm", help="Emit sbatch files for the wave")
     slurm_parser.add_argument("--wave", default="1", help="1, 2, 3, or all")
-    slurm_parser.add_argument("--scale", default=None, choices=("xs", "xxs"), help="run wave 1 at a scaling-ladder geometry")
     slurm_parser.add_argument("--destination", required=True)
     slurm_parser.add_argument("--output-root", required=True)
     slurm_parser.add_argument("--release-root", required=True)
@@ -715,7 +772,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="${METIS_REPO:?set METIS_REPO}",
         help="Repo root on the target machine; may be a shell expression",
     )
-    slurm_parser.add_argument("--budget-tokens", type=int, default=DEFAULT_BUDGET_TOKENS)
+    slurm_parser.add_argument("--budget-tokens", type=int, default=None)
     slurm_parser.add_argument("--seed", type=int, default=16_062_026)
     slurm_parser.add_argument("--time-limit", default="36:00:00")
     slurm_parser.add_argument(
@@ -743,7 +800,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "plan":
-        payload = plan(wave=args.wave, budget_tokens=args.budget_tokens, scale=args.scale)
+        payload = plan(wave=args.wave, budget_tokens=args.budget_tokens)
         print(
             json.dumps(payload, indent=2, sort_keys=True)
             if args.json
@@ -775,7 +832,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         budget_tokens=args.budget_tokens,
         seed=args.seed,
         time_limit=args.time_limit,
-        scale=args.scale,
         learning_rates=(
             load_learning_rates(Path(args.learning_rates))
             if args.learning_rates

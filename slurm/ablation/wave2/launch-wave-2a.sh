@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
-# Launch execution batch 2 (8 rows, 308 APUs).
-exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026]}"
+# Launch execution batch 2a (4 rows, 220 APUs).
+exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026,063]}"
 sbatch_args=()
 if [ -n "$exclude_nodes" ]; then sbatch_args+=(--exclude="$exclude_nodes"); fi
 
@@ -17,11 +17,3 @@ mkdir -p "${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-core-xs"
 sbatch "${sbatch_args[@]}" --output="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-core-xs/slurm-%j.out" --error="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-core-xs/slurm-%j.err" "$(dirname "$0")/22-more-core-xs.sbatch"
 mkdir -p "${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-rm-xs"
 sbatch "${sbatch_args[@]}" --output="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-rm-xs/slurm-%j.out" --error="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-rm-xs/slurm-%j.err" "$(dirname "$0")/23-more-rm-xs.sbatch"
-mkdir -p "${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/dense-param-matched-xxs"
-sbatch "${sbatch_args[@]}" --output="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/dense-param-matched-xxs/slurm-%j.out" --error="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/dense-param-matched-xxs/slurm-%j.err" "$(dirname "$0")/24-dense-param-matched-xxs.sbatch"
-mkdir -p "${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/moe-k4-xxs"
-sbatch "${sbatch_args[@]}" --output="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/moe-k4-xxs/slurm-%j.out" --error="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/moe-k4-xxs/slurm-%j.err" "$(dirname "$0")/25-moe-k4-xxs.sbatch"
-mkdir -p "${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-core-xxs"
-sbatch "${sbatch_args[@]}" --output="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-core-xxs/slurm-%j.out" --error="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-core-xxs/slurm-%j.err" "$(dirname "$0")/26-more-core-xxs.sbatch"
-mkdir -p "${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-rm-xxs"
-sbatch "${sbatch_args[@]}" --output="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-rm-xxs/slurm-%j.out" --error="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/more-rm-xxs/slurm-%j.err" "$(dirname "$0")/27-more-rm-xxs.sbatch"

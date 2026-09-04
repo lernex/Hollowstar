@@ -233,11 +233,17 @@ hard/high-ranked tokens receive more, while neither all-$k^\star$ nor an
 all-min/all-max collapse can satisfy the marginal. The routed
 contribution is scaled by a straight-through envelope
 \[
-  \frac{k_t^{(r)} + \hat{k}_t^{(r)} - \operatorname{sg}[\hat{k}_t^{(r)}]}{\operatorname{sg}[k_t^{(r)}]},
+  \frac{k_t^{(r)} + \Pi_{\mathcal{A}}\!\left(\hat{k}^{(r)}\right)_t
+  - \operatorname{sg}\!\left[\Pi_{\mathcal{A}}\!\left(\hat{k}^{(r)}\right)_t\right]}
+  {\operatorname{sg}[k_t^{(r)}]},
 \]
-identically one in the forward pass, but carrying gradient from the task loss
-into the $k$-router. This is what makes width a \emph{learned} decision rather
-than a scheduled one.
+where $\Pi_{\mathcal{A}}(x)_t =
+\mathbf{1}[t\in\mathcal{A}](x_t-\lvert\mathcal{A}\rvert^{-1}
+\sum_{j\in\mathcal{A}}x_j)$ projects onto the active fixed-budget tangent.
+The envelope is identically one in the forward pass, but task credit can only
+\emph{reallocate} width between tokens; its infeasible common mode cannot ask
+the exact-budget executor to spend more compute. This is what makes width a
+\emph{learned} decision rather than a scheduled one.
 
 \paragraph{Exact depth budget.} At every continuation boundary, the model ranks
 the active tokens by $p_t^{(r)}$. The number that survive is fixed by the
@@ -246,7 +252,16 @@ $d^\star=2$. Thus the router
 learns \emph{which} tokens deserve later passes while the batch budget fixes
 only \emph{how many}. Random-depth and random-$k$ controls use the identical
 marginals with random rankings, so learned-versus-random rows execute exactly
-the same hard compute.
+the same hard compute. Depth uses the same tangent-projected straight-through
+credit. A boundary whose quota is zero or all active tokens carries no task
+gradient, because no allocation decision exists there.
+
+For both exact-budget routers, the policy reads a stop-gradient copy of the
+shared representation. The policy heads and their route-feature projection
+still learn from task and calibration losses, while the backbone learns from
+the hard computation that actually ran rather than from a continuous
+relaxation the executor cannot realize. Model, depth-policy, and width-policy
+gradients are clipped independently at norm one.
 
 \paragraph{Pathway.} The expert router is re-evaluated at every pass from the
 updated state and current route features, so the selected coalition can change
@@ -262,11 +277,14 @@ story in ours. The expert-transition-matrix figure
   \mathcal{L} = \mathcal{L}_{\mathrm{LM}}
   + \lambda_k \big(\bar{\hat{k}} - k^\star\big)^2
   + \lambda_d \big(\bar{\hat{d}} - d^\star\big)^2
+  + \lambda_{k,\mathrm{cal}}\,\mathrm{CE}(q, k)
+  + \lambda_{d,\mathrm{cal}}\,\mathrm{BCE}(p, c)
   + \lambda_z \mathcal{L}_z
   - \lambda_H \mathcal{H}\!\left[p^{(r)}\right],
 \]
 with $k^\star$, $d^\star$ the exact hard marginal means; the quadratic terms
-calibrate the soft surrogates but do not enforce the hard budget. Expert load balancing
+calibrate the soft surrogates but do not enforce the hard budget. Here $k$ is
+the assigned expert count and $c$ the assigned continue/halt target. Expert load balancing
 uses the aux-loss-free selection-bias update \CITE{deepseekv3} rather than a
 balance loss, so the balancing objective is not fighting the width objective for
 control of the same router.
@@ -478,10 +496,14 @@ sees it stated is satisfied; one who suspects it is not.}
 
 \subsection{Scaling}
 
-\TODO{Three sizes $\times$ four archetypes (Dense, MoE, MoRE-Core, MoRE-RM), plus
-Praxis and Logos as points four and five on the same curve. The question is
-whether the MoRE advantage holds, grows, or shrinks with scale. One size is a
-data point; three is a trend; five is a claim.}
+\TODO{Three controlled stored-parameter sizes --- 0.61B, 1.81B, and 5.01B ---
+$\times$ four archetypes (Dense, MoE, MoRE-Core, MoRE-RM), plus Praxis and Logos
+as larger scale demonstrations. Wave 2 trains each added point for 100B tokens;
+at 5.01B this gives the parameter-matched dense control 20 tokens per stored
+parameter rather than the clearly undertrained 10 that a 50B run would provide.
+The controlled ladder is nearly logarithmic and holds the two-layer recurrent
+block shape fixed. The question is whether the MoRE advantage holds, grows, or
+shrinks with scale.}
 
 \subsection{Results}
 
@@ -584,9 +606,10 @@ These were written before the runs, and we report against them either way.
 \label{sec:limitations}
 
 \begin{itemize}
-\item \textbf{Ablation scale.} \TODO{state tokens/parameter per row}. Conclusions
-about relative architecture quality at 1.5B do not automatically transfer to
-frontier scale. The Praxis and Logos points partially address this and do not
+\item \textbf{Ablation scale.} \TODO{state tokens/parameter per row}. The
+controlled ladder now reaches 5.01B stored parameters, but conclusions about
+relative architecture quality still do not automatically transfer to frontier
+scale. The Praxis and Logos demonstrations partially address this and do not
 close it, and anyone claiming otherwise about their own ablations is guessing too.
 \item \textbf{Recursion does not buy knowledge} \CITE{ouro2025}. MoRE targets
 manipulation. Closed-book factual benchmarks are not where this architecture is

@@ -1768,10 +1768,16 @@ def test_schedule_is_identical_across_rows():
 
 
 def test_every_wave_allocation_fits_and_uses_whole_nodes():
-    from metis_ablation.specs import WAVES, WAVE_1_BATCHES
+    from metis_ablation.specs import WAVES, WAVE_1_BATCHES, WAVE_2_BATCHES
 
     for wave, specs in WAVES.items():
-        batches = WAVE_1_BATCHES.values() if wave == "1" else (specs,)
+        batches = (
+            WAVE_1_BATCHES.values()
+            if wave == "1"
+            else WAVE_2_BATCHES.values()
+            if wave == "2"
+            else (specs,)
+        )
         for batch in batches:
             report = validate_allocation(batch)
             assert report["spare_apus"] >= 0, wave
@@ -1796,7 +1802,7 @@ def test_scaling_ladder_is_monotone_in_size():
     from metis_ablation.specs import WAVES, spec_by_name
 
     sizes = []
-    for name in ("more-core-xxs", "more-core-xs", "more-core"):
+    for name in ("more-core-xs", "more-core", "more-core-xl"):
         audit = spec_by_name(name).model_config(
             mhc_backend="torch_reference",
             mamba_backend="torch_reference",
@@ -1804,9 +1810,9 @@ def test_scaling_ladder_is_monotone_in_size():
         ).logical_parameter_audit()
         sizes.append(audit.stored_total)
     assert sizes == sorted(sizes)
-    # Each step should be a real jump, not a rounding difference.
-    assert sizes[1] > 1.5 * sizes[0]
-    assert sizes[2] > 1.5 * sizes[1]
+    ratios = (sizes[1] / sizes[0], sizes[2] / sizes[1])
+    assert all(2.5 < ratio < 3.3 for ratio in ratios), ratios
+    assert max(ratios) / min(ratios) < 1.15, ratios
     assert len(WAVES["2"]) == 8
 
 
@@ -1817,7 +1823,7 @@ def test_scaling_ladder_keeps_the_ngram_table_proportional():
     from metis_ablation.specs import spec_by_name
 
     fractions = []
-    for name in ("more-core-xxs", "more-core-xs", "more-core"):
+    for name in ("more-core-xs", "more-core", "more-core-xl"):
         audit = spec_by_name(name).model_config(
             mhc_backend="torch_reference",
             mamba_backend="torch_reference",
@@ -1828,10 +1834,24 @@ def test_scaling_ladder_keeps_the_ngram_table_proportional():
     assert max(fractions) < 0.30, fractions
 
 
+def test_scaling_ladder_keeps_active_compute_proportional():
+    from metis_ablation.specs import spec_by_name
+
+    fractions = []
+    for name in ("more-core-xs", "more-core", "more-core-xl"):
+        audit = spec_by_name(name).model_config(
+            mhc_backend="torch_reference",
+            mamba_backend="torch_reference",
+            attention_backend="torch_reference",
+        ).logical_parameter_audit()
+        fractions.append(2 * audit.active_per_pass_mean / audit.stored_total)
+    assert max(fractions) - min(fractions) < 0.03, fractions
+
+
 def test_scaling_dense_controls_stay_parameter_matched():
     from metis_ablation.specs import spec_by_name
 
-    for scale in ("-xs", "-xxs"):
+    for scale in ("-xs", "-xl"):
         def stored(name: str) -> int:
             return spec_by_name(name).model_config(
                 mhc_backend="torch_reference",
@@ -1842,6 +1862,71 @@ def test_scaling_dense_controls_stay_parameter_matched():
         dense = stored(f"dense-param-matched{scale}")
         sparse = stored(f"more-core{scale}")
         assert abs(dense - sparse) / sparse < 0.02, (scale, dense, sparse)
+
+
+def test_scaling_ladder_holds_the_recurrent_block_shape_constant():
+    from metis_ablation.specs import spec_by_name
+
+    for name in ("more-core-xs", "more-core", "more-core-xl"):
+        config = spec_by_name(name).model_config(
+            mhc_backend="torch_reference",
+            mamba_backend="torch_reference",
+            attention_backend="torch_reference",
+        )
+        assert config.n_layers == 2
+        assert config.attention_indices == (1,)
+        assert config.latent_dim * 2 == config.d_model
+
+
+def test_wave_2_uses_capacity_safe_xs_and_xl_batches():
+    from metis_ablation.specs import WAVE_2_BATCHES
+
+    assert tuple(WAVE_2_BATCHES) == ("2a", "2b")
+    assert {
+        spec.name for spec in WAVE_2_BATCHES["2a"]
+    } == {
+        "dense-param-matched-xs",
+        "moe-k4-xs",
+        "more-core-xs",
+        "more-rm-xs",
+    }
+    assert {
+        spec.name for spec in WAVE_2_BATCHES["2b"]
+    } == {
+        "dense-param-matched-xl",
+        "moe-k4-xl",
+        "more-core-xl",
+        "more-rm-xl",
+    }
+    assert validate_allocation(WAVE_2_BATCHES["2a"])["allocated_apus"] == 220
+    assert validate_allocation(WAVE_2_BATCHES["2b"])["allocated_apus"] == 400
+
+
+def test_xl_point_is_a_real_five_billion_parameter_model():
+    from metis_ablation.specs import spec_by_name
+
+    sparse = spec_by_name("more-core-xl").model_config(
+        mhc_backend="torch_reference",
+        mamba_backend="torch_reference",
+        attention_backend="torch_reference",
+    ).logical_parameter_audit()
+    dense = spec_by_name("dense-param-matched-xl").model_config(
+        mhc_backend="torch_reference",
+        mamba_backend="torch_reference",
+        attention_backend="torch_reference",
+    ).logical_parameter_audit()
+    assert 4_800_000_000 < sparse.stored_total < 5_200_000_000
+    assert (
+        abs(dense.stored_total - sparse.stored_total) / sparse.stored_total
+        < 0.0002
+    )
+    assert sparse.active_per_pass_mean > 2 * spec_by_name(
+        "more-core"
+    ).model_config(
+        mhc_backend="torch_reference",
+        mamba_backend="torch_reference",
+        attention_backend="torch_reference",
+    ).logical_parameter_audit().active_per_pass_mean
 
 
 def test_seed_wave_mirrors_its_parents_and_changes_only_the_seed(tmp_path: Path):
@@ -1898,13 +1983,49 @@ def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
     assert not (tmp_path / "wave1" / "launch-wave-1d.sh").exists()
     assert "440 APUs" in batch_a
     assert "360 APUs" in batch_b
-    assert 'METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026]' in batch_a
+    assert 'METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026,063]' in batch_a
     assert '"${sbatch_args[@]}"' in batch_a
     assert "10-more-core.sbatch" in batch_a
     assert "10-more-core.sbatch" not in batch_b
     assert "12-random-k.sbatch" in batch_a
     assert "01-dense-flop-matched.sbatch" in batch_a
     assert "05-loop-fixed.sbatch" in batch_b
+
+
+def test_wave_two_emission_replaces_stale_scale_launchers(tmp_path: Path):
+    from metis_ablation.campaign import emit_slurm
+
+    destination = tmp_path / "wave2"
+    destination.mkdir()
+    (destination / "24-dense-param-matched-xxs.sbatch").write_text("stale")
+    (destination / "launch-wave.sh").write_text("stale")
+
+    emit_slurm(
+        tmp_path,
+        wave="2",
+        repo_root="/repo",
+        output_root="/out",
+        release_root="/release",
+    )
+
+    names = {path.name for path in destination.iterdir()}
+    assert "24-dense-param-matched-xxs.sbatch" not in names
+    assert "launch-wave.sh" not in names
+    assert {
+        "20-dense-param-matched-xs.sbatch",
+        "21-moe-k4-xs.sbatch",
+        "22-more-core-xs.sbatch",
+        "23-more-rm-xs.sbatch",
+        "24-dense-param-matched-xl.sbatch",
+        "25-moe-k4-xl.sbatch",
+        "26-more-core-xl.sbatch",
+        "27-more-rm-xl.sbatch",
+        "launch-wave-2a.sh",
+        "launch-wave-2b.sh",
+    } == names
+    assert "--budget-tokens 100000000000" in (
+        destination / "26-more-core-xl.sbatch"
+    ).read_text()
 
 
 def test_every_task_in_a_launcher_gets_its_own_rank_and_apu(tmp_path: Path):
@@ -2101,6 +2222,14 @@ def test_campaign_plan_runs_for_every_wave():
         payload = plan(wave=wave)
         assert payload["rows"], wave
         assert payload["campaign_exaflops"] > 0, wave
+
+
+def test_wave_two_defaults_to_a_hundred_billion_tokens():
+    from metis_ablation.campaign import plan
+
+    payload = plan(wave="2")
+    assert payload["budget_tokens"] == 100_000_000_000
+    assert payload["optimizer_steps"] == 50_862
 
 
 def test_wave_one_plan_uses_the_measured_two_batch_schedule():

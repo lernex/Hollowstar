@@ -60,7 +60,7 @@ exec python -m metis_ablation.train \
   --row '"'"'dense-param-matched-xs'"'"' \
   --output "$METIS_ABLATION_OUTPUT" \
   --release-root "$METIS_ABLATION_RELEASE" \
-  --budget-tokens 50000000000 \
+  --budget-tokens 100000000000 \
   --seed 16062026 \
   --learning-rate "${METIS_ABLATION_LR_DENSE_PARAM_MATCHED:?run the sweep and set METIS_ABLATION_LR_DENSE_PARAM_MATCHED, or regenerate with --learning-rates}" \
   --checkpoint-every 5000 \

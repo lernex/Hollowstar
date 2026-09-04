@@ -63,6 +63,7 @@ exec python -m metis_ablation.train \
   --budget-tokens 1000000000 \
   --seed 16062026 \
   --learning-rate 0.00012 \
+  --schedule-total-steps 25431 \
   --checkpoint-every 0 \
   --analysis-every 0 \
   --telemetry-every 10 \
