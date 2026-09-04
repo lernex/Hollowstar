@@ -41,9 +41,8 @@ GLOBAL_BATCH_SEQUENCES = 480
 SEQUENCE_LENGTH = 4_096
 GLOBAL_BATCH_TOKENS = GLOBAL_BATCH_SEQUENCES * SEQUENCE_LENGTH
 
-# Portage has 512 APUs. The executable batches remain below that ceiling and
-# tolerate several unavailable nodes rather than waiting for the full machine.
-CAMPAIGN_APUS = 512
+# Portage has 512 APUs, but the campaign reserves 128 for Praxis/Logos.
+CAMPAIGN_APUS = 384
 CAMPAIGN_SPARE_APUS = 0
 
 
@@ -593,7 +592,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         dense_ffn_intermediate_dim=_DENSE_FLOP_MATCHED_INTERMEDIATE,
         continuation_mode="depth_one",
         dense_ffn_bf16=True,
-        measured_tokens_per_second=2_234_916,
+        measured_tokens_per_second=2_230_895,
         config_overrides={"activation_recompute_policy": "none"},
         notes=(
             "No recursion, no experts. The frontier point a reviewer expects. "
@@ -611,7 +610,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="depth_one",
         dense_ffn_bf16=True,
         iso_flop=False,
-        measured_tokens_per_second=664_770,
+        measured_tokens_per_second=1_653_501,
         config_overrides={"activation_recompute_policy": "none"},
         notes="Deliberately expensive per token; report against FLOPs, not steps.",
     ),
@@ -625,7 +624,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         routed_k_mode="fixed", fixed_routed_k=4,
         depth_memory=False,
         iso_flop=False,
-        measured_tokens_per_second=574_808,
+        measured_tokens_per_second=816_324,
         config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
@@ -638,7 +637,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         routed_k_mode="fixed", fixed_routed_k=8,
         depth_memory=False,
         iso_flop=False,
-        measured_tokens_per_second=635_051,
+        measured_tokens_per_second=777_328,
         config_overrides={"activation_recompute_policy": "none"},
         notes=(
             "Not a compute match: k=4->8 adds 0.29 GFLOP/token while a second "
@@ -654,7 +653,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="fixed_max", curriculum_max_passes=2,
         routed_k_mode="fixed", fixed_routed_k=4,
         depth_memory=False,
-        measured_tokens_per_second=680_845,
+        measured_tokens_per_second=677_395,
         config_overrides={"activation_recompute_policy": "layer"},
         notes="Reimplements the published fixed-loop MoE design point in our backbone.",
     ),
@@ -668,7 +667,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         routed_k_mode="fixed", fixed_routed_k=4,
         pathway_mode="frozen",
         depth_memory=False,
-        measured_tokens_per_second=569_067,
+        measured_tokens_per_second=569_329,
         config_overrides={"activation_recompute_policy": "layer"},
         notes="Exactly iso-FLOP with row 5. The only evidence for axis three.",
     ),
@@ -682,7 +681,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         dense_ffn_intermediate_dim=_DENSE_RECURSIVE_INTERMEDIATE,
         continuation_mode="budgeted",
         depth_memory=False,
-        measured_tokens_per_second=651_111,
+        measured_tokens_per_second=628_115,
         config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
@@ -694,7 +693,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="budgeted",
         routed_k_mode="fixed", fixed_routed_k=4,
         depth_memory=False,
-        measured_tokens_per_second=693_859,
+        measured_tokens_per_second=567_219,
         config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
@@ -706,7 +705,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="fixed_max", curriculum_max_passes=2,
         routed_k_mode="budgeted",
         depth_memory=False,
-        measured_tokens_per_second=567_609,
+        measured_tokens_per_second=569_363,
         config_overrides={"activation_recompute_policy": "layer"},
     ),
     AblationSpec(
@@ -718,7 +717,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="budgeted",
         routed_k_mode="budgeted",
         depth_memory=False,
-        measured_tokens_per_second=568_594,
+        measured_tokens_per_second=572_970,
         config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
@@ -730,7 +729,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="budgeted",
         routed_k_mode="budgeted",
         depth_memory=True,
-        measured_tokens_per_second=568_374,
+        measured_tokens_per_second=567_870,
         config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
@@ -742,7 +741,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="budgeted",
         routed_k_mode="random",
         depth_memory=False,
-        measured_tokens_per_second=686_428,
+        measured_tokens_per_second=567_954,
         config_overrides={"activation_recompute_policy": "none"},
         notes="Maximum-entropy width distribution at the same mean budget.",
     ),
@@ -755,7 +754,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="random",
         routed_k_mode="budgeted",
         depth_memory=False,
-        measured_tokens_per_second=705_660,
+        measured_tokens_per_second=567_243,
         config_overrides={"activation_recompute_policy": "none"},
         notes="Memoryless halt tuned to the same mean depth.",
     ),

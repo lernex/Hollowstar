@@ -180,7 +180,7 @@ def plan(
     specs = _wave_specs(wave, scale)
     execution_groups = _execution_groups(wave, specs)
     group_reports = {
-        name: validate_allocation(candidate)
+        name: validate_allocation(candidate, total_apus=total_apus)
         for name, candidate in execution_groups
     }
     max_allocated = max(
@@ -190,7 +190,7 @@ def plan(
         "rows": len(specs),
         "allocated_apus": max_allocated,
         "lane_apus": sum(spec.apus for spec in specs),
-        "spare_apus": CAMPAIGN_APUS - max_allocated,
+        "spare_apus": total_apus - max_allocated,
         "global_batch_sequences": GLOBAL_BATCH_TOKENS // 4_096,
         "global_batch_tokens": GLOBAL_BATCH_TOKENS,
         "execution_batches": {

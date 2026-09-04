@@ -77,16 +77,15 @@ implementation choice cannot silently redefine the comparison.
 
 **Recommendation: 50B, and it is not a close call.**
 
-| Budget | Campaign executed FLOPs (13 rows) | Two-batch wall @5% | @10% | @15% |
+| Budget | Campaign executed FLOPs (13 rows) | Four-batch wall @5% | @10% | @15% |
 |---|---:|---:|---:|---:|
-| 10B | 1,033 EFLOP | 15.7 h | 7.8 h | 5.2 h |
-| **50B** | **5,166 EFLOP** | **78.5 h** | **39.2 h** | **26.2 h** |
-| 100B | 10,331 EFLOP | 156.9 h | 78.5 h | 52.3 h |
+| 10B | 1,033 EFLOP | 18.7 h | 9.4 h | 6.2 h |
+| **50B** | **5,166 EFLOP** | **93.7 h** | **46.9 h** | **31.2 h** |
+| 100B | 10,331 EFLOP | 187.4 h | 93.7 h | 62.5 h |
 
-Wall clock is the sum of the longest row in each of the two executable Wave-1
-batches. The corrected dense FLOP-matched control is wider than its historical
-canary, so the measured two-batch wall clock remains pending until that row is
-re-benchmarked.
+Wall clock is the sum of the longest row in each of the four executable Wave-1
+batches. The 50-step real-data lanes predict **91.3 hours** before queue and
+restart overhead.
 
 Three reasons 10B is the wrong choice:
 
@@ -128,21 +127,21 @@ depth, width, and pathway isolations.
 | # | Model | Batch | Stored / active per pass | Model / executed GFLOP/tok | APUs | Nodes | Measured hours |
 |---:|---|:---:|---|---:|---:|---:|---:|
 | 1 | Dense, FLOP-matched | 1c | 1.44B / 0.87B | 7.09 / 7.62 | 80 | 20 | 6.2 |
-| 2 | Dense, parameter-matched | 1d | 1.81B / 1.24B | 9.31 / 9.85 | 80 | 20 | 20.9 |
-| 3 | MoE k=4 | 1c | 1.81B / 0.279B | 3.54 / 4.08 | 20 | 5 | 24.2 |
-| 4 | MoE k=8 | 1c | 1.81B / 0.336B | 3.88 / 4.42 | 20 | 5 | 21.9 |
-| 5 | Fixed LoopMoE | 1d | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 20.4 |
+| 2 | Dense, parameter-matched | 1d | 1.81B / 1.24B | 9.31 / 9.85 | 80 | 20 | 8.4 |
+| 3 | MoE k=4 | 1c | 1.81B / 0.279B | 3.54 / 4.08 | 20 | 5 | 17.0 |
+| 4 | MoE k=8 | 1c | 1.81B / 0.336B | 3.88 / 4.42 | 20 | 5 | 17.9 |
+| 5 | Fixed LoopMoE | 1d | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 20.5 |
 | 6 | Loop, pathway frozen | 1d | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 24.4 |
-| 7 | MoR + dense FFN | 1d | 0.85B / 0.278B | 7.08 / 8.15 | 80 | 20 | 21.3 |
-| 8 | MoR + fixed-k MoE | 1d | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 20.0 |
-| 9 | Fixed depth, adaptive k | 1d | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 24.5 |
-| 10 | MoRE-Core | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.4 |
-| 11 | MoRE-RM | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.4 |
-| 12 | Random-k control | 1b | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 20.2 |
-| 13 | Random-depth control | 1b | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 19.7 |
+| 7 | MoR + dense FFN | 1d | 0.85B / 0.278B | 7.08 / 8.15 | 80 | 20 | 22.1 |
+| 8 | MoR + fixed-k MoE | 1d | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.5 |
+| 9 | Fixed depth, adaptive k | 1d | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 24.4 |
+| 10 | MoRE-Core | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.2 |
+| 11 | MoRE-RM | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.5 |
+| 12 | Random-k control | 1b | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.5 |
+| 13 | Random-depth control | 1b | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.5 |
 | | **Batch 1a total** | | | | **160** | **40** | **24.4** |
-| | **Batch 1b total** | | | | **160** | **40** | **20.2** |
-| | **Batch 1c total** | | | | **120** | **30** | **24.2** |
+| | **Batch 1b total** | | | | **160** | **40** | **24.5** |
+| | **Batch 1c total** | | | | **120** | **30** | **17.9** |
 | | **Batch 1d total** | | | | **360** | **90** | **24.5** |
 
 Regenerate this table with `python -m metis_ablation.campaign plan`; it is
@@ -156,8 +155,7 @@ it: rows 1 and 7 are dense, so stored equals active and a dense-FFN recursive
 model simply cannot hold 1.8B stored at 0.279B active. Report both numbers; the
 asymmetry is what the sparse axis buys.
 
-**Two execution batches. Final measured wall time is pending the corrected
-dense-control canary.**
+**Four execution batches, 91.3 measured hours before queue/restart overhead.**
 
 ### Wave 2 — scaling ladder
 
@@ -211,12 +209,12 @@ nothing else moved.
 
 | Wave | Rows | Executed FLOPs | Wall clock @10% MFU |
 |---|---:|---:|---:|
-| 1 — the ladder, batches 1a + 1b + 1c + 1d | 13 | 5,166 EFLOP | 39.2 h at 10% MFU / ~93 h from measured lanes |
+| 1 — the ladder, batches 1a + 1b + 1c + 1d | 13 | 5,166 EFLOP | 46.9 h at 10% MFU / **91.3 h measured** |
 | 2 — scaling | 8 | 926 EFLOP | 5.6 h |
 | 3 — seeds | 5 | 2,254 EFLOP | 16.7 h |
-| **Total** | **26** | **8,346 EFLOP** | **~61.6 h at 10% MFU; Wave 1 measured correction pending** |
+| **Total** | **26** | **8,346 EFLOP** | **~69.2 h at 10% MFU; ~113.6 h with measured Wave 1** |
 
-Waves run one after another, so the 512-APU machine constraint applies per
+Waves run one after another, so the 384-APU campaign allocation applies per
 batch, not to the sum. Add the archetype learning-rate sweep (12 short runs at 1B tokens,
 about an hour) ahead of wave 1.
 
@@ -349,37 +347,39 @@ retained row.
 
 | Row | APUs | Micro × accum | Recompute | Precision exception | Median tok/s |
 |---|---:|---:|---|---|---:|
-| dense-flop-matched | 80 | 6 × 1 | none | dense FFN BF16 | **2,234,916 (50 steps)** |
-| dense-param-matched | 80 | 6 × 1 | none | dense gate/up BF16 | 664,770 |
-| moe-k4 | 20 | 12 × 2 | none | — | 574,808 |
-| moe-k8 | 20 | 12 × 2 | none | — | 635,051 |
-| loop-fixed | 40 | 12 × 1 | layer | — | 680,845 |
-| loop-pathway-frozen | 40 | 12 × 1 | layer | — | 569,067 |
-| mor-dense-ffn | 80 | 6 × 1 | none | — | 651,111 |
-| mor-fixed-k | 80 | 6 × 1 | none | — | 693,859 |
-| fixed-depth-adaptive-k | 40 | 12 × 1 | layer | — | 567,609 |
-| more-core | 80 | 6 × 1 | none | — | **568,594 (50 steps)** |
-| more-rm | 80 | 6 × 1 | none | — | **568,374 (50 steps)** |
-| random-k | 80 | 6 × 1 | none | — | 686,428 |
-| random-depth | 80 | 6 × 1 | none | — | 705,660 |
+| dense-flop-matched | 80 | 6 × 1 | none | dense FFN BF16 | **2,230,895** |
+| dense-param-matched | 80 | 6 × 1 | none | dense FFN BF16 | **1,653,501** |
+| moe-k4 | 20 | 12 × 2 | none | — | **816,324** |
+| moe-k8 | 20 | 12 × 2 | none | — | **777,328** |
+| loop-fixed | 40 | 12 × 1 | layer | — | **677,395** |
+| loop-pathway-frozen | 40 | 12 × 1 | layer | — | **569,329** |
+| mor-dense-ffn | 80 | 6 × 1 | none | — | **628,115** |
+| mor-fixed-k | 80 | 6 × 1 | none | — | **567,219** |
+| fixed-depth-adaptive-k | 40 | 12 × 1 | layer | — | **569,363** |
+| more-core | 80 | 6 × 1 | none | — | **572,970** |
+| more-rm | 80 | 6 × 1 | none | — | **567,870** |
+| random-k | 80 | 6 × 1 | none | — | **567,954** |
+| random-depth | 80 | 6 × 1 | none | — | **567,243** |
 
-On matched warm-node 50-step runs, Core and RM differ by 0.04% in throughput.
+On the final paired 50-step batch, Core and RM differ by 0.9% in throughput.
 The earlier 512k-versus-695k comparison mixed Core's long window with RM's
 first nine warmed steps. RM does not have a magically faster kernel: Core keeps
 the recurrent-memory module parameter/compute matched and gates its retrieved
 summary to zero, while RM lets that same path affect representation and routing.
 Both kept exact realized depth 2/k 4 with no dropped assignments; RM's
-`depth_memory_last_norm` grew from 3.47 to 13.53, confirming that the memory
-path is active rather than decorative.
+`depth_memory_last_norm` remained nonzero and reached 11.21, confirming that
+the memory path is active rather than decorative.
 
-Held-out routing captures at step five show that the exact means are not hiding
-constant decisions. Both learned rows populated depths 1/2/3 in exact thirds
-and routed tokens across the complete k=1..8 support. Depth and width remained
-distinct axes (Pearson r = -0.022 for Core and 0.004 for RM), while expert
-coalitions changed substantially between recurrent stages: Core's off-diagonal
-transition mass was 0.791 from pass 1→2 and 0.422 from pass 2→3; RM measured
-0.689 and 0.578. Thus the policy is neither all-depth-2 nor fixed-k-4, and later
-passes are not merely replaying the same expert coalition.
+Rank-zero training-batch routing captures at step five show that the exact
+means are not hiding constant decisions. Both learned rows populated depths
+1/2/3 in exact thirds and populated the complete k=1..8 support. Depth and
+width remained distinct axes (Pearson r = 0.003 for Core and -0.018 for RM).
+The top-1 expert winner changed between recurrent stages: Core's off-diagonal
+winner-transition mass was 0.805 from pass 1→2 and 0.485 from pass 2→3; RM
+measured 0.676 and 0.549. This proves the winner is not frozen, but it does not
+by itself measure full top-k coalition overlap. Active-token ratios were
+exactly 1, 2/3, and 1/3 across the three trained passes. Thus the policies are
+neither all-depth-2 nor fixed-k-4.
 
 The rates are individual lane measurements. A 440-APU combined canary reduced
 the adaptive rows to 474-486k through cross-job collective contention, which is
