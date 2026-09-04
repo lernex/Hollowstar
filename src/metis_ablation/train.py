@@ -76,6 +76,7 @@ from .specs import (
 
 
 DEFAULT_BUDGET_TOKENS = 50_000_000_000
+BUDGET_GRADIENT_GROUP_MAX_NORM = 1.0
 
 
 # --------------------------------------------------------------------------
@@ -461,6 +462,82 @@ def _freeze_inactive_policy_parameters(
                 parameter.requires_grad_(False)
                 frozen.append(name)
     return tuple(sorted(frozen))
+
+
+def _clip_exact_budget_gradient_groups(
+    model: Metis16ForCausalLM,
+    curriculum: Any,
+    *,
+    max_norm: float = BUDGET_GRADIENT_GROUP_MAX_NORM,
+) -> dict[str, float]:
+    """Clip the model and exact-budget policy heads independently."""
+
+    if not math.isfinite(max_norm) or max_norm <= 0.0:
+        raise ValueError("max_norm must be finite and positive")
+    groups: dict[str, list[torch.nn.Parameter]] = {
+        "model": [],
+        "depth_policy": [],
+        "width_policy": [],
+    }
+    for name, parameter in model.named_parameters():
+        if parameter.grad is None:
+            continue
+        if (
+            curriculum.routed_k_mode == "budgeted"
+            and ".k_router." in name
+        ):
+            group = "width_policy"
+        elif (
+            curriculum.continuation_mode == "budgeted"
+            and (
+                name.startswith("continuation.")
+                or name.startswith("depth_memory.route_projection.")
+            )
+        ):
+            group = "depth_policy"
+        else:
+            group = "model"
+        groups[group].append(parameter)
+
+    raw_norms: dict[str, float] = {}
+    for name, parameters in groups.items():
+        contributions = []
+        for parameter in parameters:
+            gradient = (
+                parameter.grad.coalesce().values()
+                if parameter.grad.is_sparse
+                else parameter.grad
+            )
+            contributions.append(
+                torch.linalg.vector_norm(
+                    gradient,
+                    ord=2,
+                    dtype=torch.float32,
+                )
+            )
+        if not contributions:
+            raw_norms[name] = 0.0
+            continue
+        norm = torch.linalg.vector_norm(
+            torch.stack(contributions),
+            ord=2,
+            dtype=torch.float32,
+        )
+        raw_norm = float(norm.detach().item())
+        if not math.isfinite(raw_norm):
+            raise FloatingPointError(
+                f"Non-finite {name} gradient norm: {raw_norm}"
+            )
+        raw_norms[name] = raw_norm
+        coefficient = max_norm / (raw_norm + 1.0e-6)
+        if coefficient >= 1.0:
+            continue
+        for parameter in parameters:
+            if parameter.grad.is_sparse:
+                parameter.grad._values().mul_(coefficient)
+            else:
+                parameter.grad.mul_(coefficient)
+    return raw_norms
 
 
 def _assert_storage_policy(model: Any) -> None:
@@ -885,6 +962,19 @@ def _train_row_inner(
     optimizer_manifest["frozen_policy_parameters"] = list(
         frozen_policy_parameters
     )
+    exact_budget_groups = {
+        "depth_policy": curriculum.continuation_mode == "budgeted",
+        "width_policy": curriculum.routed_k_mode == "budgeted",
+    }
+    optimizer_manifest["gradient_clipping"] = (
+        {
+            "mode": "independent_exact_budget_groups",
+            "max_norm": BUDGET_GRADIENT_GROUP_MAX_NORM,
+            "groups": exact_budget_groups,
+        }
+        if any(exact_budget_groups.values())
+        else {"mode": "global", "max_norm": 1.0}
+    )
     if spec.optimizer_sharding == "world":
         if not runtime.distributed or topology.expert_parallel_size != 1:
             raise RuntimeError(
@@ -1291,9 +1381,25 @@ def _train_row_inner(
             normalize_summed_gradients(
                 model, topology, global_supervised_tokens=global_supervised
             )
-            grad_norm = float(
-                clip_grad_norm_(model, 1.0, topology=topology).detach().item()
-            )
+            if (
+                curriculum.continuation_mode == "budgeted"
+                or curriculum.routed_k_mode == "budgeted"
+            ):
+                gradient_group_norms = _clip_exact_budget_gradient_groups(
+                    model,
+                    curriculum,
+                )
+                grad_norm = gradient_group_norms["model"]
+                step_telemetry.update(
+                    {
+                        f"{name}_grad_norm": value
+                        for name, value in gradient_group_norms.items()
+                    }
+                )
+            else:
+                grad_norm = float(
+                    clip_grad_norm_(model, 1.0, topology=topology).detach().item()
+                )
             step_loss = global_loss_numerator / global_supervised
 
             # Freshly initialized models spike the pre-clip gradient norm for

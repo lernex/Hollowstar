@@ -725,6 +725,48 @@ def test_exact_depth_policy_trains_heads_without_backpropagating_into_backbone()
     )
 
 
+def test_exact_budget_gradient_groups_clip_without_starving_the_model():
+    from metis_ablation.train import _clip_exact_budget_gradient_groups
+
+    model = Metis16ForCausalLM(_tiny())
+    for parameter in model.parameters():
+        parameter.grad = None
+
+    model_parameter = model.embedding.weight
+    model_parameter.grad = torch.zeros_like(model_parameter)
+    model_parameter.grad.view(-1)[0] = 0.5
+
+    depth_parameter = next(model.continuation.parameters())
+    depth_parameter.grad = torch.zeros_like(depth_parameter)
+    depth_parameter.grad.view(-1)[0] = 30.0
+
+    route_projection_parameter = model.depth_memory.route_projection.weight
+    route_projection_parameter.grad = torch.zeros_like(route_projection_parameter)
+    route_projection_parameter.grad.view(-1)[0] = 40.0
+
+    width_parameter = next(model.layers[0].moe.k_router.parameters())
+    width_parameter.grad = torch.zeros_like(width_parameter)
+    width_parameter.grad.view(-1)[0] = 80.0
+
+    norms = _clip_exact_budget_gradient_groups(
+        model,
+        _curriculum(
+            continuation_mode="budgeted",
+            routed_k_mode="budgeted",
+        ),
+    )
+
+    assert norms == {
+        "model": pytest.approx(0.5),
+        "depth_policy": pytest.approx(50.0),
+        "width_policy": pytest.approx(80.0),
+    }
+    assert model_parameter.grad.view(-1)[0] == pytest.approx(0.5)
+    assert depth_parameter.grad.view(-1)[0] == pytest.approx(0.6)
+    assert route_projection_parameter.grad.view(-1)[0] == pytest.approx(0.8)
+    assert width_parameter.grad.view(-1)[0] == pytest.approx(1.0)
+
+
 def test_exact_budget_tangent_removes_infeasible_common_mode():
     soft = torch.tensor(
         [[0.1, 0.4, 0.8, 0.9]],
