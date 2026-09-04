@@ -204,7 +204,7 @@ def proxy_config(
         "final_context_length": SEQUENCE_LENGTH,
         "context_extension_train_length": SEQUENCE_LENGTH,
         # A shallow physical block is the architecture the experiment repeats.
-        # At identical stored parameters and executed FLOPs, two wide layers
+        # At identical stored parameters and model FLOPs, two wide layers
         # turn launch-bound micro-GEMMs into MI300A-sized contractions while
         # retaining one Mamba and one attention layer per recurrent pass.
         "d_model": 4_096,
@@ -593,6 +593,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         ffn_mode="dense",
         dense_ffn_intermediate_dim=_DENSE_FLOP_MATCHED_INTERMEDIATE,
         continuation_mode="depth_one",
+        depth_memory=False,
         dense_ffn_bf16=True,
         measured_tokens_per_second=2_227_718,
         config_overrides={"activation_recompute_policy": "none"},
@@ -610,6 +611,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         ffn_mode="dense",
         dense_ffn_intermediate_dim=_DENSE_PARAM_MATCHED_INTERMEDIATE,
         continuation_mode="depth_one",
+        depth_memory=False,
         dense_ffn_bf16=True,
         iso_flop=False,
         measured_tokens_per_second=1_654_017,

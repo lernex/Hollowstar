@@ -634,6 +634,7 @@ class Metis16CausalLMOutput:
     telemetry: dict[str, Tensor]
     chosen_depths: Tensor
     active_masks: Tensor
+    continuation_probabilities: Tensor
     final_hidden_state: Tensor
 
 
@@ -6015,6 +6016,7 @@ class Metis16ForCausalLM(nn.Module):
         bank = RecurrentMemoryBank()
         active_mask = attention_mask.clone()
         active_masks: list[Tensor] = []
+        continuation_probabilities: list[Tensor] = []
         chosen_depths = torch.zeros_like(input_ids, dtype=torch.long)
         initial_state = streams.mean(dim=-2)
         previous_pass_state = initial_state
@@ -6572,6 +6574,7 @@ class Metis16ForCausalLM(nn.Module):
                 if bank.slot_count != before_slots + 1:
                     raise RuntimeError("Continuation memory write lost its slot.")
             if pass_index + 1 < effective_passes:
+                continuation_probabilities.append(continuation_probability)
                 next_active = self._continuation_decision(
                     continuation_probability,
                     active_mask=active_mask,
@@ -6749,6 +6752,14 @@ class Metis16ForCausalLM(nn.Module):
         else:
             halt_collapse_fraction = final_hidden.new_zeros((), dtype=torch.float32)
         stacked_active = torch.stack(active_masks, dim=0)
+        stacked_continuation = (
+            torch.stack(continuation_probabilities, dim=0)
+            if continuation_probabilities
+            else embeddings.new_empty(
+                (0, *input_ids.shape),
+                dtype=torch.float32,
+            )
+        )
         valid_tokens = attention_mask.sum().clamp_min(1)
         active_ratios = stacked_active.sum(dim=(1, 2)).float() / valid_tokens.float()
         stream_centered = streams.float() - streams.float().mean(dim=-2, keepdim=True)
@@ -6817,6 +6828,7 @@ class Metis16ForCausalLM(nn.Module):
             telemetry=telemetry,
             chosen_depths=chosen_depths,
             active_masks=stacked_active,
+            continuation_probabilities=stacked_continuation,
             final_hidden_state=final_hidden,
         )
 

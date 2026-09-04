@@ -1368,6 +1368,7 @@ def test_routing_analyzer_collects_transitions_and_correlation(tmp_path: Path):
     assert report["observations"] == 1
     assert len(report["depth_distribution"]) == config.max_passes + 1
     assert len(report["transition_off_diagonal_mass"]) == config.max_passes - 1
+    assert report["halt_calibration"]
     path = analyzer.flush(tmp_path / "routing.json", step=3)
     payload = json.loads(path.read_text())
     assert payload["step"] == 3
@@ -1457,6 +1458,25 @@ def test_fixed_controls_do_not_train_hidden_depth_or_width_policies():
         gradient is None or not bool(torch.count_nonzero(gradient))
         for gradient in hidden_policy_gradients
     )
+
+
+def test_trainer_freezes_policies_that_do_not_control_execution():
+    from metis_ablation.train import _freeze_inactive_policy_parameters
+
+    model = Metis16ForCausalLM(_tiny())
+    frozen = _freeze_inactive_policy_parameters(
+        model,
+        _curriculum(
+            continuation_mode="fixed_max",
+            max_passes=2,
+            routed_k_mode="fixed",
+            fixed_routed_k=2,
+        ),
+    )
+    assert any(name.startswith("continuation.") for name in frozen)
+    assert any(".k_router." in name for name in frozen)
+    parameters = dict(model.named_parameters())
+    assert all(not parameters[name].requires_grad for name in frozen)
 
 
 # --------------------------------------------------------------------------
@@ -2224,12 +2244,21 @@ def test_resume_refuses_a_changed_schedule(tiny_proxy, tmp_path: Path):
 
     spec = _smoke_spec("more-core")
     _train(spec, tmp_path, checkpoint_every=2, max_steps=4)
-    with pytest.raises(RuntimeError, match="Refusing to resume"):
+    with pytest.raises(RuntimeError, match="identity changed"):
         _train(spec, tmp_path, checkpoint_every=2, max_steps=3)
     with pytest.raises(RuntimeError, match="Refusing to resume"):
         _train(spec, tmp_path, checkpoint_every=2, max_steps=4, learning_rate=9.0e-4)
-    with pytest.raises(RuntimeError, match="run identity changed"):
+    with pytest.raises(RuntimeError, match="identity changed"):
         _train(spec, tmp_path, checkpoint_every=2, max_steps=4, seed=2)
+
+
+def test_campaign_identity_rejects_cross_row_environment_drift(
+    tiny_proxy,
+    tmp_path: Path,
+):
+    _train(_smoke_spec("more-core"), tmp_path, max_steps=1, seed=1)
+    with pytest.raises(RuntimeError, match="Campaign identity changed"):
+        _train(_smoke_spec("more-rm"), tmp_path, max_steps=1, seed=2)
 
 
 def test_current_scaling_restore_discards_only_delayed_fp8_metadata(
@@ -2474,6 +2503,7 @@ def test_run_manifest_records_everything_needed_to_reproduce(tiny_proxy, tmp_pat
         "spec", "model", "optimizer", "parameters", "schedule", "curriculum",
         "global_batch_tokens", "total_steps", "world_size", "precision_profile",
         "sampler", "run_identity", "run_identity_sha256",
+        "campaign_identity_sha256",
     ):
         assert key in manifest, key
     assert manifest["global_batch_tokens"] == GLOBAL_BATCH_TOKENS

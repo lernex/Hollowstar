@@ -162,6 +162,15 @@ class RoutingAnalyzer:
                 float(active[pass_index].sum().item()) / total_valid
             )
         self.active_ratio_count += 1
+        continuation = output.continuation_probabilities.detach().to("cpu")
+        for pass_index in range(
+            min(continuation.shape[0], max(active.shape[0] - 1, 0))
+        ):
+            self.observe_calibration(
+                predicted=continuation[pass_index],
+                continued=active[pass_index + 1],
+                valid=active[pass_index],
+            )
 
         widths = self.config.max_routed_k - self.config.min_routed_k + 1
         by_pass: dict[int, list[_PassRecord]] = {}
@@ -178,18 +187,44 @@ class RoutingAnalyzer:
                 shifted, minlength=widths
             ).double()
 
-        # Depth against the token's own mean width: the correlation that decides
-        # whether depth and width are genuinely distinct axes.
-        first_pass = by_pass.get(0)
-        if first_pass and valid.numel():
-            per_token_width = torch.stack(
-                [record.chosen_k.reshape(-1).double() for record in first_pass]
-            ).mean(dim=0)
+        token_total = int(mask.numel())
+        absolute_index = {
+            pass_index: active[pass_index].reshape(-1).nonzero(
+                as_tuple=False
+            ).flatten()
+            for pass_index in range(min(active.shape[0], self.max_passes))
+        }
+
+        # Depth against the token's mean width across every layer and executed
+        # pass. Pass-zero alone would ignore the adaptive decisions made after
+        # the representation has evolved.
+        if by_pass and valid.numel():
+            width_sum = torch.zeros(token_total, dtype=torch.float64)
+            width_count = torch.zeros(token_total, dtype=torch.float64)
+            for pass_index, records in by_pass.items():
+                index = absolute_index.get(pass_index)
+                if index is None:
+                    continue
+                for record in records:
+                    values = record.chosen_k.reshape(-1).double()
+                    if values.numel() == token_total:
+                        selected_values = values.index_select(0, index)
+                    elif values.numel() == index.numel():
+                        selected_values = values
+                    else:
+                        continue
+                    width_sum.index_add_(0, index, selected_values)
+                    width_count.index_add_(
+                        0,
+                        index,
+                        torch.ones_like(selected_values),
+                    )
             flat_depth = depths.reshape(-1).double()
             flat_mask = mask.reshape(-1)
-            if per_token_width.numel() == flat_depth.numel():
-                d = flat_depth.masked_select(flat_mask)
-                w = per_token_width.masked_select(flat_mask)
+            observed = flat_mask & (width_count > 0)
+            if bool(observed.any()):
+                d = flat_depth.masked_select(observed)
+                w = (width_sum / width_count.clamp_min(1.0)).masked_select(observed)
                 self._sum_depth += float(d.sum())
                 self._sum_width += float(w.sum())
                 self._sum_depth_sq += float((d * d).sum())
@@ -219,12 +254,6 @@ class RoutingAnalyzer:
         # in ascending flat-token order, so scattering each record back through
         # its own mask is an exact inverse.
         experts = max(self.config.n_routed_experts, 1)
-        token_total = int(mask.numel())
-        absolute_index: dict[int, Tensor] = {}
-        for pass_index in range(min(active.shape[0], self.max_passes)):
-            absolute_index[pass_index] = (
-                active[pass_index].reshape(-1).nonzero(as_tuple=False).flatten()
-            )
 
         def unpack(record: _PassRecord) -> Tensor | None:
             """Place a packed per-token record into the absolute token layout."""

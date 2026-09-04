@@ -66,7 +66,13 @@ from metis_training.schedule import set_optimizer_learning_rate
 
 from .analysis import RoutingAnalyzer
 from .sampler import AblationSampleStream, build_sample_stream
-from .specs import ABLATION_LADDER, AblationSpec, GLOBAL_BATCH_TOKENS, spec_by_name
+from .specs import (
+    ABLATION_LADDER,
+    AblationSpec,
+    GLOBAL_BATCH_TOKENS,
+    spec_by_name,
+    wave_for_row,
+)
 
 
 DEFAULT_BUDGET_TOKENS = 50_000_000_000
@@ -228,6 +234,68 @@ def _run_identity(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return payload, hashlib.sha256(encoded).hexdigest()
 
 
+def _validate_campaign_identity(
+    output_root: Path,
+    payload: dict[str, Any],
+    runtime: Runtime,
+) -> str:
+    _, identity_sha256 = _run_identity(payload)
+    error = None
+    if runtime.rank == 0:
+        try:
+            output_root.mkdir(parents=True, exist_ok=True)
+            wave = str(payload["wave"])
+            path = output_root / f"CAMPAIGN_IDENTITY-wave{wave}.json"
+            document = {
+                "schema": "more.ablation-campaign-identity/v1",
+                "identity": payload,
+                "identity_sha256": identity_sha256,
+            }
+            encoded = (
+                json.dumps(document, indent=2, sort_keys=True, default=str)
+                + "\n"
+            ).encode("utf-8")
+            try:
+                descriptor = os.open(
+                    path,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o644,
+                )
+            except FileExistsError:
+                existing = None
+                for _ in range(50):
+                    try:
+                        existing = json.loads(path.read_text(encoding="utf-8"))
+                        break
+                    except (FileNotFoundError, json.JSONDecodeError):
+                        time.sleep(0.1)
+                if existing is None:
+                    raise RuntimeError(
+                        f"Campaign identity is incomplete: {path}"
+                    )
+                if (
+                    existing.get("identity_sha256") != identity_sha256
+                    or existing.get("identity") != payload
+                ):
+                    raise RuntimeError(
+                        f"Campaign identity changed across rows: {path}"
+                    )
+            else:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(encoded)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+        except (OSError, RuntimeError) as exc:
+            error = str(exc)
+    if runtime.distributed:
+        status = [error]
+        dist.broadcast_object_list(status, src=0, group=dist.group.WORLD)
+        error = status[0]
+    if error is not None:
+        raise RuntimeError(error)
+    return identity_sha256
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -369,6 +437,30 @@ def _truncate_telemetry(path: Path, *, start_step: int) -> None:
         encoding="utf-8",
     )
     staging.replace(path)
+
+
+def _freeze_inactive_policy_parameters(
+    model: Metis16ForCausalLM,
+    curriculum: Any,
+) -> tuple[str, ...]:
+    frozen: list[str] = []
+    if curriculum.continuation_mode in {"random", "fixed_max", "depth_one"}:
+        for name, parameter in model.continuation.named_parameters(
+            prefix="continuation"
+        ):
+            parameter.requires_grad_(False)
+            frozen.append(name)
+    if curriculum.routed_k_mode in {"random", "fixed"}:
+        for layer_index, layer in enumerate(model.layers):
+            router = getattr(layer.moe, "k_router", None)
+            if router is None:
+                continue
+            for name, parameter in router.named_parameters(
+                prefix=f"layers.{layer_index}.moe.k_router"
+            ):
+                parameter.requires_grad_(False)
+                frozen.append(name)
+    return tuple(sorted(frozen))
 
 
 def _assert_storage_policy(model: Any) -> None:
@@ -715,6 +807,7 @@ def _train_row_inner(
     torch.manual_seed(seed)
     if runtime.device.type == "cuda":
         torch.cuda.manual_seed_all(seed)
+    curriculum = spec.curriculum(random_policy_seed=seed + spec.index)
 
     on_accelerator = runtime.device.type == "cuda"
     config = spec.model_config(
@@ -751,6 +844,10 @@ def _train_row_inner(
     # BF16, which degrades exactly the discrete decisions this campaign is
     # measuring.
     model.apply_parameter_storage_policy(device=runtime.device)
+    frozen_policy_parameters = _freeze_inactive_policy_parameters(
+        model,
+        curriculum,
+    )
     _assert_storage_policy(model)
     if topology.distributed and config.ngram_memory.table_mode == "replicated":
         # N-gram tables produce sparse gradients, which the dense reducer
@@ -782,6 +879,9 @@ def _train_row_inner(
         muon_state_bits=spec.muon_state_bits,
     )
     optimizer_manifest = optimizer_summary.to_dict()
+    optimizer_manifest["frozen_policy_parameters"] = list(
+        frozen_policy_parameters
+    )
     if spec.optimizer_sharding == "world":
         if not runtime.distributed or topology.expert_parallel_size != 1:
             raise RuntimeError(
@@ -833,7 +933,6 @@ def _train_row_inner(
         total_steps = min(total_steps, max_steps)
 
     schedule = AblationSchedule(total_steps=total_steps, base_learning_rate=base_lr)
-    curriculum = spec.curriculum(random_policy_seed=seed + spec.index)
     analyzer = RoutingAnalyzer(config, max_passes=config.max_passes)
     source_revision: str | None = (
         _source_revision(require_clean=not synthetic)
@@ -860,6 +959,29 @@ def _train_row_inner(
     sampler_manifest = (
         sample_stream.describe() if sample_stream else {"synthetic": True}
     )
+    release_manifest = (
+        {
+            "release_sha256": inventory.release_sha256,
+            "shard_manifest_sha256": inventory.shard_manifest_sha256,
+        }
+        if inventory is not None
+        else {"synthetic": True}
+    )
+    campaign_identity_sha256 = _validate_campaign_identity(
+        Path(output_root).expanduser().resolve(),
+        {
+            "schema": "more.ablation-campaign-core/v1",
+            "wave": wave_for_row(spec.name),
+            "source_revision": source_revision,
+            "runtime": runtime_fingerprint,
+            "release": release_manifest,
+            "seed": int(seed),
+            "total_steps": total_steps,
+            "global_batch_tokens": GLOBAL_BATCH_TOKENS,
+            "sampler": sampler_manifest,
+        },
+        runtime,
+    )
     identity_payload, identity_sha256 = _run_identity(
         {
             "schema": "more.ablation-run-identity/v1",
@@ -874,16 +996,10 @@ def _train_row_inner(
             "global_batch_tokens": GLOBAL_BATCH_TOKENS,
             "precision_profile": policy.requested_profile,
             "sampler": sampler_manifest,
-            "release": (
-                {
-                    "release_sha256": inventory.release_sha256,
-                    "shard_manifest_sha256": inventory.shard_manifest_sha256,
-                }
-                if inventory is not None
-                else {"synthetic": True}
-            ),
+            "release": release_manifest,
             "source_revision": source_revision,
             "runtime": runtime_fingerprint,
+            "campaign_identity_sha256": campaign_identity_sha256,
         }
     )
 
@@ -964,6 +1080,7 @@ def _train_row_inner(
             "precision_profile": policy.requested_profile,
             "run_identity": identity_payload,
             "run_identity_sha256": identity_sha256,
+            "campaign_identity_sha256": campaign_identity_sha256,
             "final_checkpoint": bool(final_checkpoint),
             "sampler": sampler_manifest,
         }
