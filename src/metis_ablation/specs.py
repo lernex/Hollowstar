@@ -240,10 +240,10 @@ def proxy_config(
         "expert_weight_chunks": 4,
         "max_passes": 5,
         "target_mean_passes": 2.0,
-        # Keep the complete Metis-1.6 depth range in the paper proxy. Exact
-        # budget counts hold the mean at two while leaving real depth-4/5 tails
-        # for the learned ranking to allocate.
-        "budgeted_depth_values": (1, 2, 3, 4, 5),
+        # The trained policy uses easy / medium / hard depth levels. All three
+        # are populated at an exact mean of two, avoiding both constant-depth
+        # collapse and the tiny depth-4/5 tails that dominate launch overhead.
+        "budgeted_depth_values": (1, 2, 3),
         "route_feature_dim": 256,
         "memory_dim": 256,
         "memory_heads": 4,
