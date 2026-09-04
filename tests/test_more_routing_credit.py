@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -11,7 +15,7 @@ from metis_training.model import (
     Metis16ForCausalLM,
     _budgeted_binary_straight_through,
 )
-from metis_training.model_config import Metis16Config, load_family_config
+from metis_training.model_config import GlobalTokenBatchBounds, Metis16Config, load_family_config
 
 
 def tiny_joint_config(**changes):
@@ -240,6 +244,55 @@ class JointCreditTests(unittest.TestCase):
                     compute_allocation_mode="joint", fixed_routed_k=2
                 ),
             )
+
+    def test_opt_in_trainer_records_budget_and_updates_utility_head(self):
+        from metis_ablation.specs import AblationSpec, spec_by_name
+        from metis_ablation.train import train_row
+
+        base = Metis16Config.tiny_for_tests()
+        tokens = 480 * 2
+        config = replace(
+            base,
+            sequence_length=2,
+            max_routed_k=4,
+            target_mean_routed_k=4.0,
+            joint_router_hidden_dim=8,
+            autotune=replace(
+                base.autotune,
+                global_token_batch=GlobalTokenBatchBounds(tokens, tokens, tokens),
+            ),
+        )
+        spec = replace(
+            spec_by_name("more-core"),
+            apus=1, micro_batch=480, grad_accum=1, optimizer_sharding="none",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                patch.object(AblationSpec, "model_config", return_value=config),
+                patch("metis_ablation.train.GLOBAL_BATCH_TOKENS", tokens),
+            ):
+                summary = train_row(
+                    spec, output_root=root, release_root=None, budget_tokens=2 * tokens,
+                    learning_rate=1e-4, seed=10, checkpoint_every=0,
+                    analysis_every=0, telemetry_every=1, max_steps=1,
+                    schedule_total_steps=20, device_override="cpu", synthetic=True,
+                    compute_allocation_mode="joint",
+                )
+            self.assertEqual(summary["steps"], 1)
+            manifest = json.loads((root / "more-core" / "run.json").read_text())
+            self.assertEqual(manifest["curriculum"]["compute_allocation_mode"], "joint")
+            self.assertTrue(manifest["optimizer"]["gradient_clipping"]["groups"]["joint_policy"])
+            records = [
+                json.loads(line)
+                for line in (root / "more-core" / "telemetry" / "rank-00000.jsonl").read_text().splitlines()
+            ]
+            self.assertGreater(records[0]["telemetry"]["global_joint_router_flops"], 0)
+            state = torch.load(
+                root / "more-core" / "checkpoints" / "step-0000001" / "state.pt",
+                map_location="cpu", weights_only=False,
+            )
+            self.assertGreater(int(state["model"]["joint_router.trained_updates"]), 0)
 
 
 if __name__ == "__main__":
