@@ -90,14 +90,18 @@ METIS_CACHE_ABI=gfx942-rocm721-torch213-te217
 METIS_LOCAL_CACHE_RANK=${LOCAL_RANK:-${SLURM_LOCALID:-0}}
 METIS_NODE_SCRATCH=/data/$USER/metis-${SLURM_JOB_ID:-local}-${SLURM_PROCID:-0}
 METIS_NODE_CACHE=/data/$USER/metis-cache-$METIS_CACHE_ABI-rank$METIS_LOCAL_CACHE_RANK
-# /data is a per-node disk and it is not healthy on every node: parrypeak061
-# answers mkdir with an I/O error while its four APUs are perfectly fine, and a
-# job that assumes otherwise loses the whole row to one bad mount. Fall back to
-# the tmpfs rather than the run.
+# /data is a per-node disk and it is not healthy on every node. Falling back to
+# /tmp is unsafe on MI300A because tmpfs and HBM consume the same system memory;
+# a compiler spill can kill all four ranks without a Python exception. Fail
+# closed unless a disposable diagnostic explicitly opts into the fallback.
 if ! mkdir -p "$METIS_NODE_SCRATCH" "$METIS_NODE_CACHE" 2>/dev/null; then
+  if [ "${METIS_ALLOW_TMP_CACHE_FALLBACK:-0}" != "1" ]; then
+    echo "metis: /data unusable on $(hostname); refusing unsafe tmpfs cache fallback" >&2
+    return 1
+  fi
   METIS_NODE_SCRATCH=/tmp/metis-$USER-${SLURM_JOB_ID:-local}-${SLURM_PROCID:-0}
   METIS_NODE_CACHE=$METIS_NODE_SCRATCH/cache
-  echo "metis: /data unusable on $(hostname), falling back to $METIS_NODE_SCRATCH" >&2
+  echo "metis: /data unusable on $(hostname), using explicitly enabled tmpfs fallback" >&2
 fi
 export TRITON_CACHE_DIR=$METIS_NODE_CACHE/triton
 export MIOPEN_USER_DB_PATH=$METIS_NODE_CACHE/miopen

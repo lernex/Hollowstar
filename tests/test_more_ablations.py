@@ -1557,6 +1557,8 @@ def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
     batch_b = (tmp_path / "wave1" / "launch-wave-1b.sh").read_text()
     assert "440 APUs" in batch_a
     assert "360 APUs" in batch_b
+    assert 'METIS_ABLATION_EXCLUDE_NODES:-parrypeak026' in batch_a
+    assert '"${sbatch_args[@]}"' in batch_a
     assert "10-more-core.sbatch" in batch_a
     assert "10-more-core.sbatch" not in batch_b
 

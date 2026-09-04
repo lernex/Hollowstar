@@ -411,6 +411,7 @@ export METIS_REPO=/home/users/vollmerc/Metis
 export METIS_SCRATCH=/lus/lustre1/vollmerc
 export METIS_RELEASE_ROOT=/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r2
 export METIS_ABLATION_RUNTIME="$METIS_REPO/ops/more-ablation-runtime.sh"
+export METIS_ABLATION_EXCLUDE_NODES=parrypeak026
 
 cd "$METIS_REPO"
 PYTHONPATH=src python -m metis_ablation.campaign plan --wave all

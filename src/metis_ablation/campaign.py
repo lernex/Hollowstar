@@ -472,6 +472,9 @@ def emit_slurm(
             "set -euo pipefail",
             f"# Launch execution batch {group_name} ({len(group_specs)} rows, "
             f"{sum(spec.apus for spec in group_specs)} APUs).",
+            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak026}"',
+            "sbatch_args=()",
+            'if [ -n "$exclude_nodes" ]; then sbatch_args+=(--exclude="$exclude_nodes"); fi',
             "",
         ]
         if learning_rates is None:
@@ -490,7 +493,7 @@ def emit_slurm(
             launcher += [
                 f'mkdir -p "{row_output}"',
                 (
-                    f'sbatch --output="{row_output}/slurm-%j.out" '
+                    f'sbatch "${{sbatch_args[@]}}" --output="{row_output}/slurm-%j.out" '
                     f'--error="{row_output}/slurm-%j.err" '
                     f'"$(dirname "$0")/{paths_by_row[spec.name].name}"'
                 ),
@@ -609,6 +612,9 @@ def emit_sweep(
             "set -euo pipefail",
             f"# Learning-rate sweep batch {batch_name}: {len(batch_paths)} runs, "
             f"{batch_apus} APUs, {budget_tokens:,} tokens per run.",
+            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak026}"',
+            "sbatch_args=()",
+            'if [ -n "$exclude_nodes" ]; then sbatch_args+=(--exclude="$exclude_nodes"); fi',
             "",
         ]
         for path in batch_paths:
@@ -617,7 +623,7 @@ def emit_sweep(
             launcher += [
                 f'mkdir -p "{row_output}"',
                 (
-                    f'sbatch --output="{row_output}/slurm-%j.out" '
+                    f'sbatch "${{sbatch_args[@]}}" --output="{row_output}/slurm-%j.out" '
                     f'--error="{row_output}/slurm-%j.err" '
                     f'"$(dirname "$0")/{path.name}"'
                 ),
