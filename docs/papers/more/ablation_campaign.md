@@ -112,34 +112,35 @@ order as a confound for free, and it is worth a sentence in the paper.
 Keep headroom to extend rows 2, 10, and 11 to 100B if their curves have not
 separated.
 
-## 4. Allocation — measured lanes in two execution batches
+## 4. Allocation — measured lanes in three execution batches
 
-The accepted >500k tok/s lanes require 744 APUs in aggregate, so the thirteen
-scientific rows cannot run simultaneously. They are partitioned into two
-explicit launch batches that each fit the 384-APU campaign allocation. Batch 1a
-keeps MoRE-Core, MoRE-RM, and both random-policy controls under the same fabric
-conditions; batch 1b keeps the fixed-loop baseline with the depth, width, and
-pathway isolation rows.
+The accepted lanes require 800 APUs in aggregate, so the thirteen scientific
+rows cannot run simultaneously. A 440-APU combined canary pushed the adaptive
+rows below 500k through simultaneous gradient-sync contention. The executable
+schedule therefore uses three comparison-preserving batches: 1a holds the four
+adaptive-policy rows together, 1b holds the dense/single-pass controls, and 1c
+holds the fixed-loop baseline with the depth, width, and pathway isolations.
 
 ### Master table — Wave 1, all 13 runs, 50B tokens each
 
 | # | Model | Batch | Stored / active per pass | Model / executed GFLOP/tok | APUs | Nodes | Measured hours |
 |---:|---|:---:|---|---:|---:|---:|---:|
-| 1 | Dense, FLOP-matched | 1a | 1.44B / 0.87B | 7.09 / 7.62 | 24 | 6 | pending |
-| 2 | Dense, parameter-matched | 1b | 1.81B / 1.24B | 9.31 / 9.85 | 80 | 20 | 20.9 |
-| 3 | MoE k=4 | 1a | 1.81B / 0.279B | 3.54 / 4.08 | 20 | 5 | 24.2 |
-| 4 | MoE k=8 | 1a | 1.81B / 0.336B | 3.88 / 4.42 | 20 | 5 | 21.9 |
-| 5 | Fixed LoopMoE | 1b | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 20.4 |
-| 6 | Loop, pathway frozen | 1b | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 24.4 |
-| 7 | MoR + dense FFN | 1b | 0.85B / 0.278B | 7.08 / 8.15 | 80 | 20 | 21.3 |
-| 8 | MoR + fixed-k MoE | 1b | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 20.0 |
-| 9 | Fixed depth, adaptive k | 1b | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 24.5 |
-| 10 | MoRE-Core | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 27.1 |
-| 11 | MoRE-RM | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 20.0 |
+| 1 | Dense, FLOP-matched | 1b | 1.44B / 0.87B | 7.09 / 7.62 | 80 | 20 | 6.2 |
+| 2 | Dense, parameter-matched | 1c | 1.81B / 1.24B | 9.31 / 9.85 | 80 | 20 | 20.9 |
+| 3 | MoE k=4 | 1b | 1.81B / 0.279B | 3.54 / 4.08 | 20 | 5 | 24.2 |
+| 4 | MoE k=8 | 1b | 1.81B / 0.336B | 3.88 / 4.42 | 20 | 5 | 21.9 |
+| 5 | Fixed LoopMoE | 1c | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 20.4 |
+| 6 | Loop, pathway frozen | 1c | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 24.4 |
+| 7 | MoR + dense FFN | 1c | 0.85B / 0.278B | 7.08 / 8.15 | 80 | 20 | 21.3 |
+| 8 | MoR + fixed-k MoE | 1c | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 20.0 |
+| 9 | Fixed depth, adaptive k | 1c | 1.81B / 0.279B | 7.09 / 9.45 | 40 | 10 | 24.5 |
+| 10 | MoRE-Core | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.4 |
+| 11 | MoRE-RM | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 24.4 |
 | 12 | Random-k control | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 20.2 |
 | 13 | Random-depth control | 1a | 1.81B / 0.279B | 7.09 / 8.16 | 80 | 20 | 19.7 |
-| | **Batch 1a total** | | | | **384** | **96** | **pending dense re-canary** |
-| | **Batch 1b total** | | | | **360** | **90** | **24.4** |
+| | **Batch 1a total** | | | | **320** | **80** | **24.4** |
+| | **Batch 1b total** | | | | **120** | **30** | **24.2** |
+| | **Batch 1c total** | | | | **360** | **90** | **24.5** |
 
 Regenerate this table with `python -m metis_ablation.campaign plan`; it is
 computed from `metis_training.metrics.estimate_hardware_flops`, the same
@@ -207,13 +208,13 @@ nothing else moved.
 
 | Wave | Rows | Executed FLOPs | Wall clock @10% MFU |
 |---|---:|---:|---:|
-| 1 — the ladder, batches 1a + 1b | 13 | 5,166 EFLOP | 39.2 h planned; measured pending |
+| 1 — the ladder, batches 1a + 1b + 1c | 13 | 5,166 EFLOP | 39.2 h at 10% MFU / ~73 h from measured lanes |
 | 2 — scaling | 8 | 926 EFLOP | 5.6 h |
 | 3 — seeds | 5 | 2,254 EFLOP | 16.7 h |
 | **Total** | **26** | **8,346 EFLOP** | **~61.6 h at 10% MFU; Wave 1 measured correction pending** |
 
-Waves run one after another, so the 384-APU constraint applies per wave, not to
-the sum. Add the archetype learning-rate sweep (12 short runs at 1B tokens,
+Waves run one after another, so the 512-APU machine constraint applies per
+batch, not to the sum. Add the archetype learning-rate sweep (12 short runs at 1B tokens,
 about an hour) ahead of wave 1.
 
 ## 5. Parallelism — pure data parallelism, replicated experts, no EP
@@ -334,20 +335,18 @@ that measured as almost pure launch overhead on MI300A. `max_passes=5` remains
 the architectural cap for explicit controls and later budget studies, but the
 primary 50B-token policy does not train on those two tail levels.
 
-### Measured Wave-1 throughput lanes (2026-08-18)
+### Measured Wave-1 throughput lanes (updated 2026-09-03)
 
 The target is 500k real release-data tokens/s for every row. The table reports
 the warmed median from the retained canary window; every run used a 480-sequence
 global batch, 4,096-token sequences, NS=5 Muon, blockwise int8 Muon momentum,
 full-world optimizer ownership, four expert-weight chunks, an 8,192-token LM
 head chunk, and the OFI/CXI runtime. FP8 loss parity stayed below 0.001 in every
-retained row. The per-pass LM-head accounting correction widened the
-FLOP-matched dense control after these measurements, so that row is explicitly
-unaccepted until its replacement canary clears the same gate.
+retained row.
 
 | Row | APUs | Micro × accum | Recompute | Precision exception | Median tok/s |
 |---|---:|---:|---|---|---:|
-| dense-flop-matched | 24 | 10 × 2 | none | dense gate/up BF16 | **superseded; re-canary required** |
+| dense-flop-matched | 80 | 6 × 1 | none | dense FFN BF16 | **2,234,916 (50 steps)** |
 | dense-param-matched | 80 | 6 × 1 | none | dense gate/up BF16 | 664,770 |
 | moe-k4 | 20 | 12 × 2 | none | — | 574,808 |
 | moe-k8 | 20 | 12 × 2 | none | — | 635,051 |
@@ -356,18 +355,19 @@ unaccepted until its replacement canary clears the same gate.
 | mor-dense-ffn | 80 | 6 × 1 | none | — | 651,111 |
 | mor-fixed-k | 80 | 6 × 1 | none | — | 693,859 |
 | fixed-depth-adaptive-k | 40 | 12 × 1 | layer | — | 567,609 |
-| more-core | 80 | 6 × 1 | none | — | **512,083** |
-| more-rm | 80 | 6 × 1 | none | — | 695,082 |
+| more-core | 80 | 6 × 1 | none | — | **568,594 (50 steps)** |
+| more-rm | 80 | 6 × 1 | none | — | **568,374 (50 steps)** |
 | random-k | 80 | 6 × 1 | none | — | 686,428 |
 | random-depth | 80 | 6 × 1 | none | — | 705,660 |
-| **Sum of 12 still-valid row rates** | | | | | **7,636,373** |
 
-MoRE-Core's final acceptance covered 50 optimizer steps: 49 warmed steps had a
-512k median and 543k mean. Over the final 20 steps, expected depth averaged
-2.14, expected k 3.99, and expert-load CV 1.05; realized depth and k remained
-exactly 2 and 4 with no dropped assignments. MoRE-RM's retained canary also
-kept exact depth 2/k 4, used recurrent memory (`depth_memory_last_norm=2.95`),
-and finished at 549k tokens/s.
+On matched warm-node 50-step runs, Core and RM differ by 0.04% in throughput.
+The earlier 512k-versus-695k comparison mixed Core's long window with RM's
+first nine warmed steps. RM does not have a magically faster kernel: Core keeps
+the recurrent-memory module parameter/compute matched and gates its retrieved
+summary to zero, while RM lets that same path affect representation and routing.
+Both kept exact realized depth 2/k 4 with no dropped assignments; RM's
+`depth_memory_last_norm` grew from 3.47 to 13.53, confirming that the memory
+path is active rather than decorative.
 
 Held-out routing captures at step five show that the exact means are not hiding
 constant decisions. Both learned rows populated depths 1/2/3 in exact thirds
@@ -378,10 +378,9 @@ transition mass was 0.791 from pass 1→2 and 0.422 from pass 2→3; RM measured
 0.689 and 0.578. Thus the policy is neither all-depth-2 nor fixed-k-4, and later
 passes are not merely replaying the same expert coalition.
 
-The twelve retained rates are individually real but were not observed
-simultaneously. The executable campaign uses the explicit 1a/1b batches in
-section 4; no aggregate rate should be presented as concurrently observed
-throughput.
+The rates are individual lane measurements. A 440-APU combined canary reduced
+the adaptive rows to 474-486k through cross-job collective contention, which is
+why the executable campaign uses the explicit 1a/1b/1c schedule in section 4.
 
 ## 6. Learning rate and hyperparameters
 
@@ -441,7 +440,7 @@ JSON
 ```
 
 Replace those values with the measured winners, then generate and launch the
-two explicit Wave-1 batches:
+three explicit Wave-1 batches:
 
 ```bash
 PYTHONPATH=src python -m metis_ablation.campaign slurm \
@@ -453,6 +452,8 @@ PYTHONPATH=src python -m metis_ablation.campaign slurm \
 bash slurm/ablation/wave1/launch-wave-1a.sh
 # Launch only after batch 1a has completed:
 bash slurm/ablation/wave1/launch-wave-1b.sh
+# Launch only after batch 1b has completed:
+bash slurm/ablation/wave1/launch-wave-1c.sh
 ```
 
 Repeat generation with `--wave 2` and `--wave 3`; both fit in one execution
@@ -567,8 +568,8 @@ compared against twelve rows that stayed in parity.
 2. `python -m metis_ablation.campaign plan --wave all` — allocation and cost.
 3. Sweep (12 runs in two capacity-safe batches), record the four archetype
    winners in `learning-rates.json`.
-4. Wave 1a, then Wave 1b (13 rows; final measured time follows the corrected
-   dense-control canary).
+4. Wave 1a, then Wave 1b, then Wave 1c (13 rows, about 73 measured hours before
+   queue/restart overhead).
 5. Wave 2 (8 rows, estimated ~4 h at 10% MFU).
 6. Wave 3 (5 rows, estimated ~13 h at 10% MFU).
 7. Analysis pass over checkpoints; fill every `\TODO{}` in `main.tex`.

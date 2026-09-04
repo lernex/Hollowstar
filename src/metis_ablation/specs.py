@@ -593,11 +593,11 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         dense_ffn_intermediate_dim=_DENSE_FLOP_MATCHED_INTERMEDIATE,
         continuation_mode="depth_one",
         dense_ffn_bf16=True,
+        measured_tokens_per_second=2_234_916,
         config_overrides={"activation_recompute_policy": "none"},
         notes=(
             "No recursion, no experts. The frontier point a reviewer expects. "
-            "Its measured lane must be refreshed after per-pass LM-head FLOP "
-            "accounting widened the dense control."
+            "The corrected control is measured on its widened parameterization."
         ),
     ),
     AblationSpec(
@@ -718,7 +718,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="budgeted",
         routed_k_mode="budgeted",
         depth_memory=False,
-        measured_tokens_per_second=512_083,
+        measured_tokens_per_second=568_594,
         config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
@@ -730,7 +730,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         continuation_mode="budgeted",
         routed_k_mode="budgeted",
         depth_memory=True,
-        measured_tokens_per_second=695_082,
+        measured_tokens_per_second=568_374,
         config_overrides={"activation_recompute_policy": "none"},
     ),
     AblationSpec(
@@ -1036,9 +1036,6 @@ WAVE_1_BATCHES: dict[str, tuple[AblationSpec, ...]] = {
     "1a": tuple(
         spec_by_name(name, ladder=ABLATION_LADDER)
         for name in (
-            "dense-flop-matched",
-            "moe-k4",
-            "moe-k8",
             "more-core",
             "more-rm",
             "random-k",
@@ -1046,6 +1043,14 @@ WAVE_1_BATCHES: dict[str, tuple[AblationSpec, ...]] = {
         )
     ),
     "1b": tuple(
+        spec_by_name(name, ladder=ABLATION_LADDER)
+        for name in (
+            "dense-flop-matched",
+            "moe-k4",
+            "moe-k8",
+        )
+    ),
+    "1c": tuple(
         spec_by_name(name, ladder=ABLATION_LADDER)
         for name in (
             "dense-param-matched",

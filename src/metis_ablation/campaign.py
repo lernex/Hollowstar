@@ -466,6 +466,8 @@ def emit_slurm(
     }
     if wave == "1":
         (destination / "launch-wave.sh").unlink(missing_ok=True)
+        for stale in destination.glob("launch-wave-*.sh"):
+            stale.unlink()
     for group_name, group_specs in execution_groups:
         launcher = [
             "#!/bin/bash",

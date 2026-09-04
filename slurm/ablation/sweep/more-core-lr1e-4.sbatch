@@ -39,6 +39,7 @@ mkdir -p "${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/sweep/more-core-lr1
 # expression expands once, here, rather than inside the single-quoted step body.
 export METIS_ABLATION_OUTPUT="${METIS_SCRATCH:?set METIS_SCRATCH}/more-ablations/sweep/more-core-lr1e-4"
 export METIS_ABLATION_RELEASE="${METIS_RELEASE_ROOT:?set METIS_RELEASE_ROOT}"
+export METIS_ABLATION_TELEMETRY="$METIS_ABLATION_OUTPUT/more-core/telemetry/rank-00000.jsonl"
 
 # Portage's parry partition defines no GPU gres, so the four MI300A APUs are
 # addressed by local task id rather than requested from Slurm. RANK and
@@ -65,4 +66,44 @@ exec python -m metis_ablation.train \
   --analysis-every 0 \
   --telemetry-every 10 \
   --no-resume
-'
+' &
+step_pid=$!
+
+# A compute-node reboot can remove every rank on that node without making this
+# Portage Slurm build finish the step. The surviving ranks then stay at 100%
+# GPU inside collectives forever. Require rank-zero telemetry to advance; a
+# healthy cold start takes minutes, while twenty minutes without one new byte
+# is a lost-rank failure, not slow training.
+stall_timeout="${METIS_ABLATION_STALL_TIMEOUT_SECONDS:-1200}"
+stall_poll="${METIS_ABLATION_STALL_POLL_SECONDS:-30}"
+(
+  last_size=-1
+  last_progress="$(date +%s)"
+  while kill -0 "$step_pid" 2>/dev/null; do
+    sleep "$stall_poll"
+    current_size=0
+    if [ -f "$METIS_ABLATION_TELEMETRY" ]; then
+      current_size="$(wc -c < "$METIS_ABLATION_TELEMETRY")"
+    fi
+    now="$(date +%s)"
+    if [ "$current_size" -ne "$last_size" ]; then
+      last_size="$current_size"
+      last_progress="$now"
+    elif [ $((now - last_progress)) -ge "$stall_timeout" ]; then
+      echo "metis: no rank-zero telemetry progress for ${stall_timeout}s; terminating stalled step" >&2
+      kill -TERM "$step_pid" 2>/dev/null || true
+      sleep 60
+      kill -KILL "$step_pid" 2>/dev/null || true
+      exit 124
+    fi
+  done
+) &
+watchdog_pid=$!
+
+set +e
+wait "$step_pid"
+step_status=$?
+set -e
+kill "$watchdog_pid" 2>/dev/null || true
+wait "$watchdog_pid" 2>/dev/null || true
+exit "$step_status"
