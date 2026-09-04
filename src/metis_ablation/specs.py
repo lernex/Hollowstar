@@ -1038,11 +1038,16 @@ WAVE_1_BATCHES: dict[str, tuple[AblationSpec, ...]] = {
         for name in (
             "more-core",
             "more-rm",
+        )
+    ),
+    "1b": tuple(
+        spec_by_name(name, ladder=ABLATION_LADDER)
+        for name in (
             "random-k",
             "random-depth",
         )
     ),
-    "1b": tuple(
+    "1c": tuple(
         spec_by_name(name, ladder=ABLATION_LADDER)
         for name in (
             "dense-flop-matched",
@@ -1050,7 +1055,7 @@ WAVE_1_BATCHES: dict[str, tuple[AblationSpec, ...]] = {
             "moe-k8",
         )
     ),
-    "1c": tuple(
+    "1d": tuple(
         spec_by_name(name, ladder=ABLATION_LADDER)
         for name in (
             "dense-param-matched",
