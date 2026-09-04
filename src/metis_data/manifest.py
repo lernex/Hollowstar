@@ -238,9 +238,12 @@ def validate_manifest(path: str | Path | None = None) -> ValidationResult:
     if actual_fresh_buckets != expected_fresh_buckets:
         errors.append(f"fresh bucket totals {actual_fresh_buckets} do not match {expected_fresh_buckets}")
 
-    vocab = int(manifest.get("tokenizer", {}).get("vocabulary_size_including_special_tokens", 0))
+    tokenizer = manifest.get("tokenizer", {})
+    vocab = int(tokenizer.get("vocabulary_size_including_special_tokens", 0))
     if vocab != 65_536:
         errors.append(f"tokenizer vocabulary including special tokens must be 65,536, got {vocab:,}")
+    if "split_digits" in tokenizer and type(tokenizer["split_digits"]) is not bool:
+        errors.append("tokenizer.split_digits must be a boolean")
 
     excluded = {str(item.get("id", "")).lower() for item in manifest.get("hard_exclusions", [])}
     for source in sources:

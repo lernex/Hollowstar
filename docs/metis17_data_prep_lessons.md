@@ -43,12 +43,19 @@ This is the expensive lesson. The entire 90B-token freshness layer was
 withdrawn, and 1.6 ships **35B of freshness ending 2025-06** instead of 90B
 ending 2026-06.
 
-Not because Common Crawl is hard. Because of three properties of the host that
-stack:
+Not because Common Crawl is hard. Because of three properties of the acquisition
+path that stack:
 
-1. **Only login nodes have egress.** Compute nodes cannot reach
-   `data.commoncrawl.org`. So acquisition is pinned to a login node.
-2. **That node has no local scratch.** `sda` is unmounted, `/home` is NFS, `/`
+1. **Egress depends on both host and origin.** The earlier blanket claim that
+   compute nodes have no egress was wrong. The two login nodes have independent
+   1 GbE paths and reached 167 MB/s together against a non-throttled CDN.
+   Compute nodes have outbound access through one shared NAT gateway and reached
+   about 126 MB/s across six nodes. Hugging Face flattened every tested topology
+   at about 110 MB/s, which is an origin/IP-range throttle rather than a site
+   link limit. Reachability of a specific crawl endpoint must be tested rather
+   than inferred from either result.
+2. **The login node used for the crawl had no local scratch.** `sda` is
+   unmounted, `/home` is NFS, `/`
    is an overlay. So the acquisition ledger lives on Lustre.
 3. **The ledger is a `WITHOUT ROWID` B-tree keyed on canonical URL.** Inserts
    land at uniformly random positions. On Lustre a page read is a network round
@@ -82,9 +89,11 @@ downloads and training on the HPC system. Then:
   one machine. Splitting acquisition needs a first-class notion of *acquired
   elsewhere, imported with receipts* — a design task, not a config change.
 
-**Scale warning:** at 30T tokens, packaged acquisition alone is ~150–200 TB and
-on the order of two to three weeks of continuous transfer at the rate that
-worked here.
+**Scale warning:** scaling the measured 2.41 TB / 849B-token acquisition to 30T
+is about 85 TB. The Hugging Face-hosted majority alone is roughly nine days at
+the measured 110 MB/s throttle. Additional hosts help independent origins and
+do not move that publisher ceiling; overlap the two classes rather than treating
+"more download workers" as one universal lever.
 
 ---
 

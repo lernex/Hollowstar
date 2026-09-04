@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Mapping
 
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, processors, trainers
 
@@ -38,6 +38,41 @@ def iter_jsonl_text(paths: Iterable[Path]) -> Iterator[str]:
                     yield text
 
 
+def tokenizer_splits_digits(tokenizer: Tokenizer) -> bool:
+    """Read the resolved digit policy from the serialized pre-tokenizer."""
+
+    payload = json.loads(tokenizer.to_str())
+    pre_tokenizer = payload.get("pre_tokenizer")
+    if not isinstance(pre_tokenizer, dict):
+        raise RuntimeError("Tokenizer has no serialized pre-tokenizer")
+    if pre_tokenizer.get("type") == "ByteLevel":
+        return False
+    if pre_tokenizer.get("type") != "Sequence":
+        raise RuntimeError(
+            f"Unsupported tokenizer pre-tokenizer: {pre_tokenizer.get('type')!r}"
+        )
+    entries = pre_tokenizer.get("pretokenizers")
+    if not isinstance(entries, list):
+        raise RuntimeError("Tokenizer pre-tokenizer sequence is malformed")
+    digit_entries = [
+        entry
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("type") == "Digits"
+    ]
+    if len(digit_entries) != 1:
+        raise RuntimeError("Tokenizer must contain exactly one digit pre-tokenizer")
+    return digit_entries[0].get("individual_digits") is True
+
+
+def tokenizer_split_digits_setting(tokenizer_manifest: Mapping[str, Any]) -> bool:
+    """Resolve the optional policy without truthy string coercion."""
+
+    value = tokenizer_manifest.get("split_digits", False)
+    if type(value) is not bool:
+        raise ValueError("tokenizer.split_digits must be a boolean")
+    return value
+
+
 def train_tokenizer(
     texts: Iterable[str],
     *,
@@ -45,11 +80,19 @@ def train_tokenizer(
     vocabulary_size: int,
     special_tokens: list[str],
     minimum_frequency: int = 2,
+    split_digits: bool = False,
 ) -> dict[str, Any]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     tokenizer = Tokenizer(models.BPE(unk_token=None, byte_fallback=True))
-    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=True)
+    byte_level = pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=True)
+    tokenizer.pre_tokenizer = (
+        pre_tokenizers.Sequence(
+            [pre_tokenizers.Digits(individual_digits=True), byte_level]
+        )
+        if split_digits
+        else byte_level
+    )
     tokenizer.decoder = decoders.ByteLevel()
     trainer = trainers.BpeTrainer(
         vocab_size=vocabulary_size,
@@ -85,6 +128,7 @@ def train_tokenizer(
         "schema": "metis.tokenizer-release/v1",
         "created_at": utc_now(),
         "algorithm": "byte_level_bpe",
+        "split_digits": bool(split_digits),
         "vocabulary_size": len(vocab),
         "requested_vocabulary_size": vocabulary_size,
         "special_tokens": {token: tokenizer.token_to_id(token) for token in special_tokens},

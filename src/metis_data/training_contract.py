@@ -12,6 +12,7 @@ from tokenizers import Tokenizer
 
 from .manifest import validate_manifest
 from .ngram_canonical import validate_canonical_id_sidecar
+from .tokenizer import tokenizer_split_digits_setting, tokenizer_splits_digits
 
 
 PHASE_DIRECTORIES = {
@@ -440,11 +441,27 @@ def validate_training_release(
         str(token): tokenizer.token_to_id(str(token))
         for token in released_manifest["tokenizer"]["special_tokens"]
     }
+    expected_split_digits = tokenizer_split_digits_setting(
+        released_manifest["tokenizer"]
+    )
+    reported_split_digits = tokenizer_release.get("split_digits")
+    contracted_split_digits = tokenizer_contract.get("split_digits")
     if (
         tokenizer_release.get("tokenizer_sha256") != _sha256(tokenizer_path)
         or tokenizer_release.get("uint16_safe") is not True
         or int(tokenizer_release.get("vocabulary_size", -1)) != 65_536
         or tokenizer_release.get("special_tokens") != expected_special_tokens
+        or tokenizer_splits_digits(tokenizer) is not expected_split_digits
+        or (
+            reported_split_digits is not None
+            and reported_split_digits is not expected_split_digits
+        )
+        or (expected_split_digits and reported_split_digits is not True)
+        or (
+            contracted_split_digits is not None
+            and contracted_split_digits is not expected_split_digits
+        )
+        or (expected_split_digits and contracted_split_digits is not True)
         or tokenizer_release.get("ngram_canonical_ids_manifest_sha256")
         != canonical_descriptor.get("manifest_sha256")
         or tokenizer_release.get("ngram_canonical_ids_sha256")

@@ -133,6 +133,21 @@ value and guessing at it twice.
 
 ---
 
+### 0a-postscript. Ten build stages were still taking the fallback
+
+The stage-code map held a dead `"context"` key while the graph stages are
+`context_select`, `context_prepare`, `context_pack`, and `context_verify`.
+Those four plus six tokenizer, verification, and cleanup stages therefore bound
+the entire `metis_data` package. The fallback is fail-safe, so nothing was
+wrong; unrelated edits simply moved execution contracts and invalidated work.
+
+The map now names every stage in `BUILD_GRAPH`, and
+`test_stage_code_map_is_total.py` makes total coverage an invariant. The test
+compares each explicit binding with the package's real module inventory rather
+than pinning an arbitrary module-count threshold.
+
+---
+
 ### 0b. The dominant failure mode: configured, and silently inert
 
 Four times in one build, a setting was configured correctly, persisted
@@ -148,6 +163,10 @@ correctly, and had no effect, with nothing failing to say so.
 Add to those the audit that read `repo_path` when the field was named `path`
 and reported a confident zero suspect files, and the marker check that looked
 up `task-<index:06d>` when the stage wrote `task-<index:08d>-<digest>.json`.
+The 1.6 tokenizer manifest also declares `preserve_code_whitespace` and
+`preserve_latex`; neither setting is implemented by the tokenizer. They describe
+intent, not the artifact that was actually trained, and must not be cited as
+properties of the released tokenizer.
 
 The shape is always the same: **the absence of a signal is read as the absence
 of a problem.** A zero, a default, a missing key, an empty grep. None of them
@@ -845,7 +864,7 @@ minutes" twice and was wrong twice for this reason.
 sub-file (byte ranges / row groups). Either removes the tail and makes ETAs
 meaningful.
 
-## 10f. The dedup stages do not record how much they removed
+## 10f. Filtering receipts now record how much they removed
 
 `exact_filter` completion markers carry `stage`, `task_index`, `completed_at`
 and the execution-contract hash. No counts. `cleanup_exact` then deletes the
@@ -862,10 +881,23 @@ depends entirely on how much the four dedup passes remove. Today that is
 unknowable until `token_count` at stage 27 -- by which point 26 stages and
 several days have already been spent.
 
-**For 1.7:** every filtering stage should write `records_in`, `records_out` and
-`bytes_in`, `bytes_out` into its completion marker. `normalize` already writes
-`counts` and `rejection_reasons`; the dedup filters should do the same. It costs
-nothing and turns a late hard gate into an early prediction.
+This is now implemented for the six stages that emit a filtered corpus:
+`exact_filter`, `span_filter`, `minhash_filter`, `code_filter`,
+`decontam_filter`, and `final_hash_filter`. Their completion markers carry
+`records_in`, `records_out`, `records_removed`, Unicode character totals, and any
+`dropped_*` reasons DataTrove reported.
+
+Signature and finder stages are deliberately excluded: they read documents but
+do not emit a successor corpus, so treating their zero writer count as total
+removal would be worse than having no accounting. Missing, unreadable,
+incomplete, or inconsistent DataTrove stats are recorded with an explicit
+`accounting_status`; accounting cannot fail already-correct filtering work, and
+it cannot silently turn missing evidence into a reassuring zero.
+
+When a legacy completion marker has no counts, filter-chain generation derives
+them from the retained per-rank DataTrove stats and atomically backfills the
+marker. If those stats are gone or incomplete, release generation refuses to
+attest the filter chain rather than publishing a count-free receipt.
 
 ## 10e. Every manifest edit cascades through three identities
 
@@ -1053,10 +1085,13 @@ do not ship it until the build is finished.
 Recorded after §8, which noted that reformulations defeat n-gram matching. The
 opposite failure is also present: rules that fire on documents nobody copied.
 
-r2 decontamination kept **97.2% of documents but only 92.0% of their bytes**. The
-documents it removed averaged **three times the length** of the ones it kept.
-Drop rate against document size, over 4,800 sampled documents scored with the
-real index:
+The final DataTrove stats across all 3,274 ranks recorded 1,081,933,951
+documents in, 1,047,469,393 out, and **34,464,558 removed (3.185%)**. These
+supersede the earlier 29.3M / 97.2%-kept figures parsed from `.err` files, which
+missed 294 shards whose stat blocks had not flushed. The length-bias sample
+still shows the qualitative failure: removed documents averaged roughly three
+times the length of retained ones. Drop rate against document size, over 4,800
+sampled documents scored with the real index:
 
 | size | drop rate | dominant reason |
 |---|---|---|
@@ -1072,22 +1107,22 @@ A corpus that has to supply an 18 B-token long-context extension, with
 `minimum_long_document_tokens: 8192`, cannot be biased against its own longest
 documents.
 
-Corpus-wide removals, 29.3 M documents in total:
+Final corpus-wide removals:
 
 | rule | removed | share |
 |---|---|---|
-| short_ngram (8-gram, min 4) | 13.5 M | 46% |
-| ngram (13-gram, proportional) | 6.7 M | 23% |
-| contiguous_run (8 x 13-gram) | 4.0 M | 13% |
-| code_skeleton (16-gram, min 32) | 3.3 M | 11% |
-| code_ngram (12-gram, min 16) | 1.9 M | 6% |
+| short_ngram (8-gram, min 4) | 15,024,711 | 43.6% |
+| ngram (13-gram, proportional) | 8,388,537 | 24.3% |
+| contiguous_run (8 x 13-gram) | 4,825,402 | 14.0% |
+| code_skeleton (16-gram, min 32) | 3,918,560 | 11.4% |
+| code_ngram (12-gram, min 16) | 2,307,231 | 6.7% |
 | **exact** | **117** | 0.0004% |
 
 Current open practice is 13-gram overlap against the evaluation set. That is the
 `ngram` family, and it stays. The two largest contributors are not that:
 
 - **short_ngram at 8 tokens is below the standard.** Eight words is ordinary
-  phrasing. Because `reason()` tests it last, every one of those 13.5 M documents
+  phrasing. Because `reason()` tests it last, every one of those 15.0 M documents
   had already passed every 13-gram test -- they are removals *beyond* the
   standard, and there are 115,000 of them for every document exact match caught.
 - **code_skeleton erases identifiers and literals**, so it matches structure
@@ -1103,12 +1138,12 @@ same sample, disabling both takes 32-64 KB documents from 20.0% to about 9% and
 
 **For 1.7: ship with short_ngram and code_skeleton off, and re-measure the
 drop-rate-by-size table before accepting the corpus.** The table, not the
-headline retention percentage, is what shows this class of defect -- 97.2%
+headline retention percentage, is what shows this class of defect -- 96.8%
 retention looks fine and hides a 20% loss at the sizes that matter most.
 
 ---
 
-## 15. An open disagreement about the r2 token budget
+## 15. The r2 token-budget disagreement, later resolved
 
 §11 records r1 finishing at **973.7 B usable tokens** against the 950 B gate, a
 +23.7 B margin, from a projection of candidate x measured yield.
@@ -1131,6 +1166,15 @@ measurement is if anything optimistic.
 submission-time projection as the answer.** The gate that matters fires at
 `select`, stage 33 of 37; a two-hour measurement immediately after
 `final_hash_filter` is worth more than a projection at submission.
+
+The finished 1.6 tokenizer later measured **4.039 bytes/token** corpus-wide:
+5.91 on prose, 2.89 on Python, 2.50 on JSON, and 2.43 on LaTeX, at 14.3 MB/s
+single-process encode throughput. Applying that fertility to the 3.503 TB
+corpus implied about 867B tokens, confirming the shortfall direction. That was
+still an estimate; the later authoritative build measurement was **849.5B**.
+The lesson survives the changing number: measure with the final tokenizer and
+packed inputs, then allocate. Do not promote an extrapolation into a corpus
+contract.
 
 ---
 
@@ -1484,3 +1528,21 @@ across more nodes buys nothing. Only fewer, fatter jobs do.
 **For 1.7: size `tasks_per_job` to the node, not to a round number.** Eight jobs
 of ~101 tasks would use ~53% of each node and have a third the tail, because
 there are fewer jobs to schedule late.
+
+### 17i. Digit splitting is now an explicit tokenizer choice
+
+The GPT-2 byte-level regex admits whole digit runs as pre-tokens, so BPE can
+turn a literal such as `147832` into one atomic id. `tokenizer.split_digits`
+now controls an individual-digit pre-tokenizer and defaults to `false`, which
+preserves the 1.6 recipe. A future tokenizer can enable it deliberately; the
+release manifest records the resolved value, and tests pin both lossless
+round-trip behavior and the off-by-default compatibility path. Packing and
+release validation require the manifest, `TOKENIZER_RELEASE.json`, tokenizer
+contract, and serialized pre-tokenizer to agree, so a stale tokenizer cannot be
+accepted after the setting changes.
+
+The separate `preserve_code_whitespace` and `preserve_latex` declarations
+remain historical no-ops. Before 1.7 tokenizer training, either implement each
+with artifact-level behavioral tests or remove the declarations from the new
+manifest. Carrying them forward unchanged would repeat the exact silent-inert
+failure this section exists to prevent.

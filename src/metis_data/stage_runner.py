@@ -37,7 +37,12 @@ from .manifest import PHASES, validate_manifest
 from .quality import evaluate_quality, priority_score
 from .stage_code import stage_code_sha256
 from .state import StateStore, atomic_json, utc_now, zstd_bulk_compressor
-from .tokenizer import train_tokenizer, validate_tokenizer
+from .tokenizer import (
+    tokenizer_split_digits_setting,
+    tokenizer_splits_digits,
+    train_tokenizer,
+    validate_tokenizer,
+)
 from .selection import build_selection, hamilton_apportion, replay_quotas, unique_quotas
 from .replacement import allocate_replacements
 from .download import sha256_file
@@ -405,12 +410,22 @@ def _production_tokenizer_contract(
 
     release = json.loads(paths["release"].read_text(encoding="utf-8"))
     tokenizer_sha = sha256_file(paths["tokenizer"])
+    expected_split_digits = tokenizer_split_digits_setting(
+        manifest["tokenizer"]
+    )
+    reported_split_digits = release.get("split_digits")
     if (
         release.get("schema") != "metis.tokenizer-release/v1"
         or int(release.get("vocabulary_size", -1)) != expected_size
         or release.get("uint16_safe") is not True
         or release.get("tokenizer_sha256") != tokenizer_sha
         or release.get("special_tokens") != expected_special_tokens
+        or tokenizer_splits_digits(tokenizer) is not expected_split_digits
+        or (
+            reported_split_digits is not None
+            and reported_split_digits is not expected_split_digits
+        )
+        or (expected_split_digits and reported_split_digits is not True)
     ):
         raise RuntimeError("TOKENIZER_RELEASE.json does not describe tokenizer.json")
     validation = json.loads(paths["validation"].read_text(encoding="utf-8"))
@@ -473,6 +488,7 @@ def _production_tokenizer_contract(
         "endianness": "little",
         "eos_token": eos_token,
         "eos_token_id": int(eos_id),
+        "split_digits": expected_split_digits,
     }
     contract["contract_sha256"] = _json_sha256(contract)
     return contract
@@ -631,6 +647,7 @@ def _completion_inventory(
     *,
     expected_execution_contract_sha256: str,
     allow_contract_drift: bool = False,
+    accounting_logs_root: Path | None = None,
 ) -> dict[str, Any]:
     folder = state.path("completed", stage)
     paths = sorted(folder.glob("task-*.json")) if folder.is_dir() else []
@@ -644,6 +661,15 @@ def _completion_inventory(
         )
     rows = []
     observed_contracts: set[str] = set()
+    accounting_totals = {
+        "records_in": 0,
+        "records_out": 0,
+        "records_removed": 0,
+        "characters_in": 0,
+        "characters_out": 0,
+        "characters_removed": 0,
+    }
+    removed_by_reason: dict[str, int] = {}
     for path in paths:
         try:
             marker = json.loads(path.read_text(encoding="utf-8"))
@@ -656,6 +682,73 @@ def _completion_inventory(
                 raise RuntimeError(
                     f"Filtering stage {stage} completion belongs to stale inputs or policy: {path.name}"
                 )
+        if stage in _DATATROVE_FILTER_STAGES:
+            counts = marker.get("counts")
+            if not isinstance(counts, dict) or counts.get(
+                "accounting_status"
+            ) != "complete":
+                if accounting_logs_root is None:
+                    raise RuntimeError(
+                        f"Filtering stage {stage} has no accounting source: "
+                        f"{path.name}"
+                    )
+                task_index = int(path.stem.removeprefix("task-"))
+                counts = _datatrove_task_counts(
+                    accounting_logs_root
+                    / stage
+                    / (observed or expected_execution_contract_sha256)[:24],
+                    task_index,
+                    stage=stage,
+                )
+                if counts.get("accounting_status") != "complete":
+                    raise RuntimeError(
+                        f"Filtering stage {stage} accounting is "
+                        f"{counts.get('accounting_status')}: {path.name}"
+                    )
+                marker = dict(marker)
+                marker["counts"] = counts
+                atomic_json(path, marker)
+            required_count_fields = set(accounting_totals)
+            missing = sorted(required_count_fields - set(counts))
+            if missing:
+                raise RuntimeError(
+                    f"Filtering stage {stage} accounting omits {missing}: "
+                    f"{path.name}"
+                )
+            for name in accounting_totals:
+                value = _parse_stat_total(counts[name])
+                if value is None:
+                    raise RuntimeError(
+                        f"Filtering stage {stage} accounting has invalid "
+                        f"{name}: {path.name}"
+                    )
+                accounting_totals[name] += value
+            if (
+                int(counts["records_removed"])
+                != int(counts["records_in"]) - int(counts["records_out"])
+                or int(counts["characters_removed"])
+                != int(counts["characters_in"]) - int(counts["characters_out"])
+            ):
+                raise RuntimeError(
+                    f"Filtering stage {stage} accounting counters disagree: "
+                    f"{path.name}"
+                )
+            reasons = counts.get("removed_by_reason", {})
+            if reasons is not None and not isinstance(reasons, dict):
+                raise RuntimeError(
+                    f"Filtering stage {stage} removal reasons are invalid: "
+                    f"{path.name}"
+                )
+            for reason, value in (reasons or {}).items():
+                parsed = _parse_stat_total(value)
+                if parsed is None:
+                    raise RuntimeError(
+                        f"Filtering stage {stage} removal reason is invalid: "
+                        f"{path.name}:{reason}"
+                    )
+                removed_by_reason[str(reason)] = (
+                    removed_by_reason.get(str(reason), 0) + parsed
+                )
         rows.append(
             {"task": path.name, "size": path.stat().st_size, "sha256": sha256_file(path)}
         )
@@ -665,6 +758,11 @@ def _completion_inventory(
         "execution_contract_sha256": expected_execution_contract_sha256,
         "marker_manifest_sha256": _json_sha256(rows),
     }
+    if stage in _DATATROVE_FILTER_STAGES:
+        receipt["accounting"] = {
+            **accounting_totals,
+            "removed_by_reason": dict(sorted(removed_by_reason.items())),
+        }
     if observed_contracts:
         # The drift is part of the receipt, not a footnote to it. A release that
         # was accepted over a contract mismatch has to say so, and say which
@@ -966,6 +1064,9 @@ def _write_filter_chain_receipt(
                             profile, state, stage
                         ),
                         allow_contract_drift=_filter_chain_drift_allowed(profile),
+                        accounting_logs_root=(
+                            root / directories.get("logs", "logs")
+                        ),
                     )
                     for stage, count in completions
                 ],
@@ -1190,6 +1291,7 @@ def _cleanup_filter_intermediate(
                 profile, state, stage
             ),
             allow_contract_drift=_filter_chain_drift_allowed(profile),
+            accounting_logs_root=root / directories.get("logs", "logs"),
         )
         for stage, count in spec["completions"]
     ]
@@ -1771,6 +1873,150 @@ def _priority(doc: Any) -> int:
     return int(doc.metadata.get("priority", 1))
 
 
+_DATATROVE_FILTER_STAGES = frozenset(
+    {
+        "exact_filter",
+        "span_filter",
+        "minhash_filter",
+        "code_filter",
+        "decontam_filter",
+        "final_hash_filter",
+    }
+)
+
+
+def _stat_total(value: Any) -> int:
+    """Read a DataTrove counter encoded as either a scalar or summary."""
+
+    parsed = _parse_stat_total(value)
+    return 0 if parsed is None else parsed
+
+
+def _parse_stat_total(value: Any) -> int | None:
+    if isinstance(value, dict):
+        if "total" not in value:
+            return None
+        value = value["total"]
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _required_stat(stats: dict[str, Any], *names: str) -> int | None:
+    for name in names:
+        if name in stats:
+            return _parse_stat_total(stats[name])
+    return None
+
+
+def _datatrove_task_counts(
+    logs: Path,
+    rank: int,
+    *,
+    stage: str,
+) -> dict[str, Any]:
+    """Recover durable filter accounting from DataTrove's rank stats."""
+
+    if stage not in _DATATROVE_FILTER_STAGES:
+        return {}
+    path = logs / "stats" / f"{rank:05d}.json"
+    if not path.is_file():
+        return {
+            "accounting_status": "missing",
+            "stats_path": str(path),
+        }
+    try:
+        steps = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "accounting_status": "unreadable",
+            "stats_path": str(path),
+            "error": type(exc).__name__,
+        }
+    if not isinstance(steps, list) or not steps:
+        return {
+            "accounting_status": "invalid",
+            "stats_path": str(path),
+        }
+
+    def named_stats(step: Any) -> tuple[str, dict[str, Any]]:
+        if not isinstance(step, dict):
+            return "", {}
+        stats = step.get("stats", {})
+        return (
+            str(step.get("name", "")).upper(),
+            stats if isinstance(stats, dict) else {},
+        )
+
+    named = [named_stats(step) for step in steps]
+    reader = next(
+        (stats for name, stats in named if name.startswith("READER")),
+        None,
+    )
+    writer = next(
+        (stats for name, stats in reversed(named) if name.startswith("WRITER")),
+        None,
+    )
+    if reader is None or writer is None:
+        return {
+            "accounting_status": "incomplete",
+            "stats_path": str(path),
+            "reader_found": reader is not None,
+            "writer_found": writer is not None,
+        }
+
+    required = {
+        "records_in": _required_stat(reader, "documents", "total"),
+        "records_out": _required_stat(writer, "total", "documents"),
+        "characters_in": _required_stat(reader, "doc_len"),
+        "characters_out": _required_stat(writer, "doc_len"),
+    }
+    missing_counters = sorted(
+        name for name, value in required.items() if value is None
+    )
+    if missing_counters:
+        return {
+            "accounting_status": "invalid",
+            "stats_path": str(path),
+            "missing_or_malformed_counters": missing_counters,
+        }
+    records_in = int(required["records_in"])
+    records_out = int(required["records_out"])
+    characters_in = int(required["characters_in"])
+    characters_out = int(required["characters_out"])
+    removed_by_reason: dict[str, int] = {}
+    for _name, stats in named:
+        for key, value in stats.items():
+            if str(key).startswith("dropped_"):
+                removed_by_reason[str(key)] = (
+                    removed_by_reason.get(str(key), 0) + _stat_total(value)
+                )
+
+    counts: dict[str, Any] = {
+        "accounting_status": "complete",
+        "stats_path": str(path),
+        "records_in": records_in,
+        "records_out": records_out,
+        "characters_in": characters_in,
+        "characters_out": characters_out,
+    }
+    if records_out > records_in or characters_out > characters_in:
+        counts["accounting_status"] = "inconsistent"
+        counts["accounting_error"] = (
+            "filter output exceeds input"
+        )
+    else:
+        counts["records_removed"] = records_in - records_out
+        counts["characters_removed"] = characters_in - characters_out
+    if removed_by_reason:
+        counts["removed_by_reason"] = dict(sorted(removed_by_reason.items()))
+    return counts
+
+
 def _local_executor(profile: dict[str, Any], stage: str, task_index: int, tasks: int, pipeline: list[Any]) -> None:
     from datatrove.executor.local import LocalPipelineExecutor
 
@@ -2290,6 +2536,15 @@ def _datatrove_stage(profile: dict[str, Any], stage: str, task_index: int) -> di
         ),
         "completed_at": utc_now(),
     }
+    if stage in _DATATROVE_FILTER_STAGES:
+        payload["counts"] = _datatrove_task_counts(
+            root
+            / directories["logs"]
+            / stage
+            / payload["execution_contract_sha256"][:24],
+            task_index,
+            stage=stage,
+        )
     state.complete(stage, f"task-{task_index:06d}", payload)
     return payload
 
@@ -2624,6 +2879,7 @@ def _tokenizer_train(profile: dict[str, Any]) -> dict[str, Any]:
         output_dir=output_dir,
         vocabulary_size=int(manifest["tokenizer"]["vocabulary_size_including_special_tokens"]),
         special_tokens=list(manifest["tokenizer"]["special_tokens"]),
+        split_digits=tokenizer_split_digits_setting(manifest["tokenizer"]),
     )
     audit_limits: dict[str, int] = {}
 
