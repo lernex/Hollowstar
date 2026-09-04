@@ -6009,7 +6009,9 @@ class Metis16ForCausalLM(nn.Module):
                 flat_losses = flat_losses.index_copy(
                     0, torch.cat(collected_positions), torch.cat(collected_losses)
                 )
-            return loss_sum, flat_losses.reshape_as(labels)
+            # Empty synchronized chunks must replay too. Utility targets
+            # detach these losses, so this edge belongs only to backbone CE.
+            return loss_sum, flat_losses.reshape_as(labels) + loss_sum * 0.0
         return loss_sum
 
     def forward(

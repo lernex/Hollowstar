@@ -1484,7 +1484,7 @@ def _train_row_inner(
             )
 
             optimizer.step()
-            if compute_allocation_mode == "joint":
+            if compute_allocation_mode == "joint" and curriculum.joint_utility_coefficient > 0.0:
                 global_utility_observations = all_reduce_sum(
                     torch.tensor([joint_step_observations], device=runtime.device),
                     topology,

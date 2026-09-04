@@ -207,6 +207,32 @@ class JointCreditTests(unittest.TestCase):
             for p in model.joint_router.parameters()
         ))
 
+    def test_token_loss_consumer_replays_empty_synchronized_head_chunks(self):
+        config = tiny_joint_config(lm_head_chunk_size=1)
+        model = Metis16ForCausalLM(config).train()
+        hidden = torch.randn(1, 1, config.d_model, requires_grad=True)
+        labels = torch.tensor([[1]])
+        calls = []
+        hook = model.lm_head.register_forward_hook(
+            lambda _module, _args, _output: calls.append(1)
+        )
+        try:
+            with (
+                patch("metis_training.model._precision_requires_synchronized_schedule", return_value=True),
+                patch("metis_training.model._group_world_size", return_value=2),
+                patch("metis_training.model.dist.all_reduce", side_effect=lambda value, **_kw: value.fill_(2)),
+            ):
+                _weighted, tokens = model._chunked_weighted_causal_loss_sum(
+                    hidden, labels, torch.ones_like(labels, dtype=torch.float32),
+                    compute_mask=torch.ones_like(labels, dtype=torch.bool),
+                    return_token_losses=True,
+                )
+                self.assertEqual(len(calls), 2)
+                tokens.sum().backward()
+                self.assertEqual(len(calls), 4)
+        finally:
+            hook.remove()
+
     def test_joint_execution_accounts_for_controller_and_padding(self):
         config = tiny_joint_config(max_passes=5)
         model = Metis16ForCausalLM(config).eval()
@@ -246,6 +272,12 @@ class JointCreditTests(unittest.TestCase):
             )
 
     def test_opt_in_trainer_records_budget_and_updates_utility_head(self):
+        self._check_trainer_update(1.0)
+
+    def test_disabled_utility_training_does_not_mark_the_head_ready(self):
+        self._check_trainer_update(0.0)
+
+    def _check_trainer_update(self, coefficient):
         from metis_ablation.specs import AblationSpec, spec_by_name
         from metis_ablation.train import train_row
 
@@ -278,6 +310,7 @@ class JointCreditTests(unittest.TestCase):
                     analysis_every=0, telemetry_every=1, max_steps=1,
                     schedule_total_steps=20, device_override="cpu", synthetic=True,
                     compute_allocation_mode="joint",
+                    joint_utility_coefficient=coefficient,
                 )
             self.assertEqual(summary["steps"], 1)
             manifest = json.loads((root / "more-core" / "run.json").read_text())
@@ -292,7 +325,10 @@ class JointCreditTests(unittest.TestCase):
                 root / "more-core" / "checkpoints" / "step-0000001" / "state.pt",
                 map_location="cpu", weights_only=False,
             )
-            self.assertGreater(int(state["model"]["joint_router.trained_updates"]), 0)
+            self.assertEqual(
+                int(state["model"]["joint_router.trained_updates"]),
+                int(coefficient > 0.0),
+            )
 
     def test_short_diagnostic_geometry_preserves_the_real_global_batch(self):
         from metis_ablation.train import main
