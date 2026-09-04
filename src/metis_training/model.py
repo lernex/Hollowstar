@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from inspect import signature
 import math
@@ -3956,6 +3956,47 @@ class DistributedHashEmbedding(nn.Module):
             dtype=dtype,
         )
         self.embedding.metis_precision_role = "ngram_table"
+        # Evaluation-only packed storage.  Kept outside the module/buffer tree
+        # so it never enters a checkpoint or silently replaces the trainable
+        # sparse parameter.  Build it only after final device placement.
+        self._quantized_snapshot: Any = None
+
+    @torch.no_grad()
+    def enable_quantized_lookup(
+        self,
+        spec: Any,
+        *,
+        chunk_rows: int = 65_536,
+    ) -> dict[str, Any]:
+        if self.training:
+            raise RuntimeError(
+                "Packed N-gram table snapshots are evaluation-only; call model.eval() "
+                "before measuring quantized loss parity."
+            )
+        from .ngram_quantization import quantize_ngram_table
+
+        self._quantized_snapshot = quantize_ngram_table(
+            self.embedding.weight.detach(),
+            spec,
+            chunk_rows=chunk_rows,
+        )
+        return self._quantized_snapshot.storage_report()
+
+    def disable_quantized_lookup(self) -> None:
+        self._quantized_snapshot = None
+
+    def _lookup_local(self, row_ids: Tensor) -> Tensor:
+        if self._quantized_snapshot is None:
+            return self.embedding(row_ids)
+        if self.training:
+            raise RuntimeError(
+                "Packed N-gram table snapshots cannot be used for training; "
+                "disable the snapshot or call eval()."
+            )
+        return self._quantized_snapshot.lookup(
+            row_ids,
+            output_dtype=self.embedding.weight.dtype,
+        )
 
     def forward(self, row_ids: Tensor) -> Tensor:
         if row_ids.dtype != torch.long:
@@ -3965,7 +4006,7 @@ class DistributedHashEmbedding(nn.Module):
         ):
             raise IndexError("Hashed N-gram row is outside the table.")
         if self.table_mode == "replicated" or self.world_size == 1:
-            return self.embedding(row_ids)
+            return self._lookup_local(row_ids)
         original_shape = row_ids.shape
         flattened = row_ids.reshape(-1)
         destinations = flattened.remainder(self.world_size)
@@ -3986,7 +4027,7 @@ class DistributedHashEmbedding(nn.Module):
             output_splits=recv_counts,
             group=self.process_group,
         )
-        local_values = self.embedding(requested_rows)
+        local_values = self._lookup_local(requested_rows)
         returned = _variable_all_to_all(
             local_values,
             input_splits=recv_counts,
@@ -4114,6 +4155,55 @@ class NGramConditionalMemory(nn.Module):
         )
         self._sync_enabled = False
         self._sync_group: Any = None
+
+    @torch.no_grad()
+    def enable_quantized_table_lookup(
+        self,
+        spec: Any,
+        *,
+        chunk_rows: int = 65_536,
+    ) -> dict[str, Any]:
+        """Install one packed snapshot per hash table for loss/throughput probes."""
+
+        reports: dict[str, dict[str, Any]] = {}
+        try:
+            for name, table in self.tables.items():
+                reports[name] = table.enable_quantized_lookup(
+                    spec,
+                    chunk_rows=chunk_rows,
+                )
+        except BaseException:
+            self.disable_quantized_table_lookup()
+            raise
+        storage_bytes = sum(int(row["storage_bytes"]) for row in reports.values())
+        parameters = sum(int(row["logical_parameters"]) for row in reports.values())
+        return {
+            "format": next(iter(reports.values()))["format"],
+            "table_count": len(reports),
+            "logical_parameters": parameters,
+            "storage_bytes": storage_bytes,
+            "bits_per_parameter": 8.0 * storage_bytes / max(parameters, 1),
+            "tables": reports,
+        }
+
+    def disable_quantized_table_lookup(self) -> None:
+        for table in self.tables.values():
+            table.disable_quantized_lookup()
+
+    @contextmanager
+    def quantized_table_lookup(
+        self,
+        spec: Any,
+        *,
+        chunk_rows: int = 65_536,
+    ) -> Iterator[dict[str, Any]]:
+        """Temporarily change only table storage and always restore BF16 lookup."""
+
+        report = self.enable_quantized_table_lookup(spec, chunk_rows=chunk_rows)
+        try:
+            yield report
+        finally:
+            self.disable_quantized_table_lookup()
 
     def _valid_ngram_mask(
         self,
