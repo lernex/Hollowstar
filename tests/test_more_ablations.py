@@ -1958,6 +1958,34 @@ def test_more_core_and_more_rm_specs_actually_differ():
     assert core.routed_k_mode == memory.routed_k_mode
 
 
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("more-core", "more-rm"),
+        ("loop-fixed", "loop-pathway-frozen"),
+    ],
+)
+def test_matched_pairs_start_from_identical_model_weights(
+    left: str,
+    right: str,
+    tiny_proxy,
+):
+    def initialized(name: str) -> dict[str, torch.Tensor]:
+        torch.manual_seed(16_062_026)
+        config = spec_by_name(name).model_config(
+            mhc_backend="torch_reference",
+            mamba_backend="torch_reference",
+            attention_backend="torch_reference",
+        )
+        return Metis16ForCausalLM(config).state_dict()
+
+    left_state = initialized(left)
+    right_state = initialized(right)
+    assert left_state.keys() == right_state.keys()
+    for name in left_state:
+        torch.testing.assert_close(left_state[name], right_state[name])
+
+
 # --------------------------------------------------------------------------
 # transition alignment under packing
 

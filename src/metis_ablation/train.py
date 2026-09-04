@@ -474,9 +474,12 @@ def _train_row_inner(
             "rank count is part of the experiment, not a scheduling detail."
         )
 
-    torch.manual_seed(seed + 1_000 * spec.index)
+    # Matched rows must begin from identical weights. Row-specific randomness
+    # belongs to the routing controls below, not to model initialization, or a
+    # Core/RM or fixed/frozen loss gap is confounded by a different draw.
+    torch.manual_seed(seed)
     if runtime.device.type == "cuda":
-        torch.cuda.manual_seed_all(seed + 1_000 * spec.index)
+        torch.cuda.manual_seed_all(seed)
 
     on_accelerator = runtime.device.type == "cuda"
     config = spec.model_config(
