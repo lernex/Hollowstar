@@ -1864,18 +1864,45 @@ def test_scaling_dense_controls_stay_parameter_matched():
         assert abs(dense - sparse) / sparse < 0.02, (scale, dense, sparse)
 
 
-def test_scaling_ladder_holds_the_recurrent_block_shape_constant():
+def test_xl_grows_physical_depth_at_wave_one_width():
     from metis_ablation.specs import spec_by_name
 
-    for name in ("more-core-xs", "more-core", "more-core-xl"):
-        config = spec_by_name(name).model_config(
-            mhc_backend="torch_reference",
-            mamba_backend="torch_reference",
-            attention_backend="torch_reference",
-        )
+    backends = {
+        "mhc_backend": "torch_reference",
+        "mamba_backend": "torch_reference",
+        "attention_backend": "torch_reference",
+    }
+    primary = spec_by_name("more-core").model_config(**backends)
+    xs = spec_by_name("more-core-xs").model_config(**backends)
+    assert (xs.d_model, primary.d_model) == (2_304, 4_096)
+    for config in (xs, primary):
         assert config.n_layers == 2
         assert config.attention_indices == (1,)
-        assert config.latent_dim * 2 == config.d_model
+    for archetype in (
+        "dense-param-matched",
+        "moe-k4",
+        "more-core",
+        "more-rm",
+    ):
+        spec = spec_by_name(f"{archetype}-xl")
+        config = spec.model_config(**backends)
+        assert config.d_model == primary.d_model == 4_096
+        assert config.n_layers == 6
+        assert config.attention_indices == (1, 3, 5)
+        for field in (
+            "n_heads",
+            "n_kv_heads",
+            "head_dim",
+            "latent_dim",
+            "expert_intermediate_dim",
+            "mamba_ngroups",
+            "budgeted_depth_values",
+        ):
+            assert getattr(config, field) == getattr(primary, field), (archetype, field)
+        assert config.ngram_memory.injection_layers == (2, 5)
+        if config.ffn_mode == "moe":
+            assert config.n_routed_experts == 80
+        assert spec.measured_tokens_per_second is None
 
 
 def test_wave_2_uses_capacity_safe_xs_and_xl_batches():
@@ -1918,7 +1945,7 @@ def test_xl_point_is_a_real_five_billion_parameter_model():
     assert 4_800_000_000 < sparse.stored_total < 5_200_000_000
     assert (
         abs(dense.stored_total - sparse.stored_total) / sparse.stored_total
-        < 0.0002
+        < 0.001
     )
     assert sparse.active_per_pass_mean > 2 * spec_by_name(
         "more-core"

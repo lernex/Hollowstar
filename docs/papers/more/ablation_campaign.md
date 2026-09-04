@@ -154,9 +154,9 @@ asymmetry is what the sparse axis buys.
 ### Wave 2 — scaling ladder
 
 One size is a data point; three sizes are a trend. Wave 1 supplies the 1.81B
-middle point. Wave 2 brackets it with a 0.61B XS point and a 5.01B XL point,
+middle point. Wave 2 brackets it with a 0.61B XS point and a 5.12B XL point,
 carrying the dense, single-pass sparse, Core, and RM archetypes to both. This is
-a nearly logarithmic **0.61B / 1.81B / 5.01B** ladder rather than a collection
+a nearly logarithmic **0.61B / 1.81B / 5.12B** ladder rather than a collection
 of sub-billion demonstrations.
 
 The high point is not an arbitrary round number. **Loop the Loopies! (July
@@ -165,14 +165,13 @@ then 3.78B and 6.36B recurrent models beside a 4.76B vanilla model
 ([primary paper](https://arxiv.org/abs/2607.16051)). **LoopMoE (June 2026,
 revised August 2026)** evaluates 3B and 9B models; their exact geometric midpoint
 is 5.20B, and its reported recursive advantage is larger at 9B than at 3B
-([primary paper](https://arxiv.org/abs/2606.04438)). The 5.01B point therefore
+([primary paper](https://arxiv.org/abs/2606.04438)). The 5.12B point therefore
 sits directly inside the scale regime used by the nearest published work.
 
-Wave 2 uses **100B tokens per row**. At 5.01B stored parameters, 50B would give
-the parameter-matched dense control only 10 tokens per stored parameter and
-reintroduce the undertraining bias Wave 1 was explicitly sized to avoid. 100B
-is the minimum defensible compromise: 20 tokens per stored parameter for the
-XL dense control while keeping the scaling wave shorter than Wave 1. Loopies'
+Wave 2 retains **100B tokens per row**, about 19.5 tokens per stored parameter
+for the XL dense control, versus about 9.8 at 50B. This reduces the risk of
+judging a severely undertrained dense baseline without establishing convergence.
+Loopies'
 nearest 4.76B/3.78B rung trains for 500B tokens (July 2026), so this remains a
 budgeted architecture study rather than a claim of converged frontier-scale
 pretraining.
@@ -184,25 +183,36 @@ pretraining.
 | 22 | MoRE-Core (XS) | scaling point: all three axes together | 0.610B / 0.091B | 3.81 | 60 | 15 | 9.0 |
 | 23 | MoRE-RM (XS) | scaling point: route-typed recurrent depth memory | 0.610B / 0.091B | 3.81 | 60 | 15 | 9.0 |
 | | **Batch 2a** | | | | **220** | **55** | **9.0** |
-| 24 | Dense, parameter-matched (XL) | scaling point: dense reference at MoRE's stored parameters | 5.006B / 3.717B | 26.51 | 160 | 40 | 23.5 |
-| 25 | MoE k=4 (XL) | scaling point: sparse routing without recursion | 5.006B / 0.789B | 8.94 | 80 | 20 | 15.8 |
-| 26 | MoRE-Core (XL) | scaling point: all three axes together | 5.006B / 0.789B | 17.89 | 80 | 20 | 31.7 |
-| 27 | MoRE-RM (XL) | scaling point: route-typed recurrent depth memory | 5.006B / 0.789B | 17.89 | 80 | 20 | 31.7 |
-| | **Batch 2b** | | | | **400** | **100** | **31.7** |
+| 24 | Dense, parameter-matched (XL) | scaling point: dense reference at MoRE's stored parameters | 5.120B / 4.033B | 27.19 | 160 | 40 | 24.1 |
+| 25 | MoE k=4 (XL) | scaling point: sparse routing without recursion | 5.124B / 0.809B | 7.85 | 80 | 20 | 13.9 |
+| 26 | MoRE-Core (XL) | scaling point: all three axes together | 5.124B / 0.809B | 15.72 | 80 | 20 | 27.8 |
+| 27 | MoRE-RM (XL) | scaling point: route-typed recurrent depth memory | 5.124B / 0.809B | 15.72 | 80 | 20 | 27.8 |
+| | **Batch 2b** | | | | **400** | **100** | **27.8** |
 
-The three geometries keep the same two-layer recurrent block shape while
-scaling `d_model`, latent width, expert width/count, and conditional memory.
-This removes a layer-count confound from the original XS/XXS draft. **The
-N-gram table scales too**: held fixed, it would dominate the smallest model.
-Slot counts keep the table a roughly constant fraction of routed-expert capacity
+**XL grows depth instead of stretching width.** All four XL rows now use
+`d_model=4096`, latent width 2048, and six physical layers alternating three
+Mamba-2 and three attention layers (zero-based attention indices 1, 3, 5).
+The sparse rows retain 80 routed experts per layer, with intermediate width
+1152. Core/RM execute about **12 layer applications per token** at mean
+recursion depth two, and at most 18 under the primary one-to-three-pass policy.
+The same-width dense control uses the same six-layer backbone, with its dense
+FFN intermediate width re-solved to match stored parameters.
+
+XS and Wave 1 keep their existing two-layer geometries. Comparisons within
+each size share one backbone; comparisons across sizes now vary both size and
+shape and must not be presented as a width-only scaling law. **The N-gram table
+scales too**: held fixed, it would dominate the smallest model.
+Slot counts keep the table a roughly constant fraction of stored capacity
 (`test_scaling_ladder_keeps_the_ngram_table_proportional`).
 
 The XL point is split from XS because all eight rows require 620 APUs. Batch 2a
-uses 220; batch 2b uses 400, leaving 112 APUs of nominal launch headroom. The dense
-solver expands its search beyond the old 131k intermediate-width ceiling and
-matches the 5.006B sparse model within 0.02%. Stored-to-executed-active ratios
-remain within two percentage points across XS, Wave 1, and XL, so the curve
-scales capacity without quietly changing sparsity or mean recurrent compute.
+uses 220; batch 2b uses 400, leaving 112 APUs of nominal launch headroom.
+The 64-aligned dense solver returns an intermediate width of 93,248, matching
+the 5.124B sparse model within **0.073%**. Executed-active/stored ratios remain
+within two percentage points across the three sizes, while the physical-depth
+change is reported explicitly. These allocations and wall clocks remain
+provisional until an XL HBM/throughput canary; lower modeled FLOPs do not prove
+that a deeper stack will run faster.
 
 ### Wave 3 — paired seeds
 
@@ -228,9 +238,9 @@ nothing else moved.
 | Wave | Rows | Executed FLOPs | Wall clock @10% MFU |
 |---|---:|---:|---:|
 | 1 — the ladder, batches 1a + 1b | 13 | 5,166 EFLOP | 32.4 h at 10% MFU / **50.45 h measured** |
-| 2 — scaling, XS then XL, 100B/row | 8 | 8,424 EFLOP | 40.7 h |
+| 2 — scaling, XS then XL, 100B/row | 8 | 7,947 EFLOP | 36.8 h |
 | 3 — seeds | 5 | 2,254 EFLOP | 16.7 h |
-| **Total** | **26** | **15,844 EFLOP** | **~89.8 h at 10% MFU; ~107.9 h with measured Wave 1** |
+| **Total** | **26** | **15,367 EFLOP** | **~85.9 h at 10% MFU; ~104.0 h with measured Wave 1** |
 
 Waves run one after another, so the 512-APU machine limit applies per
 batch, not to the sum. Add the archetype learning-rate sweep (12 short runs at 1B tokens,
@@ -586,7 +596,7 @@ compared against twelve rows that stayed in parity.
 - **Rows trained with `routed_k_mode=fixed` still carry unused `k_router`
   parameters.** Negligible in size; state it in the methods section.
 - **Wave-2 and Wave-3 wall clocks remain model-based estimates.** Wave 1 uses
-  measured Portage rates; the smaller scaling geometries and second-seed batch
+  measured Portage rates; the XS/deeper-XL geometries and second-seed batch
   still need their launch-day warm-step telemetry checked before promising an
   end time.
 
@@ -598,8 +608,7 @@ compared against twelve rows that stayed in parity.
    winners in `learning-rates.json`.
 4. Wave 1a, then Wave 1b (13 rows, about 50.5 measured hours before queue/restart
    overhead).
-5. Wave 2a then 2b (8 rows at 100B tokens each, estimated ~41 h total at
-   10% MFU; the new XL
-   geometry requires a launch-day HBM/throughput canary).
+5. Wave 2a then 2b (8 rows at 100B tokens each, estimated ~37 h total at
+   10% MFU; the deeper XL requires a launch-day HBM/throughput canary).
 6. Wave 3 (5 rows, estimated ~13 h at 10% MFU).
 7. Analysis pass over checkpoints; fill every `\TODO{}` in `main.tex`.

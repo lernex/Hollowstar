@@ -780,9 +780,9 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
 # Wave 2 -- scaling ladder
 #
 # One size is a data point, three sizes are a trend. Wave 1 supplies the 1.81B
-# middle point; Wave 2 brackets it with a ~0.62B XS model and a ~4.98B XL model.
-# All three use the same two-layer recurrent block shape, while d_model, latent
-# width, expert width/count, and conditional memory scale together.
+# middle point; Wave 2 brackets it with a ~0.61B XS model and a ~5.12B XL model.
+# XL keeps Wave 1's width and per-layer dimensions, growing physical depth
+# instead. This is a size-and-shape comparison, not a width-only scaling curve.
 
 _SCALE_GEOMETRIES: dict[str, dict[str, Any]] = {
     # Roughly one third of Wave 1. n_heads follows d_model at head_dim 64;
@@ -799,17 +799,16 @@ _SCALE_GEOMETRIES: dict[str, dict[str, Any]] = {
         "mamba_ngroups": 8,
         "_ngram_slots_per_head": 100_003,
     },
-    # A frontier-useful point above Wave 1. The dimensions are chosen so the
-    # audited sparse model lands at ~5B stored parameters without changing the
-    # recurrent block shape or the mean depth/k compute contract.
+    # Keep Wave 1's per-layer dimensions and 1:1 mixer ratio rather than
+    # concentrating the larger parameter budget into two over-wide layers.
     "xl": {
-        "d_model": 7_168,
-        "n_heads": 112,
-        "n_kv_heads": 28,
-        "n_layers": 2,
-        "attention_indices": (1,),
-        "latent_dim": 3_584,
-        "expert_intermediate_dim": 1_792,
+        "d_model": 4_096,
+        "n_heads": 64,
+        "n_kv_heads": 16,
+        "n_layers": 6,
+        "attention_indices": (1, 3, 5),
+        "latent_dim": 2_048,
+        "expert_intermediate_dim": 1_152,
         "n_routed_experts": 80,
         "mamba_ngroups": 16,
         "_ngram_slots_per_head": 800_011,
@@ -839,10 +838,9 @@ def _scaled_dense_intermediate(scale: str, objective: str, passes: int) -> int:
     )
 
 
-# Allocation per (scale, archetype), chosen so every wave-2 row finishes within
-# about half an hour of the others.  Each tuple multiplies to 480, so the global batch
-# is identical to wave 1 and the scaling curve is directly comparable to the main
-# ladder rather than merely similar.  ``(apus, micro_batch, grad_accum)``.
+# Provisional allocation per (scale, archetype). Each tuple multiplies to 480,
+# preserving the global batch while the deeper XL awaits an on-hardware
+# memory/throughput canary. ``(apus, micro_batch, grad_accum)``.
 _SCALING_ALLOCATION: dict[tuple[str, str], tuple[int, int, int]] = {
     ("xs", "dense-param-matched"): (60, 1, 8),
     ("xs", "moe-k4"): (40, 2, 6),

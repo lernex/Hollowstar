@@ -128,8 +128,9 @@ and untyped perform identically, we built an expensive MeSH and should say so.
 - [x] `metis_ablation` package: specs, strided sampler, DP trainer, routing analyzer, campaign planner
 - [x] Slurm launchers for the 13-row Wave 1, split into measured makespan-first 1a/1b batches (`slurm/ablation/`)
 - [ ] Resolve `[CHECK]` citations in `references.bib`
-- [x] Wave 2 (0.61B / 1.81B / 5.01B scaling ladder, 8 rows at 100B
-  tokens each) and wave 3 (paired seeds, 5 rows)
+- [x] Wave 2 (0.61B / 1.81B / 5.12B scaling ladder, 8 rows at 100B
+  tokens each; XL uses 6 physical layers at width 4096) and wave 3
+  (paired seeds, 5 rows)
 - [x] Archetype learning-rate sweep generator
 - [x] Checkpoint resume with atomic writes and a schedule-change guard
 - [x] FP8-vs-BF16 parity check per run

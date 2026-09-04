@@ -496,14 +496,18 @@ sees it stated is satisfied; one who suspects it is not.}
 
 \subsection{Scaling}
 
-\TODO{Three controlled stored-parameter sizes --- 0.61B, 1.81B, and 5.01B ---
+\TODO{Three controlled stored-parameter sizes --- 0.61B, 1.81B, and 5.12B ---
 $\times$ four archetypes (Dense, MoE, MoRE-Core, MoRE-RM), plus Praxis and Logos
 as larger scale demonstrations. Wave 2 trains each added point for 100B tokens;
-at 5.01B this gives the parameter-matched dense control 20 tokens per stored
-parameter rather than the clearly undertrained 10 that a 50B run would provide.
-The controlled ladder is nearly logarithmic and holds the two-layer recurrent
-block shape fixed. The question is whether the MoRE advantage holds, grows, or
-shrinks with scale.}
+at 5.12B this gives the parameter-matched dense control about 19.5 tokens per
+stored parameter, without establishing convergence. XL holds
+$d_{\mathrm{model}}=4096$, latent width 2048, and expert intermediate width
+1152 from Wave 1, but grows to six physical layers (three Mamba-2 and three
+attention) with 80 routed experts per layer. XS and Wave 1 remain two-layer
+models. Each four-way comparison shares one backbone, but the nearly
+logarithmic ladder varies size and physical depth across points; it is not a
+width-only scaling law. The question is whether the MoRE advantage holds,
+grows, or shrinks across these scales and shapes.}
 
 \subsection{Results}
 
@@ -607,7 +611,7 @@ These were written before the runs, and we report against them either way.
 
 \begin{itemize}
 \item \textbf{Ablation scale.} \TODO{state tokens/parameter per row}. The
-controlled ladder now reaches 5.01B stored parameters, but conclusions about
+controlled ladder now reaches 5.12B stored parameters, but conclusions about
 relative architecture quality still do not automatically transfer to frontier
 scale. The Praxis and Logos demonstrations partially address this and do not
 close it, and anyone claiming otherwise about their own ablations is guessing too.
