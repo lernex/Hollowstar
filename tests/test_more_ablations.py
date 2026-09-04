@@ -641,6 +641,90 @@ def test_exact_budget_calibration_teaches_the_selected_depth_and_width():
     assert calibrated_output.auxiliary_loss > baseline_output.auxiliary_loss
 
 
+def test_exact_width_policy_does_not_backpropagate_into_shared_features():
+    torch.manual_seed(31)
+    config = _tiny(
+        budgeted_k_calibration_coefficient=1.0,
+    )
+    model = Metis16ForCausalLM(config).train()
+    input_ids, labels = _tiny_batch(config, batch=2, length=16)
+    output = model(
+        input_ids,
+        labels,
+        curriculum=_curriculum(
+            continuation_mode="depth_one",
+            routed_k_mode="budgeted",
+            target_mean_routed_k=2.0,
+        ),
+    )
+
+    output.auxiliary_losses["routed_k_budget"].backward()
+
+    k_router_gradients = [
+        parameter.grad
+        for name, parameter in model.named_parameters()
+        if ".k_router." in name
+    ]
+    assert any(
+        gradient is not None and bool(torch.count_nonzero(gradient))
+        for gradient in k_router_gradients
+    )
+    upstream_gradients = [
+        parameter.grad
+        for name, parameter in model.named_parameters()
+        if ".moe.latent_down." in name or name == "embedding.weight"
+    ]
+    assert all(
+        gradient is None or not bool(torch.count_nonzero(gradient))
+        for gradient in upstream_gradients
+    )
+
+
+def test_exact_depth_policy_trains_heads_without_backpropagating_into_backbone():
+    torch.manual_seed(37)
+    config = _tiny(
+        budgeted_depth_values=(1, 2, 3),
+        budgeted_depth_calibration_coefficient=1.0,
+    )
+    model = Metis16ForCausalLM(config).train()
+    input_ids, labels = _tiny_batch(config, batch=2, length=16)
+    output = model(
+        input_ids,
+        labels,
+        curriculum=_curriculum(
+            continuation_mode="budgeted",
+            routed_k_mode="fixed",
+            target_mean_depth=2.0,
+            fixed_routed_k=2,
+        ),
+    )
+
+    output.auxiliary_losses["continuation_budget_calibration"].backward()
+
+    assert any(
+        parameter.grad is not None and bool(torch.count_nonzero(parameter.grad))
+        for parameter in model.continuation.parameters()
+    )
+    route_projection_gradients = [
+        parameter.grad
+        for name, parameter in model.named_parameters()
+        if name.startswith("depth_memory.route_projection.")
+    ]
+    assert any(
+        gradient is not None and bool(torch.count_nonzero(gradient))
+        for gradient in route_projection_gradients
+    )
+    backbone_gradients = [
+        parameter.grad
+        for name, parameter in model.named_parameters()
+        if name == "embedding.weight" or ".mixer." in name
+    ]
+    assert all(
+        gradient is None or not bool(torch.count_nonzero(gradient))
+        for gradient in backbone_gradients
+    )
+
+
 def test_exact_budget_tangent_removes_infeasible_common_mode():
     soft = torch.tensor(
         [[0.1, 0.4, 0.8, 0.9]],

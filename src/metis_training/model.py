@@ -3753,7 +3753,14 @@ class AdaptiveDroplessMoE(nn.Module):
             dtype=torch.float32,
         )
         centered_choices = k_choices - k_choices.mean()
-        k_logits = _fp32_linear(self.k_router, route_input)
+        if curriculum.routed_k_mode == "budgeted":
+            # Exact allocation trains the policy head, not the shared
+            # representation. Letting surrogate budget credit flow through the
+            # router input made the backbone optimize the relaxation instead of
+            # the hard route that actually executed.
+            k_logits = _fp32_linear(self.k_router, route_input.detach())
+        else:
+            k_logits = _fp32_linear(self.k_router, route_input)
         k_logits = (
             k_logits
             + token_difficulty.detach().unsqueeze(-1) * centered_choices
@@ -6464,6 +6471,10 @@ class Metis16ForCausalLM(nn.Module):
                 _add_loss(auxiliary_losses, name, value)
 
             before_continuation_streams = streams
+            budgeted_depth = (
+                curriculum_state.continuation_mode == "budgeted"
+                and force_depth is None
+            )
             if token_layout is not None:
                 continuation_bank = RecurrentMemoryBank(
                     entries=[
@@ -6490,15 +6501,43 @@ class Metis16ForCausalLM(nn.Module):
                 )
                 packed_route_features = self._precision_call(
                     self.depth_memory.routing_features,
-                    packed_current_state,
-                    packed_memory_summary,
-                    packed_state_difference,
-                    token_layout.pack(route_history),
+                    (
+                        packed_current_state.detach()
+                        if budgeted_depth
+                        else packed_current_state
+                    ),
+                    (
+                        packed_memory_summary.detach()
+                        if budgeted_depth
+                        else packed_memory_summary
+                    ),
+                    (
+                        packed_state_difference.detach()
+                        if budgeted_depth
+                        else packed_state_difference
+                    ),
+                    (
+                        token_layout.pack(route_history).detach()
+                        if budgeted_depth
+                        else token_layout.pack(route_history)
+                    ),
                 )
                 packed_continuation_probability = self.continuation(
-                    packed_current_state,
-                    packed_memory_summary,
-                    packed_state_difference,
+                    (
+                        packed_current_state.detach()
+                        if budgeted_depth
+                        else packed_current_state
+                    ),
+                    (
+                        packed_memory_summary.detach()
+                        if budgeted_depth
+                        else packed_memory_summary
+                    ),
+                    (
+                        packed_state_difference.detach()
+                        if budgeted_depth
+                        else packed_state_difference
+                    ),
                     packed_route_features,
                 )
                 raw_continuation_streams = token_layout.scatter(
@@ -6530,15 +6569,31 @@ class Metis16ForCausalLM(nn.Module):
                 state_difference = current_state - previous_pass_state
                 continuation_route_features = self._precision_call(
                     self.depth_memory.routing_features,
-                    current_state,
-                    last_memory_summary,
-                    state_difference,
-                    route_history,
+                    current_state.detach() if budgeted_depth else current_state,
+                    (
+                        last_memory_summary.detach()
+                        if budgeted_depth
+                        else last_memory_summary
+                    ),
+                    (
+                        state_difference.detach()
+                        if budgeted_depth
+                        else state_difference
+                    ),
+                    route_history.detach() if budgeted_depth else route_history,
                 )
                 continuation_probability = self.continuation(
-                    current_state,
-                    last_memory_summary,
-                    state_difference,
+                    current_state.detach() if budgeted_depth else current_state,
+                    (
+                        last_memory_summary.detach()
+                        if budgeted_depth
+                        else last_memory_summary
+                    ),
+                    (
+                        state_difference.detach()
+                        if budgeted_depth
+                        else state_difference
+                    ),
                     continuation_route_features,
                 )
             learned_depth = (
