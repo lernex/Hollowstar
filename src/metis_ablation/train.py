@@ -445,13 +445,14 @@ def _freeze_inactive_policy_parameters(
     curriculum: Any,
 ) -> tuple[str, ...]:
     frozen: list[str] = []
-    if curriculum.continuation_mode in {"random", "fixed_max", "depth_one"}:
+    joint = getattr(curriculum, "compute_allocation_mode", "legacy") == "joint"
+    if joint or curriculum.continuation_mode in {"random", "fixed_max", "depth_one"}:
         for name, parameter in model.continuation.named_parameters(
             prefix="continuation"
         ):
             parameter.requires_grad_(False)
             frozen.append(name)
-    if curriculum.routed_k_mode in {"random", "fixed"}:
+    if joint or curriculum.routed_k_mode in {"random", "fixed"}:
         for layer_index, layer in enumerate(model.layers):
             router = getattr(layer.moe, "k_router", None)
             if router is None:
@@ -479,16 +480,23 @@ def _clip_exact_budget_gradient_groups(
         "depth_policy": [],
         "width_policy": [],
     }
+    joint = getattr(curriculum, "compute_allocation_mode", "legacy") == "joint"
+    if joint:
+        groups["joint_policy"] = []
     for name, parameter in model.named_parameters():
         if parameter.grad is None:
             continue
-        if (
-            curriculum.routed_k_mode == "budgeted"
+        if joint and name.startswith("joint_router."):
+            group = "joint_policy"
+        elif (
+            not joint
+            and curriculum.routed_k_mode == "budgeted"
             and ".k_router." in name
         ):
             group = "width_policy"
         elif (
-            curriculum.continuation_mode == "budgeted"
+            not joint
+            and curriculum.continuation_mode == "budgeted"
             and (
                 name.startswith("continuation.")
                 or name.startswith("depth_memory.route_projection.")
@@ -818,6 +826,10 @@ def train_row(
     synthetic: bool,
     resume: bool = True,
     final_checkpoint: bool = True,
+    compute_allocation_mode: str = "legacy",
+    joint_router_exploration: float = 0.05,
+    joint_utility_coefficient: float = 1.0,
+    joint_max_passes: int | None = None,
 ) -> dict[str, Any]:
     runtime = initialize_runtime(device=device_override)
     lease = None
@@ -842,6 +854,10 @@ def train_row(
             synthetic=synthetic,
             resume=resume,
             final_checkpoint=final_checkpoint,
+            compute_allocation_mode=compute_allocation_mode,
+            joint_router_exploration=joint_router_exploration,
+            joint_utility_coefficient=joint_utility_coefficient,
+            joint_max_passes=joint_max_passes,
         )
     finally:
         _release_row_lease(lease)
@@ -865,6 +881,10 @@ def _train_row_inner(
     synthetic: bool,
     resume: bool = True,
     final_checkpoint: bool = True,
+    compute_allocation_mode: str = "legacy",
+    joint_router_exploration: float = 0.05,
+    joint_utility_coefficient: float = 1.0,
+    joint_max_passes: int | None = None,
 ) -> dict[str, Any]:
     if runtime.distributed and runtime.world_size != spec.apus:
         raise RuntimeError(
@@ -897,6 +917,23 @@ def _train_row_inner(
             "varlen_fused_required" if on_accelerator else "torch_reference"
         ),
     )
+    if compute_allocation_mode not in {"legacy", "joint"}:
+        raise ValueError("compute_allocation_mode must be legacy or joint")
+    if compute_allocation_mode == "joint":
+        if spec.continuation_mode != "budgeted" or spec.routed_k_mode != "budgeted":
+            raise ValueError("Joint routing must not silently replace a fixed or random control")
+        config = replace(config, joint_compute_router=True, budgeted_depth_values=())
+        config.validate()
+        curriculum = replace(
+            curriculum,
+            compute_allocation_mode="joint",
+            joint_router_exploration=joint_router_exploration,
+            joint_utility_coefficient=joint_utility_coefficient,
+            max_passes=joint_max_passes,
+        )
+        curriculum.validate(config)
+    elif joint_max_passes is not None:
+        raise ValueError("joint_max_passes requires joint allocation")
     topology = build_replicated_expert_topology(runtime, family=config.family)
     policy = build_precision_policy(
         config.precision,
@@ -963,9 +1000,11 @@ def _train_row_inner(
         frozen_policy_parameters
     )
     exact_budget_groups = {
-        "depth_policy": curriculum.continuation_mode == "budgeted",
-        "width_policy": curriculum.routed_k_mode == "budgeted",
+        "depth_policy": curriculum.continuation_mode == "budgeted" and compute_allocation_mode != "joint",
+        "width_policy": curriculum.routed_k_mode == "budgeted" and compute_allocation_mode != "joint",
     }
+    if compute_allocation_mode == "joint":
+        exact_budget_groups["joint_policy"] = True
     optimizer_manifest["gradient_clipping"] = (
         {
             "mode": "independent_exact_budget_groups",
@@ -1239,6 +1278,10 @@ def _train_row_inner(
             loss_numerator = 0.0
             supervised_total = 0
             step_telemetry: dict[str, Any] = {}
+            joint_step_flops = 0.0
+            joint_step_router_flops = 0.0
+            joint_step_active_tokens = 0.0
+            joint_step_observations = 0.0
             expert_selection_counts: torch.Tensor | None = None
             depth_histogram = torch.zeros(
                 config.max_passes + 1, device=runtime.device, dtype=torch.long
@@ -1341,6 +1384,11 @@ def _train_row_inner(
                 total_tokens += int(batch.non_padding_tokens)
 
                 telemetry = output.telemetry
+                if compute_allocation_mode == "joint":
+                    joint_step_flops += float(telemetry["joint_model_flops"].detach().item())
+                    joint_step_router_flops += float(telemetry["joint_router_flops"].detach().item())
+                    joint_step_active_tokens += float(telemetry["executed_active_tokens"].detach().item())
+                    joint_step_observations += float(telemetry["joint_utility_observations"].detach().item())
                 counts = telemetry.get("expert_selection_counts")
                 if isinstance(counts, torch.Tensor):
                     detached = counts.detach()
@@ -1382,7 +1430,8 @@ def _train_row_inner(
                 model, topology, global_supervised_tokens=global_supervised
             )
             if (
-                curriculum.continuation_mode == "budgeted"
+                compute_allocation_mode == "joint"
+                or curriculum.continuation_mode == "budgeted"
                 or curriculum.routed_k_mode == "budgeted"
             ):
                 gradient_group_norms = _clip_exact_budget_gradient_groups(
@@ -1434,6 +1483,13 @@ def _train_row_inner(
             )
 
             optimizer.step()
+            if compute_allocation_mode == "joint":
+                global_utility_observations = all_reduce_sum(
+                    torch.tensor([joint_step_observations], device=runtime.device),
+                    topology,
+                )
+                if float(global_utility_observations[0].item()) > 0:
+                    model.joint_router.mark_trained()
             updater = getattr(model, "update_expert_selection_biases", None)
             if callable(updater) and expert_selection_counts is not None:
                 updater(expert_selection_counts)
@@ -1447,6 +1503,26 @@ def _train_row_inner(
                     observed_mean_passes=step_telemetry.get("mean_depth"),
                     observed_mean_routed_k=step_telemetry.get("mean_routed_k"),
                 )
+                if compute_allocation_mode == "joint":
+                    joint_totals = all_reduce_sum(
+                        torch.tensor(
+                            [joint_step_flops, joint_step_router_flops, joint_step_active_tokens],
+                            device=runtime.device,
+                            dtype=torch.float64,
+                        ),
+                        topology,
+                    )
+                    model_flops, router_flops, active_tokens = [
+                        float(value.item()) for value in joint_totals
+                    ]
+                    replay_flops = (
+                        (model_flops - router_flops) / 3.0
+                        if config.activation_recompute_policy in {"pass", "layer"}
+                        else 2.0 * config.vocab_size * config.d_model * active_tokens
+                    )
+                    flops = model_flops + replay_flops
+                    step_telemetry["global_joint_model_flops"] = model_flops
+                    step_telemetry["global_joint_router_flops"] = router_flops
                 memory = peak_memory_evidence(runtime.device)
                 metrics.write(
                     {
@@ -1600,6 +1676,10 @@ def _synthetic_batches(*, config: Any, spec: AblationSpec, step: int, rank: int,
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train one MoRE ablation row")
     parser.add_argument("--row", required=True, help="Ablation row name, e.g. more-core")
+    parser.add_argument("--compute-allocation-mode", choices=("legacy", "joint"), default="legacy")
+    parser.add_argument("--joint-router-exploration", type=float, default=0.05)
+    parser.add_argument("--joint-utility-coefficient", type=float, default=1.0)
+    parser.add_argument("--joint-max-passes", type=int, default=None)
     parser.add_argument("--output", required=True, help="Campaign output root")
     parser.add_argument("--release-root", default=None, help="1T release inventory root")
     parser.add_argument("--budget-tokens", type=int, default=DEFAULT_BUDGET_TOKENS)
@@ -1655,6 +1735,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         synthetic=args.synthetic,
         resume=not args.no_resume,
         final_checkpoint=not args.no_final_checkpoint,
+        compute_allocation_mode=args.compute_allocation_mode,
+        joint_router_exploration=args.joint_router_exploration,
+        joint_utility_coefficient=args.joint_utility_coefficient,
+        joint_max_passes=args.joint_max_passes,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0

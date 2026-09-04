@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from inspect import signature
 import math
 import time
@@ -32,6 +32,7 @@ from .context_parallel import (
 from .mhc_kernels import mhc_masked_write, mhc_read_mix
 from .routing_kernels import stream_gate_logits, swiglu
 from .model_config import Metis16Config, load_family_config
+from .compute_router import JointComputeRouter, JointRouterObservation
 
 
 Tensor = torch.Tensor
@@ -401,6 +402,10 @@ class CurriculumState:
     # generator that advanced during the first forward would hand the backward
     # a different coalition than the one whose loss it is differentiating.
     random_policy_step: int = 0
+    compute_allocation_mode: str = "legacy"
+    joint_router_exploration: float = 0.05
+    joint_utility_coefficient: float = 1.0
+    allow_untrained_joint_router: bool = False
 
     @classmethod
     def from_value(
@@ -414,6 +419,17 @@ class CurriculumState:
         return cls(**dict(value))
 
     def validate(self, config: Metis16Config) -> None:
+        if self.compute_allocation_mode not in {"legacy", "joint"}:
+            raise ValueError("compute_allocation_mode must be legacy or joint.")
+        if self.compute_allocation_mode == "joint":
+            if not config.joint_compute_router:
+                raise ValueError("Joint allocation requires an enabled utility router.")
+            if self.pathway_mode != "per_pass":
+                raise ValueError("Joint allocation requires re-routed expert pathways.")
+            if not 0.0 <= self.joint_router_exploration <= 1.0:
+                raise ValueError("Joint exploration must lie in [0, 1] loss units.")
+            if not math.isfinite(self.joint_utility_coefficient) or self.joint_utility_coefficient < 0:
+                raise ValueError("Joint utility coefficient must be finite and non-negative.")
         if self.continuation_mode not in {
             "adaptive",
             "budgeted",
@@ -712,6 +728,7 @@ class Metis16CausalLMOutput:
     active_masks: Tensor
     continuation_probabilities: Tensor
     final_hidden_state: Tensor
+    router_observations: tuple[JointRouterObservation, ...] = ()
 
 
 @dataclass
@@ -2880,7 +2897,10 @@ class DenseFFN(nn.Module):
         pass_index: int = 0,
         pathway_cache: "PathwayCache | None" = None,
         replay_tape: "RoutingReplayTape | None" = None,
+        forced_routed_k: Tensor | None = None,
     ) -> tuple[Tensor, RouteState]:
+        if forced_routed_k is not None:
+            raise ValueError("A dense FFN cannot accept a routed-expert allocation.")
         del route_features, curriculum, pass_index, pathway_cache, replay_tape
         latent = self.latent_down(hidden_states)
         activated = self.ffn(latent) * active_mask.unsqueeze(-1).to(latent.dtype)
@@ -3762,6 +3782,7 @@ class AdaptiveDroplessMoE(nn.Module):
         pass_index: int = 0,
         pathway_cache: "PathwayCache | None" = None,
         replay_tape: "RoutingReplayTape | None" = None,
+        forced_routed_k: Tensor | None = None,
     ) -> tuple[Tensor, RouteState]:
         batch, seq_len, _ = hidden_states.shape
         latent = self.latent_down(hidden_states)
@@ -3801,6 +3822,19 @@ class AdaptiveDroplessMoE(nn.Module):
         chosen_k, expected_k, _k_probabilities = self._choose_k(
             k_logits, active_mask, curriculum, pass_index
         )
+        if forced_routed_k is not None:
+            if forced_routed_k.shape != active_mask.shape:
+                raise ValueError("Forced widths must match the active-token layout.")
+            if forced_routed_k.dtype not in {torch.int32, torch.int64}:
+                raise ValueError("Forced widths must be integer tensors.")
+            selected_widths = forced_routed_k.masked_select(active_mask)
+            if bool(
+                ((selected_widths < self.config.min_routed_k)
+                 | (selected_widths > self.config.max_routed_k)).any().item()
+            ):
+                raise ValueError("Forced width is outside the routed-expert bounds.")
+            chosen_k = forced_routed_k.long().clamp_min(self.config.min_routed_k)
+            expected_k = chosen_k.float()
         # ``pass_index`` is zero-based: the first pass through the shared stack
         # is 0, so pass one stores and every later pass reuses.
         frozen = (
@@ -3904,8 +3938,13 @@ class AdaptiveDroplessMoE(nn.Module):
         # Hard K controls the exact packed dispatch above. This straight-through
         # envelope is numerically one in the forward pass, but lets downstream
         # task loss teach the K router whether the routed update was useful.
-        learned_width = curriculum.routed_k_mode not in {"fixed", "random"}
-        if curriculum.routed_k_mode == "budgeted":
+        learned_width = (
+            forced_routed_k is None
+            and curriculum.routed_k_mode not in {"fixed", "random"}
+        )
+        if forced_routed_k is not None:
+            straight_through_k = chosen_k.float()
+        elif curriculum.routed_k_mode == "budgeted":
             budget_tangent = _budget_tangent(expected_k, active_mask)
             straight_through_k = (
                 chosen_k.float() + budget_tangent - budget_tangent.detach()
@@ -3963,7 +4002,9 @@ class AdaptiveDroplessMoE(nn.Module):
             if curriculum.target_mean_routed_k is not None
             else self.config.target_mean_routed_k
         )
-        if curriculum.routed_k_mode == "budgeted":
+        if forced_routed_k is not None:
+            k_budget = mean_expected_k * 0.0
+        elif curriculum.routed_k_mode == "budgeted":
             chosen_index = chosen_k - self.config.min_routed_k
             calibration = F.nll_loss(
                 _k_probabilities.clamp_min(1.0e-8).log().reshape(
@@ -4864,6 +4905,7 @@ class Metis16Block(nn.Module):
         pathway_cache: "PathwayCache | None" = None,
         replay_tape: "RoutingReplayTape | None" = None,
         context_parallel: "ContextParallelPassState | None" = None,
+        forced_routed_k: Tensor | None = None,
     ) -> tuple[Tensor, RouteState]:
         mixer_input, mixer_residual = self.mixer_connection.read(streams, pass_embedding)
         # Only the mixers see the shard boundary. mHC, routing, the experts and
@@ -4892,6 +4934,7 @@ class Metis16Block(nn.Module):
             pass_index=pass_index,
             pathway_cache=pathway_cache,
             replay_tape=replay_tape,
+            forced_routed_k=forced_routed_k,
         )
         streams = self.moe_connection.write(
             moe_residual,
@@ -5108,6 +5151,11 @@ class Metis16ForCausalLM(nn.Module):
             self.lm_head.weight = self.embedding.weight
         nn.init.normal_(self.stream_embeddings, std=config.d_model ** -0.5)
         nn.init.normal_(self.pass_embeddings, std=config.mhc_pass_embedding_dim ** -0.5)
+        self.joint_router = (
+            JointComputeRouter(config, device=device)
+            if config.joint_compute_router
+            else None
+        )
         self._tag_sensitive_fp32_parameters()
 
     def _tag_sensitive_fp32_parameters(self) -> None:
@@ -5119,6 +5167,7 @@ class Metis16ForCausalLM(nn.Module):
                 or ".expert_router." in name
                 or ".k_router." in name
                 or name.startswith("continuation.")
+                or name.startswith("joint_router.")
             ):
                 setattr(parameter, "metis_storage_dtype", "float32")
             else:
@@ -5510,6 +5559,7 @@ class Metis16ForCausalLM(nn.Module):
         pass_index: int,
         curriculum: CurriculumState,
         context_parallel: "ContextParallelPassState | None",
+        forced_routed_k: Tensor | None = None,
     ) -> tuple[Tensor, ...]:
         """Run one block, plus the memory read that feeds it, as a pure function.
 
@@ -5571,6 +5621,7 @@ class Metis16ForCausalLM(nn.Module):
             pathway_cache=self._pathway_cache,
             replay_tape=self._routing_replay_tape,
             context_parallel=context_parallel,
+            forced_routed_k=forced_routed_k,
         )
         return (streams, *_route_state_to_flat(route_state))
 
@@ -5592,6 +5643,7 @@ class Metis16ForCausalLM(nn.Module):
         packed_layout: PackedDocumentLayout,
         curriculum: CurriculumState,
         context_parallel: "ContextParallelPassState | None" = None,
+        forced_routed_k: Tensor | None = None,
     ) -> tuple[Tensor, ...]:
         """Run one recurrent pass as a pure checkpointable tensor function.
 
@@ -5662,6 +5714,11 @@ class Metis16ForCausalLM(nn.Module):
                 "pass_index": pass_index,
                 "curriculum": curriculum,
                 "context_parallel": context_parallel,
+                "forced_routed_k": (
+                    forced_routed_k[layer_index]
+                    if forced_routed_k is not None
+                    else None
+                ),
             }
             if recompute_layers:
 
@@ -5851,7 +5908,8 @@ class Metis16ForCausalLM(nn.Module):
         weights: Tensor,
         *,
         compute_mask: Tensor,
-    ) -> Tensor:
+        return_token_losses: bool = False,
+    ) -> Tensor | tuple[Tensor, Tensor]:
         """Memory-bounded per-exit LM loss for hard-forward ACT credit.
 
         Only hard-active tokens run the vocabulary projection. ``weights`` are
@@ -5869,6 +5927,8 @@ class Metis16ForCausalLM(nn.Module):
         flat_labels = labels.reshape(-1)
         flat_weights = weights.reshape(-1)
         loss_sum = hidden_states.float().sum() * 0.0
+        collected_positions: list[Tensor] = []
+        collected_losses: list[Tensor] = []
         chunk_size = self.config.lm_head_chunk_size
         global_selected = torch.tensor(
             int(flat_indices.numel()),
@@ -5901,7 +5961,7 @@ class Metis16ForCausalLM(nn.Module):
                 values: Tensor,
                 targets: Tensor,
                 exit_weights: Tensor,
-            ) -> Tensor:
+            ) -> Tensor | tuple[Tensor, Tensor]:
                 with _execution_context(
                     self.precision_policy,
                     module=self.lm_head,
@@ -5912,7 +5972,10 @@ class Metis16ForCausalLM(nn.Module):
                         targets,
                         reduction="none",
                     )
-                    return torch.sum(token_losses * exit_weights.float())
+                    weighted = torch.sum(token_losses * exit_weights.float())
+                    if return_token_losses:
+                        return weighted, token_losses
+                    return weighted
 
             if self.training and torch.is_grad_enabled():
                 with set_checkpoint_early_stop(False):
@@ -5932,7 +5995,21 @@ class Metis16ForCausalLM(nn.Module):
                     chunk_labels,
                     chunk_weights,
                 )
-            loss_sum = loss_sum + chunk_value
+            if return_token_losses:
+                weighted_value, token_values = chunk_value
+                loss_sum = loss_sum + weighted_value
+                if positions.numel():
+                    collected_positions.append(positions)
+                    collected_losses.append(token_values)
+            else:
+                loss_sum = loss_sum + chunk_value
+        if return_token_losses:
+            flat_losses = hidden_states.new_zeros(labels.numel(), dtype=torch.float32)
+            if collected_positions:
+                flat_losses = flat_losses.index_copy(
+                    0, torch.cat(collected_positions), torch.cat(collected_losses)
+                )
+            return loss_sum, flat_losses.reshape_as(labels)
         return loss_sum
 
     def forward(
@@ -5947,6 +6024,8 @@ class Metis16ForCausalLM(nn.Module):
         canonical_ids: Tensor | None = None,
         max_passes: int | None = None,
         force_depth: int | Tensor | None = None,
+        force_routed_k: Tensor | None = None,
+        return_router_observations: bool = False,
         return_logits: bool | None = None,
     ) -> Metis16CausalLMOutput:
         return self._forward_impl(
@@ -5959,6 +6038,8 @@ class Metis16ForCausalLM(nn.Module):
             canonical_ids=canonical_ids,
             max_passes=max_passes,
             force_depth=force_depth,
+            force_routed_k=force_routed_k,
+            return_router_observations=return_router_observations,
             return_logits=return_logits,
         )
 
@@ -5974,6 +6055,8 @@ class Metis16ForCausalLM(nn.Module):
         canonical_ids: Tensor | None,
         max_passes: int | None,
         force_depth: int | Tensor | None,
+        force_routed_k: Tensor | None,
+        return_router_observations: bool,
         return_logits: bool | None,
     ) -> Metis16CausalLMOutput:
         if input_ids.ndim != 2:
@@ -6032,6 +6115,30 @@ class Metis16ForCausalLM(nn.Module):
         effective_passes = max_passes or curriculum_state.max_passes or self.config.max_passes
         if not 1 <= effective_passes <= self.config.max_passes:
             raise ValueError("max_passes is outside [1, config.max_passes].")
+        if force_routed_k is not None:
+            if force_routed_k.shape != (
+                self.config.max_passes, self.config.n_layers, *input_ids.shape
+            ):
+                raise ValueError("force_routed_k must have shape [passes, layers, batch, sequence].")
+            if force_routed_k.dtype not in {torch.int32, torch.int64}:
+                raise ValueError("force_routed_k must contain integer widths.")
+            if force_routed_k.device != input_ids.device:
+                raise ValueError("Forced widths must be on the input device.")
+            if self.config.ffn_mode != "moe" or curriculum_state.pathway_mode != "per_pass":
+                raise ValueError("Forced widths require a re-routed MoE pathway.")
+        joint_mode = curriculum_state.compute_allocation_mode == "joint"
+        collect_joint_outcomes = joint_mode or return_router_observations
+        if joint_mode:
+            if force_depth is not None or force_routed_k is not None:
+                raise ValueError("An explicit plan and learned joint allocation are mutually exclusive.")
+            if not self.training and not curriculum_state.allow_untrained_joint_router:
+                if self.joint_router is None or not bool(self.joint_router.trained_updates.item()):
+                    raise RuntimeError("Joint routing requires trained utility weights; untrained probes must opt in.")
+        if return_router_observations:
+            if self.joint_router is None or labels is None:
+                raise ValueError("Utility observations require a utility router and supervised labels.")
+            if not joint_mode and (force_depth is None or force_routed_k is None):
+                raise ValueError("Teacher utility observations require an explicit depth and width trajectory.")
         attention_mask = (
             torch.ones_like(input_ids, dtype=torch.bool)
             if attention_mask is None
@@ -6158,6 +6265,43 @@ class Metis16ForCausalLM(nn.Module):
             or _group_world_size(self.process_groups.table_lookup) > 1
             or _group_world_size(self.process_groups.context) > 1
         )
+        joint_observations: list[JointRouterObservation] = []
+        joint_observation_count = torch.zeros((), device=input_ids.device, dtype=torch.long)
+        joint_utility_sum = streams.float().sum() * 0.0
+        joint_spent = torch.zeros((), device=input_ids.device, dtype=torch.int64)
+        joint_router_spent = torch.zeros_like(joint_spent)
+        joint_budget = torch.zeros_like(joint_spent)
+        joint_reserve = torch.zeros_like(joint_spent)
+        joint_gap = streams.new_zeros((), dtype=torch.float32)
+        joint_next_widths: Tensor | None = None
+        execution_curriculum = curriculum_state
+        if collect_joint_outcomes:
+            if self.joint_router is None:
+                raise RuntimeError("A joint utility path has no utility router.")
+            joint_utility_sum = sum(
+                (parameter.sum() * 0.0 for parameter in self.joint_router.parameters()),
+                joint_utility_sum,
+            )
+            costs = self.joint_router.costs
+            joint_budget = attention_mask.sum(dtype=torch.int64) * costs.reference_per_token
+            # Reserve the worst-case controller work before planning the
+            # backbone. Unused reserve is reported, never disguised as work.
+            joint_reserve = (
+                attention_mask.sum(dtype=torch.int64)
+                * max(0, effective_passes - 1)
+                * costs.router_per_token
+            )
+        if joint_mode:
+            bootstrap_k = round(self.config.target_mean_routed_k)
+            joint_next_widths = torch.full(
+                (self.config.n_layers, *input_ids.shape),
+                bootstrap_k,
+                device=input_ids.device,
+                dtype=torch.long,
+            )
+            execution_curriculum = replace(
+                curriculum_state, routed_k_mode="fixed", fixed_routed_k=bootstrap_k
+            )
 
         for pass_index in range(effective_passes):
             active_masks.append(active_mask)
@@ -6204,6 +6348,22 @@ class Metis16ForCausalLM(nn.Module):
             run_cached_ngram = cached_ngram
             run_continuation_confidence = continuation_confidence
             run_active_mask = active_mask
+            pass_routed_k = (
+                joint_next_widths
+                if joint_mode
+                else force_routed_k[pass_index] if force_routed_k is not None else None
+            )
+            if collect_joint_outcomes:
+                if pass_routed_k is None:
+                    raise RuntimeError("Utility outcome accounting requires explicit widths.")
+                for observation in joint_observations:
+                    observation.width_history.append(pass_routed_k)
+                joint_spent = joint_spent + costs.pass_cost(
+                    pass_index, pass_routed_k, active_mask
+                )
+                if joint_mode and bool((joint_spent + joint_reserve > joint_budget).item()):
+                    raise RuntimeError("Executed joint allocation exceeded its reserved compute budget.")
+            run_routed_k = pass_routed_k
             run_memory_entries: tuple[Tensor, ...] = tuple(bank.entries)
             run_memory_masks: tuple[Tensor, ...] = tuple(bank.valid_masks)
             if int(active_mask.sum().item()) < input_ids.numel():
@@ -6276,6 +6436,10 @@ class Metis16ForCausalLM(nn.Module):
                 run_memory_masks = tuple(
                     token_layout.pack(mask) for mask in bank.valid_masks
                 )
+                if pass_routed_k is not None:
+                    run_routed_k = torch.stack(
+                        [token_layout.pack(width) for width in pass_routed_k]
+                    )
             if context_parallel.enabled and pass_context_parallel is None:
                 pass_context_parallel = _build_context_parallel_pass_state(
                     context_parallel,
@@ -6325,6 +6489,7 @@ class Metis16ForCausalLM(nn.Module):
                     _attention_mask: Tensor = run_attention_mask,
                     _packed_layout: PackedDocumentLayout = run_packed_layout,
                     _context_parallel: ContextParallelPassState | None = pass_context_parallel,
+                    _routed_k: Tensor | None = run_routed_k,
                 ) -> tuple[Tensor, ...]:
                     return self._run_physical_pass(
                         *arguments,
@@ -6334,8 +6499,9 @@ class Metis16ForCausalLM(nn.Module):
                         reset_mask=_reset_mask,
                         attention_mask=_attention_mask,
                         packed_layout=_packed_layout,
-                        curriculum=curriculum_state,
+                        curriculum=execution_curriculum,
                         context_parallel=_context_parallel,
+                        forced_routed_k=_routed_k,
                     )
 
                 # Disabling non-reentrant early-stop makes every rank replay the
@@ -6359,8 +6525,9 @@ class Metis16ForCausalLM(nn.Module):
                     reset_mask=run_reset_mask,
                     attention_mask=run_attention_mask,
                     packed_layout=run_packed_layout,
-                    curriculum=curriculum_state,
+                    curriculum=execution_curriculum,
                     context_parallel=pass_context_parallel,
+                    forced_routed_k=run_routed_k,
                 )
             (
                 run_streams,
@@ -6510,6 +6677,7 @@ class Metis16ForCausalLM(nn.Module):
             budgeted_depth = (
                 curriculum_state.continuation_mode == "budgeted"
                 and force_depth is None
+                and not joint_mode
             )
             if token_layout is not None:
                 continuation_bank = RecurrentMemoryBank(
@@ -6632,10 +6800,90 @@ class Metis16ForCausalLM(nn.Module):
                     ),
                     continuation_route_features,
                 )
+            current_token_losses: Tensor | None = None
+            joint_next_active: Tensor | None = None
+            if collect_joint_outcomes:
+                if labels is not None:
+                    _all_active_loss, current_token_losses = self._chunked_weighted_causal_loss_sum(
+                        self.final_norm(streams.mean(dim=-2)),
+                        labels,
+                        active_mask.float(),
+                        compute_mask=active_mask,
+                        return_token_losses=True,
+                    )
+                    for observation in joint_observations:
+                        observed = active_mask & observation.prediction.active_mask & labels.ne(-100)
+                        value_loss, count = observation.prediction.observed_loss(
+                            observation.width_history,
+                            observation.stop_losses - current_token_losses.detach(),
+                            observed,
+                        )
+                        joint_utility_sum = joint_utility_sum + value_loss
+                        joint_observation_count = joint_observation_count + count
+                if pass_index + 1 < effective_passes:
+                    prediction = self.joint_router(
+                        current_state,
+                        last_memory_summary,
+                        current_state - previous_pass_state,
+                        route_history,
+                        active_mask=active_mask,
+                        origin_pass=pass_index,
+                        remaining_passes=effective_passes - pass_index - 1,
+                    )
+                    joint_router_spent = (
+                        joint_router_spent
+                        + active_mask.sum(dtype=torch.int64) * costs.router_per_token
+                    )
+                    if joint_mode:
+                        from .compute_budget import allocate_joint_budget
+
+                        generator = self._random_depth_generator(
+                            curriculum_state, input_ids.device, pass_index
+                        )
+                        utilities, width_utilities = self.joint_router.allocation_utilities(
+                            prediction,
+                            exploration=(
+                                curriculum_state.joint_router_exploration
+                                if self.training and curriculum_state.stochastic_routing
+                                else 0.0
+                            ),
+                            generator=generator,
+                        )
+                        plan = allocate_joint_budget(
+                            utilities,
+                            width_utilities,
+                            active_mask,
+                            base_pass_costs=torch.tensor(
+                                costs.base_pass_costs[pass_index + 1 : effective_passes],
+                                device=input_ids.device,
+                                dtype=torch.int64,
+                            ),
+                            expert_costs=torch.tensor(
+                                costs.expert_costs, device=input_ids.device, dtype=torch.int64
+                            ),
+                            budget=joint_budget - joint_reserve - joint_spent,
+                        )
+                        joint_next_active = active_mask & plan.depths.gt(0)
+                        joint_next_widths = plan.routed_k[0]
+                        joint_gap = torch.maximum(
+                            joint_gap,
+                            (plan.dual_upper_bound - plan.utility).float().clamp_min(0.0),
+                        )
+                        continuation_probability = joint_next_active.float()
+                    if current_token_losses is not None:
+                        joint_observations.append(
+                            JointRouterObservation(
+                                prediction, current_token_losses.detach(), []
+                            )
+                        )
+                elif joint_mode:
+                    joint_next_active = torch.zeros_like(active_mask)
+                    continuation_probability = joint_next_active.float()
             learned_depth = (
                 curriculum_state.continuation_mode not in
                 {"random", "fixed_max", "depth_one"}
                 and force_depth is None
+                and not joint_mode
             )
             if not learned_depth:
                 # Preserve the controller's forward compute for a matched-cost
@@ -6709,17 +6957,24 @@ class Metis16ForCausalLM(nn.Module):
                     raise RuntimeError("Continuation memory write lost its slot.")
             if pass_index + 1 < effective_passes:
                 continuation_probabilities.append(continuation_probability)
-                next_active = self._continuation_decision(
-                    continuation_probability,
-                    active_mask=active_mask,
-                    pass_index=pass_index,
-                    curriculum=curriculum_state,
-                    force_depth=force_depth,
-                    initial_token_count=int(attention_mask.sum().item()),
-                )
+                if joint_mode:
+                    if joint_next_active is None:
+                        raise RuntimeError("Joint allocation did not supply a continuation plan.")
+                    next_active = joint_next_active
+                else:
+                    next_active = self._continuation_decision(
+                        continuation_probability,
+                        active_mask=active_mask,
+                        pass_index=pass_index,
+                        curriculum=curriculum_state,
+                        force_depth=force_depth,
+                        initial_token_count=int(attention_mask.sum().item()),
+                    )
                 if (
                     curriculum_state.continuation_mode == "budgeted"
                     and self.config.budgeted_depth_calibration_coefficient > 0.0
+                    and not joint_mode
+                    and force_depth is None
                 ):
                     selected_probabilities = continuation_probability.masked_select(
                         active_mask
@@ -6789,13 +7044,18 @@ class Metis16ForCausalLM(nn.Module):
                 exit_mass_by_token + exit_gate.detach().float()
             )
             if labels is not None:
-                exit_hidden = self.final_norm(streams.mean(dim=-2))
-                ponder_loss_sum = ponder_loss_sum + self._chunked_weighted_causal_loss_sum(
-                    exit_hidden,
-                    labels,
-                    exit_gate,
-                    compute_mask=active_mask,
-                )
+                if current_token_losses is not None:
+                    ponder_loss_sum = ponder_loss_sum + (
+                        current_token_losses * exit_gate.float()
+                    ).sum()
+                else:
+                    exit_hidden = self.final_norm(streams.mean(dim=-2))
+                    ponder_loss_sum = ponder_loss_sum + self._chunked_weighted_causal_loss_sum(
+                        exit_hidden,
+                        labels,
+                        exit_gate,
+                        compute_mask=active_mask,
+                    )
             if next_active is not None:
                 active_mask = next_active
                 pass_survival_gate = next_survival_gate
@@ -6812,7 +7072,9 @@ class Metis16ForCausalLM(nn.Module):
             if curriculum_state.target_mean_depth is not None
             else self.config.target_mean_passes
         )
-        if curriculum_state.continuation_mode == "budgeted":
+        if joint_mode:
+            depth_budget = mean_expected_depth * 0.0
+        elif curriculum_state.continuation_mode == "budgeted":
             depth_budget = self.depth_budget.penalty(
                 mean_expected_depth,
                 target=target_mean_depth,
@@ -6833,6 +7095,13 @@ class Metis16ForCausalLM(nn.Module):
             "depth_budget",
             depth_budget if valid_expected_depth.numel() else mean_expected_depth,
         )
+        if collect_joint_outcomes:
+            _add_loss(
+                auxiliary_losses,
+                "joint_utility",
+                curriculum_state.joint_utility_coefficient
+                * joint_utility_sum / joint_observation_count.clamp_min(1),
+            )
         final_hidden = self.final_norm(streams.mean(dim=-2))
         if return_logits is None:
             return_logits = labels is None
@@ -6961,6 +7230,19 @@ class Metis16ForCausalLM(nn.Module):
             "ngram_cached_vectors": final_hidden.new_tensor(input_ids.numel(), dtype=torch.long),
             "depth_memory_last_norm": last_memory_summary.float().norm(dim=-1).mean(),
         }
+        if collect_joint_outcomes:
+            total_joint_cost = joint_spent + joint_router_spent
+            if joint_mode and bool((total_joint_cost > joint_budget).item()):
+                raise RuntimeError("Joint model plus utility learning exceeded the reference cost cap.")
+            telemetry.update({
+                "joint_budget_enforced": final_hidden.new_tensor(int(joint_mode)),
+                "joint_budget_flops": joint_budget,
+                "joint_model_flops": total_joint_cost,
+                "joint_router_flops": joint_router_spent,
+                "joint_unused_budget_flops": joint_budget - total_joint_cost,
+                "joint_utility_observations": joint_observation_count,
+                "joint_utility_upper_gap": joint_gap,
+            })
         return Metis16CausalLMOutput(
             logits=logits,
             loss=causal_loss,
@@ -6971,6 +7253,7 @@ class Metis16ForCausalLM(nn.Module):
             active_masks=stacked_active,
             continuation_probabilities=stacked_continuation,
             final_hidden_state=final_hidden,
+            router_observations=tuple(joint_observations) if return_router_observations else (),
         )
 
 

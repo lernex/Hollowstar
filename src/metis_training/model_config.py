@@ -417,6 +417,7 @@ class ParameterAudit:
     active_per_pass_min: int
     active_per_pass_mean: int
     active_per_pass_max: int
+    joint_router: int = 0
 
     def to_dict(self) -> dict[str, int]:
         return asdict(self)
@@ -496,6 +497,8 @@ class Metis16Config:
     depth_budget_coefficient: float = 1.0e-2
     budgeted_k_calibration_coefficient: float = 0.0
     budgeted_depth_calibration_coefficient: float = 0.0
+    joint_compute_router: bool = False
+    joint_router_hidden_dim: int = 128
     # Dual step size for the width and depth budget controllers. Zero keeps the
     # fixed-coefficient penalty exactly as it was, which is what production
     # Praxis and Logos run. Any positive value turns the coefficient above into
@@ -741,6 +744,7 @@ class Metis16Config:
             raise ValueError("budgeted_k_calibration_coefficient cannot be negative.")
         if self.budgeted_depth_calibration_coefficient < 0.0:
             raise ValueError("budgeted_depth_calibration_coefficient cannot be negative.")
+        self._validate_joint_router()
         if any(
             layer < 0 or layer >= self.n_layers
             for layer in self.ngram_memory.injection_layers
@@ -893,6 +897,7 @@ class Metis16Config:
         if self.family != "tiny":
             raise ValueError("_validate_tiny is only valid for tiny configs.")
         self._validate_memory_policies()
+        self._validate_joint_router()
         if self.mhc_backend != "torch_reference":
             raise ValueError("Tiny/CPU tests require the torch mHC reference backend.")
         if self.ngram_memory.orders != (2, 3):
@@ -904,6 +909,19 @@ class Metis16Config:
                 raise ValueError("Tiny N-gram table geometry is inconsistent.")
         self.precision.validate()
         self.autotune.validate()
+
+    def _validate_joint_router(self) -> None:
+        if self.joint_router_hidden_dim < 1:
+            raise ValueError("joint_router_hidden_dim must be positive.")
+        if self.joint_compute_router:
+            if self.family not in _RELAXED_FAMILIES:
+                raise ValueError("Joint compute routing is opt-in for research families only.")
+            if self.ffn_mode != "moe" or self.min_routed_k != 1:
+                raise ValueError("Joint compute routing requires an MoE with minimum k=1.")
+            if self.max_passes < 2 or self.target_mean_passes < 1.0:
+                raise ValueError("Joint compute routing requires a recurrent compute budget.")
+            if self.expert_parallel_size != 1 or self.context_parallel_size != 1:
+                raise ValueError("Joint compute routing currently requires replicated experts without CP.")
 
     @property
     def expert_entropy_normalizer(self) -> float:
@@ -1051,6 +1069,11 @@ class Metis16Config:
             * (d + 1)
         )
         final_norm = d
+        joint_router = 0
+        if self.joint_compute_router:
+            from .compute_router import utility_router_parameter_count
+
+            joint_router = utility_router_parameter_count(self)
         stored_total = (
             embedding
             + mixers
@@ -1064,6 +1087,7 @@ class Metis16Config:
             + ngram_tables
             + ngram_fusion
             + final_norm
+            + joint_router
         )
 
         common_active = (
@@ -1076,6 +1100,7 @@ class Metis16Config:
             + continuation
             + ngram_fusion
             + final_norm
+            + joint_router
         )
         # A dense sublayer activates all of its feed-forward weight on every
         # token, so its routed-per-k slope is zero and min/mean/max collapse to
@@ -1101,6 +1126,7 @@ class Metis16Config:
             active_per_pass_min=int(common_active + self.min_routed_k * routed_per_k + retrieved),
             active_per_pass_mean=int(common_active + self.target_mean_routed_k * routed_per_k + retrieved),
             active_per_pass_max=int(common_active + self.max_routed_k * routed_per_k + retrieved),
+            joint_router=joint_router,
         )
 
 
