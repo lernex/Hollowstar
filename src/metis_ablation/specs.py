@@ -12,9 +12,10 @@ Two invariants are enforced here rather than trusted:
   ``GLOBAL_BATCH_SEQUENCES`` sequences per optimizer step regardless of how many
   APUs it was given, so all thirteen models see byte-identical token sets in
   identical order.  Data order is therefore not a confound for anyone.
-* **Iso-FLOP by construction.** Rows 1 and 5-13 execute the same FLOPs per
-  token.  Rows 2, 3, and 4 are deliberate off-frontier reference points and are
-  labelled as such.
+* **Iso-model-FLOP by construction.** Rows 1 and 5-13 perform the same model
+  work per token. Issued hardware work can differ when a measured lane uses
+  activation checkpointing. Rows 2, 3, and 4 are deliberate off-frontier
+  reference points and are labelled as such.
 """
 
 from __future__ import annotations
@@ -459,9 +460,9 @@ def _solve_dense_intermediate(
     """Size a dense control against the MoRE reference, rather than by hand.
 
     ``objective='stored'`` matches total stored parameters; ``objective='flops'``
-    matches executed FLOPs per token at the given depth.  Both use the repo's
-    own audited accounting -- ``logical_parameter_audit`` and
-    ``estimate_hardware_flops`` -- so the paper's matching claim is derived from
+    matches model FLOPs per token at the given depth. Both use the repo's own
+    audited accounting -- ``logical_parameter_audit`` and
+    ``estimate_train_flops`` -- so the paper's matching claim is derived from
     the same code that reports the training telemetry, not from a parallel
     hand-derivation that can silently drift.
 
@@ -470,7 +471,7 @@ def _solve_dense_intermediate(
     the paper rather than being rounded away.
     """
 
-    from metis_training.metrics import estimate_hardware_flops
+    from metis_training.metrics import estimate_train_flops
 
     if objective == "stored":
         target = float(reference.logical_parameter_audit().stored_total)
@@ -483,7 +484,7 @@ def _solve_dense_intermediate(
             )
 
     elif objective == "flops":
-        target = estimate_hardware_flops(
+        target = estimate_train_flops(
             reference,
             tokens=1,
             observed_mean_passes=float(reference.target_mean_passes),
@@ -491,7 +492,7 @@ def _solve_dense_intermediate(
         )
 
         def measure(intermediate: int) -> float:
-            return estimate_hardware_flops(
+            return estimate_train_flops(
                 _dense_candidate(intermediate, reference, geometry),
                 tokens=1,
                 observed_mean_passes=float(passes),
@@ -526,8 +527,8 @@ def _reference_config() -> Metis16Config:
 # The dense controls cannot hold MoRE's stored parameters at MoRE's active
 # parameters -- that asymmetry is exactly what the sparse-expert axis buys, and
 # both numbers are reported rather than the flattering one.  Row 2 matches
-# MoRE's stored parameters at depth 1; row 1 matches its executed FLOPs at
-# depth 1; row 7 matches its executed FLOPs at depth 2.
+# MoRE's stored parameters at depth 1; row 1 matches its model FLOPs at depth 1;
+# row 7 matches its model FLOPs at depth 2.
 _REFERENCE = _reference_config()
 _DENSE_PARAM_MATCHED_INTERMEDIATE = _solve_dense_intermediate(
     "stored", passes=1, reference=_REFERENCE
@@ -543,7 +544,7 @@ _DENSE_RECURSIVE_INTERMEDIATE = _solve_dense_intermediate(
 def dense_control_report() -> dict[str, dict[str, float]]:
     """Exact matching residuals for the dense controls, for the methods section."""
 
-    from metis_training.metrics import estimate_hardware_flops
+    from metis_training.metrics import estimate_train_flops
 
     def described(intermediate: int, passes: int) -> dict[str, float]:
         candidate = proxy_config(
@@ -559,7 +560,7 @@ def dense_control_report() -> dict[str, dict[str, float]]:
             "dense_ffn_intermediate_dim": float(intermediate),
             "stored_total": float(audit.stored_total),
             "active_per_pass": float(audit.active_per_pass_mean),
-            "flops_per_token": estimate_hardware_flops(
+            "model_flops_per_token": estimate_train_flops(
                 candidate, tokens=1, observed_mean_passes=float(passes)
             ),
         }
@@ -569,7 +570,7 @@ def dense_control_report() -> dict[str, dict[str, float]]:
         "more_core": {
             "stored_total": float(reference_audit.stored_total),
             "active_per_pass": float(reference_audit.active_per_pass_mean),
-            "flops_per_token": estimate_hardware_flops(
+            "model_flops_per_token": estimate_train_flops(
                 _REFERENCE,
                 tokens=1,
                 observed_mean_passes=float(_REFERENCE.target_mean_passes),
@@ -587,7 +588,7 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         index=1,
         name="dense-flop-matched",
         title="Dense, FLOP-matched",
-        isolates="dense reference at MoRE's executed compute",
+        isolates="dense reference at MoRE's model FLOPs",
         apus=80, micro_batch=6, grad_accum=1,
         ffn_mode="dense",
         dense_ffn_intermediate_dim=_DENSE_FLOP_MATCHED_INTERMEDIATE,
@@ -757,7 +758,10 @@ ABLATION_LADDER: tuple[AblationSpec, ...] = (
         depth_memory=False,
         measured_tokens_per_second=1_212_482,
         config_overrides={"activation_recompute_policy": "none"},
-        notes="Memoryless halt tuned to the same mean depth.",
+        notes=(
+            "Exact-budget random ranking over depth support {1,2,3}; identical "
+            "realized depth marginal to the learned policy."
+        ),
     ),
 )
 
@@ -818,7 +822,7 @@ def scaled_ablation_ladder(scale: str) -> tuple[AblationSpec, ...]:
     moves, and the campaign already treats that axis as something to report.
 
     The dense controls are re-solved rather than rescaled. Their whole purpose
-    is to match MoRE's stored parameters or its executed FLOPs at the geometry
+    is to match MoRE's stored parameters or its model FLOPs at the geometry
     they actually run at, and a hand-scaled intermediate width would quietly
     stop matching either.
     """

@@ -6491,6 +6491,11 @@ class Metis16ForCausalLM(nn.Module):
                     state_difference,
                     continuation_route_features,
                 )
+            if curriculum_state.continuation_mode == "random":
+                # Preserve the controller's forward compute for a matched-cost
+                # control, but detach every downstream use. The random ranking,
+                # not this unused learned head, determines execution.
+                continuation_probability = continuation_probability.detach()
             continuation_confidence = torch.where(
                 active_mask,
                 continuation_probability.to(embeddings.dtype),
@@ -6589,18 +6594,29 @@ class Metis16ForCausalLM(nn.Module):
                             calibration_loss
                             * self.config.budgeted_depth_calibration_coefficient,
                         )
-                soft_continue = continuation_probability * active_mask.float()
-                local_continue_gate = (
-                    next_active.float()
-                    + soft_continue
-                    - soft_continue.detach()
-                )
+                random_depth = curriculum_state.continuation_mode == "random"
+                if random_depth:
+                    # The hard ranking is the control. A learned continuation
+                    # gradient that cannot affect execution would train a
+                    # second hidden policy and confound learned-vs-random.
+                    local_continue_gate = next_active.float()
+                else:
+                    soft_continue = continuation_probability * active_mask.float()
+                    local_continue_gate = (
+                        next_active.float()
+                        + soft_continue
+                        - soft_continue.detach()
+                    )
                 exit_gate = pass_survival_gate * (1.0 - local_continue_gate)
                 next_survival_gate = pass_survival_gate * local_continue_gate
-                survival = survival * continuation_probability * active_mask.float()
+                survival = survival * (
+                    next_active.float()
+                    if random_depth
+                    else continuation_probability * active_mask.float()
+                )
                 expected_depth = expected_depth + survival
                 valid_probability = continuation_probability.masked_select(active_mask)
-                if valid_probability.numel():
+                if valid_probability.numel() and not random_depth:
                     entropy = -(
                         valid_probability * valid_probability.clamp_min(1.0e-8).log()
                         + (1.0 - valid_probability)

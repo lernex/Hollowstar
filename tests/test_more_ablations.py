@@ -237,8 +237,9 @@ def test_dense_controls_are_matched_to_their_stated_objective():
         report["dense_param_matched"]["stored_total"] - reference["stored_total"]
     ) / reference["stored_total"]
     flop_error = abs(
-        report["dense_flop_matched"]["flops_per_token"] - reference["flops_per_token"]
-    ) / reference["flops_per_token"]
+        report["dense_flop_matched"]["model_flops_per_token"]
+        - reference["model_flops_per_token"]
+    ) / reference["model_flops_per_token"]
     assert stored_error < 0.01, report["dense_param_matched"]
     assert flop_error < 0.01, report["dense_flop_matched"]
 
@@ -1400,6 +1401,36 @@ def test_halt_calibration_bins_are_well_formed():
         assert 0.0 <= row["mean_realized"] <= 1.0
 
 
+def test_random_depth_does_not_train_a_hidden_continuation_policy():
+    torch.manual_seed(19)
+    config = _tiny()
+    model = Metis16ForCausalLM(config)
+    input_ids, labels = _tiny_batch(config)
+    output = model(
+        input_ids,
+        labels,
+        curriculum=_curriculum(
+            continuation_mode="random",
+            routed_k_mode="fixed",
+            random_policy_seed=7,
+        ),
+    )
+    (output.loss + output.auxiliary_loss).backward()
+    continuation_gradients = [
+        parameter.grad
+        for parameter in model.continuation.parameters()
+    ]
+    assert all(
+        gradient is None or not bool(torch.count_nonzero(gradient))
+        for gradient in continuation_gradients
+    )
+    assert any(
+        parameter.grad is not None
+        for name, parameter in model.named_parameters()
+        if not name.startswith("continuation.")
+    )
+
+
 # --------------------------------------------------------------------------
 # schedule
 
@@ -2136,8 +2167,8 @@ def test_resume_picks_up_where_it_stopped(tiny_proxy, tmp_path: Path):
     assert second["start_step"] == 4
     assert second["resumed_from"] is not None
 
-    fresh = _train(spec, tmp_path, checkpoint_every=2, max_steps=4, resume=False)
-    assert fresh["start_step"] == 0
+    with pytest.raises(RuntimeError, match="clean row output directory"):
+        _train(spec, tmp_path, checkpoint_every=2, max_steps=4, resume=False)
 
 
 def test_resume_refuses_a_changed_schedule(tiny_proxy, tmp_path: Path):
@@ -2150,6 +2181,8 @@ def test_resume_refuses_a_changed_schedule(tiny_proxy, tmp_path: Path):
         _train(spec, tmp_path, checkpoint_every=2, max_steps=3)
     with pytest.raises(RuntimeError, match="Refusing to resume"):
         _train(spec, tmp_path, checkpoint_every=2, max_steps=4, learning_rate=9.0e-4)
+    with pytest.raises(RuntimeError, match="run identity changed"):
+        _train(spec, tmp_path, checkpoint_every=2, max_steps=4, seed=2)
 
 
 def test_current_scaling_restore_discards_only_delayed_fp8_metadata(
@@ -2208,7 +2241,7 @@ def test_current_scaling_restore_discards_only_delayed_fp8_metadata(
         total_steps=4,
         learning_rate=0.1,
     )
-    assert restored == 2
+    assert restored == 3
     torch.testing.assert_close(target.projection.weight, source.projection.weight)
     torch.testing.assert_close(target.projection.bias, source.projection.bias)
     assert not hasattr(target.projection, "delayed_amax")
@@ -2222,6 +2255,39 @@ def test_checkpoints_are_pruned_and_atomic(tiny_proxy, tmp_path: Path):
     for path in kept:
         assert (path / "state.pt").exists()
         assert not (path / "state.pt.partial").exists()
+
+
+def test_intermediate_checkpoint_resumes_at_the_next_unexecuted_step(
+    tiny_proxy,
+    tmp_path: Path,
+):
+    spec = _smoke_spec("more-core")
+    first = _train(
+        spec,
+        tmp_path,
+        checkpoint_every=2,
+        max_steps=3,
+        final_checkpoint=False,
+    )
+    assert first["steps"] == 3
+    checkpoint = tmp_path / spec.name / "checkpoints" / "step-0000002"
+    payload = torch.load(
+        checkpoint / "state.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert payload["step_semantics"] == "next_unexecuted"
+    assert payload["step"] == 2
+
+    resumed = _train(
+        spec,
+        tmp_path,
+        checkpoint_every=2,
+        max_steps=3,
+        final_checkpoint=False,
+    )
+    assert resumed["start_step"] == 2
+    assert resumed["steps"] == 3
 
 
 def test_world_sharded_checkpoint_hashes_and_restores_rank_state(tmp_path: Path):
@@ -2261,6 +2327,7 @@ def test_world_sharded_checkpoint_hashes_and_restores_rank_state(tmp_path: Path)
         device=torch.device("cpu"),
         total_steps=4,
         learning_rate=1.0e-3,
+        run_identity_sha256="test-identity",
     )
     assert checkpoint is not None
     manifest = torch.load(

@@ -24,6 +24,7 @@ import queue
 import threading
 import math
 import os
+import subprocess
 import time
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
@@ -171,6 +172,60 @@ class RunPaths:
             path.mkdir(parents=True, exist_ok=True)
 
 
+def _existing_run_artifacts(paths: RunPaths) -> list[Path]:
+    artifacts = [
+        path
+        for path in (paths.root / "run.json", paths.root / "summary.json")
+        if path.exists()
+    ]
+    for directory, pattern in (
+        (paths.telemetry, "*.jsonl"),
+        (paths.checkpoints, "step-*/state.pt"),
+        (paths.analysis, "*.json"),
+    ):
+        if directory.exists():
+            artifacts.extend(directory.glob(pattern))
+    return sorted(artifacts)
+
+
+def _source_revision(*, require_clean: bool) -> str:
+    repository = Path(__file__).resolve().parents[2]
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(repository), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    try:
+        revision = git("rev-parse", "HEAD")
+        dirty = git("status", "--porcelain", "--untracked-files=no")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        if require_clean:
+            raise RuntimeError(
+                "A real ablation run requires a Git-bound source revision"
+            ) from exc
+        return "unavailable"
+    if dirty and require_clean:
+        raise RuntimeError(
+            "A real ablation run requires a clean tracked Git worktree"
+        )
+    return revision + ("+dirty" if dirty else "")
+
+
+def _run_identity(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return payload, hashlib.sha256(encoded).hexdigest()
+
+
 def _assert_storage_policy(model: Any) -> None:
     """Fail loudly if a trainable parameter escaped the storage policy.
 
@@ -212,6 +267,7 @@ def _save_checkpoint(
     device: torch.device,
     total_steps: int,
     learning_rate: float,
+    run_identity_sha256: str,
     keep_last: int = 2,
 ) -> Path | None:
     """Write a resumable checkpoint and prune older ones.
@@ -258,6 +314,8 @@ def _save_checkpoint(
             else "more.ablation-checkpoint/v2"
         ),
         "model": model.state_dict(),
+        "run_identity_sha256": run_identity_sha256,
+        "step_semantics": "next_unexecuted",
         "step": step,
         "spec": asdict(spec),
         # The schedule shape is part of the run's identity: resuming a cosine
@@ -321,8 +379,20 @@ def _restore_checkpoint(
     device: torch.device,
     total_steps: int,
     learning_rate: float,
+    expected_run_identity_sha256: str | None = None,
 ) -> int:
     payload = torch.load(path / "state.pt", map_location=device, weights_only=False)
+    if expected_run_identity_sha256 is not None:
+        stored_identity = payload.get("run_identity_sha256")
+        if stored_identity is None:
+            raise RuntimeError(
+                f"Refusing to resume {path.name}: legacy checkpoint has no "
+                "run-identity binding. Start in a clean output directory."
+            )
+        if str(stored_identity) != expected_run_identity_sha256:
+            raise RuntimeError(
+                f"Refusing to resume {path.name}: run identity changed"
+            )
     stored_steps = int(payload.get("total_steps", total_steps))
     stored_lr = float(payload.get("base_learning_rate", learning_rate))
     if stored_steps != int(total_steps) or abs(stored_lr - float(learning_rate)) > 1e-12:
@@ -404,7 +474,13 @@ def _restore_checkpoint(
                 payload["cuda_rng_state"].to(torch.uint8).cpu(),
                 device,
             )
-    return int(payload["step"])
+    stored_step = int(payload["step"])
+    if payload.get("step_semantics") == "next_unexecuted":
+        return stored_step
+    # Legacy checkpoints recorded the just-completed zero-based loop index.
+    # Their terminal checkpoint already used total_steps, so only intermediate
+    # values need advancing.
+    return stored_step if stored_step >= total_steps else stored_step + 1
 
 
 # --------------------------------------------------------------------------
@@ -472,6 +548,14 @@ def _train_row_inner(
             f"{spec.name} is specified for {spec.apus} ranks but was launched on "
             f"{runtime.world_size}. The global batch is fixed across rows, so the "
             "rank count is part of the experiment, not a scheduling detail."
+        )
+
+    paths = RunPaths(Path(output_root).expanduser().resolve() / spec.name)
+    existing_artifacts = _existing_run_artifacts(paths)
+    if not resume and existing_artifacts:
+        raise RuntimeError(
+            "--no-resume requires a clean row output directory; found "
+            f"{existing_artifacts[0]}"
         )
 
     # Matched rows must begin from identical weights. Row-specific randomness
@@ -568,12 +652,12 @@ def _train_row_inner(
     else:
         optimizer_manifest["sharding"] = {"mode": "none"}
 
-    paths = RunPaths(Path(output_root).expanduser().resolve() / spec.name)
     if runtime.rank == 0:
         paths.prepare()
     if runtime.distributed:
         dist.barrier()
 
+    inventory: ReleaseInventory | None = None
     sample_stream: AblationSampleStream | None = None
     if not synthetic:
         if release_root is None:
@@ -600,6 +684,49 @@ def _train_row_inner(
     schedule = AblationSchedule(total_steps=total_steps, base_learning_rate=base_lr)
     curriculum = spec.curriculum(random_policy_seed=seed + spec.index)
     analyzer = RoutingAnalyzer(config, max_passes=config.max_passes)
+    source_revision: str | None = (
+        _source_revision(require_clean=not synthetic)
+        if runtime.rank == 0
+        else None
+    )
+    if runtime.distributed:
+        source_payload = [source_revision]
+        dist.broadcast_object_list(
+            source_payload,
+            src=0,
+            group=topology.dense_data_group,
+        )
+        source_revision = source_payload[0]
+    if not isinstance(source_revision, str) or not source_revision:
+        raise RuntimeError("Ablation source revision could not be established")
+    sampler_manifest = (
+        sample_stream.describe() if sample_stream else {"synthetic": True}
+    )
+    identity_payload, identity_sha256 = _run_identity(
+        {
+            "schema": "more.ablation-run-identity/v1",
+            "row": spec.name,
+            "row_index": spec.index,
+            "model": config.to_dict(),
+            "curriculum": asdict(curriculum),
+            "optimizer": optimizer_manifest,
+            "schedule": asdict(schedule),
+            "seed": int(seed),
+            "world_size": runtime.world_size,
+            "global_batch_tokens": GLOBAL_BATCH_TOKENS,
+            "precision_profile": policy.requested_profile,
+            "sampler": sampler_manifest,
+            "release": (
+                {
+                    "release_sha256": inventory.release_sha256,
+                    "shard_manifest_sha256": inventory.shard_manifest_sha256,
+                }
+                if inventory is not None
+                else {"synthetic": True}
+            ),
+            "source_revision": source_revision,
+        }
+    )
 
     # Resume before the reducer is built: loading a state dict in place keeps
     # parameter identity, but restoring after registering post-accumulate hooks
@@ -608,6 +735,11 @@ def _train_row_inner(
     resumed_from: str | None = None
     if resume:
         checkpoint = _latest_checkpoint(paths)
+        if checkpoint is None and existing_artifacts:
+            raise RuntimeError(
+                "Existing run artifacts have no resumable checkpoint; use a "
+                "new output directory rather than appending a fresh run"
+            )
         if checkpoint is not None:
             start_step = _restore_checkpoint(
                 checkpoint,
@@ -616,6 +748,7 @@ def _train_row_inner(
                 device=runtime.device,
                 total_steps=total_steps,
                 learning_rate=base_lr,
+                expected_run_identity_sha256=identity_sha256,
             )
             resumed_from = str(checkpoint)
         if topology.distributed:
@@ -655,8 +788,10 @@ def _train_row_inner(
             "resumed_from": resumed_from,
             "world_size": runtime.world_size,
             "precision_profile": policy.requested_profile,
+            "run_identity": identity_payload,
+            "run_identity_sha256": identity_sha256,
             "final_checkpoint": bool(final_checkpoint),
-            "sampler": sample_stream.describe() if sample_stream else {"synthetic": True},
+            "sampler": sampler_manifest,
         }
         (paths.root / "run.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True, default=str),
@@ -928,17 +1063,22 @@ def _train_row_inner(
                 )
             if collect_analysis and runtime.rank == 0:
                 analyzer.flush(paths.analysis / f"routing-step-{step:07d}.json", step=step)
-            if checkpoint_every > 0 and step > 0 and step % checkpoint_every == 0:
+            completed_steps = step + 1
+            if (
+                checkpoint_every > 0
+                and completed_steps % checkpoint_every == 0
+            ):
                 _save_checkpoint(
                     paths,
                     model=model,
                     optimizer=optimizer,
-                    step=step,
+                    step=completed_steps,
                     spec=spec,
                     rank=runtime.rank,
                     device=runtime.device,
                     total_steps=total_steps,
                     learning_rate=base_lr,
+                    run_identity_sha256=identity_sha256,
                 )
             summary["steps"] = step + 1
             summary["final_loss"] = step_loss
@@ -954,6 +1094,7 @@ def _train_row_inner(
             device=runtime.device,
             total_steps=total_steps,
             learning_rate=base_lr,
+            run_identity_sha256=identity_sha256,
         )
     summary["fp8_parity_relative_error"] = fp8_parity_error
     summary["tokens"] = summary["steps"] * GLOBAL_BATCH_TOKENS

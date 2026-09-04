@@ -70,7 +70,7 @@ pass, anchor, expert coalition, routed $k$, and router confidence, and which is
 read by the representation path and the routers at the same time --- the model
 remembers not just what it computed, but who computed it and how sure they were.
 On a ladder of 13 models trained on byte-identical data at \TODO{tokens} we
-isolate each axis at matched executed FLOPs, including the control this
+isolate each axis at matched model FLOPs, including the control this
 literature keeps forgetting: a \emph{learned} policy against a \emph{random} one
 at the same mean budget. \TODO{headline result}
 We close with Metis-1.6 Praxis and Logos, two MoRE models pretrained on 1T
@@ -96,7 +96,7 @@ one of them will buy the wrong one.
 composition and joint training, not any single axis. Adaptive depth has prior
 art. Adaptive $k$ has prior art. We say so in Section~\ref{sec:related} rather
 than making a reviewer say it for us.
-\item We back it with an axis-isolating ladder at matched executed FLOPs. The
+\item We back it with an axis-isolating ladder at matched model FLOPs. The
 uncomfortable control --- learned policy versus random policy at the same mean
 budget --- is included, and reported whichever way it comes out.
 \end{enumerate}
@@ -110,7 +110,7 @@ make three discrete decisions trainable from task loss (Section~\ref{sec:core}).
 the strict sense that its key space is the token's own pass and route history,
 read by the representation path and the routers simultaneously
 (Section~\ref{sec:rm}).
-\item A 13-model ablation ladder that isolates each axis at matched executed
+\item A 13-model ablation ladder that isolates each axis at matched model
 FLOPs, plus random-policy controls that ask whether the \emph{learned} allocation
 does anything or whether any allocation with the same budget would do
 (Section~\ref{sec:ablations}).
