@@ -12,7 +12,7 @@ from unittest.mock import patch
 import torch
 
 from metis_ablation.specs import GLOBAL_BATCH_SEQUENCES, spec_by_name
-from metis_ablation.train import main
+from metis_ablation.train import _routed_expert_gradient_evidence, main
 from tests import test_more_execution_bounds as execution_bounds
 
 
@@ -116,10 +116,12 @@ class CausalPilotTests(unittest.TestCase):
         self.fixture.train(
             "terminal", compute_allocation_mode="causal", stop_after_steps=2,
             terminal_action_critic=True, terminal_critic_exploration=0.5,
+            require_routed_expert_gradients=True,
         )
         manifest = self.fixture.manifest("terminal")
         self.assertTrue(manifest["model"]["terminal_action_critic"])
         self.assertEqual(manifest["model"]["terminal_critic_exploration"], 0.5)
+        self.assertTrue(manifest["optimizer"]["require_routed_expert_gradients"])
         path = self.fixture.root / "terminal/more-core/telemetry/rank-00000.jsonl"
         for line in path.read_text().splitlines():
             record = json.loads(line)
@@ -131,6 +133,13 @@ class CausalPilotTests(unittest.TestCase):
                 telemetry["global_lm_head_recompute_flops"],
                 telemetry["global_lm_head_forward_flops"],
             )
+            if record["step"] == 0:
+                self.assertGreater(telemetry["routed_expert_gradient_parameters_expected"], 0)
+                self.assertEqual(
+                    telemetry["routed_expert_gradient_parameters_expected"],
+                    telemetry["routed_expert_gradient_parameters_present"],
+                )
+                self.assertGreater(telemetry["routed_expert_gradient_parameters_nonzero"], 0)
             self.assertLessEqual(telemetry["global_joint_budget_fraction"], 1)
         with self.assertRaisesRegex(ValueError, "explicit causal"):
             self.fixture.train("invalid-terminal", stop_after_steps=1, terminal_action_critic=True)
@@ -196,6 +205,25 @@ class CausalPilotTests(unittest.TestCase):
             result = subprocess.run(["bash", str(launcher)], env={**environment, field: value}, text=True, capture_output=True)
             self.assertEqual(result.returncode, 2)
             self.assertEqual(result.stdout, "")
+
+    def test_expert_gradient_gate_rejects_disconnected_and_zero_credit(self):
+        parameter = torch.nn.Parameter(torch.ones(4))
+        model = unittest.mock.Mock()
+        model.named_parameters.return_value = [
+            ("layers.0.moe.local_experts.gate_up.weight_chunks.0", parameter)
+        ]
+        with self.assertRaisesRegex(RuntimeError, "missing after backward"):
+            _routed_expert_gradient_evidence(model)
+        parameter.grad = torch.zeros_like(parameter)
+        with self.assertRaisesRegex(RuntimeError, "finite nonzero"):
+            _routed_expert_gradient_evidence(model)
+        parameter.grad.fill_(1)
+        evidence = _routed_expert_gradient_evidence(model)
+        self.assertEqual(evidence["routed_expert_gradient_parameters_present"], 1)
+        self.assertEqual(evidence["routed_expert_gradient_parameters_nonzero"], 1)
+        parameter.grad[0] = float("nan")
+        with self.assertRaisesRegex(RuntimeError, "finite nonzero"):
+            _routed_expert_gradient_evidence(model)
 
     def test_fresh_pilot_cache_is_explicit_and_leaves_existing_cache_untouched(self):
         root = self.fixture.root

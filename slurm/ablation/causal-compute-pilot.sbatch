@@ -69,7 +69,8 @@ exec python -B -m metis_ablation.train \
   --budget-tokens 50000000000 --schedule-total-steps 25429 \
   --learning-rate 0.00026 --seed 16062026 \
   --checkpoint-every "${METIS_PILOT_CHECKPOINT_EVERY:-500}" \
-  --keep-all-checkpoints --analysis-every 1000 --telemetry-every 10 \
+  --keep-all-checkpoints --require-routed-expert-gradients \
+  --analysis-every 1000 --telemetry-every 10 \
   --stop-after-steps "$METIS_PILOT_STOP_AFTER_STEPS" \
   "${resume_args[@]}"
 '

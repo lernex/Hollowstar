@@ -554,6 +554,31 @@ def _clip_exact_budget_gradient_groups(
     return raw_norms
 
 
+def _routed_expert_gradient_evidence(model: Metis16ForCausalLM) -> dict[str, float]:
+    parameters = [
+        (name, parameter) for name, parameter in model.named_parameters()
+        if parameter.requires_grad and ".moe.local_experts." in name and "weight" in name
+    ]
+    if not parameters:
+        raise RuntimeError("Full-expert qualification requires trainable routed expert weights")
+    missing = [name for name, parameter in parameters if parameter.grad is None]
+    if missing:
+        raise RuntimeError(f"Routed expert gradients are missing after backward: {missing[:4]}")
+    norms = torch.stack([
+        torch.linalg.vector_norm(parameter.grad.detach(), dtype=torch.float32)
+        for _, parameter in parameters
+    ])
+    nonzero = int(norms.gt(0).sum().item())
+    if not bool(torch.isfinite(norms).all().item()) or nonzero == 0:
+        raise RuntimeError("Routed expert gradients must contain finite nonzero learning credit")
+    return {
+        "routed_expert_gradient_parameters_expected": float(len(parameters)),
+        "routed_expert_gradient_parameters_present": float(len(parameters) - len(missing)),
+        "routed_expert_gradient_parameters_nonzero": float(nonzero),
+        "routed_expert_gradient_norm": float(torch.linalg.vector_norm(norms).item()),
+    }
+
+
 def _assert_storage_policy(model: Any) -> None:
     """Fail loudly if a trainable parameter escaped the storage policy.
 
@@ -843,6 +868,7 @@ def train_row(
     activation_recompute_policy: str | None = None,
     terminal_action_critic: bool = False,
     terminal_critic_exploration: float = 0.05,
+    require_routed_expert_gradients: bool = False,
 ) -> dict[str, Any]:
     runtime = initialize_runtime(device=device_override)
     lease = None
@@ -878,6 +904,7 @@ def train_row(
             activation_recompute_policy=activation_recompute_policy,
             terminal_action_critic=terminal_action_critic,
             terminal_critic_exploration=terminal_critic_exploration,
+            require_routed_expert_gradients=require_routed_expert_gradients,
         )
     finally:
         _release_row_lease(lease)
@@ -912,6 +939,7 @@ def _train_row_inner(
     activation_recompute_policy: str | None = None,
     terminal_action_critic: bool = False,
     terminal_critic_exploration: float = 0.05,
+    require_routed_expert_gradients: bool = False,
 ) -> dict[str, Any]:
     if stop_after_steps is not None:
         if type(stop_after_steps) is not int or stop_after_steps <= 0:
@@ -1073,6 +1101,8 @@ def _train_row_inner(
         muon_state_bits=spec.muon_state_bits,
     )
     optimizer_manifest = optimizer_summary.to_dict()
+    if require_routed_expert_gradients:
+        optimizer_manifest["require_routed_expert_gradients"] = True
     optimizer_manifest["frozen_policy_parameters"] = list(
         frozen_policy_parameters
     )
@@ -1538,6 +1568,8 @@ def _train_row_inner(
             normalize_summed_gradients(
                 model, topology, global_supervised_tokens=global_supervised
             )
+            if require_routed_expert_gradients and step == start_step:
+                step_telemetry.update(_routed_expert_gradient_evidence(model))
             if (
                 joint_policy
                 or curriculum.continuation_mode == "budgeted"
@@ -1604,7 +1636,10 @@ def _train_row_inner(
                 updater(expert_selection_counts)
 
             elapsed = time.perf_counter() - step_started
-            if step % max(1, telemetry_every) == 0 or step == execution_end - 1:
+            if (
+                step % max(1, telemetry_every) == 0 or step == execution_end - 1
+                or (require_routed_expert_gradients and step == start_step)
+            ):
                 global_depth = all_reduce_sum(depth_histogram, topology)
                 flops = estimate_hardware_flops(
                     config,
@@ -1824,6 +1859,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--terminal-critic-exploration", type=float, default=0.05)
     parser.add_argument(
+        "--require-routed-expert-gradients", action="store_true",
+        help="Fail the first backward of each launch if routed expert weights are disconnected or entirely untrained",
+    )
+    parser.add_argument(
         "--activation-recompute-policy", choices=("none", "pass", "layer"), default=None,
         help="Explicit measured-lane override, sealed in model identity; preserve the row default when omitted",
     )
@@ -1935,6 +1974,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         activation_recompute_policy=args.activation_recompute_policy,
         terminal_action_critic=args.terminal_action_critic,
         terminal_critic_exploration=args.terminal_critic_exploration,
+        require_routed_expert_gradients=args.require_routed_expert_gradients,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
