@@ -197,6 +197,53 @@ class CausalPilotTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertEqual(result.stdout, "")
 
+    def test_fresh_pilot_cache_is_explicit_and_leaves_existing_cache_untouched(self):
+        root = self.fixture.root
+        binary = root / "bin"
+        binary.mkdir()
+        old_cache = root / "existing-cache"
+        old_cache.mkdir()
+        marker = old_cache / "historical-artifact"
+        marker.write_text("preserve")
+        runtime = root / "runtime.sh"
+        runtime.write_text(
+            f'export METIS_NODE_SCRATCH="{root}/private-job"\n'
+            f'export TRITON_CACHE_DIR="{old_cache}"\n'
+        )
+        programs = {
+            "git": '#!/bin/bash\nif [ "$3" = rev-parse ]; then echo pinned; fi\n',
+            "scontrol": "#!/bin/bash\necho test-node\n",
+            "srun": '#!/bin/bash\nshift 2\nSLURM_PROCID=0 SLURM_LOCALID=0 "$@"\n',
+            "python": (
+                f"#!{sys.executable}\nimport json,os,sys\n"
+                "print(json.dumps({'argv': sys.argv[1:], 'cache': os.environ['TRITON_CACHE_DIR']}))\n"
+            ),
+        }
+        for name, contents in programs.items():
+            path = binary / name
+            path.write_text(contents)
+            path.chmod(0o755)
+        environment = {
+            **os.environ, "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+            "METIS_REPO": str(root), "METIS_EXPECTED_REVISION": "pinned",
+            "METIS_RELEASE_ROOT": str(root), "METIS_PILOT_OUTPUT": str(root / "output"),
+            "METIS_PILOT_EXPERIMENT": "terminal-core", "METIS_PILOT_STOP_AFTER_STEPS": "100",
+            "METIS_ABLATION_RUNTIME": str(runtime), "SLURM_NTASKS": "40",
+            "SLURM_JOB_NODELIST": "test-node",
+        }
+        launcher = Path(__file__).resolve().parents[1] / "slurm/ablation/causal-compute-pilot.sbatch"
+        for fresh in ("0", "1"):
+            result = subprocess.run(
+                ["bash", str(launcher)], env={**environment, "METIS_PILOT_FRESH_TRITON_CACHE": fresh},
+                text=True, capture_output=True, check=True,
+            )
+            launch = json.loads(result.stdout)
+            expected = old_cache if fresh == "0" else root / "private-job/pilot-triton"
+            self.assertEqual(launch["cache"], str(expected))
+            self.assertEqual(marker.read_text(), "preserve")
+            self.assertIn("--terminal-action-critic", launch["argv"])
+            self.assertIn("--stop-after-steps", launch["argv"])
+
 
 if __name__ == "__main__":
     unittest.main()

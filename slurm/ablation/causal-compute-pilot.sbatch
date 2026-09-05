@@ -38,6 +38,7 @@ export MASTER_PORT="${METIS_PILOT_MASTER_PORT:-29630}"
 export OMP_NUM_THREADS=6
 export PYTHONPATH="$METIS_REPO/src:${PYTHONPATH:-}"
 export PYTHONDONTWRITEBYTECODE=1
+export PYTHONFAULTHANDLER=1
 export NCCL_ALGO=Ring
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
@@ -45,6 +46,11 @@ srun --kill-on-bad-exit=1 --network=disable_rdzv_get bash -c '
 set -euo pipefail
 export RANK="$SLURM_PROCID" LOCAL_RANK="$SLURM_LOCALID"
 source "$METIS_ABLATION_RUNTIME"
+if [ "${METIS_PILOT_FRESH_TRITON_CACHE:-0}" = 1 ]; then
+  export TRITON_CACHE_DIR="$METIS_NODE_SCRATCH/pilot-triton"
+  mkdir -p "$TRITON_CACHE_DIR"
+  echo "metis pilot: isolated Triton cache $TRITON_CACHE_DIR" >&2
+fi
 resume_args=()
 if [ "${METIS_PILOT_RESUME:-0}" != 1 ]; then resume_args+=(--no-resume); fi
 if [ "${METIS_TERMINAL_CRITIC:-0}" = 1 ]; then
