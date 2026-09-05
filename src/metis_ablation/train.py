@@ -65,6 +65,7 @@ from metis_training.precision import build_precision_policy
 from metis_training.schedule import set_optimizer_learning_rate
 
 from .analysis import RoutingAnalyzer
+from .runtime_diagnostics import record_rank_startup
 from .sampler import AblationSampleStream, build_sample_stream
 from .specs import (
     ABLATION_LADDER,
@@ -901,6 +902,10 @@ def _train_row_inner(
             "--no-resume requires a clean row output directory; found "
             f"{existing_artifacts[0]}"
         )
+    record_rank_startup(
+        paths.root, rank=runtime.rank, world_size=runtime.world_size,
+        local_rank=runtime.local_rank, device=str(runtime.device),
+    )
 
     # Matched rows must begin from identical weights. Row-specific randomness
     # belongs to the routing controls below, not to model initialization, or a
