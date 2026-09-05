@@ -135,6 +135,10 @@ class IntakeBudget:
             source["objects"] += 1
             del state["inflight"][object_id]
 
+    def snapshot(self) -> dict[str, Any]:
+        with file_lock(self.lock):
+            return self._read()
+
     def reserve(self, spec: ObjectSpec, size: int) -> None:
         if size < 0:
             raise ValueError("Cannot reserve negative bytes")

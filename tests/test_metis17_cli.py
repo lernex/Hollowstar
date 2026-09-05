@@ -298,6 +298,10 @@ class Metis17CliTests(unittest.TestCase):
             "capacity_confirmation": "pending", "max_raw_bytes": 5, "max_working_bytes": 50,
             "max_unknown_object_bytes": 5,
         })
+        write_receipt(self.root / "state" / "intake-budget.json", {
+            "schema": "metis17.intake-budget/v1", "raw_bytes": 0, "network_payload_bytes": 0,
+            "sources": {}, "inflight": {},
+        })
         specs = [
             ObjectSpec.create(
                 source_id="source", url=f"https://example.test/{name}", revision="r",
@@ -339,6 +343,22 @@ class Metis17CliTests(unittest.TestCase):
 
     def test_oversized_candidate_does_not_pause_other_downloads(self):
         attempted, progress = self._download_with_failed_head(CapacityPending("Does not fit remaining reservation"))
+        self.assertEqual(attempted, ["large", "small"])
+        self.assertEqual(progress["completed_objects"], 1)
+
+    def test_budget_snapshot_does_not_depend_on_racy_file_timestamps(self):
+        original_stat, original_exists = Path.stat, Path.exists
+
+        def stat(path, *args, **kwargs):
+            if path.name == "intake-budget.json":
+                raise FileNotFoundError("Replacement raced an unlocked metadata probe")
+            return original_stat(path, *args, **kwargs)
+
+        def exists(path):
+            return True if path.name == "intake-budget.json" else original_exists(path)
+
+        with patch.object(Path, "stat", stat), patch.object(Path, "exists", exists):
+            attempted, progress = self._download_with_failed_head(CapacityPending("Large object does not fit"))
         self.assertEqual(attempted, ["large", "small"])
         self.assertEqual(progress["completed_objects"], 1)
         self.assertEqual(progress["capacity_blocked_objects"], 1)

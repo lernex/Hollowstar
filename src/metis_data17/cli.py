@@ -14,6 +14,7 @@ import time
 import traceback
 from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlsplit
@@ -21,7 +22,9 @@ from urllib.parse import urlsplit
 import requests
 import yaml
 
-from .acquisition import CapacityPending, DownloadFailure, DownloadPaused, download_object, file_lock, receipt_path
+from .acquisition import (
+    CapacityPending, DownloadFailure, DownloadPaused, IntakeBudget, download_object, file_lock, receipt_path,
+)
 from .catalogue import resolve_source
 from .common import ObjectSpec, RawReceipt, atomic_json, canonical_json, digest_json, read_receipt, utc_now, write_receipt
 
@@ -335,12 +338,12 @@ def download_service(
     status_path = root / "status" / f"download-{host}.json"
     baseline = _interface_counters()
     commit = code_commit()
-    budget_path = root / "state" / "intake-budget.json"
-    reservations = read_receipt(budget_path)["inflight"] if budget_path.exists() else {}
+    reservations = IntakeBudget(root, _limits(root)).snapshot()["inflight"]
     resumable = set(reservations)
     resumable_owners = {key: value["host"] for key, value in reservations.items()}
     with file_lock(root / "locks" / f"download-daemon-{host}.lock", timeout=2):
-        with ThreadPoolExecutor(max_workers=workers or int(settings["workers_per_host"])) as pool:
+        with ThreadPoolExecutor(max_workers=workers or int(settings["workers_per_host"])) as pool, ExitStack() as shutdown:
+            shutdown.callback(stop.set)
             while not stop.is_set() or active:
                 if (root / "STOP").exists():
                     stop.set()
@@ -369,9 +372,9 @@ def download_service(
                                 heapq.heappush(pending.setdefault(group, []), download_order_key(spec, resumable))
                         loaded_pages.add(page)
                 limits = _limits(root)
-                intake = read_receipt(budget_path) if budget_path.exists() else {"raw_bytes": 0, "inflight": {}}
-                new_stamp = (root / "limits.json").stat().st_mtime_ns
-                new_budget_stamp = budget_path.stat().st_mtime_ns if budget_path.exists() else 0
+                intake = IntakeBudget(root, limits).snapshot()
+                new_stamp = digest_json(limits)
+                new_budget_stamp = digest_json(intake)
                 if new_stamp != limit_stamp or new_budget_stamp != budget_stamp:
                     for spec in capacity_blocked.values():
                         group = str(spec.policy.get("admission_group", spec.source_id))
