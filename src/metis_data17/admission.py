@@ -39,12 +39,15 @@ def admit_source(
     expected = {chunk["chunk_id"] for chunk in normalized["chunks"]}
     if len(expected) != len(normalized["chunks"]) or set(screened) != expected:
         raise RuntimeError("Source admission requires exact coverage of the sealed object")
-    if any(value["status"] != "ELIGIBLE" for value in screened.values()):
+    intake_only = bool(screened) and all(value["status"] == "SCREENED_FOR_INTAKE" for value in screened.values())
+    expected_status = "SCREENED_FOR_INTAKE" if intake_only else "ELIGIBLE"
+    if any(value["status"] != expected_status for value in screened.values()):
         raise RuntimeError("Pending screening cannot admit a source")
     covered = sum(value["input_documents"] for value in screened.values())
     if covered != normalized["normalized_documents"]:
         raise RuntimeError("Screened documents do not cover normalization exactly once")
-    accepted = sum(value["eligible_documents"] for value in screened.values())
+    accepted = sum(value["accepted_documents"] if intake_only else value["eligible_documents"]
+                   for value in screened.values())
     total = normalized["input_documents"]
     if not 0 <= accepted <= covered <= total:
         raise RuntimeError("Invalid canary retention accounting")
@@ -55,13 +58,20 @@ def admit_source(
         path = under_root(root, summary["receipt_path"])
         stage = read_receipt(path)
         if (
-            stage.get("schema") != "metis17.prepared-chunk/v1" or stage.get("status") != "ELIGIBLE"
-            or stage.get("eligible") is not True or stage.get("training_ready") is not True
+            stage.get("schema") != ("metis17.intake-screened-chunk/v1" if intake_only else "metis17.prepared-chunk/v1")
+            or stage.get("status") != expected_status
+            or stage.get("eligible") is not (not intake_only)
+            or stage.get("training_ready") is not (not intake_only)
             or stage.get("object_complete") is not True
             or stage.get("object_id") != spec.object_id or stage.get("source_id") != spec.source_id
             or stage.get("chunk_id") != chunk_id
             or stage.get("input_documents") != summary["input_documents"]
             or stage.get("eligible_documents") != summary["eligible_documents"]
+            or (intake_only and (
+                stage.get("accepted_documents") != summary["accepted_documents"]
+                or stage.get("deferred_gates") != ["source_quality_selection_pending"]
+                or stage.get("inputs", {}).get("purpose") != "acquisition_compliance_only"
+            ))
             or stage.get("object_completion") != {
                 "path": normalized["receipt_path"], "receipt_sha256": normalization_seal,
             }
@@ -74,11 +84,13 @@ def admit_source(
         "schema": "metis17.source-admission/v1", "admission_group": group,
         "generation": generation, "source_id": spec.source_id,
         "object_id": spec.object_id, "input_documents": total,
-        "eligible_documents": accepted, "acceptance_fraction": ratio,
+        "eligible_documents": 0 if intake_only else accepted,
+        "screened_documents": accepted, "acceptance_fraction": ratio,
+        "admission_basis": "compliance_screening_quality_deferred" if intake_only else "fully_eligible",
         "minimum_acceptance": minimum_acceptance,
         "normalization_receipt": normalized["receipt_path"],
         "normalization_receipt_sha256": normalization_seal,
-        "eligible_receipts": eligible_receipts,
+        ("intake_receipts" if intake_only else "eligible_receipts"): eligible_receipts,
         "status": "admitted" if accepted and ratio >= minimum_acceptance else "retention_review_required",
         "created_at": utc_now(),
     }

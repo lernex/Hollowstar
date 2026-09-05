@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +11,7 @@ from unittest.mock import patch
 
 import requests
 
-from metis_data17.acquisition import CapacityPending, DownloadFailure, IntakeBudget, download_object, receipt_path
+from metis_data17.acquisition import CapacityPending, DownloadFailure, IntakeBudget, download_object, file_lock, receipt_path
 from metis_data17.catalogue import CatalogueWriter, catalogue_objects, resolve_source
 from metis_data17.common import ObjectSpec, read_receipt, write_receipt
 
@@ -138,6 +141,28 @@ class Metis17AcquisitionTests(unittest.TestCase):
         with self.assertRaises(CapacityPending):
             IntakeBudget(self.root, limits).reserve(second, 6)
         self.assertEqual(len(read_receipt(self.root / "state/intake-budget.json")["inflight"]), 1)
+
+    def test_lock_release_between_owner_probe_and_read_is_retried(self):
+        lock = self.root / "racing.lock"
+        lock.mkdir()
+        owner = lock / "owner.json"
+        owner.write_text(json.dumps({"host": socket.gethostname(), "pid": os.getpid(), "nonce": "previous"}))
+        original = Path.read_text
+        raced = []
+
+        def read(path, *args, **kwargs):
+            if path == owner and not raced:
+                raced.append(True)
+                owner.unlink()
+                lock.rmdir()
+                raise FileNotFoundError("Previous holder released")
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", read):
+            with file_lock(lock):
+                self.assertTrue(owner.exists())
+        self.assertTrue(raced)
+        self.assertFalse(lock.exists())
 
     def test_published_receipt_recovers_interrupted_budget_commit(self):
         budget = IntakeBudget(self.root, self.limits)

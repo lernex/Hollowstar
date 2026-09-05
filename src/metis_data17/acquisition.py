@@ -60,7 +60,11 @@ def file_lock(path: Path, *, timeout: float = 60) -> Iterator[None]:
         except FileExistsError:
             owner_path = path / "owner.json"
             if owner_path.is_file():
-                previous = json.loads(owner_path.read_text())
+                try:
+                    previous = json.loads(owner_path.read_text())
+                except FileNotFoundError:
+                    # The holder can release between is_file and open.
+                    continue
                 if previous["host"] == owner["host"] and not _pid_alive(int(previous["pid"])):
                     try:
                         reap.mkdir()

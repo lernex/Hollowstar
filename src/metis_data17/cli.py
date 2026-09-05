@@ -240,6 +240,30 @@ def resolve_command(root: Path, *, source_ids: set[str] | None = None) -> dict[s
     return {"sources": results, "ok": bool(results) and all(row["status"] == "complete" for row in results)}
 
 
+def activate_batch(root: Path, config_path: Path) -> dict[str, Any]:
+    load_run(root)
+    batch = yaml.safe_load(config_path.read_text())
+    if batch.get("schema") != "metis17.activation/v1" or not isinstance(batch.get("sources"), list):
+        raise ValueError("A sealed content-source activation batch is required")
+    identifiers = [source["id"] for source in batch["sources"]]
+    if not identifiers or len(set(identifiers)) != len(identifiers):
+        raise ValueError("Activation source identities must be nonempty and unique")
+    if any(source.get("kind") not in {"hf", "hplt", "cc"} for source in batch["sources"]):
+        raise ValueError("Only packaged content and sequential archive objects may be activated")
+    batch_id = digest_json(batch)
+    path = root / "activations" / batch_id / "BATCH.json"
+    if path.exists() and read_receipt(path) != batch:
+        raise RuntimeError("Immutable activation batch changed")
+    write_receipt(path, batch)
+    results = []
+    for source in batch["sources"]:
+        result = resolve_source(root, source)
+        row = {"source_id": source["id"], "objects": result["objects"], "known_bytes": result["known_bytes"]}
+        results.append(row)
+        print(canonical_json(row), flush=True)
+    return {"batch_id": batch_id, "sources": results}
+
+
 def download_service(root: Path, *, workers: int | None = None) -> None:
     run = load_run(root)
     settings = run["config"]["download"]
@@ -343,6 +367,7 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                 if not stop.is_set():
                     while len(active) < (workers or int(settings["workers_per_host"])):
                         choices: list[tuple[tuple[int, int, str], str]] = []
+                        deferred: dict[str, list[tuple[int, int, str]]] = {}
                         for group, heap in pending.items():
                             while heap:
                                 candidate = specs[heap[0][2]]
@@ -351,6 +376,8 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                                 elif not intake_candidate_fits(candidate, intake, limits):
                                     heapq.heappop(heap)
                                     capacity_blocked[candidate.object_id] = candidate
+                                elif retry_at.get(candidate.object_id, 0) > time.monotonic():
+                                    deferred.setdefault(group, []).append(heapq.heappop(heap))
                                 else:
                                     break
                             if not heap:
@@ -371,13 +398,16 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                             )
                             if not admitted and preview_counts.get(group, 0) + inflight_group >= int(settings["admission_objects_per_group"]):
                                 continue
-                            if retry_at.get(candidate.object_id, 0) > time.monotonic():
-                                continue
                             choices.append((heap[0], group))
-                        if not choices:
+                        selected = select_download_group(choices, specs, active.values()) if choices else None
+                        if selected is not None:
+                            heapq.heappop(pending[selected[1]])
+                        for group, keys in deferred.items():
+                            for key in keys:
+                                heapq.heappush(pending[group], key)
+                        if selected is None:
                             break
-                        key, group = select_download_group(choices, specs, active.values())
-                        heapq.heappop(pending[group])
+                        key, group = selected
                         spec = specs[key[2]]
                         future = pool.submit(
                             download_object, spec, root, limits,
@@ -456,6 +486,9 @@ def main(argv: list[str] | None = None) -> int:
     resolve = sub.add_parser("resolve")
     resolve.add_argument("--root", type=Path, required=True)
     resolve.add_argument("--source", action="append")
+    activate = sub.add_parser("activate")
+    activate.add_argument("--root", type=Path, required=True)
+    activate.add_argument("--config", type=Path, required=True)
     download = sub.add_parser("download")
     download.add_argument("--root", type=Path, required=True)
     download.add_argument("--workers", type=int)
@@ -485,6 +518,8 @@ def main(argv: list[str] | None = None) -> int:
         result = resolve_command(root, source_ids=set(args.source) if args.source else None)
         print(canonical_json(result))
         return 0 if result["ok"] else 1
+    elif args.command == "activate":
+        print(canonical_json(activate_batch(root, args.config)))
     elif args.command == "download":
         download_service(root, workers=args.workers)
     elif args.command == "prep":

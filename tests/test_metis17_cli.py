@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 import yaml
 
-from metis_data17.acquisition import CapacityPending
+from metis_data17.acquisition import CapacityPending, DownloadFailure
 from metis_data17.cli import (
-    _limits, append_event, download_order_key, download_service, init_run,
+    _limits, activate_batch, append_event, download_order_key, download_service, init_run,
     intake_candidate_fits, main, read_events, select_download_group, status,
 )
 from metis_data17.common import ObjectSpec, RawReceipt, digest_json, read_receipt, write_receipt
@@ -103,6 +103,20 @@ class Metis17CliTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             init_run(self.root, config)
 
+    def test_expansion_activates_a_separate_batch_without_mutating_frozen_run(self):
+        with patch("metis_data17.cli.code_commit", return_value="a" * 40):
+            init_run(self.root, self.config)
+        frozen = (self.root / "RUN.json").read_bytes()
+        path = Path(self.tmp.name) / "expansion.yaml"
+        source = {"id": "additional", "kind": "hf"}
+        path.write_text(yaml.safe_dump({"schema": "metis17.activation/v1", "sources": [source]}))
+        with patch("metis_data17.cli.resolve_source", return_value={"objects": 4, "known_bytes": 128}) as resolve:
+            result = activate_batch(self.root, path)
+        resolve.assert_called_once_with(self.root, source)
+        self.assertEqual((self.root / "RUN.json").read_bytes(), frozen)
+        self.assertEqual(result["sources"][0]["objects"], 4)
+        self.assertTrue((self.root / "activations" / result["batch_id"] / "BATCH.json").is_file())
+
     def test_journal_recovers_only_uncommitted_tail(self):
         append_event(self.root, "raw/host", {"object_id": "first"})
         path = self.root / "events/raw/host.jsonl"
@@ -149,7 +163,7 @@ class Metis17CliTests(unittest.TestCase):
         self.assertEqual(select_download_group(candidates, specs, [busy])[1], "fresh")
         self.assertEqual(select_download_group(candidates, specs, [busy, other])[1], "high")
 
-    def test_oversized_candidate_does_not_pause_other_downloads(self):
+    def _download_with_failed_head(self, failure):
         from concurrent.futures import Future
 
         class ImmediatePool:
@@ -166,7 +180,7 @@ class Metis17CliTests(unittest.TestCase):
                 future = Future()
                 try:
                     future.set_result(function(*args, **kwargs))
-                except CapacityPending as exc:
+                except (CapacityPending, DownloadFailure) as exc:
                     future.set_exception(exc)
                 return future
 
@@ -200,7 +214,7 @@ class Metis17CliTests(unittest.TestCase):
         def download(spec, *_args, **_kwargs):
             attempted.append(spec.relative_key)
             if spec.relative_key == "large":
-                raise CapacityPending("Does not fit remaining reservation")
+                raise failure
             return RawReceipt(spec.object_id, spec.source_id, "raw/small", 5, "a" * 64,
                               "fixture-host", "2026-09-05T00:00:00+00:00")
 
@@ -217,11 +231,19 @@ class Metis17CliTests(unittest.TestCase):
             "metis_data17.cli.time.sleep", side_effect=tick,
         ):
             download_service(self.root)
-        self.assertEqual(attempted, ["large", "small"])
         progress = json.loads((self.root / "status" / "download-fixture-host.json").read_text())
+        return attempted, progress
+
+    def test_oversized_candidate_does_not_pause_other_downloads(self):
+        attempted, progress = self._download_with_failed_head(CapacityPending("Does not fit remaining reservation"))
+        self.assertEqual(attempted, ["large", "small"])
         self.assertEqual(progress["completed_objects"], 1)
         self.assertEqual(progress["capacity_blocked_objects"], 1)
 
+    def test_retry_backoff_does_not_stall_other_objects_in_the_same_source(self):
+        attempted, progress = self._download_with_failed_head(DownloadFailure("Retry this object later"))
+        self.assertEqual(attempted, ["large", "small"])
+        self.assertEqual(progress["completed_objects"], 1)
     def test_capacity_hint_avoids_requests_without_losing_resumable_objects(self):
         spec = ObjectSpec.create(
             source_id="source", url="https://example.test/object", revision="r",

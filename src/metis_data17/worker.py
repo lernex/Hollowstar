@@ -159,7 +159,12 @@ def _reblock_job(spec: ObjectSpec, raw: RawReceipt, config: dict[str, Any]) -> s
 
 def screen_chunk(path: Path, spec: ObjectSpec, config: dict[str, Any]) -> dict[str, Any]:
     root = Path(config["root"])
-    value = prep.prepare_chunk(path, _prepared_directory(root, config, spec), config)
+    if spec.policy.get("metadata", {}).get("quality_selection_pending") is True:
+        from .intake_screening import screen_intake_chunk
+
+        value = screen_intake_chunk(path, _prepared_directory(root, config, spec), config)
+    else:
+        value = prep.prepare_chunk(path, _prepared_directory(root, config, spec), config)
     return {
         key: value[key] for key in (
             "status", "receipt_path", "chunk_id", "input_documents",
@@ -272,6 +277,7 @@ class ObjectWork:
     ready_files: set[Path] = field(default_factory=set)
     screened: dict[str, dict[str, Any]] = field(default_factory=dict)
     indexed: set[str] = field(default_factory=set)
+    intake_screened: set[str] = field(default_factory=set)
     pending: set[str] = field(default_factory=set)
     failed: bool = False
     admitted: bool = False
@@ -301,6 +307,7 @@ def prep_service(
     closed: set[str] = set()
     completed_objects: set[str] = set()
     failures: dict[str, dict[str, Any]] = {}
+    admitted_groups: set[str] = set()
     limits_sha256 = ""
     active: dict[str, ObjectWork] = {}
     jobs: dict[tuple[str, str], tuple[str, Any]] = {}
@@ -374,7 +381,7 @@ def prep_service(
                             totals["failed_tasks"] += 1
                         work.reader = None
                         last_work = now
-                    for path in work.output.glob("normalized/*/part-*.READY.json"):
+                    for path in work.output.glob("normalized/[0-9a-f]*/part-*.READY.json"):
                         if path in work.ready_files:
                             continue
                         value = read_receipt(path)
@@ -417,6 +424,10 @@ def prep_service(
                                     "eligible_documents": value["eligible_documents"],
                                 })
                                 totals["eligible_documents"] += value["eligible_documents"]
+                            elif value["status"] == "SCREENED_FOR_INTAKE":
+                                work.intake_screened.add(chunk_id)
+                                totals["intake_screened_chunks"] += 1
+                                totals["intake_screened_documents"] += value["accepted_documents"]
                         else:
                             work.indexed.add(chunk_id)
                             totals["indexed_chunks"] += 1
@@ -432,7 +443,8 @@ def prep_service(
                     if work.normalized is not None and not work.failed and not work.admitted:
                         if (
                             set(work.screened) == set(work.ready)
-                            and all(row["status"] == "ELIGIBLE" for row in work.screened.values())
+                            and all(row["status"] in {"ELIGIBLE", "SCREENED_FOR_INTAKE"}
+                                    for row in work.screened.values())
                         ):
                             admission = admit_source(
                                 root, work.spec, work.normalized, work.screened,
@@ -440,16 +452,18 @@ def prep_service(
                                 minimum_acceptance=float(config["source_minimum_acceptance"]),
                             )
                             append_event(root, f"admissions/{owner}", {
-                                key: value for key, value in admission.items() if key != "eligible_receipts"
+                                key: value for key, value in admission.items()
+                                if key not in {"eligible_receipts", "intake_receipts"}
                             })
                             work.admitted = True
                     finished = (
-                        work.normalized is not None and work.indexed == set(work.ready)
+                        work.normalized is not None and (work.indexed | work.intake_screened) == set(work.ready)
                         and not work.pending and work.reader is None and not work.failed
                     )
                     if finished:
                         result = {
-                            "schema": "metis17.prepared-object-indexed/v1",
+                            "schema": ("metis17.screened-object-pending-selection/v1" if work.intake_screened
+                                       else "metis17.prepared-object-indexed/v1"),
                             "generation": generation, "object_id": object_id,
                             "index_generation": index_generation,
                             "source_id": work.spec.source_id,
@@ -457,13 +471,17 @@ def prep_service(
                             "input_documents": work.normalized["input_documents"],
                             "normalized_documents": work.normalized["normalized_documents"],
                             "eligible_documents": sum(row["eligible_documents"] for row in work.screened.values()),
-                            "chunk_ids": sorted(work.indexed), "created_at": utc_now(),
+                            "chunk_ids": sorted(work.indexed | work.intake_screened), "created_at": utc_now(),
+                            "indexed_chunk_count": len(work.indexed),
+                            "intake_screened_chunk_count": len(work.intake_screened),
                             "near_deletion_complete": False,
+                            "quality_selection_pending": bool(work.intake_screened),
+                            "indexing_complete": not bool(work.intake_screened),
                         }
                         write_receipt(_object_marker(root, index_generation, object_id), result)
                         append_event(root, f"prepared/{owner}", {
                             **{key: value for key, value in result.items() if key != "chunk_ids"},
-                            "chunk_count": len(work.indexed),
+                            "chunk_count": len(work.indexed | work.intake_screened),
                         })
                         totals["completed_objects"] += 1
                         totals["prepared_payload_bytes"] += work.raw.byte_count
@@ -477,9 +495,15 @@ def prep_service(
                 if not stop.is_set():
                     candidates = []
                     for object_id, (spec, raw) in list(waiting.items()):
-                        # Tiny, real schema canaries prevent days of acquiring
-                        # a source whose payload/license adapter yields nothing.
-                        candidates.append(((raw.byte_count >= 16_000_000, -spec.priority, raw.byte_count, object_id), spec, raw))
+                        group = str(spec.policy.get("admission_group", spec.source_id))
+                        if group not in admitted_groups:
+                            admission_path = root / "admissions" / f"{digest_json(group)}.json"
+                            if admission_path.exists() and read_receipt(admission_path)["status"] == "admitted":
+                                admitted_groups.add(group)
+                        # Bootstrap a new schema cheaply, but do not let an
+                        # endless tail of tiny admitted files starve premium shards.
+                        canary = group not in admitted_groups and raw.byte_count < 16_000_000
+                        candidates.append(((not canary, -spec.priority, raw.byte_count, object_id), spec, raw))
                     candidates.sort(key=lambda value: value[0])
                     for _, spec, raw in candidates:
                         if (
@@ -514,11 +538,13 @@ def prep_service(
                     if work.failed:
                         continue
                     for chunk_id, path in work.ready.items():
-                        if chunk_id in work.pending or chunk_id in work.indexed:
+                        if chunk_id in work.pending or chunk_id in work.indexed or chunk_id in work.intake_screened:
                             continue
                         screened = work.screened.get(chunk_id)
                         if screened is None or (
-                            screened["status"] == "ELIGIBLE_PENDING_OBJECT_COMPLETION"
+                            screened["status"] in {
+                                "ELIGIBLE_PENDING_OBJECT_COMPLETION", "SCREENED_INTAKE_PENDING_OBJECT_COMPLETION",
+                            }
                             and work.normalized is not None
                         ):
                             heapq.heappush(queue, (-work.spec.priority, 0, object_id, chunk_id, "screen", path))

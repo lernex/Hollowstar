@@ -1,0 +1,146 @@
+schema: metis17.activation/v1
+sources:
+  - id: cc_main_2026_30_wet
+    kind: cc
+    manifest_url: https://data.commoncrawl.org/crawl-data/CC-MAIN-2026-30/wet.paths.gz
+    manifest_sha256: fed084d0dc49defc01afa95fcda3b70bfc02fa46f472db2041dedee7b38b8640
+    key_prefix: crawl-data/CC-MAIN-2026-30/
+    expected_objects: 100000
+    budget_bytes: 6500000000000
+    adapter: wet
+    priority: 49
+    policy:
+      category: web
+      language: any
+      license_mode: compilation
+      collection_license: Common Crawl terms; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: raw_web
+      metadata: {quality_selection_pending: true, crawl: CC-MAIN-2026-30}
+  - id: cc_main_2026_25_wet
+    kind: cc
+    manifest_url: https://data.commoncrawl.org/crawl-data/CC-MAIN-2026-25/wet.paths.gz
+    manifest_sha256: d8f1900a7f5bcb859eee31b42b4695b5c78e7829ac4df32533ca404fdd58a9ed
+    key_prefix: crawl-data/CC-MAIN-2026-25/
+    expected_objects: 100000
+    budget_bytes: 6290000000000
+    adapter: wet
+    priority: 48
+    policy:
+      category: web
+      language: any
+      license_mode: compilation
+      collection_license: Common Crawl terms; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: raw_web
+      metadata: {quality_selection_pending: true, crawl: CC-MAIN-2026-25}
+  - id: cc_main_2026_21_wet
+    kind: cc
+    manifest_url: https://data.commoncrawl.org/crawl-data/CC-MAIN-2026-21/wet.paths.gz
+    manifest_sha256: 80a5987b51747f5d28116f3157d4f7da3cd6aa84503c0214b19316cf259d5ce9
+    key_prefix: crawl-data/CC-MAIN-2026-21/
+    expected_objects: 100000
+    budget_bytes: 6460000000000
+    adapter: wet
+    priority: 47
+    policy:
+      category: web
+      language: any
+      license_mode: compilation
+      collection_license: Common Crawl terms; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: raw_web
+      metadata: {quality_selection_pending: true, crawl: CC-MAIN-2026-21}
+  - id: fineweb2_filtered_train
+    kind: hf
+    repo: HuggingFaceFW/fineweb-2
+    revision: af9c13333eb981300149d5ca60a8e9d659b276b9
+    allow_patterns: ['data/*/train/*.parquet']
+    deny_patterns: ['*_removed/*', '*removed*']
+    expected_inventory_bytes: 9443457890178
+    budget_bytes: 9450000000000
+    adapter: text
+    priority: 82
+    policy:
+      category: multilingual
+      language: any
+      license_mode: compilation
+      collection_license: ODC-By-1.0; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: native_prose
+  - id: dolma35_web
+    kind: hf
+    repo: allenai/dolma3.5_pool
+    revision: d2bf6ae7aeda502ff8c5eb5ad425b90ae2f10279
+    prefixes: [cc_all_dressed, cc_all_dressed_addons]
+    allow_patterns: ['*.jsonl.gz']
+    expected_inventory_bytes: 15742893153074
+    budget_bytes: 15750000000000
+    adapter: text
+    priority: 86
+    policy:
+      category: web
+      language: en
+      license_mode: compilation
+      collection_license: ODC-By-1.0; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: curated_prose
+  - id: ultrafineweb_late2025_hq
+    kind: hf
+    repo: openbmb/Ultra-FineWeb
+    revision: 02c85641e3d19a854be2e09139c25adaa9518063
+    prefixes: [data/ultrafineweb_l1_en_hq]
+    allow_patterns: ['*.parquet']
+    expected_inventory_bytes: 477974475357
+    budget_bytes: 480000000000
+    adapter: content
+    priority: 97
+    policy:
+      category: web
+      language: en
+      license_mode: compilation
+      collection_license: Apache-2.0 compilation; retain publisher redistribution terms
+      common_crawl_derived: true
+      generated: false
+      quality_profile: curated_prose
+  - id: ultrafineweb_v14_selected
+    kind: hf
+    repo: openbmb/Ultra-FineWeb
+    revision: 02c85641e3d19a854be2e09139c25adaa9518063
+    prefixes: [data/ultrafineweb_en_v1_4]
+    allow_patterns: ['*.parquet']
+    expected_inventory_bytes: 6747427279621
+    budget_bytes: 6750000000000
+    adapter: content
+    priority: 84
+    policy:
+      category: web
+      language: en
+      license_mode: compilation
+      collection_license: Apache-2.0 compilation; retain publisher redistribution terms
+      common_crawl_derived: true
+      generated: false
+      quality_profile: curated_prose
+  - id: ultradata_math
+    kind: hf
+    repo: openbmb/UltraData-Math
+    revision: fe10db8efd35597fd7fcff8ff576b5ec4ea5ff87
+    prefixes: [data]
+    allow_patterns: ['*.parquet']
+    expected_inventory_bytes: 552412859233
+    budget_bytes: 560000000000
+    adapter: content
+    priority: 96
+    policy:
+      category: math
+      language: any
+      license_mode: compilation
+      collection_license: Apache-2.0 compilation; retain underlying source rights and parent lineage
+      common_crawl_derived: true
+      generated: true
+      quality_profile: math
