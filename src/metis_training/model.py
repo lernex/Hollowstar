@@ -6273,7 +6273,6 @@ class Metis16ForCausalLM(nn.Module):
         joint_spent = torch.zeros((), device=input_ids.device, dtype=torch.int64)
         joint_router_spent = torch.zeros_like(joint_spent)
         joint_budget = torch.zeros_like(joint_spent)
-        joint_reserve = torch.zeros_like(joint_spent)
         joint_gap = streams.new_zeros((), dtype=torch.float32)
         joint_next_widths: Tensor | None = None
         execution_curriculum = curriculum_state
@@ -6286,13 +6285,6 @@ class Metis16ForCausalLM(nn.Module):
             )
             costs = self.joint_router.costs
             joint_budget = attention_mask.sum(dtype=torch.int64) * costs.reference_per_token
-            # Reserve the worst-case controller work before planning the
-            # backbone. Unused reserve is reported, never disguised as work.
-            joint_reserve = (
-                attention_mask.sum(dtype=torch.int64)
-                * max(0, effective_passes - 1)
-                * costs.router_per_token
-            )
         if joint_mode:
             bootstrap_k = round(self.config.target_mean_routed_k)
             joint_next_widths = torch.full(
@@ -6363,8 +6355,15 @@ class Metis16ForCausalLM(nn.Module):
                 joint_spent = joint_spent + costs.pass_cost(
                     pass_index, pass_routed_k, active_mask
                 )
-                if joint_mode and bool((joint_spent + joint_reserve > joint_budget).item()):
-                    raise RuntimeError("Executed joint allocation exceeded its reserved compute budget.")
+                required_router_cost = (
+                    active_mask.sum(dtype=torch.int64) * costs.router_per_token
+                    if pass_index + 1 < effective_passes
+                    else torch.zeros_like(joint_spent)
+                )
+                if joint_mode and bool(
+                    (joint_spent + joint_router_spent + required_router_cost > joint_budget).item()
+                ):
+                    raise RuntimeError("Executed joint allocation cannot fund its required controller work.")
             run_routed_k = pass_routed_k
             run_memory_entries: tuple[Tensor, ...] = tuple(bank.entries)
             run_memory_masks: tuple[Tensor, ...] = tuple(bank.valid_masks)
@@ -6856,14 +6855,22 @@ class Metis16ForCausalLM(nn.Module):
                             width_utilities,
                             active_mask,
                             base_pass_costs=torch.tensor(
-                                costs.base_pass_costs[pass_index + 1 : effective_passes],
+                                [
+                                    costs.base_pass_costs[future_pass]
+                                    + (
+                                        costs.router_per_token
+                                        if future_pass + 1 < effective_passes
+                                        else 0
+                                    )
+                                    for future_pass in range(pass_index + 1, effective_passes)
+                                ],
                                 device=input_ids.device,
                                 dtype=torch.int64,
                             ),
                             expert_costs=torch.tensor(
                                 costs.expert_costs, device=input_ids.device, dtype=torch.int64
                             ),
-                            budget=joint_budget - joint_reserve - joint_spent,
+                            budget=joint_budget - joint_router_spent - joint_spent,
                         )
                         joint_next_active = active_mask & plan.depths.gt(0)
                         joint_next_widths = plan.routed_k[0]

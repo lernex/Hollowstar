@@ -26,9 +26,11 @@ language-model quality. Discrete unused budget is reported rather than burned
 on padding. Neither perfect allocation nor a quality advantage is assumed.
 
 The ledger charges pass-dependent backbone/LM-head/memory cost, actual routed
-expert invocations, and the utility head. It reserves worst-case utility-head
-work before allocating backbone work. The cost reference excludes the new
-head, so adding a controller does not silently increase the comparison budget.
+expert invocations, and the utility head. Each possible future pass is priced
+together with its required controller call; already executed controller work
+is subtracted before replanning. It does not withhold controller work for
+tokens that stop. The cost reference excludes the new head, so adding a
+controller does not silently increase the comparison budget.
 These are modeled training FLOPs, not a promise of identical wall-clock time.
 Kernel launch overhead, packing, and small expert batches still matter.
 

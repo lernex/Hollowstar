@@ -259,6 +259,39 @@ class JointCreditTests(unittest.TestCase):
         self.assertGreater(int(output.telemetry["joint_router_flops"]), 0)
         self.assertEqual(float(output.telemetry["ponder_exit_mass_max_error"]), 0)
 
+    def test_future_controller_work_is_priced_per_executed_trajectory(self):
+        from metis_training.compute_budget import allocate_joint_budget
+
+        config = tiny_joint_config(max_passes=5)
+        model = Metis16ForCausalLM(config).eval()
+        inputs, labels = batch(config)
+        with torch.no_grad(), patch(
+            "metis_training.compute_budget.allocate_joint_budget",
+            wraps=allocate_joint_budget,
+        ) as allocate:
+            model(
+                inputs, labels,
+                curriculum=CurriculumState(
+                    compute_allocation_mode="joint", fixed_routed_k=2,
+                    allow_untrained_joint_router=True,
+                ),
+            )
+        costs = model.joint_router.costs
+        mask = torch.ones_like(inputs, dtype=torch.bool)
+        first_widths = torch.full((config.n_layers, *inputs.shape), 2)
+        expected_remaining = (
+            inputs.numel() * (costs.reference_per_token - costs.router_per_token)
+            - int(costs.pass_cost(0, first_widths, mask))
+        )
+        first = allocate.call_args_list[0]
+        self.assertEqual(int(first.kwargs["budget"]), expected_remaining)
+        expected_costs = torch.tensor([
+            costs.base_pass_costs[index]
+            + (costs.router_per_token if index < config.max_passes - 1 else 0)
+            for index in range(1, config.max_passes)
+        ])
+        torch.testing.assert_close(first.kwargs["base_pass_costs"], expected_costs)
+
     def test_untrained_joint_policy_cannot_masquerade_as_ready(self):
         config = tiny_joint_config()
         model = Metis16ForCausalLM(config).eval()
