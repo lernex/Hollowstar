@@ -667,6 +667,45 @@ class TinyModelProbeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "coverage"):
             capture.full_widths(masks)
 
+    def test_summary_prefers_actual_head_rows_and_snapshots_live_replay_counters(self):
+        result = evaluate_in_memory(self.model, self.batch, self.curriculum, seed=23)
+        telemetry = result.output.telemetry
+        self.assertIn("lm_head_forward_rows", telemetry)
+        telemetry["executed_lm_head_tokens"] = torch.tensor(999999)
+        before = forward_summary(result, self.batch)
+        self.assertEqual(before["lm_head_tokens"], int(telemetry["lm_head_forward_rows"]))
+        self.assertEqual(before["lm_head_tokens_counter"], "lm_head_forward_rows")
+        self.assertEqual(before["lm_head_tokens_basis"], "model_execution_counter")
+        self.assertEqual(before["lm_head_forward_flops"], int(telemetry["lm_head_forward_flops"]))
+        self.assertEqual(before["lm_head_recompute_rows"], 0)
+        self.assertEqual(before["lm_head_recompute_flops"], 0)
+        telemetry["lm_head_recompute_rows"].add_(3)
+        telemetry["lm_head_recompute_flops"].add_(6 * self.config.vocab_size * self.config.d_model)
+        after = forward_summary(result, self.batch)
+        self.assertEqual(before["lm_head_recompute_rows"], 0)
+        self.assertEqual(after["lm_head_recompute_rows"], 3)
+        self.assertEqual(after["lm_head_recompute_flops"], 6 * self.config.vocab_size * self.config.d_model)
+        self.assertEqual(before["modeled_total_train_flops"], after["modeled_total_train_flops"])
+
+    def test_summary_legacy_head_counter_and_nominal_fallback_are_explicit(self):
+        result = evaluate_in_memory(self.model, self.batch, self.curriculum, seed=23)
+        for name in (
+            "lm_head_forward_rows", "lm_head_forward_flops",
+            "lm_head_recompute_rows", "lm_head_recompute_flops",
+        ):
+            result.output.telemetry.pop(name, None)
+        result.output.telemetry["executed_lm_head_tokens"] = torch.tensor(7)
+        legacy = forward_summary(result, self.batch)
+        self.assertEqual(legacy["lm_head_tokens"], 7)
+        self.assertEqual(legacy["lm_head_tokens_counter"], "executed_lm_head_tokens")
+        del result.output.telemetry["executed_lm_head_tokens"]
+        fallback = forward_summary(result, self.batch)
+        self.assertEqual(fallback["lm_head_tokens"], result.cost["token_passes"])
+        self.assertEqual(fallback["lm_head_tokens_basis"], "nominal_nonpadding_fallback")
+        self.assertIsNone(fallback["lm_head_tokens_counter"])
+        self.assertNotIn("lm_head_forward_rows", fallback)
+        self.assertNotIn("lm_head_recompute_flops", fallback)
+
     def test_full_captured_plan_is_replayed_and_verified_for_noise(self):
         runtime = FrozenRuntimeState(self.model)
         natural, variability = repeated_plan_evaluation(

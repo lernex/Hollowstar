@@ -636,6 +636,7 @@ def evaluate_in_memory(
 
 
 def forward_summary(result: ProbeForward, batch: TrainingBatch) -> dict[str, Any]:
+    """Snapshot scalar counters after evaluation and any requested backward."""
     depths = result.output.chosen_depths[batch.attention_mask]
     routed = result.widths[result.widths > 0]
     total_flops = int(result.output.telemetry.get("joint_model_flops", result.cost["nominal_train_flops"]))
@@ -652,12 +653,29 @@ def forward_summary(result: ProbeForward, batch: TrainingBatch) -> dict[str, Any
         "modeled_total_train_flops": total_flops,
         "nominal_probe_forward_flops": total_flops / 3.0,
     }
-    if "modeled_lm_head_tokens" in result.cost:
-        actual = result.output.telemetry.get("executed_lm_head_tokens")
-        summary.update({
-            "lm_head_tokens": int(actual) if actual is not None else result.cost["modeled_lm_head_tokens"],
-            "lm_head_tokens_basis": "model_execution_counter" if actual is not None else "nominal_nonpadding_fallback",
-        })
+    head_fields = (
+        "lm_head_forward_rows", "lm_head_forward_flops",
+        "lm_head_recompute_rows", "lm_head_recompute_flops",
+    )
+    head_work = {
+        name: int(result.output.telemetry[name])
+        for name in head_fields if name in result.output.telemetry
+    }
+    summary.update(head_work)
+    if head_work:
+        summary["lm_head_work_basis"] = "model_reported_logical_projection_work_not_backend_padding"
+    counter = (
+        "lm_head_forward_rows" if "lm_head_forward_rows" in head_work else
+        "executed_lm_head_tokens" if "executed_lm_head_tokens" in result.output.telemetry else None
+    )
+    summary.update({
+        "lm_head_tokens": (
+            int(result.output.telemetry[counter]) if counter is not None else
+            result.cost.get("modeled_lm_head_tokens", result.cost["token_passes"])
+        ),
+        "lm_head_tokens_basis": "model_execution_counter" if counter is not None else "nominal_nonpadding_fallback",
+        "lm_head_tokens_counter": counter,
+    })
     return summary
 
 
