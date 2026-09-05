@@ -207,9 +207,19 @@ class Metis17WorkerTests(unittest.TestCase):
         self.assertEqual(run.call_args.args, (self.root,))
         kwargs = dict(run.call_args.kwargs)
         self.assertIs(kwargs.pop("defer_compaction", False), False)
+        self.assertIs(kwargs.pop("screening_only"), False)
         self.assertEqual(kwargs, {
             "workers": 9, "raw_readers": 2, "idle_seconds": 600, "maximum_seconds": 42000,
         })
+
+    def test_cli_reaches_independent_screening_lane(self):
+        with patch("metis_data17.worker.prep_service") as run:
+            self.assertEqual(main([
+                "prep", "--root", str(self.root), "--screening-only", "--workers", "64", "--raw-readers", "8",
+            ]), 0)
+        self.assertIs(run.call_args.kwargs["screening_only"], True)
+        self.assertIs(run.call_args.kwargs["defer_compaction"], False)
+        self.assertEqual(run.call_args.kwargs["raw_readers"], 8)
 
     def test_independent_compaction_visits_every_bucket_without_blocking_index_admission(self):
         spec, raw, output = self._object()

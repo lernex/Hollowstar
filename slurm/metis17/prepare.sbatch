@@ -21,6 +21,18 @@ case "${METIS17_DEFER_COMPACTION:-0}" in
   *) printf 'Invalid METIS17_DEFER_COMPACTION\n' >&2; exit 2 ;;
 esac
 
+case "${METIS17_SCREENING_ONLY:-0}" in
+  0) ;;
+  1) maintenance_args+=(--screening-only) ;;
+  *) printf 'Invalid METIS17_SCREENING_ONLY\n' >&2; exit 2 ;;
+esac
+
+case "${METIS17_RAW_READERS:-0}" in
+  0) ;;
+  *[!0-9]*|'') printf 'Invalid METIS17_RAW_READERS\n' >&2; exit 2 ;;
+  *) maintenance_args+=(--raw-readers "${METIS17_RAW_READERS}") ;;
+esac
+
 exec "${METIS17_PYTHON}" -B -m metis_data17.cli prep \
   --root "${METIS17_ROOT}" \
   --workers "${METIS17_WORKERS}" \

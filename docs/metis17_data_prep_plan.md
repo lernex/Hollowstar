@@ -566,6 +566,41 @@ rest do not create a distributed-lock polling storm. Existing immutable
 index-layout validation also avoids that write-lock queue. Acquiring it
 again for every batch would defeat the admission separation.
 
+**Independent screening lane:** the corrected live fleet still exposed a
+pipeline-level bottleneck: about 3,800 indexed documents/second while all
+96 active-object slots waited for complete exact/signature indexing.
+Normalization and eligibility stopped advancing despite available raw code,
+science and multilingual data. The tokenizer consequently had abundant math
+candidates but little coverage in its other required strata.
+
+`supervise-prep --maximum-nodes 16 --screening-nodes 4
+--screening-raw-readers 8 --workers 64 --defer-compaction --tokenizer` reserves
+four of the existing sixteen prep allocations for independent normalization
+and screening, with twelve full-indexing allocations. It does not request
+four extra nodes; the tokenizer retains its independent single allocation.
+Screening workers use the same raw-object claims and sealed normalization
+and eligibility artifacts. They balance active objects across categories,
+retaining highest-priority sources within each category and cheap schema
+canaries first, so one abundant category cannot monopolize sample preparation.
+
+A screening worker releases an object after verified EOF, exact chunk
+coverage and completed policy screening, without awaiting deduplication.
+Its completion is sealed separately under
+`state/screened-objects/<eligibility-generation>/` and journaled in `screened/`,
+with **`indexing_complete: false`**. These records never satisfy the full
+`prepared/` completion gate. Full workers subsequently reuse the artifacts
+and publish the normal indexed-object receipts. Producer failures are also
+separate from index failures. `--screening-nodes` defaults to zero, leaves at
+least one full worker, and changes neither frozen inputs nor data identities.
+This removes the sample-preparation dependency on indexing latency; it does
+not assert that exact/signature indexing already keeps up with acquisition.
+
+The live downloader also exposed a Lustre `exists()`/`stat()` race on the
+replaced intake ledger. Scheduling now reads under the existing accounting
+lock and invalidates capacity retries from sealed content rather than
+filesystem timestamps. Coordinator exit sets the cooperative stop event
+before joining transfer threads, preserving resumable partials on failures.
+
 All six declared decontamination thresholds were compared with the actual
 sealed live index on September 5 and matched. Startup now rejects a
 disagreement or an unknown declared knob instead of accepting an inert

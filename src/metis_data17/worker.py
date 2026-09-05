@@ -14,7 +14,7 @@ from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, Mapping
+from typing import Any, BinaryIO, Iterator, Mapping
 
 from . import prep
 from .acquisition import CapacityPending, receipt_path
@@ -142,6 +142,10 @@ def _prepared_directory(root: Path, config: Mapping[str, Any], spec: ObjectSpec)
 
 def _object_marker(root: Path, generation: str, object_id: str) -> Path:
     return root / "state" / "prepared-objects" / generation / object_id[:2] / f"{object_id}.json"
+
+
+def _screened_marker(root: Path, generation: str, object_id: str) -> Path:
+    return root / "state" / "screened-objects" / generation / object_id[:2] / f"{object_id}.json"
 
 
 def _failure_marker(root: Path, generation: str, object_id: str) -> Path:
@@ -297,6 +301,31 @@ class ObjectWork:
     admitted: bool = False
 
 
+_RawCandidate = tuple[tuple[bool, int, int, str], ObjectSpec, RawReceipt]
+
+
+def _raw_candidates(
+    candidates: list[_RawCandidate], active: Mapping[str, ObjectWork], *, balance_categories: bool,
+) -> Iterator[_RawCandidate]:
+    if not balance_categories:
+        yield from sorted(candidates, key=lambda value: value[0])
+        return
+    queues: dict[str, list[_RawCandidate]] = {}
+    for candidate in candidates:
+        queues.setdefault(candidate[1].policy["category"], []).append(candidate)
+    for queue in queues.values():
+        heapq.heapify(queue)
+    while queues:
+        counts = Counter(work.spec.policy["category"] for work in active.values())
+        category = min(queues, key=lambda key: (
+            queues[key][0][0][0], counts[key], queues[key][0][0][1:],
+        ))
+        candidate = heapq.heappop(queues[category])
+        if not queues[category]:
+            del queues[category]
+        yield candidate
+
+
 def _claim_compaction(config: Mapping[str, Any]) -> tuple[int, BinaryIO] | None:
     root = Path(config["root"])
     generation = config["index_generation"]
@@ -355,16 +384,21 @@ def _compact_job(config: dict[str, Any]) -> dict[str, Any]:
 
 def prep_service(
     root: Path, *, workers: int = 32, raw_readers: int | None = None,
-    idle_seconds: float = 600, maximum_seconds: float = 42_000, defer_compaction: bool = False,
+    idle_seconds: float = 600, maximum_seconds: float = 42_000,     defer_compaction: bool = False, screening_only: bool = False,
 ) -> None:
     if workers < 1 or idle_seconds <= 0 or maximum_seconds <= 0:
         raise ValueError("Worker counts and service time bounds must be positive")
     if type(defer_compaction) is not bool:
         raise ValueError("defer_compaction must be a boolean")
+    if type(screening_only) is not bool:
+        raise ValueError("screening_only must be a boolean")
+    if screening_only and defer_compaction:
+        raise ValueError("Screening-only workers do not own exact-index maintenance")
     if "fork" not in multiprocessing.get_all_start_methods():
         raise RuntimeError("Preparation requires a Linux/POSIX fork runtime with shared verified policy mappings")
     config, run = worker_configuration(root)
     config["defer_compaction"] = defer_compaction
+    config["screening_only"] = screening_only
     readers = raw_readers or int(config["raw_readers_per_node"])
     if readers < 1:
         raise ValueError("A positive raw-reader count is required")
@@ -373,6 +407,8 @@ def prep_service(
     status_path = root / "status" / f"prep-{owner}.json"
     generation = config["generation"]
     index_generation = config["index_generation"]
+    failure_generation = f"screening-{generation}" if screening_only else index_generation
+    config["failure_generation"] = failure_generation
     stop = _stop_event()
     tail = EventTail()
     waiting: dict[str, tuple[ObjectSpec, RawReceipt]] = {}
@@ -392,6 +428,7 @@ def prep_service(
     startup = {
         "pid": os.getpid(), "host": host, "job_id": os.environ.get("SLURM_JOB_ID"),
         "generation": generation, "index_generation": index_generation, "code_commit": commit,
+        "screening_only": screening_only,
     }
     atomic_json(status_path, {**startup, "status": "loading_policies", "updated_at": utc_now()})
     prep.prepare_runtime(config, require_ready=True)
@@ -436,13 +473,18 @@ def prep_service(
                     finally:
                         compaction_lease.close()
                         compaction_job = compaction_lease = None
-                for stream in ("prepared", "prep-errors"):
+                streams = ("prepared", "screened", "prep-errors") if screening_only else ("prepared", "prep-errors")
+                for stream in streams:
                     for path in sorted((root / "events" / stream).glob("*.jsonl")):
                         for event in tail.read(path):
-                            if event.get("index_generation") == index_generation:
-                                if stream == "prepared":
+                            matches = (
+                                event.get("generation") == generation if screening_only
+                                else event.get("index_generation") == index_generation
+                            )
+                            if matches:
+                                if stream != "prep-errors":
                                     completed_objects.add(event["object_id"])
-                                else:
+                                elif bool(event.get("screening_only", False)) == screening_only:
                                     observe_failure(failures, event)
                 newly_closed = completed_objects | {
                     object_id for object_id, value in failures.items()
@@ -554,40 +596,47 @@ def prep_service(
                                 if key not in {"eligible_receipts", "intake_receipts"}
                             })
                             work.admitted = True
+                    complete_chunks = set(work.screened) if screening_only else work.indexed | work.intake_screened
                     finished = (
-                        work.normalized is not None and (work.indexed | work.intake_screened) == set(work.ready)
+                        work.normalized is not None and work.admitted and complete_chunks == set(work.ready)
                         and not work.pending and work.reader is None and not work.failed
                     )
                     if finished:
                         result = {
-                            "schema": ("metis17.screened-object-pending-selection/v1" if work.intake_screened
+                            "schema": ("metis17.screened-object/v1" if screening_only
+                                       else "metis17.screened-object-pending-selection/v1" if work.intake_screened
                                        else "metis17.prepared-object-indexed/v1"),
                             "generation": generation, "object_id": object_id,
-                            "index_generation": index_generation,
+                            **({"index_generation": index_generation} if not screening_only else {}),
                             "source_id": work.spec.source_id,
                             "raw_byte_count": work.raw.byte_count,
                             "input_documents": work.normalized["input_documents"],
                             "normalized_documents": work.normalized["normalized_documents"],
                             "eligible_documents": sum(row["eligible_documents"] for row in work.screened.values()),
-                            "chunk_ids": sorted(work.indexed | work.intake_screened), "created_at": utc_now(),
+                            "chunk_ids": sorted(complete_chunks), "created_at": utc_now(),
                             "indexed_chunk_count": len(work.indexed),
                             "intake_screened_chunk_count": len(work.intake_screened),
                             "near_deletion_complete": False,
                             "quality_selection_pending": bool(work.intake_screened),
-                            "indexing_complete": not bool(work.intake_screened),
+                            "indexing_complete": not screening_only and not bool(work.intake_screened),
                         }
-                        write_receipt(_object_marker(root, index_generation, object_id), result)
-                        append_event(root, f"prepared/{owner}", {
+                        marker = (
+                            _screened_marker(root, generation, object_id) if screening_only
+                            else _object_marker(root, index_generation, object_id)
+                        )
+                        write_receipt(marker, result)
+                        stream = "screened" if screening_only else "prepared"
+                        append_event(root, f"{stream}/{owner}", {
                             **{key: value for key, value in result.items() if key != "chunk_ids"},
-                            "chunk_count": len(work.indexed | work.intake_screened),
+                            "chunk_count": len(complete_chunks),
                         })
-                        totals["completed_objects"] += 1
-                        totals["prepared_payload_bytes"] += work.raw.byte_count
+                        totals["screened_objects" if screening_only else "completed_objects"] += 1
+                        totals["screened_payload_bytes" if screening_only else "prepared_payload_bytes"] += work.raw.byte_count
                     if finished or (work.failed and not work.pending and work.reader is None):
                         work.lease.close()
                         del active[object_id]
                         if work.failed and not stop.is_set():
-                            failure = read_receipt(_failure_marker(root, index_generation, object_id))
+                            failure = read_receipt(_failure_marker(root, failure_generation, object_id))
                             if not failure_blocks(failure, current_limits):
                                 waiting[object_id] = (work.spec, work.raw)
                 if not stop.is_set():
@@ -604,8 +653,7 @@ def prep_service(
                         # endless tail of tiny admitted files starve premium shards.
                         canary = group not in admitted_groups and raw.byte_count < 16_000_000
                         candidates.append(((not canary, -spec.priority, raw.byte_count, object_id), spec, raw))
-                    candidates.sort(key=lambda value: value[0])
-                    for _, spec, raw in candidates:
+                    for _, spec, raw in _raw_candidates(candidates, active, balance_categories=screening_only):
                         if (
                             sum(work.reader is not None for work in active.values()) >= readers
                             or len(active) >= readers + 4
@@ -616,10 +664,11 @@ def prep_service(
                             continue
                         if (
                             _object_marker(root, index_generation, spec.object_id).exists()
+                            or (screening_only and _screened_marker(root, generation, spec.object_id).exists())
                             or (
-                                _failure_marker(root, index_generation, spec.object_id).exists()
+                                _failure_marker(root, failure_generation, spec.object_id).exists()
                                 and failure_blocks(
-                                    read_receipt(_failure_marker(root, index_generation, spec.object_id)),
+                                    read_receipt(_failure_marker(root, failure_generation, spec.object_id)),
                                     limits_sha256,
                                 )
                             )
@@ -648,7 +697,7 @@ def prep_service(
                             and work.normalized is not None
                         ):
                             heapq.heappush(queue, (-work.spec.priority, 0, object_id, chunk_id, "screen", path))
-                        elif screened["status"] == "ELIGIBLE":
+                        elif screened["status"] == "ELIGIBLE" and not screening_only:
                             heapq.heappush(queue, (-work.spec.priority, 1, object_id, chunk_id, "index",
                                                   under_root(root, screened["receipt_path"])))
                 while queue and len(jobs) < workers:
@@ -686,6 +735,7 @@ def prep_service(
                     "elapsed_seconds": now - started,
                     "policy_ready": True, "near_deletion_complete": False,
                     "defer_compaction": defer_compaction,
+                    "screening_only": screening_only,
                     "compaction_active": compaction_job is not None,
                     "capacity_confirmation": current_capacity["capacity_confirmation"],
                 })
@@ -719,7 +769,9 @@ def _record_failure(
     capacity_pending = isinstance(error, CapacityPending) or detail.get("capacity_pending") is True
     result = {
         "generation": config["generation"], "object_id": work.spec.object_id,
-        "index_generation": config["index_generation"], "worker_sha256": _IMPLEMENTATION_SHA256,
+        **({"index_generation": config["index_generation"]} if not config.get("screening_only", False) else {}),
+        "screening_only": config.get("screening_only", False),
+        "worker_sha256": _IMPLEMENTATION_SHA256,
         "source_id": work.spec.source_id, "stage": stage,
         "status": "capacity_pending" if capacity_pending else "failed",
         "created_at": utc_now(), **detail,
@@ -728,5 +780,7 @@ def _record_failure(
             if capacity_pending else None
         ),
     }
-    write_receipt(_failure_marker(root, config["index_generation"], work.spec.object_id), result)
+    write_receipt(
+        _failure_marker(root, config.get("failure_generation", config["index_generation"]), work.spec.object_id), result,
+    )
     append_event(root, f"prep-errors/{owner}", result)

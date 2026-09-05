@@ -582,6 +582,7 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--idle-seconds", type=float, default=600)
     prepare.add_argument("--maximum-seconds", type=float, default=42000)
     prepare.add_argument("--defer-compaction", action="store_true")
+    prepare.add_argument("--screening-only", action="store_true")
     supervise = sub.add_parser("supervise-prep")
     supervise.add_argument("--root", type=Path, required=True)
     supervise.add_argument("--python", type=Path, required=True)
@@ -589,6 +590,8 @@ def main(argv: list[str] | None = None) -> int:
     supervise.add_argument("--workers", type=int, default=32)
     supervise.add_argument("--tokenizer", action="store_true")
     supervise.add_argument("--defer-compaction", action="store_true")
+    supervise.add_argument("--screening-nodes", type=int, default=0)
+    supervise.add_argument("--screening-raw-readers", type=int, default=8)
     tokenizer = sub.add_parser("tokenizer")
     tokenizer.add_argument("--root", type=Path, required=True)
     tokenizer.add_argument("--scratch-dir", type=Path, required=True)
@@ -625,6 +628,7 @@ def main(argv: list[str] | None = None) -> int:
             root, workers=args.workers, raw_readers=args.raw_readers,
             idle_seconds=args.idle_seconds, maximum_seconds=args.maximum_seconds,
             defer_compaction=args.defer_compaction,
+            screening_only=args.screening_only,
         )
     elif args.command == "supervise-prep":
         from .runtime import supervise_prep
@@ -634,6 +638,8 @@ def main(argv: list[str] | None = None) -> int:
             maximum_nodes=args.maximum_nodes, workers_per_node=args.workers,
             tokenizer=args.tokenizer,
             defer_compaction=args.defer_compaction,
+            screening_nodes=args.screening_nodes,
+            screening_raw_readers=args.screening_raw_readers,
         )
     elif args.command == "tokenizer":
         from .tokenizer_service import tokenizer_service

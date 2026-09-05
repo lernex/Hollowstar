@@ -80,6 +80,53 @@ class Metis17RuntimeTests(unittest.TestCase):
         idle.assert_not_called()
         self.assertEqual(len(result["active_jobs"]), 1)
 
+    def test_screening_lanes_share_the_node_cap_and_keep_an_independent_full_worker(self):
+        commands = []
+        next_id = 100
+
+        def output(argv, **_kwargs):
+            nonlocal next_id
+            commands.append(argv)
+            if argv[0] == "git":
+                return "a" * 40
+            if argv[0] == "sbatch":
+                next_id += 1
+                return f"{next_id}\n"
+            if argv[0] == "squeue":
+                return "\n".join(str(index) for index in range(101, next_id + 1))
+            raise AssertionError(argv)
+
+        nodes = [{"name": f"node{index}", "cpus": 192, "memory_mb": 512000} for index in range(4)]
+        with patch("metis_data17.runtime.idle_nodes", return_value=nodes), patch(
+            "metis_data17.runtime.subprocess.check_output", side_effect=output,
+        ):
+            result = submit_prep_workers(
+                self.root, self.code, Path(sys.executable), maximum_nodes=4,
+                screening_nodes=2, screening_raw_readers=8, defer_compaction=True,
+            )
+            again = submit_prep_workers(
+                self.root, self.code, Path(sys.executable), maximum_nodes=4,
+                screening_nodes=2, screening_raw_readers=8, defer_compaction=True,
+            )
+        self.assertEqual(result["active_jobs"], again["active_jobs"])
+        jobs = result["active_jobs"]
+        self.assertEqual([job["screening_only"] for job in jobs], [False, True, True, False])
+        self.assertEqual([job["defer_compaction"] for job in jobs], [True, False, False, True])
+        self.assertEqual([job["raw_readers"] for job in jobs], [0, 8, 8, 0])
+        submitted = [row for row in commands if row[0] == "sbatch"]
+        self.assertEqual(len(submitted), 4)
+        for command in submitted[1:3]:
+            exports = next(arg for arg in command if arg.startswith("--export="))
+            self.assertIn("METIS17_SCREENING_ONLY=1", exports)
+            self.assertIn("METIS17_DEFER_COMPACTION=0", exports)
+            self.assertIn("METIS17_RAW_READERS=8", exports)
+
+    def test_screening_reservation_cannot_displace_every_full_indexer(self):
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            submit_prep_workers(
+                self.root, self.code, Path(sys.executable), maximum_nodes=4, screening_nodes=4,
+            )
+
     def test_no_idle_nodes_waits_without_interfering_with_running_work(self):
         with patch("metis_data17.runtime.idle_nodes", return_value=[]), patch(
             "metis_data17.runtime.subprocess.check_output",

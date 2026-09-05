@@ -37,11 +37,17 @@ def _submit_workers(
     workers_per_node: int = 32,
     stage: str = "prep",
     defer_compaction: bool = False,
+    screening_nodes: int = 0,
+    screening_raw_readers: int = 8,
 ) -> dict[str, Any]:
     if maximum_nodes < 1 or workers_per_node < 1:
         raise ValueError("Positive worker/node limits required")
     if type(defer_compaction) is not bool:
         raise ValueError("defer_compaction must be a boolean")
+    if type(screening_nodes) is not int or not 0 <= screening_nodes < maximum_nodes:
+        raise ValueError("Screening nodes must leave at least one full-indexing node")
+    if type(screening_raw_readers) is not int or screening_raw_readers < 1:
+        raise ValueError("Positive screening raw-reader count required")
     if not python.is_file():
         raise FileNotFoundError("The pinned data interpreter is unavailable")
     scripts = {"prep": ("prepare.sbatch", "12:00:00"), "tokenizer": ("tokenizer.sbatch", "2-00:00:00")}
@@ -83,6 +89,13 @@ def _submit_workers(
         memory_mb = min(480_000, node["memory_mb"] - 16_000)
         if memory_mb < 32_000:
             continue
+        screening_only = (
+            stage == "prep"
+            and sum(job.get("screening_only", False) for job in active) < screening_nodes
+            and any(not job.get("screening_only", False) for job in active)
+        )
+        maintenance = defer_compaction and not screening_only
+        raw_readers = screening_raw_readers if screening_only else 0
         # Idle snapshots bound admission, not placement: a pinned node can
         # become busy while another suitable node stays idle.
         command = [
@@ -93,7 +106,8 @@ def _submit_workers(
             f"--output={logs}/%j.out", f"--error={logs}/%j.err",
             f"--chdir={checkout}",
             f"--export=METIS17_ROOT={root},METIS17_CODE={checkout},METIS17_PYTHON={python},"
-            f"METIS17_WORKERS={workers_per_node},METIS17_DEFER_COMPACTION={int(defer_compaction)}",
+            f"METIS17_WORKERS={workers_per_node},METIS17_DEFER_COMPACTION={int(maintenance)},"
+            f"METIS17_SCREENING_ONLY={int(screening_only)},METIS17_RAW_READERS={raw_readers}",
             str(script),
         ]
         output = subprocess.check_output(command, text=True).strip()
@@ -107,7 +121,9 @@ def _submit_workers(
             "python": str(python),
             "submitted_at": utc_now(),
             "workers": workers_per_node,
-            "defer_compaction": defer_compaction,
+            "defer_compaction": maintenance,
+            "screening_only": screening_only,
+            "raw_readers": raw_readers,
         }
         previous["jobs"].append(job)
         active.append(job)
@@ -123,6 +139,8 @@ def submit_prep_workers(
     maximum_nodes: int = 4,
     workers_per_node: int = 32,
     defer_compaction: bool = False,
+    screening_nodes: int = 0,
+    screening_raw_readers: int = 8,
 ) -> dict[str, Any]:
     from .worker import claim
 
@@ -134,6 +152,7 @@ def submit_prep_workers(
             root, checkout, python,
             maximum_nodes=maximum_nodes, workers_per_node=workers_per_node,
             defer_compaction=defer_compaction,
+            screening_nodes=screening_nodes, screening_raw_readers=screening_raw_readers,
         )
     finally:
         lock.close()
@@ -159,12 +178,17 @@ def supervise_prep(
     root: Path, checkout: Path, python: Path, *,
     maximum_nodes: int = 4, workers_per_node: int = 32, tokenizer: bool = False,
     defer_compaction: bool = False,
+    screening_nodes: int = 0, screening_raw_readers: int = 8,
 ) -> None:
     from .cli import _stop_event, safe_error
     from .worker import EventTail, claim, failure_blocks, observe_failure, worker_configuration
 
     if maximum_nodes < 1 or workers_per_node < 1:
         raise ValueError("Positive node/worker counts required")
+    if type(screening_nodes) is not int or not 0 <= screening_nodes < maximum_nodes:
+        raise ValueError("Screening nodes must leave at least one full-indexing node")
+    if type(screening_raw_readers) is not int or screening_raw_readers < 1:
+        raise ValueError("Positive screening raw-reader count required")
     lock = claim(root / "locks" / "prep-supervisor.flock")
     if lock is None:
         raise RuntimeError("A preparation supervisor already owns this release")
@@ -197,6 +221,8 @@ def supervise_prep(
                     root, checkout, python, maximum_nodes=min(maximum_nodes, len(pending)),
                     workers_per_node=workers_per_node,
                     defer_compaction=defer_compaction,
+                    screening_nodes=min(screening_nodes, len(pending) - 1),
+                    screening_raw_readers=screening_raw_readers,
                 )
             else:
                 result = {"status": "waiting_for_new_raw_objects"}
@@ -209,6 +235,7 @@ def supervise_prep(
                 "updated_at": utc_now(), "acquired_objects": len(acquired),
                 "completed_objects": len(completed), "failed_objects": len(failed),
                 "pending_objects": len(pending), "maximum_nodes": maximum_nodes, **result,
+                "screening_nodes": screening_nodes, "screening_raw_readers": screening_raw_readers,
             })
             stop.wait(60)
     except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.SubprocessError) as exc:
