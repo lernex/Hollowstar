@@ -147,6 +147,7 @@ def _resolve_hf(root: Path, source: Mapping[str, Any], writer: CatalogueWriter) 
     if info.sha != revision:
         raise RuntimeError(f"HF revision did not resolve exactly: {repo}")
     seen_paths: set[str] = set()
+    candidates: list[ObjectSpec] | None = [] if source.get("selection_bytes") is not None else None
     for prefix in source.get("prefixes", [None]):
         for item in api.list_repo_tree(
             repo,
@@ -170,7 +171,7 @@ def _resolve_hf(root: Path, source: Mapping[str, Any], writer: CatalogueWriter) 
             checksum = lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)
             policy, priority = _policy_for(source, key)
             policy["repo_id"] = repo
-            writer.add(ObjectSpec.create(
+            spec = ObjectSpec.create(
                 source_id=str(source["id"]),
                 url=hf_hub_url(repo, key, repo_type="dataset", revision=revision),
                 revision=revision,
@@ -181,7 +182,45 @@ def _resolve_hf(root: Path, source: Mapping[str, Any], writer: CatalogueWriter) 
                 expected_bytes=item.size,
                 expected_sha256=checksum,
                 policy=policy,
-            ))
+            )
+            if candidates is None:
+                writer.add(spec)
+            else:
+                candidates.append(spec)
+    if candidates is not None:
+        selected, omitted = select_bounded_objects(candidates, int(source["selection_bytes"]))
+        expected_candidates = source.get("expected_candidate_bytes")
+        candidate_bytes = sum(spec.expected_bytes for spec in candidates)
+        if expected_candidates is not None and candidate_bytes != expected_candidates:
+            raise RuntimeError("Bounded source candidate inventory differs from its reviewed universe")
+        for spec in selected:
+            writer.add(spec)
+        write_receipt(writer.directory / "SELECTION.json", {
+            "schema": "metis17.object-selection/v1",
+            "policy": "newest-path-first-whole-objects/v1",
+            "limit_bytes": source["selection_bytes"], "candidate_bytes": candidate_bytes,
+            "selected": [spec.object_id for spec in selected],
+            "omitted": [spec.object_id for spec in omitted], "omission_reason": "explicit_byte_budget",
+        })
+
+
+def select_bounded_objects(
+    candidates: Iterable[ObjectSpec], maximum_bytes: int,
+) -> tuple[list[ObjectSpec], list[ObjectSpec]]:
+    if type(maximum_bytes) is not int or maximum_bytes < 1:
+        raise ValueError("A positive whole-object selection budget is required")
+    selected, omitted, seen = [], [], set()
+    used = 0
+    for spec in sorted(candidates, key=lambda value: (value.relative_key, value.object_id), reverse=True):
+        if spec.object_id in seen or spec.expected_bytes is None:
+            raise ValueError("Bounded selection needs unique objects with known sizes")
+        seen.add(spec.object_id)
+        if used + spec.expected_bytes <= maximum_bytes:
+            selected.append(spec)
+            used += spec.expected_bytes
+        else:
+            omitted.append(spec)
+    return selected, omitted
 
 
 def _cached_metadata(root: Path, url: str, *, maximum_bytes: int = 10_000_000) -> bytes:
@@ -288,11 +327,23 @@ def _resolve_cc(root: Path, source: Mapping[str, Any], writer: CatalogueWriter) 
         ))
 
 
-def resolve_source(root: Path, source: Mapping[str, Any]) -> dict[str, Any]:
+def _catalogue_specs(root: Path, descriptor: Mapping[str, Any]) -> Iterable[ObjectSpec]:
+    directory = (root / descriptor["directory"]).resolve()
+    if not directory.is_relative_to((root / "catalogue").resolve()):
+        raise RuntimeError("Catalogue directory escapes the release")
+    for page in sorted(directory.glob("page-*.json")):
+        value = read_receipt(page)
+        if value.get("schema") != "metis17.object-page/v1" or value["source_hash"] != descriptor["source_hash"]:
+            raise RuntimeError("Unrecognized or mismatched catalogue page")
+        for record in value["objects"]:
+            yield ObjectSpec.from_dict(record)
+
+
+def resolve_source(
+    root: Path, source: Mapping[str, Any], *, reconcile_incomplete: bool = False,
+) -> dict[str, Any]:
     writer = CatalogueWriter(root, source)
     complete = writer.directory / "SOURCE_COMPLETE.json"
-    if complete.exists():
-        return read_receipt(complete)
     with file_lock(root / "locks" / "catalogue" / f"{source['id']}.lock", timeout=2):
         active = root / "catalogue" / "active" / f"{source['id']}.json"
         descriptor = {
@@ -300,36 +351,62 @@ def resolve_source(root: Path, source: Mapping[str, Any]) -> dict[str, Any]:
             "source_hash": writer.source_hash,
             "directory": str(writer.directory.relative_to(root)),
         }
-        if active.exists() and read_receipt(active) != descriptor:
-            raise RuntimeError("Active source definition changed; create a separate immutable batch")
-        write_receipt(active, descriptor)
-        kind = source["kind"]
-        if kind == "hf":
-            _resolve_hf(root, source, writer)
-        elif kind == "hplt":
-            _resolve_hplt(root, source, writer)
-        elif kind == "cc":
-            _resolve_cc(root, source, writer)
+        previous = read_receipt(active) if active.exists() else None
+        replacing = previous is not None and previous != descriptor
+        if replacing:
+            if not reconcile_incomplete:
+                raise RuntimeError("Active source definition changed; use an explicit incomplete-catalogue reconciliation")
+            previous_directory = (root / previous["directory"]).resolve()
+            if not previous_directory.is_relative_to((root / "catalogue").resolve()):
+                raise RuntimeError("Previous catalogue directory escapes the release")
+            if (previous_directory / "SOURCE_COMPLETE.json").exists():
+                raise RuntimeError("A sealed source cannot be replaced by an inventory correction")
+        if complete.exists():
+            result = read_receipt(complete)
+            if result["source"] != source:
+                raise RuntimeError("Completed source identity changed")
         else:
-            raise ValueError(f"No content-only source resolver for kind: {kind}")
-        return writer.seal()
+            if not replacing:
+                write_receipt(active, descriptor)
+            kind = source["kind"]
+            if kind == "hf":
+                _resolve_hf(root, source, writer)
+            elif kind == "hplt":
+                _resolve_hplt(root, source, writer)
+            elif kind == "cc":
+                _resolve_cc(root, source, writer)
+            else:
+                raise ValueError(f"No content-only source resolver for kind: {kind}")
+            result = writer.seal()
+        if replacing:
+            corrected = {
+                spec.object_id: digest_json(spec.to_dict())
+                for spec in _catalogue_specs(root, descriptor)
+            }
+            covered = set()
+            for spec in _catalogue_specs(root, previous):
+                if spec.object_id in covered or corrected.get(spec.object_id) != digest_json(spec.to_dict()):
+                    raise RuntimeError("Inventory correction must preserve every existing object and its policy exactly once")
+                covered.add(spec.object_id)
+            if len(corrected) != result["objects"]:
+                raise RuntimeError("Corrected catalogue object coverage is not unique")
+            write_receipt(writer.directory / "RECONCILIATION.json", {
+                "schema": "metis17.catalogue-reconciliation/v1",
+                "previous": previous, "replacement": descriptor,
+                "preserved_objects": len(covered), "added_objects": len(corrected) - len(covered),
+                "source_complete_sha256": digest_json(result),
+            })
+        write_receipt(active, descriptor)
+        return result
 
 
 def catalogue_objects(root: Path, *, origins: set[str] | None = None) -> Iterable[ObjectSpec]:
     seen: set[str] = set()
     for active in sorted((root / "catalogue" / "active").glob("*.json")):
         descriptor = read_receipt(active)
-        directory = (root / descriptor["directory"]).resolve()
-        if not directory.is_relative_to((root / "catalogue").resolve()):
-            raise RuntimeError("Catalogue directory escapes the release")
-        for page in sorted(directory.glob("page-*.json")):
-            value = read_receipt(page)
-            if value.get("schema") != "metis17.object-page/v1" or value["source_hash"] != descriptor["source_hash"]:
-                raise RuntimeError("Unrecognized or mismatched catalogue page")
-            for record in value["objects"]:
-                spec = ObjectSpec.from_dict(record)
-                if spec.object_id in seen:
-                    raise RuntimeError("Object appears more than once in active catalogues")
-                seen.add(spec.object_id)
-                if origins is None or urlsplit(spec.url).hostname in origins:
-                    yield spec
+        for spec in _catalogue_specs(root, descriptor):
+            if spec.object_id in seen:
+                raise RuntimeError("Object appears more than once in active catalogues")
+            seen.add(spec.object_id)
+            if origins is None or urlsplit(spec.url).hostname in origins:
+                yield spec

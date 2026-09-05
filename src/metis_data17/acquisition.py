@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import socket
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -25,6 +26,10 @@ class CapacityPending(RuntimeError):
 
 class DownloadFailure(RuntimeError):
     """A content object could not be acquired with its integrity contract."""
+
+
+class DownloadPaused(RuntimeError):
+    """A requested shutdown retained the verified-resumable partial object."""
 
 
 def receipt_path(root: Path, object_id: str) -> Path:
@@ -235,6 +240,7 @@ def download_object(
     attempts: int = 8,
     timeout: float = 90,
     session: requests.Session | None = None,
+    stop_event: threading.Event | None = None,
 ) -> RawReceipt:
     ready = receipt_path(root, spec.object_id)
     if ready.exists():
@@ -297,6 +303,8 @@ def download_object(
                 started = time.monotonic()
                 response: requests.Response | None = None
                 try:
+                    if stop_event is not None and stop_event.is_set():
+                        raise DownloadPaused("Acquisition shutdown requested")
                     response = http.get(
                         spec.url,
                         headers=_headers(spec.url, offset, previous.get("etag")),
@@ -335,6 +343,9 @@ def download_object(
                     last_report = 0.0
                     with partial.open("ab" if offset else "wb") as output:
                         for block in response.iter_content(chunk_size=4 * 1024 * 1024):
+                            if stop_event is not None and stop_event.is_set():
+                                transferred += len(block)
+                                raise DownloadPaused("Acquisition shutdown requested")
                             if not block:
                                 continue
                             transferred += len(block)
@@ -395,6 +406,15 @@ def download_object(
                         "updated_at": utc_now(),
                     })
                     return receipt
+                except DownloadPaused:
+                    budget.failed_attempt(spec, transferred, release=not partial.exists())
+                    atomic_json(progress, {
+                        "object_id": spec.object_id, "source_id": spec.source_id,
+                        "host": socket.gethostname(), "status": "paused",
+                        "bytes_present": partial.stat().st_size if partial.exists() else 0,
+                        "updated_at": utc_now(),
+                    })
+                    raise
                 except (requests.RequestException, DownloadFailure) as exc:
                     corrupt = isinstance(exc, DownloadFailure)
                     if corrupt:

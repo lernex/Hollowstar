@@ -77,7 +77,7 @@ sources:
     repo: allenai/dolma3.5_pool
     revision: d2bf6ae7aeda502ff8c5eb5ad425b90ae2f10279
     prefixes: [cc_all_dressed, cc_all_dressed_addons]
-    allow_patterns: ['*.jsonl.gz']
+    allow_patterns: ['*.jsonl.gz', '*.jsonl.zst']
     expected_inventory_bytes: 15742893153074
     budget_bytes: 15750000000000
     adapter: text

@@ -12,7 +12,7 @@ import yaml
 
 from metis_data17.acquisition import CapacityPending, DownloadFailure
 from metis_data17.cli import (
-    _limits, activate_batch, append_event, download_order_key, download_service, init_run,
+    _limits, activate_batch, append_event, download_order_key, download_owner, download_service, init_run,
     intake_candidate_fits, main, read_events, select_download_group, status,
 )
 from metis_data17.common import ObjectSpec, RawReceipt, digest_json, read_receipt, write_receipt
@@ -162,6 +162,55 @@ class Metis17CliTests(unittest.TestCase):
         candidates = [(download_order_key(high, set()), "high"), (download_order_key(other, set()), "fresh")]
         self.assertEqual(select_download_group(candidates, specs, [busy])[1], "fresh")
         self.assertEqual(select_download_group(candidates, specs, [busy, other])[1], "high")
+
+    def test_fast_origin_is_not_limited_to_one_slot_behind_a_throttled_origin(self):
+        def spec(origin, name, priority):
+            return ObjectSpec.create(
+                source_id="source", url=f"https://{origin}/{name}", revision="r",
+                relative_key=name, wire_format="parquet", adapter="text", priority=priority,
+            )
+        high = spec("slow.test", "premium", 100)
+        fast = spec("fast.test", "fresh", 50)
+        specs = {value.object_id: value for value in (high, fast)}
+        choices = [(download_order_key(high, set()), "premium"),
+                   (download_order_key(fast, set()), "fresh")]
+        self.assertEqual(select_download_group(choices, specs, [high] * 15 + [fast])[1], "fresh")
+
+    def test_shared_origin_partition_covers_every_object_exactly_once(self):
+        hosts = {"login1": ["hf.test"], "login2": ["cc.test"]}
+        specs = [
+            ObjectSpec.create(
+                source_id="source", url=f"https://cc.test/{index}", revision="r",
+                relative_key=str(index), wire_format="parquet", adapter="text", priority=50,
+            )
+            for index in range(257)
+        ]
+        partials = {specs[0].object_id: "login2.cluster"}
+        assignments = {
+            host: {spec.object_id for spec in specs
+                   if download_owner(spec, hosts, {"cc.test"}, partials) == host}
+            for host in hosts
+        }
+        self.assertTrue(all(assignments.values()))
+        self.assertFalse(assignments["login1"] & assignments["login2"])
+        self.assertEqual(set.union(*assignments.values()), {spec.object_id for spec in specs})
+        self.assertIn(specs[0].object_id, assignments["login2"])
+        self.assertTrue(all(download_owner(spec, hosts, set(), {}) == "login2" for spec in specs))
+        bootstrap = ObjectSpec.from_dict({**specs[1].to_dict(), "policy": {"bootstrap": True}})
+        self.assertEqual(download_owner(bootstrap, hosts, {"cc.test"}, {}), "login2")
+
+    def test_failed_activation_continues_independent_sources_and_returns_failure(self):
+        with patch("metis_data17.cli.code_commit", return_value="a" * 40):
+            init_run(self.root, self.config)
+        path = Path(self.tmp.name) / "expansion.yaml"
+        sources = [{"id": "bad", "kind": "hf"}, {"id": "good", "kind": "hf"}]
+        path.write_text(yaml.safe_dump({"schema": "metis17.activation/v1", "sources": sources}))
+        with patch("metis_data17.cli.resolve_source",
+                   side_effect=[RuntimeError("Incomplete publisher inventory"),
+                                {"objects": 2, "known_bytes": 128}]):
+            result = activate_batch(self.root, path)
+        self.assertFalse(result["ok"])
+        self.assertEqual([value["status"] for value in result["sources"]], ["failed", "complete"])
 
     def _download_with_failed_head(self, failure):
         from concurrent.futures import Future

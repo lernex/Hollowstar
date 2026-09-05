@@ -1,0 +1,233 @@
+schema: metis17.activation/v1
+sources:
+  - id: dolma35_materialized_code
+    kind: hf
+    repo: allenai/dolma3.5_pool
+    revision: d2bf6ae7aeda502ff8c5eb5ad425b90ae2f10279
+    prefixes: [dolma_code, the-stack-v2, swallow-code, dolma_code_prose, sponge211unified_code_prose, common_pile_code]
+    allow_patterns: ['*.jsonl.gz', '*.jsonl.zst', '*.json.zst']
+    expected_inventory_bytes: 2458368343174
+    budget_bytes: 2460000000000
+    adapter: text
+    priority: 97
+    policy:
+      category: code
+      language: any
+      license_mode: per_record
+      allowed_licenses: [MIT, Apache-2.0, BSD, BSD-2-Clause, BSD-3-Clause, ISC, CC0, public_domain, public-domain, Unlicense]
+      common_crawl_derived: false
+      generated: false
+      quality_profile: code
+  - id: dolma35_olmo_pdfs
+    kind: hf
+    repo: allenai/dolma3.5_pool
+    revision: d2bf6ae7aeda502ff8c5eb5ad425b90ae2f10279
+    prefixes: [dolma4pdfs/olmo-crawled-pdfs_ngram_filtered]
+    allow_patterns: ['*.jsonl.zst']
+    expected_inventory_bytes: 1683945715602
+    budget_bytes: 1690000000000
+    adapter: text
+    priority: 95
+    policy:
+      category: science
+      language: any
+      license_mode: compilation
+      collection_license: ODC-By-1.0; underlying source rights retained
+      common_crawl_derived: false
+      generated: false
+      quality_profile: science
+  - id: dolma35_textbooks
+    kind: hf
+    repo: allenai/dolma3.5_pool
+    revision: d2bf6ae7aeda502ff8c5eb5ad425b90ae2f10279
+    prefixes: [common_pile_textbook]
+    allow_patterns: ['*.json.zst', '*.jsonl.zst', '*.jsonl.gz']
+    expected_inventory_bytes: 19696162283
+    budget_bytes: 20000000000
+    adapter: text
+    priority: 99
+    policy:
+      category: science
+      language: any
+      license_mode: compilation
+      collection_license: ODC-By-1.0 compilation; retain public-domain and CC-BY/SA/GFDL source attribution
+      common_crawl_derived: false
+      generated: false
+      quality_profile: science
+  - id: dolma35_reference
+    kind: hf
+    repo: allenai/dolma3.5_pool
+    revision: d2bf6ae7aeda502ff8c5eb5ad425b90ae2f10279
+    prefixes: [common_pile_wiki]
+    allow_patterns: ['*.json.zst', '*.jsonl.zst', '*.jsonl.gz']
+    expected_inventory_bytes: 23690116585
+    budget_bytes: 24000000000
+    adapter: text
+    priority: 96
+    policy:
+      category: web
+      language: any
+      license_mode: compilation
+      collection_license: ODC-By-1.0 compilation; retain CC-BY-SA/GFDL source attribution
+      common_crawl_derived: false
+      generated: false
+      quality_profile: reference
+  - id: dolma35_math
+    kind: hf
+    repo: allenai/dolma3.5_pool
+    revision: d2bf6ae7aeda502ff8c5eb5ad425b90ae2f10279
+    prefixes: [finemath, proofpile2, swallow-math]
+    allow_patterns: ['*.json.zst', '*.jsonl.zst', '*.jsonl.gz']
+    expected_inventory_bytes: 79031158944
+    budget_bytes: 80000000000
+    adapter: text
+    priority: 97
+    policy:
+      category: math
+      language: any
+      license_mode: compilation
+      collection_license: ODC-By-1.0 compilation; retain underlying math/code licenses
+      common_crawl_derived: true
+      generated: false
+      quality_profile: math
+  - id: common_corpus
+    kind: hf
+    repo: PleIAs/common_corpus
+    revision: 307910e4c5d040d6f318e6edf2a2b97849155771
+    allow_patterns: ['common_corpus_*/*.parquet']
+    expected_inventory_bytes: 4489486652558
+    budget_bytes: 4500000000000
+    adapter: text
+    priority: 94
+    policy:
+      category: science
+      language: any
+      license_mode: per_record
+      allowed_licenses: [CC0, CC-BY, CC-BY-4.0, CC-BY-SA, CC-BY-SA-4.0, public_domain, public-domain, Public Domain, MIT, Apache-2.0, GFDL, ODC-By-1.0]
+      common_crawl_derived: false
+      generated: false
+      quality_profile: science
+  - id: finepdfs_train
+    kind: hf
+    repo: HuggingFaceFW/finepdfs
+    revision: 220bac3acbf07789502c621d2d33952f51ac7f86
+    allow_patterns: ['data/*/train/*.parquet']
+    expected_inventory_bytes: 5374387457392
+    budget_bytes: 5380000000000
+    adapter: text
+    priority: 93
+    policy:
+      category: science
+      language: any
+      license_mode: compilation
+      collection_license: ODC-By-1.0; underlying PDF rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: science
+  - id: fineweb_edu
+    kind: hf
+    repo: HuggingFaceFW/fineweb-edu
+    revision: 87f09149ef4734204d70ed1d046ddc9ca3f2b8f9
+    prefixes: [data]
+    allow_patterns: ['*.parquet']
+    expected_inventory_bytes: 4522727684984
+    budget_bytes: 4530000000000
+    adapter: text
+    priority: 85
+    policy:
+      category: web
+      language: en
+      license_mode: compilation
+      collection_license: ODC-By-1.0; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: curated_prose
+  - id: dclm_baseline
+    kind: hf
+    repo: mlfoundations/dclm-baseline-1.0-parquet
+    revision: 817d6752765f6a41261085171dd546b104f60626
+    prefixes: [filtered]
+    allow_patterns: ['*.parquet']
+    expected_inventory_bytes: 7419668271828
+    budget_bytes: 7420000000000
+    adapter: text
+    priority: 75
+    policy:
+      category: web
+      language: en
+      license_mode: compilation
+      collection_license: ODC-By-1.0; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: curated_prose
+  - id: essential_web_2023_2024
+    kind: hf
+    repo: EssentialAI/essential-web-v1.0
+    revision: ce4eccc7e9604667b6d7f32cb6274b8b41f3113d
+    prefixes: [data]
+    allow_patterns: ['data/CC-MAIN-2023-*/*.parquet', 'data/CC-MAIN-2024-*/*.parquet']
+    expected_inventory_bytes: 10125429804428
+    budget_bytes: 10130000000000
+    adapter: text
+    priority: 74
+    policy:
+      category: web
+      language: en
+      license_mode: compilation
+      collection_license: ODC-By-1.0; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: curated_prose
+  - id: essential_stem_selected
+    kind: hf
+    repo: EssentialAI/eai-taxonomy-stem-w-dclm
+    revision: 64c66ca0d184847dcf239bcdfefeafdb2bf11494
+    prefixes: [data]
+    allow_patterns: ['data/train-*.parquet']
+    expected_inventory_bytes: 2445503972322
+    budget_bytes: 2450000000000
+    adapter: text
+    priority: 87
+    policy:
+      category: science
+      language: en
+      license_mode: compilation
+      collection_license: ODC-By-1.0; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: science
+  - id: darwin_cc
+    kind: hf
+    repo: GAIR/Darwin-CC
+    revision: 13622c0d03b564a0a0a9fd830107ee01aef9554d
+    allow_patterns: ['train_*.jsonl.gz']
+    expected_inventory_bytes: 1798020028219
+    budget_bytes: 1800000000000
+    adapter: text
+    priority: 88
+    policy:
+      category: science
+      language: en
+      license_mode: compilation
+      collection_license: Dataset compilation terms; underlying Nemotron source rights retained
+      common_crawl_derived: true
+      generated: true
+      quality_profile: science
+  - id: ultrafineweb_l3
+    kind: hf
+    repo: openbmb/Ultra-FineWeb-L3
+    revision: bc3b1ba986fcaef6871b9790a413b16267c2de0f
+    prefixes: [data]
+    allow_patterns: ['*.parquet']
+    expected_inventory_bytes: 1899215913620
+    budget_bytes: 1910000000000
+    adapter: content
+    priority: 86
+    policy:
+      category: web
+      language: any
+      license_mode: compilation
+      collection_license: Apache-2.0 compilation; retain publisher redistribution conditions
+      common_crawl_derived: true
+      generated: true
+      quality_profile: synthetic

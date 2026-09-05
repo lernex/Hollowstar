@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import traceback
+from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterable
@@ -20,7 +21,7 @@ from urllib.parse import urlsplit
 import requests
 import yaml
 
-from .acquisition import CapacityPending, DownloadFailure, download_object, file_lock, receipt_path
+from .acquisition import CapacityPending, DownloadFailure, DownloadPaused, download_object, file_lock, receipt_path
 from .catalogue import resolve_source
 from .common import ObjectSpec, RawReceipt, atomic_json, canonical_json, digest_json, read_receipt, utc_now, write_receipt
 
@@ -185,14 +186,32 @@ def select_download_group(
     specs: dict[str, ObjectSpec],
     active: Iterable[ObjectSpec],
 ) -> tuple[tuple[int, int, str], str]:
-    active_origins = {urlsplit(spec.url).hostname for spec in active}
-    idle_origin = [
-        item for item in choices
-        if urlsplit(specs[item[0][2]].url).hostname not in active_origins
-    ]
-    # An independently throttled origin must not leave a whole NIC idle.
-    # Within each origin the same high-quality-first ordering still applies.
-    return min(idle_origin or choices)
+    active_origins = Counter(urlsplit(spec.url).hostname for spec in active)
+    # One connection to the fast origin is not enough when the other origin
+    # throttles an entire pool. Preserve priority within each independent origin.
+    return min(choices, key=lambda item: (
+        active_origins[urlsplit(specs[item[0][2]].url).hostname], item,
+    ))
+
+
+def download_owner(
+    spec: ObjectSpec, hosts: dict[str, list[str]], shared_origins: set[str],
+    resumable_owners: dict[str, str],
+) -> str:
+    origin = urlsplit(spec.url).hostname
+    eligible = sorted(name for name, origins in hosts.items()
+                      if origin in origins or origin in shared_origins)
+    if not eligible:
+        raise ValueError("The object has no approved acquisition host")
+    previous = resumable_owners.get(spec.object_id)
+    if previous is not None:
+        previous = previous.split(".", 1)[0]
+        if previous not in eligible:
+            raise RuntimeError("A partial download belongs to an unapproved host")
+        return previous
+    if spec.policy.get("bootstrap"):
+        eligible = sorted(name for name, origins in hosts.items() if origin in origins)
+    return eligible[int(spec.object_id[:16], 16) % len(eligible)]
 
 
 def intake_candidate_fits(
@@ -240,7 +259,9 @@ def resolve_command(root: Path, *, source_ids: set[str] | None = None) -> dict[s
     return {"sources": results, "ok": bool(results) and all(row["status"] == "complete" for row in results)}
 
 
-def activate_batch(root: Path, config_path: Path) -> dict[str, Any]:
+def activate_batch(
+    root: Path, config_path: Path, *, reconcile_incomplete: bool = False,
+) -> dict[str, Any]:
     load_run(root)
     batch = yaml.safe_load(config_path.read_text())
     if batch.get("schema") != "metis17.activation/v1" or not isinstance(batch.get("sources"), list):
@@ -257,30 +278,51 @@ def activate_batch(root: Path, config_path: Path) -> dict[str, Any]:
     write_receipt(path, batch)
     results = []
     for source in batch["sources"]:
-        result = resolve_source(root, source)
-        row = {"source_id": source["id"], "objects": result["objects"], "known_bytes": result["known_bytes"]}
+        try:
+            result = (
+                resolve_source(root, source, reconcile_incomplete=True)
+                if reconcile_incomplete else resolve_source(root, source)
+            )
+        except (requests.RequestException, RuntimeError, ValueError, OSError) as exc:
+            row = {"source_id": source["id"], "status": "failed", **safe_error(exc)}
+            append_event(root, "activation-errors", row)
+        else:
+            row = {"source_id": source["id"], "status": "complete",
+                   "objects": result["objects"], "known_bytes": result["known_bytes"]}
         results.append(row)
         print(canonical_json(row), flush=True)
-    return {"batch_id": batch_id, "sources": results}
+    return {"batch_id": batch_id, "sources": results, "ok": all(row["status"] == "complete" for row in results)}
 
 
-def download_service(root: Path, *, workers: int | None = None) -> None:
+def download_service(
+    root: Path, *, workers: int | None = None, shared_origins: set[str] | None = None,
+) -> None:
     run = load_run(root)
     settings = run["config"]["download"]
     host = socket.gethostname().split(".", 1)[0]
     if host not in settings["hosts"]:
         raise RuntimeError("This host is not an approved acquisition endpoint")
-    origins = set(settings["hosts"][host])
+    shared_origins = set(shared_origins or ())
+    approved = {origin for values in settings["hosts"].values() for origin in values}
+    if not shared_origins <= approved:
+        raise ValueError("Shared origins must already be approved by the frozen run")
+    origins = set(settings["hosts"][host]) | shared_origins
+    if workers is not None and (type(workers) is not int or workers < 1):
+        raise ValueError("A positive download worker count is required")
     stop = _stop_event()
     committed: set[str] = set()
     preview_counts: dict[str, int] = {}
     completed_bytes = 0
-    for event in read_events(root / "events" / "raw" / f"{host}.jsonl"):
-        if event["object_id"] not in committed:
-            committed.add(event["object_id"])
-            completed_bytes += int(event["byte_count"])
-            group = str(event["admission_group"])
-            preview_counts[group] = preview_counts.get(group, 0) + 1
+    published: set[str] = set()
+    for journal in sorted((root / "events" / "raw").glob("*.jsonl")):
+        for event in read_events(journal):
+            if event["object_id"] not in published:
+                published.add(event["object_id"])
+                group = str(event["admission_group"])
+                preview_counts[group] = preview_counts.get(group, 0) + 1
+            if journal.stem == host and event["object_id"] not in committed:
+                committed.add(event["object_id"])
+                completed_bytes += int(event["byte_count"])
     specs: dict[str, ObjectSpec] = {}
     loaded_pages: set[Path] = set()
     pending: dict[str, list[tuple[int, int, str]]] = {}
@@ -294,7 +336,9 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
     baseline = _interface_counters()
     commit = code_commit()
     budget_path = root / "state" / "intake-budget.json"
-    resumable = set(read_receipt(budget_path)["inflight"]) if budget_path.exists() else set()
+    reservations = read_receipt(budget_path)["inflight"] if budget_path.exists() else {}
+    resumable = set(reservations)
+    resumable_owners = {key: value["host"] for key, value in reservations.items()}
     with file_lock(root / "locks" / f"download-daemon-{host}.lock", timeout=2):
         with ThreadPoolExecutor(max_workers=workers or int(settings["workers_per_host"])) as pool:
             while not stop.is_set() or active:
@@ -315,10 +359,12 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                             spec = ObjectSpec.from_dict(record)
                             if urlsplit(spec.url).hostname not in origins:
                                 continue
+                            if download_owner(spec, settings["hosts"], shared_origins, resumable_owners) != host:
+                                continue
                             if spec.object_id in specs:
                                 raise RuntimeError("Duplicate object identity in active acquisition")
                             specs[spec.object_id] = spec
-                            if spec.object_id not in committed:
+                            if spec.object_id not in published:
                                 group = str(spec.policy.get("admission_group", spec.source_id))
                                 heapq.heappush(pending.setdefault(group, []), download_order_key(spec, resumable))
                         loaded_pages.add(page)
@@ -338,6 +384,9 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                     group = str(spec.policy.get("admission_group", spec.source_id))
                     try:
                         receipt = future.result()
+                    except DownloadPaused:
+                        if not stop.is_set():
+                            raise RuntimeError("A download paused without a requested shutdown")
                     except CapacityPending:
                         # A large object or exhausted source must not pause
                         # smaller, higher-value work from independent sources.
@@ -362,6 +411,7 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                                 "spec": spec.to_dict(),
                             })
                             committed.add(spec.object_id)
+                            published.add(spec.object_id)
                             completed_bytes += receipt.byte_count
                             preview_counts[group] = preview_counts.get(group, 0) + 1
                 if not stop.is_set():
@@ -392,6 +442,13 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                                 if admission["admission_group"] != group:
                                     raise RuntimeError("Source admission identity mismatch")
                                 admitted = admission["status"] == "admitted"
+                            if not admitted:
+                                native_hosts = sorted(
+                                    name for name, allowed in settings["hosts"].items()
+                                    if urlsplit(candidate.url).hostname in allowed
+                                )
+                                if host != native_hosts[0]:
+                                    continue
                             inflight_group = sum(
                                 str(item.policy.get("admission_group", item.source_id)) == group
                                 for item in active.values()
@@ -413,6 +470,7 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                             download_object, spec, root, limits,
                             attempts=int(settings["attempts"]),
                             timeout=float(settings["timeout_seconds"]),
+                            stop_event=stop,
                         )
                         active[future] = spec
                 atomic_json(status_path, {
@@ -421,7 +479,12 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                     "pid": os.getpid(),
                     "code_commit": commit,
                     "updated_at": utc_now(),
-                    "status": "downloading" if active else ("capacity_pending" if capacity_blocked else "waiting_for_catalogue_or_admission"),
+                    "status": (
+                        ("draining" if active else "stopped") if stop.is_set()
+                        else "downloading" if active
+                        else "capacity_pending" if capacity_blocked
+                        else "waiting_for_catalogue_or_admission"
+                    ),
                     "intake_paused_for_capacity": bool(capacity_blocked) and not active,
                     "capacity_blocked_objects": len(capacity_blocked),
                     "worker_limit": workers or int(settings["workers_per_host"]),
@@ -431,6 +494,8 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                     "completed_payload_bytes": completed_bytes,
                     "blocked_sources": sorted(blocked_sources),
                     "approved_origins": sorted(origins),
+                    "shared_origins": sorted(shared_origins),
+                    "routing_policy": "object-hash-with-existing-partial-owner/v1",
                     "interface": "ens2f3",
                     "interface_baseline": baseline,
                     "interface_now": _interface_counters(),
@@ -489,9 +554,11 @@ def main(argv: list[str] | None = None) -> int:
     activate = sub.add_parser("activate")
     activate.add_argument("--root", type=Path, required=True)
     activate.add_argument("--config", type=Path, required=True)
+    activate.add_argument("--reconcile-incomplete", action="store_true")
     download = sub.add_parser("download")
     download.add_argument("--root", type=Path, required=True)
     download.add_argument("--workers", type=int)
+    download.add_argument("--share-origin", action="append", default=[])
     prepare = sub.add_parser("prep")
     prepare.add_argument("--root", type=Path, required=True)
     prepare.add_argument("--workers", type=int, default=32)
@@ -519,9 +586,11 @@ def main(argv: list[str] | None = None) -> int:
         print(canonical_json(result))
         return 0 if result["ok"] else 1
     elif args.command == "activate":
-        print(canonical_json(activate_batch(root, args.config)))
+        result = activate_batch(root, args.config, reconcile_incomplete=args.reconcile_incomplete)
+        print(canonical_json(result))
+        return 0 if result["ok"] else 1
     elif args.command == "download":
-        download_service(root, workers=args.workers)
+        download_service(root, workers=args.workers, shared_origins=set(args.share_origin))
     elif args.command == "prep":
         from .worker import prep_service
 

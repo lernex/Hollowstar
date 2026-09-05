@@ -739,6 +739,27 @@ assumed complete 7.869 TB gzip snapshot.
 | `common_pile_wiki` | **23,690,116,585** |
 | `finemath` + `proofpile2` + `swallow-math` | **79,031,158,944** |
 
+**September 5, 2026 operational correction:** a complete recursive listing
+of that same pinned revision splits the web inventory into **177,568
+`.jsonl.gz` objects / 14,855,435,675,567 bytes** under `cc_all_dressed`
+and **4,669 `.jsonl.zst` objects / 887,457,477,507 bytes** under
+`cc_all_dressed_addons`. The initial activation incorrectly selected gzip
+only and therefore failed its exact inventory seal. Both suffixes are now
+selected. `activate --reconcile-incomplete` can replace only an unsealed
+catalogue, after proving that every previously published object and policy
+is unchanged and covered exactly once; the old catalogue and reconciliation
+receipt are retained. Pause/restart downloaders using that source around
+the correction because their loaded page inventory is process-local.
+
+The acquisition lanes can opt into `download --share-origin
+data.commoncrawl.org` on **both** login nodes without changing `RUN.json`.
+Whole objects are assigned by a stable hash, with existing partial objects
+kept on their original host. New-source canaries stay on the original
+approved lane; admitted origins share worker slots instead of leaving a
+fast origin with one connection behind a throttled origin. This changes
+transfer scheduling, not eligibility, quality ranking, or final dedup
+survivors. A requested shutdown now preserves resumable partial downloads.
+
 The six code components are `dolma_code`, `the-stack-v2`, `swallow-code`,
 `dolma_code_prose`, `sponge211unified_code_prose` and `common_pile_code`.
 These are materialized components in the Dolma package, not permission to

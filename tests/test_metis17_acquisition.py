@@ -5,14 +5,15 @@ import json
 import os
 import socket
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import requests
 
-from metis_data17.acquisition import CapacityPending, DownloadFailure, IntakeBudget, download_object, file_lock, receipt_path
-from metis_data17.catalogue import CatalogueWriter, catalogue_objects, resolve_source
+from metis_data17.acquisition import CapacityPending, DownloadFailure, DownloadPaused, IntakeBudget, download_object, file_lock, receipt_path
+from metis_data17.catalogue import CatalogueWriter, catalogue_objects, resolve_source, select_bounded_objects
 from metis_data17.common import ObjectSpec, read_receipt, write_receipt
 
 
@@ -99,6 +100,25 @@ class Metis17AcquisitionTests(unittest.TestCase):
         self.assertEqual(session.headers_seen[1]["Range"], "bytes=2-")
         self.assertEqual(session.headers_seen[1]["If-Range"], "identity")
         self.assertEqual(read_receipt(self.root / "state/intake-budget.json")["network_payload_bytes"], 5)
+
+    def test_requested_stop_retains_partial_and_resumes_without_redownload(self):
+        stop = threading.Event()
+
+        def blocks():
+            yield b"ab"
+            stop.set()
+            yield b"cde"
+
+        first = Session([Response(blocks(), headers={"Content-Length": "5", "ETag": "identity"})])
+        with self.assertRaises(DownloadPaused):
+            download_object(self.spec, self.root, self.limits, session=first, stop_event=stop)
+        self.assertFalse(receipt_path(self.root, self.spec.object_id).exists())
+        self.assertIn(self.spec.object_id, read_receipt(self.root / "state/intake-budget.json")["inflight"])
+        second = Session([Response([b"cde"], status=206, headers={"Content-Range": "bytes 2-4/5"})])
+        receipt = download_object(self.spec, self.root, self.limits, session=second)
+        self.assertEqual(second.headers_seen[0]["Range"], "bytes=2-")
+        self.assertEqual((self.root / receipt.relative_path).read_bytes(), self.content)
+        self.assertEqual(read_receipt(self.root / "state/intake-budget.json")["network_payload_bytes"], 8)
 
     def test_same_size_corruption_is_not_a_completed_download(self):
         session = Session([Response([self.content], headers={"Content-Length": "5"})])
@@ -212,6 +232,64 @@ class Metis17AcquisitionTests(unittest.TestCase):
         writer.add(self.spec)
         with self.assertRaises(RuntimeError):
             writer.seal()
+
+    def test_incomplete_catalogue_can_be_reconciled_without_changing_old_objects(self):
+        source = {"id": "source", "kind": "hf", "expected_inventory_bytes": 10, "formats": ["parquet"]}
+        corrected = {**source, "formats": ["parquet", "jsonl"]}
+        second = self.make_spec("second.jsonl", b"12345")
+        with patch("metis_data17.catalogue._resolve_hf",
+                   side_effect=lambda root, source, writer: writer.add(self.spec)):
+            with self.assertRaises(RuntimeError):
+                resolve_source(self.root, source)
+        active = self.root / "catalogue/active/source.json"
+        previous = active.read_bytes()
+
+        def resolve(root, source, writer):
+            writer.add(self.spec)
+            writer.add(second)
+
+        with patch("metis_data17.catalogue._resolve_hf", side_effect=resolve):
+            with self.assertRaises(RuntimeError):
+                resolve_source(self.root, corrected)
+            self.assertEqual(active.read_bytes(), previous)
+            result = resolve_source(self.root, corrected, reconcile_incomplete=True)
+        self.assertEqual(result["known_bytes"], 10)
+        self.assertEqual({spec.object_id for spec in catalogue_objects(self.root)},
+                         {self.spec.object_id, second.object_id})
+        descriptor = read_receipt(active)
+        proof = read_receipt(self.root / descriptor["directory"] / "RECONCILIATION.json")
+        self.assertEqual((proof["preserved_objects"], proof["added_objects"]), (1, 1))
+        self.assertEqual(resolve_source(self.root, corrected), result)
+        with self.assertRaises(RuntimeError):
+            resolve_source(self.root, {**corrected, "formats": ["different"]}, reconcile_incomplete=True)
+
+    def test_inventory_correction_cannot_drop_previously_published_objects(self):
+        source = {"id": "source", "kind": "hf", "expected_inventory_bytes": 10}
+        with patch("metis_data17.catalogue._resolve_hf",
+                   side_effect=lambda root, source, writer: writer.add(self.spec)):
+            with self.assertRaises(RuntimeError):
+                resolve_source(self.root, source)
+        active = self.root / "catalogue/active/source.json"
+        before = active.read_bytes()
+        different = self.make_spec("different.parquet", b"12345")
+        with patch("metis_data17.catalogue._resolve_hf",
+                   side_effect=lambda root, source, writer: writer.add(different)):
+            with self.assertRaisesRegex(RuntimeError, "preserve every existing object"):
+                resolve_source(self.root, {**source, "expected_inventory_bytes": 5},
+                               reconcile_incomplete=True)
+        self.assertEqual(active.read_bytes(), before)
+
+    def test_bounded_selection_accounts_for_every_candidate_exactly_once(self):
+        objects = [self.make_spec(f"CC-MAIN-202{i}/part.parquet", b"x" * size)
+                   for i, size in enumerate((5, 4, 8, 3))]
+        selected, omitted = select_bounded_objects(objects, 9)
+        self.assertEqual(sum(spec.expected_bytes for spec in selected), 7)
+        self.assertEqual(selected, [objects[3], objects[1]])
+        self.assertEqual({spec.object_id for spec in selected + omitted},
+                         {spec.object_id for spec in objects})
+        self.assertEqual(len(selected) + len(omitted), len(objects))
+        with self.assertRaises(ValueError):
+            select_bounded_objects(objects + objects[:1], 9)
 
     def test_reconstruction_driver_cannot_resolve(self):
         source = {"id": "forbidden", "kind": "github_repositories"}
