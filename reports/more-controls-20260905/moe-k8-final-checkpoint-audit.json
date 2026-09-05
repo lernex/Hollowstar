@@ -1,0 +1,230 @@
+{
+  "captured_at_utc": "2026-09-05T14:08:53.056897+00:00",
+  "method": "Read-only CPU mmap; match each routed chunk to its recorded owner and unique optimizer master-parameter shape. Count all momentum elements, not a sample. Check shard coverage and stored sizes; stored shard hashes are not recomputed.",
+  "rows": [
+    {
+      "activation_recompute_policy": "none",
+      "checkpoint": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/moe-k8/checkpoints/step-0025429",
+      "checkpoint_step": 25429,
+      "checkpoint_step_semantics": "next_unexecuted",
+      "checkpoint_total_steps": 25429,
+      "chunks_with_nonzero_momentum": 0,
+      "expert_momentum": [
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 84934656,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 0,
+          "owner_rank": 1,
+          "parameter": "layers.0.moe.local_experts.gate_up.weight_chunks.0",
+          "parameter_shape": [
+            18,
+            2304,
+            2048
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 84934656,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 0,
+          "owner_rank": 2,
+          "parameter": "layers.0.moe.local_experts.gate_up.weight_chunks.1",
+          "parameter_shape": [
+            18,
+            2304,
+            2048
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 84934656,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 0,
+          "owner_rank": 3,
+          "parameter": "layers.0.moe.local_experts.gate_up.weight_chunks.2",
+          "parameter_shape": [
+            18,
+            2304,
+            2048
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 84934656,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 0,
+          "owner_rank": 4,
+          "parameter": "layers.0.moe.local_experts.gate_up.weight_chunks.3",
+          "parameter_shape": [
+            18,
+            2304,
+            2048
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 84934656,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 0,
+          "owner_rank": 5,
+          "parameter": "layers.1.moe.local_experts.gate_up.weight_chunks.0",
+          "parameter_shape": [
+            18,
+            2304,
+            2048
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 84934656,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 0,
+          "owner_rank": 6,
+          "parameter": "layers.1.moe.local_experts.gate_up.weight_chunks.1",
+          "parameter_shape": [
+            18,
+            2304,
+            2048
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 84934656,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 0,
+          "owner_rank": 7,
+          "parameter": "layers.1.moe.local_experts.gate_up.weight_chunks.2",
+          "parameter_shape": [
+            18,
+            2304,
+            2048
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 84934656,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 0,
+          "owner_rank": 8,
+          "parameter": "layers.1.moe.local_experts.gate_up.weight_chunks.3",
+          "parameter_shape": [
+            18,
+            2304,
+            2048
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 42467328,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 28,
+          "owner_rank": 10,
+          "parameter": "layers.0.moe.local_experts.down.weight_chunks.0",
+          "parameter_shape": [
+            18,
+            2048,
+            1152
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 42467328,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 31,
+          "owner_rank": 11,
+          "parameter": "layers.0.moe.local_experts.down.weight_chunks.1",
+          "parameter_shape": [
+            18,
+            2048,
+            1152
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 42467328,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 2,
+          "owner_rank": 12,
+          "parameter": "layers.0.moe.local_experts.down.weight_chunks.2",
+          "parameter_shape": [
+            18,
+            2048,
+            1152
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 42467328,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 1,
+          "owner_rank": 13,
+          "parameter": "layers.0.moe.local_experts.down.weight_chunks.3",
+          "parameter_shape": [
+            18,
+            2048,
+            1152
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 42467328,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 0,
+          "owner_rank": 14,
+          "parameter": "layers.1.moe.local_experts.down.weight_chunks.0",
+          "parameter_shape": [
+            18,
+            2048,
+            1152
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 42467328,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 0,
+          "owner_rank": 15,
+          "parameter": "layers.1.moe.local_experts.down.weight_chunks.1",
+          "parameter_shape": [
+            18,
+            2048,
+            1152
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 42467328,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 0,
+          "owner_rank": 16,
+          "parameter": "layers.1.moe.local_experts.down.weight_chunks.2",
+          "parameter_shape": [
+            18,
+            2048,
+            1152
+          ]
+        },
+        {
+          "momentum_dtype": "torch.int8",
+          "momentum_elements": 42467328,
+          "nonzero_momentum_elements": 0,
+          "optimizer_parameter_id": 0,
+          "owner_rank": 17,
+          "parameter": "layers.1.moe.local_experts.down.weight_chunks.3",
+          "parameter_shape": [
+            18,
+            2048,
+            1152
+          ]
+        }
+      ],
+      "optimizer_shards_present_and_size_matched": 20,
+      "routed_expert_chunks": 16,
+      "row": "moe-k8",
+      "run_identity_sha256": "d4585a7a8b9f5ce61950c73574943087a02774a046d4b854d6f24894d1aed1e4",
+      "source_revision": "ba9809284cf787d3e69df96620048dd96345d66f"
+    }
+  ],
+  "schema": "more.control-checkpoint-audit/v1"
+}

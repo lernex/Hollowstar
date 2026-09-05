@@ -1,0 +1,53 @@
+{
+  "schema": "more.original-control-progress/v1",
+  "first_observation_utc": "2026-09-05T13:39:33.888606+00:00",
+  "last_observation_utc": "2026-09-05T14:08:46.858924+00:00",
+  "active_rows": [
+    {
+      "row": "dense-param-matched",
+      "job_id": "495942",
+      "first_step": 70,
+      "last_step": 1140,
+      "step_delta": 1070,
+      "elapsed_recorded_seconds": 1745.5115540027618,
+      "last_telemetry_age_seconds": 10.8877272605896
+    },
+    {
+      "row": "loop-fixed",
+      "job_id": "495829",
+      "first_step": 30,
+      "last_step": 580,
+      "step_delta": 550,
+      "elapsed_recorded_seconds": 1764.7925713062286,
+      "last_telemetry_age_seconds": 7.5319664478302
+    },
+    {
+      "row": "fixed-depth-adaptive-k",
+      "job_id": "495827",
+      "first_step": 2200,
+      "last_step": 2680,
+      "step_delta": 480,
+      "elapsed_recorded_seconds": 1726.328822851181,
+      "last_telemetry_age_seconds": 28.966268062591553
+    },
+    {
+      "row": "mor-dense-ffn",
+      "job_id": "495825",
+      "first_step": 16630,
+      "last_step": 17670,
+      "step_delta": 1040,
+      "elapsed_recorded_seconds": 1750.254742860794,
+      "last_telemetry_age_seconds": 4.4892497062683105
+    },
+    {
+      "row": "loop-pathway-frozen",
+      "job_id": "495828",
+      "first_step": 15790,
+      "last_step": 16260,
+      "step_delta": 470,
+      "elapsed_recorded_seconds": 1764.8658726215363,
+      "last_telemetry_age_seconds": 9.772286415100098
+    }
+  ],
+  "retired_failed_control": "Original random-k remains archived; its corrected replacement is job495956."
+}

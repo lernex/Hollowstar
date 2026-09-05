@@ -1,9 +1,9 @@
 # MoRE ablation campaign — sizing, compute, allocation, and execution
 
-Status: measured Portage canaries, 2026-08-18. Supersedes the "Fast ablation
-allocation" sizing in `METIS_1.6_PLAN.md:1038` for the post-PT window. Planning
-tables remain for compute accounting; the accepted throughput lanes are
-recorded in §5.
+Status: Wave-1 control results and recovery, 2026-09-05 (§10). Supersedes the
+"Fast ablation allocation" sizing in `METIS_1.6_PLAN.md:1038` for the post-PT
+window. Planning tables remain for compute accounting; the accepted
+throughput lanes are recorded in §5.
 
 ## 0. Window and available hardware
 
@@ -667,7 +667,7 @@ compared against twelve rows that stayed in parity.
 
 ## 10. Recorded control results and recovery, 5 September 2026
 
-The dense FLOP-matched, MoE k=4, and random-depth original runs completed
+The dense FLOP-matched, MoE k=4, MoE k=8, and random-depth original runs completed
 their full aligned 50B-token schedules. Exact summaries, sealed manifests,
 matched-step training-loss windows, checkpoint evidence, and queue recovery
 details are recorded in
@@ -685,3 +685,11 @@ lineage or overwrite its results.
 The unaffected dense parameter-matched and fixed-loop rows were restored
 without changing their original scientific identities. Core/RM recovery
 remains separate.
+
+The five approved corrected sparse controls are submitted under immutable
+revision `c7aea46eef2e407ae92ed9e9c0f874e8bf836237` in a separate output
+root. At 14:19 UTC, corrected MoR+fixed-k and both single-pass MoEs have
+resumed full training after their expert-learning gates; random-k and
+random-depth await capacity, with no dependencies on failed original jobs.
+The results directory records the job IDs, initial and post-resume gradient
+coverage, checkpoint momentum, and preserved original results.

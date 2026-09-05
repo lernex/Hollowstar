@@ -13,6 +13,7 @@ original sampler's documented block alignment, not missing work.
 |---|---:|---|---:|---:|---:|---|
 | Dense FLOP-matched | 495832 | 2026-09-05 05:17:10 | 1.535035 | 1.933596 | 12.374 | Not affected by the routed-expert cache defect |
 | MoE k=4 | 495823 | 2026-09-05 13:14:49 | 1.845806 | 2.239998 | 20.658 | Completed, but not a valid full-expert-training baseline |
+| MoE k=8 | 495824 | 2026-09-05 14:06:56 | 1.835471 | 2.225776 | 21.532 | Completed, but not a valid full-expert-training baseline |
 | Random-depth | 495821 | 2026-09-05 11:24:29 | 1.873139 | 2.259818 | 18.813 | Completed, but not a valid full-expert-training baseline |
 
 These are **training losses, not held-out quality measurements**. The last
@@ -35,7 +36,7 @@ Read-only inspection of the actual optimizer checkpoints found:
 | Row | Checkpoint step | Routed chunks with nonzero momentum |
 |---|---:|---:|
 | MoE k=4 | 25,429, final | 0 / 16 |
-| MoE k=8 | 20,000 | 0 / 16 |
+| MoE k=8 | 25,429, final | 0 / 16 |
 | Random-depth | 25,429, final | 0 / 16 |
 | Random-k | 15,000 | 0 / 16 |
 | Loop, pathway frozen | 15,000 | 16 / 16 |
@@ -82,6 +83,14 @@ New submissions exclude `parrypeak[007,012,020,026,056,063-064]`; this is a
 user-job exclusion, not a cluster drain or a claimed repair of those nodes.
 Already advancing jobs were not restarted.
 
+The original MoE k=8 finished during this intervention; its final result and
+terminal optimizer audit were added without interrupting it. Across the
+13:39--14:08 UTC observation interval, all five remaining original jobs
+advanced: dense parameter-matched by 1,070 steps, fixed loop by 550,
+fixed-depth/adaptive-k by 480, MoR+dense by 1,040, and frozen loop by 470.
+The failed original random-k is intentionally retained as historical
+evidence, not treated as a live run.
+
 ## Corrected campaign protocol
 
 The corrected controls use immutable source
@@ -110,6 +119,32 @@ The corrected output root is separate:
 The wrapper rejects Core/RM rows, incorrect allocations, changed source,
 and mismatched checkpoint identity. No old sparse checkpoint is imported.
 
+### Live corrected rows at 14:19 UTC
+
+| Corrected row | Job | Nodes | State | Latest logged step |
+|---|---:|---:|---|---:|
+| MoR + fixed-k MoE | 495953 | 20 | Full training, resumed after the expert gate | 360 |
+| MoE k=4 | 495954 | 5 | Full training, resumed after the expert gate | 290 |
+| MoE k=8 | 495955 | 5 | Full training, resumed after the expert gate | 150 |
+| Random-k | 495956 | 20 | Pending resources | - |
+| Random-depth | 495957 | 20 | Pending priority/capacity | - |
+
+All three started rows saved nonzero momentum in **16/16 expert chunks** at
+step 100. Initial and post-resume gradient evidence also covers **16/16
+chunks on every rank**: 80 ranks for MoR+fixed-k and 20 each for the two
+single-pass MoEs. The resumed run identities match their pilot identities.
+These are learning/runtime qualification results, not completed 50B quality
+results.
+
+The two pending rows have **no Slurm dependencies** on failed original jobs
+or on Core/RM. They are waiting for their 20-node allocations and will execute
+the same gate before full training. All three running corrected rows had
+telemetry less than 20 seconds old at this snapshot.
+
+Use the corrected submission ledger and status snapshot for these new jobs;
+the original campaign's hard-coded watcher still describes the original
+output root and must not be mistaken for the corrected campaign.
+
 ## Evidence files
 
 - `finished/<row>/run.json` and `summary.json`: exact copies of completed
@@ -120,6 +155,10 @@ and mismatched checkpoint identity. No old sparse checkpoint is imported.
   exactly 100 logged samples per cell for the completed original rows.
 - `checkpoint-audit.json`: per-chunk optimizer evidence, checkpoint cursors,
   source revisions, and identity bindings.
+- `moe-k8-final-checkpoint-audit.json`: the terminal audit added when k=8
+  finished, superseding its earlier step-20,000 observation.
+- `progress-confirmation.json`: paired observations covering every remaining
+  active original control.
 - `original-job-accounting.psv`: scheduler history, including failed,
   cancelled, completed, and restored jobs.
 - `random-k-failure.txt`: the relevant failure-log lines and source hash.
@@ -127,3 +166,9 @@ and mismatched checkpoint identity. No old sparse checkpoint is imported.
   recorded corrected campaign.
 - `run_corrected_control.sbatch`: the two-stage, same-identity allocation
   wrapper, including a 20-minute no-progress watchdog.
+- `corrected-submission.json`: the separate campaign's pinned source,
+  operational-script hashes, complete submission arguments, and five job IDs.
+- `corrected-status.json`: running and queued corrected rows, latest training
+  steps, gate records, and all-rank post-resume gradient evidence.
+- `gates/<row>.json`: exact copies of the passing 100-step expert-learning
+  records, including each pilot's summary and checkpoint digest.

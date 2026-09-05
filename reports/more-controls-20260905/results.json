@@ -1,9 +1,9 @@
 {
-  "captured_at_utc": "2026-09-05T13:39:33.888606+00:00",
+  "captured_at_utc": "2026-09-05T14:08:46.858924+00:00",
   "metric_caveat": "Training loss, not held-out quality. Completion is not scientific validity; see the separate routed-expert checkpoint audit.",
   "queue": [
     {
-      "elapsed": "5:17",
+      "elapsed": "34:30",
       "job_id": "495942",
       "job_name": "more-dense-param-matched",
       "nodes": "20",
@@ -11,7 +11,7 @@
       "state": "RUNNING"
     },
     {
-      "elapsed": "5:18",
+      "elapsed": "34:31",
       "job_id": "495829",
       "job_name": "more-loop-fixed",
       "nodes": "10",
@@ -19,7 +19,7 @@
       "state": "RUNNING"
     },
     {
-      "elapsed": "2:14:47",
+      "elapsed": "2:44:00",
       "job_id": "495827",
       "job_name": "more-fixed-depth-adaptive-k",
       "nodes": "10",
@@ -27,7 +27,7 @@
       "state": "RUNNING"
     },
     {
-      "elapsed": "8:21:57",
+      "elapsed": "8:51:10",
       "job_id": "495825",
       "job_name": "more-mor-dense-ffn",
       "nodes": "20",
@@ -35,19 +35,11 @@
       "state": "RUNNING"
     },
     {
-      "elapsed": "16:48:09",
+      "elapsed": "17:17:22",
       "job_id": "495828",
       "job_name": "more-loop-pathway-frozen",
       "nodes": "10",
       "reason": "parrypeak[001,025,121-128]",
-      "state": "RUNNING"
-    },
-    {
-      "elapsed": "21:06:47",
-      "job_id": "495824",
-      "job_name": "more-moe-k8",
-      "nodes": "5",
-      "reason": "parrypeak[116-120]",
       "state": "RUNNING"
     }
   ],
@@ -275,7 +267,7 @@
         "tokens_per_second": 1102321.425407616,
         "total_steps": 25429
       },
-      "last_record_age_seconds": 30179.249765396118,
+      "last_record_age_seconds": 31932.220083236694,
       "logged_records": 2544,
       "manifest_source": {
         "bytes": 26151,
@@ -369,18 +361,25 @@
     {
       "activation_recompute_policy": "none",
       "campaign_identity_sha256": "237c3878fa5c64691df626b14c3219dc989c5645e75978daa220fa23ce1e357a",
-      "complete_1000_step_windows": [],
+      "complete_1000_step_windows": [
+        {
+          "end_step_exclusive": 1000,
+          "logged_records": 100,
+          "median_training_loss": 4.757750404762955,
+          "start_step_inclusive": 0
+        }
+      ],
       "completed": false,
       "global_batch_tokens": 1966080,
       "last_100_logged_training_losses": {
-        "count": 8,
-        "first_step": 0,
-        "last_step": 70,
-        "mean": 8.794390735938975,
-        "median": 8.733860821953112
+        "count": 100,
+        "first_step": 150,
+        "last_step": 1140,
+        "mean": 4.492901083979993,
+        "median": 4.379641651860627
       },
       "last_record": {
-        "cumulative_tokens": 139591680,
+        "cumulative_tokens": 2243297280,
         "depth_histogram": [
           0,
           1966080,
@@ -390,20 +389,20 @@
           0
         ],
         "estimated_hardware_flops": 1.936429534150656e+16,
-        "estimated_mfu": 0.06343399151863444,
+        "estimated_mfu": 0.06255327510759176,
         "fp8_parity_relative_error": 0.0003299578698516831,
-        "global_supervised_tokens": 1963618,
-        "grad_norm": 2.4880571365356445,
-        "learning_rate": 5.0314960629921265e-05,
-        "loss": 7.26487581700037,
+        "global_supervised_tokens": 1963119,
+        "grad_norm": 1.349557638168335,
+        "learning_rate": 0.00017950541516897342,
+        "loss": 3.6982073143491636,
         "peak_hbm_allocated_bytes": 76412058624,
         "peak_hbm_bytes": 83120619520,
         "peak_hbm_reserved_bytes": 83120619520,
-        "recorded_unix": 1788615570.4596426,
+        "recorded_unix": 1788617315.9711967,
         "row": "dense-param-matched",
         "row_index": 2,
-        "step": 70,
-        "step_time_s": 1.9457034290244337,
+        "step": 1140,
+        "step_time_s": 1.973097884998424,
         "telemetry": {
           "activation_recompute_enabled": 0.0,
           "all_to_all_bytes": 0.0,
@@ -423,7 +422,7 @@
           "mean_passes": 1.0,
           "mean_routed_k": 0.0,
           "memory_slots_written": 2.0,
-          "mhc_stream_diversity": 0.004130655899643898,
+          "mhc_stream_diversity": 0.015009105205535889,
           "moe_assignments": 0.0,
           "moe_dropped_assignments": 0.0,
           "moe_processed_assignments": 0.0,
@@ -433,13 +432,13 @@
           "packed_continuation_passes": 0.0,
           "ponder_exit_mass_error": 0.0,
           "ponder_exit_mass_max_error": 0.0,
-          "sinkhorn_max_marginal_error": 4.8279762268066406e-05
+          "sinkhorn_max_marginal_error": 0.00015461444854736328
         },
-        "tokens_per_second": 1010472.5985839389,
+        "tokens_per_second": 996443.2149809792,
         "total_steps": 25429
       },
-      "last_record_age_seconds": 3.4289634227752686,
-      "logged_records": 8,
+      "last_record_age_seconds": 10.8877272605896,
+      "logged_records": 115,
       "manifest_source": {
         "bytes": 26107,
         "modified_at_utc": "2026-09-05T13:36:32+00:00",
@@ -451,11 +450,11 @@
         "stored_total": 1808939314
       },
       "recent_progress": {
-        "elapsed_seconds": 123.3969612121582,
-        "estimated_remaining_hours": 12.41706405721392,
-        "first_step": 0,
-        "last_step": 70,
-        "wall_tokens_per_second": 1115307.8540028087
+        "elapsed_seconds": 598.7108674049377,
+        "estimated_remaining_hours": 10.917034194843188,
+        "first_step": 770,
+        "last_step": 1140,
+        "wall_tokens_per_second": 1215026.5505503009
       },
       "resumed_from": null,
       "root": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/dense-param-matched",
@@ -505,10 +504,10 @@
       "start_step": 0,
       "telemetry_present": true,
       "telemetry_source": {
-        "bytes": 12715,
-        "modified_at_utc": "2026-09-05T13:39:30+00:00",
+        "bytes": 182981,
+        "modified_at_utc": "2026-09-05T14:08:35+00:00",
         "path": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/dense-param-matched/telemetry/rank-00000.jsonl",
-        "sha256": "215009b34b7ee4df99c982063fec51981b96656a8c36b52558fd3518dcc9c31b"
+        "sha256": "4ef8e3877b9202a5b66940bb8775ec842e4ba69d710e3fc627d2224744c3f876"
       },
       "total_steps": 25429,
       "world_size": 80
@@ -736,7 +735,7 @@
         "tokens_per_second": 634881.1758610281,
         "total_steps": 25429
       },
-      "last_record_age_seconds": 1530.7232310771942,
+      "last_record_age_seconds": 3283.6935489177704,
       "logged_records": 2544,
       "manifest_source": {
         "bytes": 24394,
@@ -974,19 +973,25 @@
           "logged_records": 100,
           "median_training_loss": 2.4070153328667434,
           "start_step_inclusive": 23000
+        },
+        {
+          "end_step_exclusive": 25000,
+          "logged_records": 100,
+          "median_training_loss": 2.3668262204658483,
+          "start_step_inclusive": 24000
         }
       ],
-      "completed": false,
+      "completed": true,
       "global_batch_tokens": 1966080,
       "last_100_logged_training_losses": {
         "count": 100,
-        "first_step": 23880,
-        "last_step": 24870,
-        "mean": 2.554758021776143,
-        "median": 2.35664048549957
+        "first_step": 24440,
+        "last_step": 25428,
+        "mean": 2.568468096365489,
+        "median": 2.2257757826466698
       },
       "last_record": {
-        "cumulative_tokens": 48898375680,
+        "cumulative_tokens": 49995448320,
         "depth_histogram": [
           0,
           1966080,
@@ -996,20 +1001,20 @@
           0
         ],
         "estimated_hardware_flops": 8691104856145920.0,
-        "estimated_mfu": 0.08519697040369827,
+        "estimated_mfu": 0.06814637097896609,
         "fp8_parity_relative_error": 0.0002789749568490337,
-        "global_supervised_tokens": 1963656,
-        "grad_norm": 0.5023797750473022,
-        "learning_rate": 2.6284553643139212e-05,
-        "loss": 3.466492770674265,
+        "global_supervised_tokens": 1964226,
+        "grad_norm": 1.928415298461914,
+        "learning_rate": 2.6000000910996378e-05,
+        "loss": 1.8354708627224336,
         "peak_hbm_allocated_bytes": 98906156544,
         "peak_hbm_bytes": 106157834240,
         "peak_hbm_reserved_bytes": 106157834240,
-        "recorded_unix": 1788615571.2459686,
+        "recorded_unix": 1788617177.6816144,
         "row": "moe-k8",
         "row_index": 4,
-        "step": 24870,
-        "step_time_s": 2.600805145018967,
+        "step": 25428,
+        "step_time_s": 3.251540995988762,
         "telemetry": {
           "activation_recompute_enabled": 0.0,
           "all_to_all_bytes": 0.0,
@@ -1020,8 +1025,8 @@
           "depth_memory_last_norm": 0.0,
           "dispatch_overlap_enabled": 0.0,
           "executed_active_tokens": 49152.0,
-          "expert_entropy_ratio": 0.06965414434671402,
-          "expert_load_cv": 0.43349960446357727,
+          "expert_entropy_ratio": 0.05976609140634537,
+          "expert_load_cv": 0.6617221832275391,
           "halt_collapse_fraction": 0.0,
           "mean_depth": 1.0,
           "mean_expected_depth": 1.0,
@@ -1029,7 +1034,7 @@
           "mean_passes": 1.0,
           "mean_routed_k": 8.0,
           "memory_slots_written": 2.0,
-          "mhc_stream_diversity": 4.036745071411133,
+          "mhc_stream_diversity": 3.8446898460388184,
           "moe_assignments": 786432.0,
           "moe_dropped_assignments": 0.0,
           "moe_processed_assignments": 786432.0,
@@ -1039,13 +1044,13 @@
           "packed_continuation_passes": 0.0,
           "ponder_exit_mass_error": 0.0,
           "ponder_exit_mass_max_error": 0.0,
-          "sinkhorn_max_marginal_error": 0.013509988784790039
+          "sinkhorn_max_marginal_error": 0.013583779335021973
         },
-        "tokens_per_second": 755950.5193095356,
+        "tokens_per_second": 604660.9907196123,
         "total_steps": 25429
       },
-      "last_record_age_seconds": 2.6426374912261963,
-      "logged_records": 2488,
+      "last_record_age_seconds": 149.17730951309204,
+      "logged_records": 2544,
       "manifest_source": {
         "bytes": 24527,
         "modified_at_utc": "2026-09-04T16:34:51+00:00",
@@ -1057,11 +1062,11 @@
         "stored_total": 1810131410
       },
       "recent_progress": {
-        "elapsed_seconds": 592.4202702045441,
-        "estimated_remaining_hours": 0.43726258038906823,
-        "first_step": 24660,
-        "last_step": 24870,
-        "wall_tokens_per_second": 696932.2637414932
+        "elapsed_seconds": 589.2108554840088,
+        "estimated_remaining_hours": 0.0,
+        "first_step": 25220,
+        "last_step": 25428,
+        "wall_tokens_per_second": 694054.8297673018
       },
       "resumed_from": null,
       "root": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/moe-k8",
@@ -1109,12 +1114,28 @@
       },
       "source_revision": "ba9809284cf787d3e69df96620048dd96345d66f",
       "start_step": 0,
+      "summary": {
+        "final_loss": 1.8354708627224336,
+        "fp8_parity_relative_error": 0.0002789749568490337,
+        "resumed_from": null,
+        "row": "moe-k8",
+        "start_step": 0,
+        "steps": 25429,
+        "tokens": 49995448320,
+        "wall_clock_s": 77514.81829765701
+      },
+      "summary_source": {
+        "bytes": 234,
+        "modified_at_utc": "2026-09-05T14:06:46+00:00",
+        "path": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/moe-k8/summary.json",
+        "sha256": "8ff0d6bee4a2febc25b460f0d0c689c4afe4b8837b7113c0cb71d5fa4c7923af"
+      },
       "telemetry_present": true,
       "telemetry_source": {
-        "bytes": 4022326,
-        "modified_at_utc": "2026-09-05T13:39:31+00:00",
+        "bytes": 4112892,
+        "modified_at_utc": "2026-09-05T14:06:17+00:00",
         "path": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/moe-k8/telemetry/rank-00000.jsonl",
-        "sha256": "647b88b72242e9af393f96a6989f5734075c07da503fae67478c3394a0f27269"
+        "sha256": "c2be82f92b5f84e4aee62d21f9167ad28ab5bb0570e66a8638aadd497d9e75c1"
       },
       "total_steps": 25429,
       "world_size": 20
@@ -1126,14 +1147,14 @@
       "completed": false,
       "global_batch_tokens": 1966080,
       "last_100_logged_training_losses": {
-        "count": 4,
+        "count": 59,
         "first_step": 0,
-        "last_step": 30,
-        "mean": 10.610501417133753,
-        "median": 10.633340601918347
+        "last_step": 580,
+        "mean": 5.900829573841787,
+        "median": 5.396101224717065
       },
       "last_record": {
-        "cumulative_tokens": 60948480,
+        "cumulative_tokens": 1142292480,
         "depth_histogram": [
           0,
           0,
@@ -1143,20 +1164,20 @@
           0
         ],
         "estimated_hardware_flops": 1.858859956174848e+16,
-        "estimated_mfu": 0.07787651134385688,
+        "estimated_mfu": 0.06818714361860008,
         "fp8_parity_relative_error": 0.0003202104820517443,
-        "global_supervised_tokens": 1964134,
-        "grad_norm": 7.8394975662231445,
-        "learning_rate": 3.1732283464566924e-05,
-        "loss": 9.58625993109986,
+        "global_supervised_tokens": 1963514,
+        "grad_norm": 1.0209770202636719,
+        "learning_rate": 0.0002599031963002075,
+        "loss": 4.348432335006039,
         "peak_hbm_allocated_bytes": 90113116160,
-        "peak_hbm_bytes": 92287270912,
-        "peak_hbm_reserved_bytes": 92287270912,
-        "recorded_unix": 1788615554.5343862,
+        "peak_hbm_bytes": 92752838656,
+        "peak_hbm_reserved_bytes": 92752838656,
+        "recorded_unix": 1788617319.3269575,
         "row": "loop-fixed",
         "row_index": 5,
-        "step": 30,
-        "step_time_s": 3.042756267997902,
+        "step": 580,
+        "step_time_s": 3.4751308010017965,
         "telemetry": {
           "activation_recompute_enabled": 1.0,
           "all_to_all_bytes": 0.0,
@@ -1167,8 +1188,8 @@
           "depth_memory_last_norm": 0.0,
           "dispatch_overlap_enabled": 0.0,
           "executed_active_tokens": 98304.0,
-          "expert_entropy_ratio": 0.9293657541275024,
-          "expert_load_cv": 0.6446743011474609,
+          "expert_entropy_ratio": 0.3386297821998596,
+          "expert_load_cv": 0.6751680374145508,
           "halt_collapse_fraction": 0.0,
           "mean_depth": 2.0,
           "mean_expected_depth": 2.0,
@@ -1176,7 +1197,7 @@
           "mean_passes": 2.0,
           "mean_routed_k": 4.0,
           "memory_slots_written": 4.0,
-          "mhc_stream_diversity": 0.004201799631118774,
+          "mhc_stream_diversity": 0.0451999306678772,
           "moe_assignments": 786432.0,
           "moe_dropped_assignments": 0.0,
           "moe_processed_assignments": 786432.0,
@@ -1186,13 +1207,13 @@
           "packed_continuation_passes": 0.0,
           "ponder_exit_mass_error": 0.0,
           "ponder_exit_mass_max_error": 0.0,
-          "sinkhorn_max_marginal_error": 7.367134094238281e-05
+          "sinkhorn_max_marginal_error": 0.00014734268188476562
         },
-        "tokens_per_second": 646150.9982505623,
+        "tokens_per_second": 565757.1218422129,
         "total_steps": 25429
       },
-      "last_record_age_seconds": 19.354219913482666,
-      "logged_records": 4,
+      "last_record_age_seconds": 7.5319664478302,
+      "logged_records": 59,
       "manifest_source": {
         "bytes": 25244,
         "modified_at_utc": "2026-09-05T13:36:36+00:00",
@@ -1204,11 +1225,11 @@
         "stored_total": 1810131410
       },
       "recent_progress": {
-        "elapsed_seconds": 98.776362657547,
-        "estimated_remaining_hours": 23.228907951633136,
-        "first_step": 0,
-        "last_step": 30,
-        "wall_tokens_per_second": 597130.7144047124
+        "elapsed_seconds": 581.5582776069641,
+        "estimated_remaining_hours": 22.300247040089268,
+        "first_step": 400,
+        "last_step": 580,
+        "wall_tokens_per_second": 608527.8356903953
       },
       "resumed_from": null,
       "root": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/loop-fixed",
@@ -1258,10 +1279,10 @@
       "start_step": 0,
       "telemetry_present": true,
       "telemetry_source": {
-        "bytes": 6472,
-        "modified_at_utc": "2026-09-05T13:39:14+00:00",
+        "bytes": 95493,
+        "modified_at_utc": "2026-09-05T14:08:39+00:00",
         "path": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/loop-fixed/telemetry/rank-00000.jsonl",
-        "sha256": "f27428504f94aa0d20e46d8b563d18f7a2947724d39e12f772ab50e96fb1d1b1"
+        "sha256": "6a1b153582e074f6f23ed8e13c0e65e9e33c81593eeaa39f0b02ea5b53dfebe7"
       },
       "total_steps": 25429,
       "world_size": 40
@@ -1359,19 +1380,25 @@
           "logged_records": 100,
           "median_training_loss": 2.7212443892589198,
           "start_step_inclusive": 14000
+        },
+        {
+          "end_step_exclusive": 16000,
+          "logged_records": 100,
+          "median_training_loss": 2.778885731293243,
+          "start_step_inclusive": 15000
         }
       ],
       "completed": false,
       "global_batch_tokens": 1966080,
       "last_100_logged_training_losses": {
         "count": 100,
-        "first_step": 14800,
-        "last_step": 15790,
-        "mean": 2.5840153292453865,
-        "median": 2.7656509202680346
+        "first_step": 15270,
+        "last_step": 16260,
+        "mean": 2.5945315034997916,
+        "median": 2.754564110286314
       },
       "last_record": {
-        "cumulative_tokens": 31046369280,
+        "cumulative_tokens": 31970426880,
         "depth_histogram": [
           0,
           0,
@@ -1381,20 +1408,20 @@
           0
         ],
         "estimated_hardware_flops": 1.858859956174848e+16,
-        "estimated_mfu": 0.06785874278532622,
+        "estimated_mfu": 0.06695085300583684,
         "fp8_parity_relative_error": 0.0002776920881776391,
-        "global_supervised_tokens": 1962400,
-        "grad_norm": 1.072168231010437,
-        "learning_rate": 0.00010091537540962051,
-        "loss": 1.36993771858158,
+        "global_supervised_tokens": 1940675,
+        "grad_norm": 0.932293176651001,
+        "learning_rate": 9.458849379533567e-05,
+        "loss": 2.066306657259182,
         "peak_hbm_allocated_bytes": 90106038784,
         "peak_hbm_bytes": 92922707968,
         "peak_hbm_reserved_bytes": 92922707968,
-        "recorded_unix": 1788615552.2207649,
+        "recorded_unix": 1788617317.0866375,
         "row": "loop-pathway-frozen",
         "row_index": 6,
-        "step": 15790,
-        "step_time_s": 3.491948617011076,
+        "step": 16260,
+        "step_time_s": 3.5393013290013187,
         "telemetry": {
           "activation_recompute_enabled": 1.0,
           "all_to_all_bytes": 0.0,
@@ -1405,8 +1432,8 @@
           "depth_memory_last_norm": 0.0,
           "dispatch_overlap_enabled": 0.0,
           "executed_active_tokens": 98304.0,
-          "expert_entropy_ratio": 0.8227633833885193,
-          "expert_load_cv": 1.184081792831421,
+          "expert_entropy_ratio": 0.793371319770813,
+          "expert_load_cv": 0.6455652713775635,
           "halt_collapse_fraction": 0.0,
           "mean_depth": 2.0,
           "mean_expected_depth": 2.0,
@@ -1414,7 +1441,7 @@
           "mean_passes": 2.0,
           "mean_routed_k": 4.0,
           "memory_slots_written": 4.0,
-          "mhc_stream_diversity": 11.417132377624512,
+          "mhc_stream_diversity": 17.812541961669922,
           "moe_assignments": 786432.0,
           "moe_dropped_assignments": 0.0,
           "moe_processed_assignments": 786432.0,
@@ -1424,13 +1451,13 @@
           "packed_continuation_passes": 0.0,
           "ponder_exit_mass_error": 0.0,
           "ponder_exit_mass_max_error": 0.0,
-          "sinkhorn_max_marginal_error": 0.012011408805847168
+          "sinkhorn_max_marginal_error": 0.012098193168640137
         },
-        "tokens_per_second": 563032.3397149128,
+        "tokens_per_second": 555499.4664878582,
         "total_steps": 25429
       },
-      "last_record_age_seconds": 21.66784119606018,
-      "logged_records": 1580,
+      "last_record_age_seconds": 9.772286415100098,
+      "logged_records": 1627,
       "manifest_source": {
         "bytes": 25294,
         "modified_at_utc": "2026-09-04T20:54:28+00:00",
@@ -1442,11 +1469,11 @@
         "stored_total": 1810131410
       },
       "recent_progress": {
-        "elapsed_seconds": 567.968688249588,
-        "estimated_remaining_hours": 10.137189291388017,
-        "first_step": 15640,
-        "last_step": 15790,
-        "wall_tokens_per_second": 519239.89139063936
+        "elapsed_seconds": 599.1396250724792,
+        "estimated_remaining_hours": 9.536305699070295,
+        "first_step": 16100,
+        "last_step": 16260,
+        "wall_tokens_per_second": 525040.8866913875
       },
       "resumed_from": null,
       "root": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/loop-pathway-frozen",
@@ -1496,10 +1523,10 @@
       "start_step": 0,
       "telemetry_present": true,
       "telemetry_source": {
-        "bytes": 2573578,
-        "modified_at_utc": "2026-09-05T13:39:12+00:00",
+        "bytes": 2650152,
+        "modified_at_utc": "2026-09-05T14:08:37+00:00",
         "path": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/loop-pathway-frozen/telemetry/rank-00000.jsonl",
-        "sha256": "c5f53dc1906b9849c629106eb1aa46d57c6ae6e6ac833a9b50ae3613a303c21f"
+        "sha256": "c49f9bf017689e162091ad2758a135f8b9c642587d7f3f33bcf1c514e03e9875"
       },
       "total_steps": 25429,
       "world_size": 40
@@ -1603,19 +1630,25 @@
           "logged_records": 100,
           "median_training_loss": 3.0771158669022585,
           "start_step_inclusive": 15000
+        },
+        {
+          "end_step_exclusive": 17000,
+          "logged_records": 100,
+          "median_training_loss": 3.0124425828200447,
+          "start_step_inclusive": 16000
         }
       ],
       "completed": false,
       "global_batch_tokens": 1966080,
       "last_100_logged_training_losses": {
         "count": 100,
-        "first_step": 15640,
-        "last_step": 16630,
-        "mean": 2.8422755777504216,
-        "median": 3.0124425828200447
+        "first_step": 16680,
+        "last_step": 17670,
+        "mean": 2.8745788319880994,
+        "median": 2.998087507726085
       },
       "last_record": {
-        "cumulative_tokens": 32697876480,
+        "cumulative_tokens": 34742599680,
         "depth_histogram": [
           0,
           655360,
@@ -1625,20 +1658,20 @@
           0
         ],
         "estimated_hardware_flops": 1.602438692339712e+16,
-        "estimated_mfu": 0.06904024518141201,
+        "estimated_mfu": 0.040063782770128564,
         "fp8_parity_relative_error": 0.00016602517943824455,
-        "global_supervised_tokens": 1964021,
-        "grad_norm": 0.9478321671485901,
-        "learning_rate": 8.97238122223272e-05,
-        "loss": 3.132286831621006,
+        "global_supervised_tokens": 1963915,
+        "grad_norm": 1.4041566848754883,
+        "learning_rate": 7.669086851865814e-05,
+        "loss": 1.8420256031978914,
         "peak_hbm_allocated_bytes": 83410859008,
         "peak_hbm_bytes": 92002058240,
         "peak_hbm_reserved_bytes": 92002058240,
-        "recorded_unix": 1788615572.1149313,
+        "recorded_unix": 1788617322.3696742,
         "row": "mor-dense-ffn",
         "row_index": 7,
-        "step": 16630,
-        "step_time_s": 1.4793675359978806,
+        "step": 17670,
+        "step_time_s": 2.549332347989548,
         "telemetry": {
           "activation_recompute_enabled": 0.0,
           "all_to_all_bytes": 0.0,
@@ -1647,20 +1680,20 @@
           "dense_envelope_tokens": 122880.0,
           "dense_pass_fallback_tokens": 0.0,
           "depth_memory_last_norm": 0.0,
-          "depth_policy_grad_norm": 7587.466796875,
+          "depth_policy_grad_norm": 27018.5390625,
           "dispatch_overlap_enabled": 0.0,
           "executed_active_tokens": 49152.0,
           "expert_entropy_ratio": 0.0,
           "expert_load_cv": 0.0,
           "halt_collapse_fraction": 0.3333333432674408,
           "mean_depth": 2.0,
-          "mean_expected_depth": 2.228987216949463,
+          "mean_expected_depth": 1.7560498714447021,
           "mean_expected_routed_k": 0.0,
           "mean_passes": 2.0,
           "mean_routed_k": 0.0,
           "memory_slots_written": 6.0,
-          "mhc_stream_diversity": 69.74577331542969,
-          "model_grad_norm": 0.9478321671485901,
+          "mhc_stream_diversity": 62.656246185302734,
+          "model_grad_norm": 1.4041566848754883,
           "moe_assignments": 0.0,
           "moe_dropped_assignments": 0.0,
           "moe_processed_assignments": 0.0,
@@ -1670,14 +1703,14 @@
           "packed_continuation_passes": 2.0,
           "ponder_exit_mass_error": 0.0,
           "ponder_exit_mass_max_error": 0.0,
-          "sinkhorn_max_marginal_error": 0.09104639291763306,
+          "sinkhorn_max_marginal_error": 0.09494560956954956,
           "width_policy_grad_norm": 0.0
         },
-        "tokens_per_second": 1329000.3681700479,
+        "tokens_per_second": 771213.6872034312,
         "total_steps": 25429
       },
-      "last_record_age_seconds": 1.773674726486206,
-      "logged_records": 1664,
+      "last_record_age_seconds": 4.4892497062683105,
+      "logged_records": 1768,
       "manifest_source": {
         "bytes": 25927,
         "modified_at_utc": "2026-09-05T05:19:38+00:00",
@@ -1689,11 +1722,11 @@
         "stored_total": 846346546
       },
       "recent_progress": {
-        "elapsed_seconds": 588.565271615982,
-        "estimated_remaining_hours": 4.23055331672991,
-        "first_step": 16290,
-        "last_step": 16630,
-        "wall_tokens_per_second": 1135757.1236995293
+        "elapsed_seconds": 596.3167662620544,
+        "estimated_remaining_hours": 3.6716075179849352,
+        "first_step": 17320,
+        "last_step": 17670,
+        "wall_tokens_per_second": 1153963.86439619
       },
       "resumed_from": null,
       "root": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/mor-dense-ffn",
@@ -1743,10 +1776,10 @@
       "start_step": 0,
       "telemetry_present": true,
       "telemetry_source": {
-        "bytes": 2891418,
-        "modified_at_utc": "2026-09-05T13:39:32+00:00",
+        "bytes": 3071945,
+        "modified_at_utc": "2026-09-05T14:08:42+00:00",
         "path": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/mor-dense-ffn/telemetry/rank-00000.jsonl",
-        "sha256": "9961b171b045549ddf2dedb7323208903aeffb483e70892ffb4a187b306d1494"
+        "sha256": "fd507c88d27e3f7457c296cc57c31713af4510d7313d84eced3a54c914a7cb2a"
       },
       "total_steps": 25429,
       "world_size": 80
@@ -1778,13 +1811,13 @@
       "global_batch_tokens": 1966080,
       "last_100_logged_training_losses": {
         "count": 100,
-        "first_step": 1210,
-        "last_step": 2200,
-        "mean": 3.2321917201055745,
-        "median": 3.311848890285493
+        "first_step": 1690,
+        "last_step": 2680,
+        "mean": 3.127203986695447,
+        "median": 3.190943980507797
       },
       "last_record": {
-        "cumulative_tokens": 4327342080,
+        "cumulative_tokens": 5271060480,
         "depth_histogram": [
           0,
           0,
@@ -1794,20 +1827,20 @@
           0
         ],
         "estimated_hardware_flops": 1.858859956174848e+16,
-        "estimated_mfu": 0.06571778753727545,
+        "estimated_mfu": 0.07704914763936377,
         "fp8_parity_relative_error": 0.00023477092829283562,
-        "global_supervised_tokens": 1963648,
-        "grad_norm": 0.570788562297821,
-        "learning_rate": 0.00025656705374560527,
-        "loss": 3.5405946920217484,
+        "global_supervised_tokens": 1964708,
+        "grad_norm": 0.7155218720436096,
+        "learning_rate": 0.0002546791782613822,
+        "loss": 2.635508242994115,
         "peak_hbm_allocated_bytes": 90824913920,
         "peak_hbm_bytes": 93428121600,
         "peak_hbm_reserved_bytes": 93428121600,
-        "recorded_unix": 1788615571.563833,
+        "recorded_unix": 1788617297.8926558,
         "row": "fixed-depth-adaptive-k",
         "row_index": 9,
-        "step": 2200,
-        "step_time_s": 3.6057093809940852,
+        "step": 2680,
+        "step_time_s": 3.075429778022226,
         "telemetry": {
           "activation_recompute_enabled": 1.0,
           "all_to_all_bytes": 0.0,
@@ -1819,17 +1852,17 @@
           "depth_policy_grad_norm": 0.0,
           "dispatch_overlap_enabled": 0.0,
           "executed_active_tokens": 98304.0,
-          "expert_entropy_ratio": 0.5364869832992554,
-          "expert_load_cv": 0.7119228839874268,
+          "expert_entropy_ratio": 0.6093658208847046,
+          "expert_load_cv": 1.0395889282226562,
           "halt_collapse_fraction": 0.0,
           "mean_depth": 2.0,
           "mean_expected_depth": 2.0,
-          "mean_expected_routed_k": 4.014132022857666,
+          "mean_expected_routed_k": 4.0424041748046875,
           "mean_passes": 2.0,
           "mean_routed_k": 4.0,
           "memory_slots_written": 4.0,
-          "mhc_stream_diversity": 0.6722732782363892,
-          "model_grad_norm": 0.570788562297821,
+          "mhc_stream_diversity": 1.0956107378005981,
+          "model_grad_norm": 0.7155218720436096,
           "moe_assignments": 786432.0,
           "moe_dropped_assignments": 0.0,
           "moe_processed_assignments": 786432.0,
@@ -1839,14 +1872,14 @@
           "packed_continuation_passes": 0.0,
           "ponder_exit_mass_error": 0.0,
           "ponder_exit_mass_max_error": 0.0,
-          "sinkhorn_max_marginal_error": 0.006140232086181641,
-          "width_policy_grad_norm": 0.4281925559043884
+          "sinkhorn_max_marginal_error": 0.0076781511306762695,
+          "width_policy_grad_norm": 0.6462688446044922
         },
-        "tokens_per_second": 545268.5705518387,
+        "tokens_per_second": 639286.2597774428,
         "total_steps": 25429
       },
-      "last_record_age_seconds": 2.324773073196411,
-      "logged_records": 221,
+      "last_record_age_seconds": 28.966268062591553,
+      "logged_records": 269,
       "manifest_source": {
         "bytes": 25185,
         "modified_at_utc": "2026-09-05T11:29:21+00:00",
@@ -1858,11 +1891,11 @@
         "stored_total": 1810131410
       },
       "recent_progress": {
-        "elapsed_seconds": 567.3884954452515,
-        "estimated_remaining_hours": 22.880729118406776,
-        "first_step": 2040,
-        "last_step": 2200,
-        "wall_tokens_per_second": 554422.2389513602
+        "elapsed_seconds": 568.4840445518494,
+        "estimated_remaining_hours": 22.451171953933105,
+        "first_step": 2520,
+        "last_step": 2680,
+        "wall_tokens_per_second": 553353.7889317296
       },
       "resumed_from": null,
       "root": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/fixed-depth-adaptive-k",
@@ -1912,10 +1945,10 @@
       "start_step": 0,
       "telemetry_present": true,
       "telemetry_source": {
-        "bytes": 389514,
-        "modified_at_utc": "2026-09-05T13:39:31+00:00",
+        "bytes": 474103,
+        "modified_at_utc": "2026-09-05T14:08:17+00:00",
         "path": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/fixed-depth-adaptive-k/telemetry/rank-00000.jsonl",
-        "sha256": "c584c4a3d34ce05a0e4e601cfb596c509c7e2c0226d0d74e28756d6ca1414b45"
+        "sha256": "e340c96d23fd081fbb616f0013ad9e118843d3ca6c7b414bb1f37027f02ce1d0"
       },
       "total_steps": 25429,
       "world_size": 40
@@ -2086,7 +2119,7 @@
         "tokens_per_second": 589200.1961346898,
         "total_steps": 25429
       },
-      "last_record_age_seconds": 28937.84677672386,
+      "last_record_age_seconds": 30690.817094564438,
       "logged_records": 1552,
       "manifest_source": {
         "bytes": 26577,
@@ -2387,7 +2420,7 @@
         "tokens_per_second": 564513.8114593329,
         "total_steps": 25429
       },
-      "last_record_age_seconds": 8153.489056110382,
+      "last_record_age_seconds": 9906.459373950958,
       "logged_records": 2544,
       "manifest_source": {
         "bytes": 26534,

@@ -1,0 +1,125 @@
+{
+  "exclude_nodes": "parrypeak[007,012,020,026,056,063-064]",
+  "exports": {
+    "METIS_ABLATION_RUNTIME": "/home/users/vollmerc/more-control-worktrees/c7aea46/ops/more-ablation-runtime.sh",
+    "METIS_CONTROL_GATE": "/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/operations/checkpoint_gate.py",
+    "METIS_CONTROL_OUTPUT": "/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/more-ablations",
+    "METIS_CONTROL_REVISION": "c7aea46eef2e407ae92ed9e9c0f874e8bf836237",
+    "METIS_RELEASE_ROOT": "/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r2",
+    "METIS_REPO": "/home/users/vollmerc/more-control-worktrees/c7aea46"
+  },
+  "full_schedule_steps": 25429,
+  "global_batch_tokens": 1966080,
+  "jobs": [
+    {
+      "job_id": "495953",
+      "nodes": 20,
+      "ranks": 80,
+      "row": "mor-fixed-k",
+      "submission_command": [
+        "sbatch",
+        "--parsable",
+        "--partition=parry",
+        "--nodes=20",
+        "--job-name=more-corrected-mor-fixed-k",
+        "--exclude=parrypeak[007,012,020,026,056,063-064]",
+        "--export=ALL",
+        "--chdir=/home/users/vollmerc/more-control-worktrees/c7aea46",
+        "--output=/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/more-ablations/mor-fixed-k/slurm-%j.out",
+        "--error=/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/more-ablations/mor-fixed-k/slurm-%j.err",
+        "/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/operations/run_corrected_control.sbatch"
+      ]
+    },
+    {
+      "job_id": "495954",
+      "nodes": 5,
+      "ranks": 20,
+      "row": "moe-k4",
+      "submission_command": [
+        "sbatch",
+        "--parsable",
+        "--partition=parry",
+        "--nodes=5",
+        "--job-name=more-corrected-moe-k4",
+        "--exclude=parrypeak[007,012,020,026,056,063-064]",
+        "--export=ALL",
+        "--chdir=/home/users/vollmerc/more-control-worktrees/c7aea46",
+        "--output=/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/more-ablations/moe-k4/slurm-%j.out",
+        "--error=/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/more-ablations/moe-k4/slurm-%j.err",
+        "/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/operations/run_corrected_control.sbatch"
+      ]
+    },
+    {
+      "job_id": "495955",
+      "nodes": 5,
+      "ranks": 20,
+      "row": "moe-k8",
+      "submission_command": [
+        "sbatch",
+        "--parsable",
+        "--partition=parry",
+        "--nodes=5",
+        "--job-name=more-corrected-moe-k8",
+        "--exclude=parrypeak[007,012,020,026,056,063-064]",
+        "--export=ALL",
+        "--chdir=/home/users/vollmerc/more-control-worktrees/c7aea46",
+        "--output=/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/more-ablations/moe-k8/slurm-%j.out",
+        "--error=/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/more-ablations/moe-k8/slurm-%j.err",
+        "/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/operations/run_corrected_control.sbatch"
+      ]
+    },
+    {
+      "job_id": "495956",
+      "nodes": 20,
+      "ranks": 80,
+      "row": "random-k",
+      "submission_command": [
+        "sbatch",
+        "--parsable",
+        "--partition=parry",
+        "--nodes=20",
+        "--job-name=more-corrected-random-k",
+        "--exclude=parrypeak[007,012,020,026,056,063-064]",
+        "--export=ALL",
+        "--chdir=/home/users/vollmerc/more-control-worktrees/c7aea46",
+        "--output=/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/more-ablations/random-k/slurm-%j.out",
+        "--error=/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/more-ablations/random-k/slurm-%j.err",
+        "/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/operations/run_corrected_control.sbatch"
+      ]
+    },
+    {
+      "job_id": "495957",
+      "nodes": 20,
+      "ranks": 80,
+      "row": "random-depth",
+      "submission_command": [
+        "sbatch",
+        "--parsable",
+        "--partition=parry",
+        "--nodes=20",
+        "--job-name=more-corrected-random-depth",
+        "--exclude=parrypeak[007,012,020,026,056,063-064]",
+        "--export=ALL",
+        "--chdir=/home/users/vollmerc/more-control-worktrees/c7aea46",
+        "--output=/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/more-ablations/random-depth/slurm-%j.out",
+        "--error=/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/more-ablations/random-depth/slurm-%j.err",
+        "/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/operations/run_corrected_control.sbatch"
+      ]
+    }
+  ],
+  "learning_rate": 0.00026,
+  "operational_sha256": {
+    "checkpoint_gate.py": "23246ba8f7b0145c5f1d4c173c1d43ba595949a3b4d831d831c9ef5f44cb0378",
+    "run_corrected_control.sbatch": "9b76e652276c42234caaddc5ae208a369e6bcbcfe9fe35be8ea357ce69b3af2b"
+  },
+  "operational_source_revision": "c7e172bcd732962282ff852493347d95c65f682b",
+  "output_root": "/lus/lustre1/vollmerc/more-paper-controls-corrected-20260905/more-ablations",
+  "pilot_stop_after_steps": 100,
+  "regular_checkpoint_interval": 500,
+  "schema": "more.corrected-controls-submission/v1",
+  "scientific_dependency_on_original_jobs": false,
+  "seed": 16062026,
+  "source_checkpoint": null,
+  "submitted_at_utc": "2026-09-05T13:59:44.222009+00:00",
+  "training_source_revision": "c7aea46eef2e407ae92ed9e9c0f874e8bf836237"
+}

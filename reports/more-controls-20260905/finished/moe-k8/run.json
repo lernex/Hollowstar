@@ -1,0 +1,891 @@
+{
+  "campaign_identity_sha256": "237c3878fa5c64691df626b14c3219dc989c5645e75978daa220fa23ce1e357a",
+  "curriculum": {
+    "continuation_mode": "depth_one",
+    "fixed_routed_k": 8,
+    "max_passes": null,
+    "memory_gate_scale": 0.0,
+    "ngram_gate_scale": 1.0,
+    "pathway_mode": "per_pass",
+    "random_policy_seed": 16062030,
+    "random_policy_step": 0,
+    "routed_k_mode": "fixed",
+    "stochastic_routing": true,
+    "target_mean_depth": 2.0,
+    "target_mean_routed_k": 4.0,
+    "temperature": 1.0
+  },
+  "final_checkpoint": true,
+  "global_batch_tokens": 1966080,
+  "model": {
+    "activation_recompute_policy": "none",
+    "attention_backend": "varlen_fused_required",
+    "attention_indices": [
+      1
+    ],
+    "attention_pass_lora_rank": 8,
+    "autotune": {
+      "compile_modes": [
+        "default",
+        "reduce-overhead",
+        "none"
+      ],
+      "dispatch_overlap": [
+        "on",
+        "off"
+      ],
+      "gates": {
+        "max_fp8_loss_relative_error": 0.02,
+        "max_grad_norm": 100.0,
+        "max_hbm_fraction": 0.9,
+        "max_ngram_layout_loss_relative_error": 0.001,
+        "max_update_to_weight_ratio": 0.01
+      },
+      "global_token_batch": {
+        "maximum": 1966080,
+        "minimum": 1966080,
+        "target": 1966080
+      },
+      "grad_accum_steps": [
+        1,
+        2,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "learning_rates": [
+        0.00012,
+        0.00018,
+        0.00026
+      ],
+      "micro_batch_sizes": [
+        12,
+        10,
+        8,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "ngram_table_modes": [
+        "replicated",
+        "row_sharded"
+      ],
+      "precision_profiles": [
+        "fp8",
+        "bf16"
+      ],
+      "preferred_learning_rate": 0.00018,
+      "status": "bounded_canary_candidates_not_validated_optima"
+    },
+    "budget_controller_leak": 0.02,
+    "budget_controller_rate": 0.0,
+    "budget_multiplier_limit": 100000.0,
+    "budgeted_depth_calibration_coefficient": 4.0,
+    "budgeted_depth_values": [
+      1,
+      2,
+      3
+    ],
+    "budgeted_k_calibration_coefficient": 0.1,
+    "context_extension_train_length": 4096,
+    "context_parallel_size": 1,
+    "continuation_entropy_coefficient": 0.001,
+    "continuation_gate_init": 0.0,
+    "d_model": 4096,
+    "dense_ffn_intermediate_dim": 0,
+    "depth_budget_coefficient": 1.0,
+    "depth_budget_controller_rate": 0.0,
+    "expected_parameter_audit": {},
+    "expert_balance_bias_update_rate": 0.05,
+    "expert_balance_coefficient": 0.0,
+    "expert_execution": "grouped_gemm",
+    "expert_intermediate_dim": 1152,
+    "expert_parallel_size": 1,
+    "expert_replicas": 20,
+    "expert_swiglu_fused": false,
+    "expert_weight_chunks": 4,
+    "family": "ablation",
+    "ffn_mode": "moe",
+    "final_context_length": 4096,
+    "head_dim": 64,
+    "k_budget_coefficient": 1.0,
+    "latent_dim": 2048,
+    "lm_head_chunk_size": 8192,
+    "mamba_backend": "fused_required",
+    "mamba_chunk_size": 256,
+    "mamba_d_conv": 4,
+    "mamba_d_state": 128,
+    "mamba_expand": 2,
+    "mamba_head_dim": 64,
+    "mamba_ngroups": 16,
+    "max_passes": 5,
+    "max_routed_k": 8,
+    "memory_dim": 256,
+    "memory_gate_init": -6.0,
+    "memory_heads": 4,
+    "mhc_backend": "fused_required",
+    "mhc_pass_embedding_dim": 64,
+    "mhc_sinkhorn_iterations": 8,
+    "min_routed_k": 1,
+    "model_type": "metis16_more",
+    "moe_dispatch_chunks": 1,
+    "n_heads": 64,
+    "n_kv_heads": 16,
+    "n_layers": 2,
+    "n_routed_experts": 72,
+    "n_shared_experts": 1,
+    "n_streams": 4,
+    "name": "MoRE-Ablation-04-moe-k8",
+    "ngram_memory": {
+      "canonicalization": "tokenizer_sidecar_required",
+      "hash_seeds": [
+        2654435761,
+        2246822519,
+        3266489917,
+        668265263,
+        374761393,
+        3550635117,
+        4251991749,
+        3043081225
+      ],
+      "injection_layers": [
+        0,
+        1
+      ],
+      "learning_rate_scale": 2.0,
+      "optimizer": "sparse_adam",
+      "orders": [
+        2,
+        3
+      ],
+      "slots_by_order": {
+        "2": [
+          292969,
+          292973,
+          292979,
+          292993,
+          293021,
+          293071,
+          293081,
+          293087
+        ],
+        "3": [
+          293093,
+          293099,
+          293107,
+          293123,
+          293129,
+          293147,
+          293149,
+          293173
+        ]
+      },
+      "sparse_gradients": true,
+      "table_mode": "replicated",
+      "tables_per_order": 8,
+      "value_dim": 64,
+      "weight_decay": 0.0
+    },
+    "no_position_embeddings": true,
+    "precision": {
+      "activation_dtype": "bfloat16",
+      "allow_bf16_fallback": true,
+      "backend": "auto",
+      "bf16_roles": [
+        "embedding",
+        "ngram_table",
+        "residual_stream",
+        "mamba_state",
+        "normalization",
+        "gate",
+        "collective",
+        "attention_pass_lora_down",
+        "attention_pass_lora_up",
+        "memory_metadata_write_projection",
+        "mhc_controller"
+      ],
+      "expert_collective_wire": "bfloat16",
+      "fp32_roles": [
+        "master_weight",
+        "optimizer_state",
+        "router_logits",
+        "sinkhorn",
+        "memory_attention_logits",
+        "loss_accumulation",
+        "mamba_sensitive"
+      ],
+      "fp8_format": "hybrid_e4m3_e5m2",
+      "fp8_roles": [
+        "mamba_in_projection",
+        "mamba_out_projection",
+        "attention_qkv_projection",
+        "attention_out_projection",
+        "expert_gate_up_projection",
+        "expert_down_projection",
+        "latent_down_projection",
+        "latent_up_projection",
+        "memory_state_write_projection",
+        "memory_query_projection",
+        "memory_key_projection",
+        "memory_value_projection",
+        "memory_output_projection",
+        "memory_route_projection",
+        "ngram_projection",
+        "lm_head"
+      ],
+      "fp8_scaling": "blockwise",
+      "master_weight_dtype": "float32",
+      "optimizer_state_dtype": "float32",
+      "parameter_dtype": "bfloat16",
+      "reduction_dtype": "float32",
+      "require_fp8_validation": true,
+      "router_dtype": "float32"
+    },
+    "route_feature_dim": 256,
+    "router_z_loss_coefficient": 0.001,
+    "schema": "metis.model-family/v1",
+    "sequence_length": 4096,
+    "target_mean_passes": 2.0,
+    "target_mean_routed_k": 4.0,
+    "tie_embeddings": true,
+    "vocab_size": 65536,
+    "world_size": 20
+  },
+  "optimizer": {
+    "dense": {
+      "adamw_impl": "loop",
+      "adamw_params": 311110209,
+      "groups": [
+        {
+          "name": "adamw_decay",
+          "optimizer": "adamw",
+          "param_count": 311058816,
+          "sample_names": [
+            "stream_embeddings",
+            "pass_embeddings",
+            "embedding.weight",
+            "ngram_memory.gate_vectors",
+            "layers.0.mixer.impl.mixer.conv1d.weight",
+            "layers.0.mixer_connection.mix_logits",
+            "layers.0.moe.expert_embeddings",
+            "layers.0.moe.expert_router.weight"
+          ],
+          "tensor_count": 17
+        },
+        {
+          "name": "adamw_no_decay",
+          "optimizer": "adamw",
+          "param_count": 51393,
+          "sample_names": [
+            "ngram_memory.gate_bias",
+            "ngram_memory.projection.bias",
+            "depth_memory.stream_gate_bias",
+            "depth_memory.state_write.bias",
+            "depth_memory.metadata_write.bias",
+            "depth_memory.query.bias",
+            "depth_memory.key.bias",
+            "depth_memory.value.bias"
+          ],
+          "tensor_count": 35
+        },
+        {
+          "name": "muon",
+          "optimizer": "muon",
+          "param_count": 1195664128,
+          "sample_names": [
+            "ngram_memory.projection.weight",
+            "depth_memory.pass_embeddings",
+            "depth_memory.anchor_embeddings",
+            "depth_memory.stream_gate",
+            "depth_memory.state_write.weight",
+            "depth_memory.metadata_write.weight",
+            "depth_memory.query.weight",
+            "depth_memory.key.weight"
+          ],
+          "tensor_count": 41
+        }
+      ],
+      "master_weights": true,
+      "muon_params": 1195664128,
+      "muon_state_bits": 8,
+      "name": "muon_adamw",
+      "routed_experts_muon": true,
+      "total_params": 1506774337
+    },
+    "fp32_master_weights": true,
+    "fp32_optimizer_states": true,
+    "frozen_policy_parameters": [
+      "continuation.hidden.bias",
+      "continuation.hidden.weight",
+      "continuation.output.bias",
+      "continuation.output.weight",
+      "layers.0.moe.k_router.bias",
+      "layers.0.moe.k_router.weight",
+      "layers.1.moe.k_router.bias",
+      "layers.1.moe.k_router.weight"
+    ],
+    "gradient_clipping": {
+      "max_norm": 1.0,
+      "mode": "global"
+    },
+    "sharding": {
+      "mode": "world",
+      "owner_loads": [
+        268435456,
+        84934656,
+        84934656,
+        84934656,
+        84934656,
+        84934656,
+        84934656,
+        84934656,
+        84934656,
+        84410368,
+        75074337,
+        75074336,
+        75382976,
+        78003392,
+        79975680,
+        79975552,
+        79975552,
+        79976064,
+        75329152,
+        75792640
+      ],
+      "world_size": 20
+    },
+    "sparse_parameter_count": 300108416,
+    "sparse_tensor_count": 16
+  },
+  "parameters": {
+    "active_per_pass_mean": 278995794,
+    "stored_total": 1810131410
+  },
+  "precision_profile": "fp8",
+  "resumed_from": null,
+  "run_identity": {
+    "campaign_identity_sha256": "237c3878fa5c64691df626b14c3219dc989c5645e75978daa220fa23ce1e357a",
+    "curriculum": {
+      "continuation_mode": "depth_one",
+      "fixed_routed_k": 8,
+      "max_passes": null,
+      "memory_gate_scale": 0.0,
+      "ngram_gate_scale": 1.0,
+      "pathway_mode": "per_pass",
+      "random_policy_seed": 16062030,
+      "random_policy_step": 0,
+      "routed_k_mode": "fixed",
+      "stochastic_routing": true,
+      "target_mean_depth": 2.0,
+      "target_mean_routed_k": 4.0,
+      "temperature": 1.0
+    },
+    "global_batch_tokens": 1966080,
+    "model": {
+      "activation_recompute_policy": "none",
+      "attention_backend": "varlen_fused_required",
+      "attention_indices": [
+        1
+      ],
+      "attention_pass_lora_rank": 8,
+      "autotune": {
+        "compile_modes": [
+          "default",
+          "reduce-overhead",
+          "none"
+        ],
+        "dispatch_overlap": [
+          "on",
+          "off"
+        ],
+        "gates": {
+          "max_fp8_loss_relative_error": 0.02,
+          "max_grad_norm": 100.0,
+          "max_hbm_fraction": 0.9,
+          "max_ngram_layout_loss_relative_error": 0.001,
+          "max_update_to_weight_ratio": 0.01
+        },
+        "global_token_batch": {
+          "maximum": 1966080,
+          "minimum": 1966080,
+          "target": 1966080
+        },
+        "grad_accum_steps": [
+          1,
+          2,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "learning_rates": [
+          0.00012,
+          0.00018,
+          0.00026
+        ],
+        "micro_batch_sizes": [
+          12,
+          10,
+          8,
+          6,
+          5,
+          4,
+          3,
+          2,
+          1
+        ],
+        "ngram_table_modes": [
+          "replicated",
+          "row_sharded"
+        ],
+        "precision_profiles": [
+          "fp8",
+          "bf16"
+        ],
+        "preferred_learning_rate": 0.00018,
+        "status": "bounded_canary_candidates_not_validated_optima"
+      },
+      "budget_controller_leak": 0.02,
+      "budget_controller_rate": 0.0,
+      "budget_multiplier_limit": 100000.0,
+      "budgeted_depth_calibration_coefficient": 4.0,
+      "budgeted_depth_values": [
+        1,
+        2,
+        3
+      ],
+      "budgeted_k_calibration_coefficient": 0.1,
+      "context_extension_train_length": 4096,
+      "context_parallel_size": 1,
+      "continuation_entropy_coefficient": 0.001,
+      "continuation_gate_init": 0.0,
+      "d_model": 4096,
+      "dense_ffn_intermediate_dim": 0,
+      "depth_budget_coefficient": 1.0,
+      "depth_budget_controller_rate": 0.0,
+      "expected_parameter_audit": {},
+      "expert_balance_bias_update_rate": 0.05,
+      "expert_balance_coefficient": 0.0,
+      "expert_execution": "grouped_gemm",
+      "expert_intermediate_dim": 1152,
+      "expert_parallel_size": 1,
+      "expert_replicas": 20,
+      "expert_swiglu_fused": false,
+      "expert_weight_chunks": 4,
+      "family": "ablation",
+      "ffn_mode": "moe",
+      "final_context_length": 4096,
+      "head_dim": 64,
+      "k_budget_coefficient": 1.0,
+      "latent_dim": 2048,
+      "lm_head_chunk_size": 8192,
+      "mamba_backend": "fused_required",
+      "mamba_chunk_size": 256,
+      "mamba_d_conv": 4,
+      "mamba_d_state": 128,
+      "mamba_expand": 2,
+      "mamba_head_dim": 64,
+      "mamba_ngroups": 16,
+      "max_passes": 5,
+      "max_routed_k": 8,
+      "memory_dim": 256,
+      "memory_gate_init": -6.0,
+      "memory_heads": 4,
+      "mhc_backend": "fused_required",
+      "mhc_pass_embedding_dim": 64,
+      "mhc_sinkhorn_iterations": 8,
+      "min_routed_k": 1,
+      "model_type": "metis16_more",
+      "moe_dispatch_chunks": 1,
+      "n_heads": 64,
+      "n_kv_heads": 16,
+      "n_layers": 2,
+      "n_routed_experts": 72,
+      "n_shared_experts": 1,
+      "n_streams": 4,
+      "name": "MoRE-Ablation-04-moe-k8",
+      "ngram_memory": {
+        "canonicalization": "tokenizer_sidecar_required",
+        "hash_seeds": [
+          2654435761,
+          2246822519,
+          3266489917,
+          668265263,
+          374761393,
+          3550635117,
+          4251991749,
+          3043081225
+        ],
+        "injection_layers": [
+          0,
+          1
+        ],
+        "learning_rate_scale": 2.0,
+        "optimizer": "sparse_adam",
+        "orders": [
+          2,
+          3
+        ],
+        "slots_by_order": {
+          "2": [
+            292969,
+            292973,
+            292979,
+            292993,
+            293021,
+            293071,
+            293081,
+            293087
+          ],
+          "3": [
+            293093,
+            293099,
+            293107,
+            293123,
+            293129,
+            293147,
+            293149,
+            293173
+          ]
+        },
+        "sparse_gradients": true,
+        "table_mode": "replicated",
+        "tables_per_order": 8,
+        "value_dim": 64,
+        "weight_decay": 0.0
+      },
+      "no_position_embeddings": true,
+      "precision": {
+        "activation_dtype": "bfloat16",
+        "allow_bf16_fallback": true,
+        "backend": "auto",
+        "bf16_roles": [
+          "embedding",
+          "ngram_table",
+          "residual_stream",
+          "mamba_state",
+          "normalization",
+          "gate",
+          "collective",
+          "attention_pass_lora_down",
+          "attention_pass_lora_up",
+          "memory_metadata_write_projection",
+          "mhc_controller"
+        ],
+        "expert_collective_wire": "bfloat16",
+        "fp32_roles": [
+          "master_weight",
+          "optimizer_state",
+          "router_logits",
+          "sinkhorn",
+          "memory_attention_logits",
+          "loss_accumulation",
+          "mamba_sensitive"
+        ],
+        "fp8_format": "hybrid_e4m3_e5m2",
+        "fp8_roles": [
+          "mamba_in_projection",
+          "mamba_out_projection",
+          "attention_qkv_projection",
+          "attention_out_projection",
+          "expert_gate_up_projection",
+          "expert_down_projection",
+          "latent_down_projection",
+          "latent_up_projection",
+          "memory_state_write_projection",
+          "memory_query_projection",
+          "memory_key_projection",
+          "memory_value_projection",
+          "memory_output_projection",
+          "memory_route_projection",
+          "ngram_projection",
+          "lm_head"
+        ],
+        "fp8_scaling": "blockwise",
+        "master_weight_dtype": "float32",
+        "optimizer_state_dtype": "float32",
+        "parameter_dtype": "bfloat16",
+        "reduction_dtype": "float32",
+        "require_fp8_validation": true,
+        "router_dtype": "float32"
+      },
+      "route_feature_dim": 256,
+      "router_z_loss_coefficient": 0.001,
+      "schema": "metis.model-family/v1",
+      "sequence_length": 4096,
+      "target_mean_passes": 2.0,
+      "target_mean_routed_k": 4.0,
+      "tie_embeddings": true,
+      "vocab_size": 65536,
+      "world_size": 20
+    },
+    "optimizer": {
+      "dense": {
+        "adamw_impl": "loop",
+        "adamw_params": 311110209,
+        "groups": [
+          {
+            "name": "adamw_decay",
+            "optimizer": "adamw",
+            "param_count": 311058816,
+            "sample_names": [
+              "stream_embeddings",
+              "pass_embeddings",
+              "embedding.weight",
+              "ngram_memory.gate_vectors",
+              "layers.0.mixer.impl.mixer.conv1d.weight",
+              "layers.0.mixer_connection.mix_logits",
+              "layers.0.moe.expert_embeddings",
+              "layers.0.moe.expert_router.weight"
+            ],
+            "tensor_count": 17
+          },
+          {
+            "name": "adamw_no_decay",
+            "optimizer": "adamw",
+            "param_count": 51393,
+            "sample_names": [
+              "ngram_memory.gate_bias",
+              "ngram_memory.projection.bias",
+              "depth_memory.stream_gate_bias",
+              "depth_memory.state_write.bias",
+              "depth_memory.metadata_write.bias",
+              "depth_memory.query.bias",
+              "depth_memory.key.bias",
+              "depth_memory.value.bias"
+            ],
+            "tensor_count": 35
+          },
+          {
+            "name": "muon",
+            "optimizer": "muon",
+            "param_count": 1195664128,
+            "sample_names": [
+              "ngram_memory.projection.weight",
+              "depth_memory.pass_embeddings",
+              "depth_memory.anchor_embeddings",
+              "depth_memory.stream_gate",
+              "depth_memory.state_write.weight",
+              "depth_memory.metadata_write.weight",
+              "depth_memory.query.weight",
+              "depth_memory.key.weight"
+            ],
+            "tensor_count": 41
+          }
+        ],
+        "master_weights": true,
+        "muon_params": 1195664128,
+        "muon_state_bits": 8,
+        "name": "muon_adamw",
+        "routed_experts_muon": true,
+        "total_params": 1506774337
+      },
+      "fp32_master_weights": true,
+      "fp32_optimizer_states": true,
+      "frozen_policy_parameters": [
+        "continuation.hidden.bias",
+        "continuation.hidden.weight",
+        "continuation.output.bias",
+        "continuation.output.weight",
+        "layers.0.moe.k_router.bias",
+        "layers.0.moe.k_router.weight",
+        "layers.1.moe.k_router.bias",
+        "layers.1.moe.k_router.weight"
+      ],
+      "gradient_clipping": {
+        "max_norm": 1.0,
+        "mode": "global"
+      },
+      "sharding": {
+        "mode": "world",
+        "owner_loads": [
+          268435456,
+          84934656,
+          84934656,
+          84934656,
+          84934656,
+          84934656,
+          84934656,
+          84934656,
+          84934656,
+          84410368,
+          75074337,
+          75074336,
+          75382976,
+          78003392,
+          79975680,
+          79975552,
+          79975552,
+          79976064,
+          75329152,
+          75792640
+        ],
+        "world_size": 20
+      },
+      "sparse_parameter_count": 300108416,
+      "sparse_tensor_count": 16
+    },
+    "precision_profile": "fp8",
+    "release": {
+      "release_sha256": "763948d8fa1e24ad5615257d3e141ec420275d868295e6826090ecffb8cae959",
+      "shard_manifest_sha256": "85c973ca54dda9a464c48529259605f3e453905827a40596ba44b8f894210c73"
+    },
+    "row": "moe-k8",
+    "row_index": 4,
+    "runtime": {
+      "environment": {
+        "FI_PROVIDER": "cxi",
+        "NCCL_ALGO": "Ring",
+        "NCCL_NET": "OFI",
+        "NVTE_USE_CK_GROUPED_GEMM": "1",
+        "PYTORCH_ROCM_ARCH": "gfx942",
+        "ROCM_PATH": "/opt/rocm-7.2.1",
+        "TORCH_BLAS_PREFER_HIPBLASLT": "0"
+      },
+      "interpreter": {
+        "path": "/opt/cray/pe/python/3.11.7/bin/python3.11",
+        "sha256": "1752673ab9535be2d2e107c28797a4f426f4926385af2b893b5c608faf0643df"
+      },
+      "packages": {
+        "aiter": null,
+        "flash-attn": "2.8.4",
+        "torch": "2.13.0+rocm7.2",
+        "transformer-engine": "2.17.0+ce80fb0",
+        "transformer-engine-torch": null,
+        "triton": "3.7.1"
+      },
+      "rccl_plugin": {
+        "path": "/lus/lustre1/vollmerc/more-runtime/rccl-ofi-v1.21.0-rocm7.2.1-pcihwloc/opt/aws-ofi-rccl/lib/librccl-net.so",
+        "sha256": "6e0f696e74134d26c52ce3b76fa728ce3e41a8b32f83a01eb82f04f6f25eb10e"
+      },
+      "runtime_script": {
+        "path": "/home/users/vollmerc/Metis/ops/more-ablation-runtime.sh",
+        "sha256": "e6ad9a1df6fb24cefef087914fca1ccc90472e28ebf7d592bb77c96fceea3bfb"
+      },
+      "torch_hip_version": "7.2.53211",
+      "torch_version": "2.13.0+rocm7.2"
+    },
+    "sampler": {
+      "block_tokens": 1966080,
+      "budget_tokens": 50000000000,
+      "dropped_to_block_alignment": 4551680,
+      "phases": [
+        {
+          "blocks": 17533,
+          "phase": "phase_a",
+          "release_tokens": 554849376946,
+          "sampled_fraction": 0.062127,
+          "sampled_tokens": 34471280640,
+          "stride_blocks": 16
+        },
+        {
+          "blocks": 6625,
+          "phase": "phase_b",
+          "release_tokens": 209668641449,
+          "sampled_fraction": 0.062123,
+          "sampled_tokens": 13025280000,
+          "stride_blocks": 16
+        },
+        {
+          "blocks": 1271,
+          "phase": "phase_c",
+          "release_tokens": 40237790440,
+          "sampled_fraction": 0.062103,
+          "sampled_tokens": 2498887680,
+          "stride_blocks": 16
+        }
+      ],
+      "sampled_tokens": 49995448320,
+      "total_blocks": 25429
+    },
+    "schedule": {
+      "base_learning_rate": 0.00026,
+      "final_fraction": 0.1,
+      "total_steps": 25429,
+      "warmup_fraction": 0.01
+    },
+    "schema": "more.ablation-run-identity/v1",
+    "seed": 16062026,
+    "source_revision": "ba9809284cf787d3e69df96620048dd96345d66f",
+    "world_size": 20
+  },
+  "run_identity_sha256": "d4585a7a8b9f5ce61950c73574943087a02774a046d4b854d6f24894d1aed1e4",
+  "sampler": {
+    "block_tokens": 1966080,
+    "budget_tokens": 50000000000,
+    "dropped_to_block_alignment": 4551680,
+    "phases": [
+      {
+        "blocks": 17533,
+        "phase": "phase_a",
+        "release_tokens": 554849376946,
+        "sampled_fraction": 0.062127,
+        "sampled_tokens": 34471280640,
+        "stride_blocks": 16
+      },
+      {
+        "blocks": 6625,
+        "phase": "phase_b",
+        "release_tokens": 209668641449,
+        "sampled_fraction": 0.062123,
+        "sampled_tokens": 13025280000,
+        "stride_blocks": 16
+      },
+      {
+        "blocks": 1271,
+        "phase": "phase_c",
+        "release_tokens": 40237790440,
+        "sampled_fraction": 0.062103,
+        "sampled_tokens": 2498887680,
+        "stride_blocks": 16
+      }
+    ],
+    "sampled_tokens": 49995448320,
+    "total_blocks": 25429
+  },
+  "schedule": {
+    "base_learning_rate": 0.00026,
+    "final_fraction": 0.1,
+    "total_steps": 25429,
+    "warmup_fraction": 0.01
+  },
+  "schema": "more.ablation-run/v1",
+  "spec": {
+    "apus": 20,
+    "config_overrides": {
+      "activation_recompute_policy": "none"
+    },
+    "continuation_mode": "depth_one",
+    "curriculum_max_passes": null,
+    "d_model": null,
+    "dense_ffn_bf16": false,
+    "dense_ffn_intermediate_dim": 0,
+    "depth_memory": false,
+    "ffn_mode": "moe",
+    "fixed_routed_k": 8,
+    "grad_accum": 2,
+    "index": 4,
+    "iso_flop": false,
+    "isolates": "wider single-pass MoE reference",
+    "latent_dim": null,
+    "measured_tokens_per_second": 564527,
+    "micro_batch": 12,
+    "muon_ns_steps": 5,
+    "muon_state_bits": 8,
+    "name": "moe-k8",
+    "notes": "Not a compute match: k=4->8 adds about 0.34 GFLOP/token while a second pass adds about 3.55. Expert GEMMs are a minority of the block.",
+    "optimizer_sharding": "world",
+    "pathway_mode": "per_pass",
+    "routed_k_mode": "fixed",
+    "title": "MoE k=8"
+  },
+  "start_step": 0,
+  "total_steps": 25429,
+  "world_size": 20
+}
