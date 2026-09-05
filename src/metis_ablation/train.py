@@ -832,6 +832,7 @@ def train_row(
     joint_router_exploration: float = 0.05,
     joint_utility_coefficient: float = 1.0,
     joint_max_passes: int | None = None,
+    stop_after_steps: int | None = None,
 ) -> dict[str, Any]:
     runtime = initialize_runtime(device=device_override)
     lease = None
@@ -860,6 +861,7 @@ def train_row(
             joint_router_exploration=joint_router_exploration,
             joint_utility_coefficient=joint_utility_coefficient,
             joint_max_passes=joint_max_passes,
+            stop_after_steps=stop_after_steps,
         )
     finally:
         _release_row_lease(lease)
@@ -887,7 +889,15 @@ def _train_row_inner(
     joint_router_exploration: float = 0.05,
     joint_utility_coefficient: float = 1.0,
     joint_max_passes: int | None = None,
+    stop_after_steps: int | None = None,
 ) -> dict[str, Any]:
+    if stop_after_steps is not None:
+        if type(stop_after_steps) is not int or stop_after_steps <= 0:
+            raise ValueError("stop_after_steps must be a positive integer absolute next-step target")
+        if max_steps is not None:
+            raise ValueError("stop_after_steps cannot be combined with max_steps, which changes run identity")
+        if not final_checkpoint:
+            raise ValueError("stop_after_steps requires a final checkpoint for extendable execution")
     if runtime.distributed and runtime.world_size != spec.apus:
         raise RuntimeError(
             f"{spec.name} is specified for {spec.apus} ranks but was launched on "
@@ -905,6 +915,7 @@ def _train_row_inner(
     record_rank_startup(
         paths.root, rank=runtime.rank, world_size=runtime.world_size,
         local_rank=runtime.local_rank, device=str(runtime.device),
+        stop_after_steps=stop_after_steps,
     )
 
     # Matched rows must begin from identical weights. Row-specific randomness
@@ -1069,6 +1080,9 @@ def _train_row_inner(
         total_steps = max(1, budget_tokens // GLOBAL_BATCH_TOKENS)
     if max_steps is not None:
         total_steps = min(total_steps, max_steps)
+    if stop_after_steps is not None and stop_after_steps > total_steps:
+        raise ValueError("stop_after_steps exceeds the full planned token/sampler horizon")
+    execution_end = total_steps if stop_after_steps is None else stop_after_steps
 
     resolved_schedule_steps = (
         total_steps if schedule_total_steps is None else int(schedule_total_steps)
@@ -1174,19 +1188,25 @@ def _train_row_inner(
                 expected_run_identity_sha256=identity_sha256,
             )
             resumed_from = str(checkpoint)
-        if topology.distributed:
-            # Every rank must agree on the resume point or the data stream and
-            # the collective sequence diverge immediately.
-            agreed = all_reduce_sum(
-                torch.tensor([float(start_step)], device=runtime.device), topology
+    if topology.distributed:
+        # The stop target is intentionally outside scientific identity, but
+        # different rank-local targets would still strand peers in collectives.
+        agreed = all_reduce_sum(
+            torch.tensor(
+                [float(start_step), float(execution_end)],
+                device=runtime.device, dtype=torch.float64,
+            ),
+            topology,
+        )
+        if abs(float(agreed[0].item()) - float(start_step) * runtime.world_size) > 0.5:
+            raise RuntimeError(
+                "Ranks disagree about the resume step; the shared checkpoint directory is inconsistent."
             )
-            expected = float(start_step) * runtime.world_size
-            if abs(float(agreed[0].item()) - expected) > 0.5:
-                raise RuntimeError(
-                    "Ranks disagree about the resume step; the shared checkpoint "
-                    "directory is inconsistent."
-                )
+        if abs(float(agreed[1].item()) - float(execution_end) * runtime.world_size) > 0.5:
+            raise RuntimeError("Ranks disagree about the operational execution stop target.")
 
+    if execution_end < start_step:
+        raise ValueError("stop_after_steps precedes the resumed next-unexecuted step")
     _truncate_telemetry(
         paths.telemetry / f"rank-{runtime.rank:05d}.jsonl",
         start_step=start_step,
@@ -1244,6 +1264,9 @@ def _train_row_inner(
         "steps": start_step,
         "tokens": 0,
         "final_loss": None,
+        "planned_total_steps": total_steps,
+        "execution_stop_after_steps": stop_after_steps,
+        "execution_target_step": execution_end,
     }
     total_tokens = 0
     # FP8 parity is measured once, on the first batch of the run.
@@ -1257,7 +1280,7 @@ def _train_row_inner(
         _PrefetchedBatches(
             (
                 batch
-                for pending in range(start_step, total_steps)
+                for pending in range(start_step, execution_end)
                 for batch in sample_stream.micro_batches(
                     step=pending,
                     rank=runtime.rank,
@@ -1272,8 +1295,9 @@ def _train_row_inner(
         else None
     )
 
+    last_checkpoint_step = start_step if resumed_from is not None else None
     with metrics:
-        for step in range(start_step, total_steps):
+        for step in range(start_step, execution_end):
             optimizer.zero_grad(set_to_none=True)
             set_optimizer_learning_rate(optimizer, schedule.learning_rate(step))
             collect_analysis = (
@@ -1501,7 +1525,7 @@ def _train_row_inner(
                 updater(expert_selection_counts)
 
             elapsed = time.perf_counter() - step_started
-            if step % max(1, telemetry_every) == 0 or step == total_steps - 1:
+            if step % max(1, telemetry_every) == 0 or step == execution_end - 1:
                 global_depth = all_reduce_sum(depth_histogram, topology)
                 flops = estimate_hardware_flops(
                     config,
@@ -1575,15 +1599,18 @@ def _train_row_inner(
                     learning_rate=base_lr,
                     run_identity_sha256=identity_sha256,
                 )
+                last_checkpoint_step = completed_steps
             summary["steps"] = step + 1
             summary["final_loss"] = step_loss
 
-    if final_checkpoint:
+    if final_checkpoint and (
+        stop_after_steps is None or last_checkpoint_step != summary["steps"]
+    ):
         _save_checkpoint(
             paths,
             model=model,
             optimizer=optimizer,
-            step=total_steps,
+            step=int(summary["steps"]),
             spec=spec,
             rank=runtime.rank,
             device=runtime.device,
@@ -1594,6 +1621,7 @@ def _train_row_inner(
     summary["fp8_parity_relative_error"] = fp8_parity_error
     summary["tokens"] = summary["steps"] * GLOBAL_BATCH_TOKENS
     summary["wall_clock_s"] = time.perf_counter() - started
+    summary["stopped_before_planned_end"] = summary["steps"] < total_steps
     if runtime.rank == 0:
         (paths.root / "summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
@@ -1700,6 +1728,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--telemetry-every", type=int, default=10)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument(
+        "--stop-after-steps", type=int, default=None,
+        help="Absolute next-step execution target; preserve the full run/sampler/LR identity and save resumable state",
+    )
+    parser.add_argument(
         "--schedule-total-steps",
         type=int,
         default=None,
@@ -1731,8 +1763,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     spec = spec_by_name(args.row)
     if args.diagnostic_apus is not None:
-        if args.max_steps is None or args.max_steps < 1:
-            raise ValueError("A diagnostic allocation requires an explicit positive max_steps")
+        bound = args.stop_after_steps if args.stop_after_steps is not None else args.max_steps
+        if bound is None or bound < 1:
+            raise ValueError("A diagnostic allocation requires positive max_steps or stop_after_steps")
         denominator = args.diagnostic_apus * spec.micro_batch
         if args.diagnostic_apus < 2 or denominator <= 0 or GLOBAL_BATCH_SEQUENCES % denominator:
             raise ValueError("Diagnostic APUs must tile the unchanged global batch with this micro-batch")
@@ -1763,6 +1796,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         joint_router_exploration=args.joint_router_exploration,
         joint_utility_coefficient=args.joint_utility_coefficient,
         joint_max_passes=args.joint_max_passes,
+        stop_after_steps=args.stop_after_steps,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0

@@ -76,9 +76,12 @@ def record_rank_startup(
     run_root: Path, *, rank: int, world_size: int, local_rank: int,
     device: str, environment: Mapping[str, str] | None = None,
     proc_root: Path = Path("/proc"),
+    stop_after_steps: int | None = None,
 ) -> Path:
     if not 0 <= rank < world_size or local_rank < 0:
         raise ValueError("Invalid runtime rank identity")
+    if stop_after_steps is not None and (type(stop_after_steps) is not int or stop_after_steps <= 0):
+        raise ValueError("stop_after_steps must be a positive integer")
     env = os.environ if environment is None else environment
     job_id = env.get("SLURM_JOB_ID") or env.get("SLURM_JOBID")
     tag = _job_tag(job_id)
@@ -91,6 +94,7 @@ def record_rank_startup(
         "device": device, "boot_identity": boot_identity(proc_root),
         "started_unix_ns": started_ns, "started_utc": _utc(started_ns / 1e9),
         "stage": "after_runtime_initialization_and_row_lease_before_model",
+        "stop_after_steps": stop_after_steps,
         "scientific_identity_member": False,
     }
     directory = Path(run_root) / "operational" / "startups"
