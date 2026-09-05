@@ -2014,7 +2014,8 @@ def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
     assert not (tmp_path / "wave1" / "launch-wave-1d.sh").exists()
     assert "440 APUs" in batch_a
     assert "360 APUs" in batch_b
-    assert 'METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026,063-064]' in batch_a
+    for batch in (batch_a, batch_b):
+        assert 'METIS_ABLATION_EXCLUDE_NODES:-parrypeak[007,020,026,063-064]' in batch
     assert '"${sbatch_args[@]}"' in batch_a
     assert "10-more-core.sbatch" in batch_a
     assert "10-more-core.sbatch" not in batch_b
@@ -2253,6 +2254,8 @@ def test_sweep_covers_every_archetype_at_every_rate(tmp_path: Path):
     assert not (tmp_path / "sweep" / "launch-sweep.sh").exists()
     batch_a = (tmp_path / "sweep" / "launch-sweep-1a.sh").read_text()
     batch_b = (tmp_path / "sweep" / "launch-sweep-1b.sh").read_text()
+    for batch in (batch_a, batch_b):
+        assert 'METIS_ABLATION_EXCLUDE_NODES:-parrypeak[007,020,026,063-064]' in batch
     assert "360 APUs" in batch_a
     assert "300 APUs" in batch_b
     assert "dense-param-matched" in batch_a

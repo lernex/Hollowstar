@@ -447,9 +447,11 @@ and the seed within a wave.
 
 **Recovery update, September 2026.** Both failed RM jobs lost the four-rank
 cohort on `parrypeak064`; the second failure coincided with a confirmed host
-reboot. The reboot trigger is not established without operator logs. Exclude
-that node from new submissions pending qualification; this is a localized
-mitigation, not a claimed repair of the host.
+reboot. A later fixed-loop qualification pilot lost `parrypeak007` to another
+confirmed reboot before its first training forward. That failure is not
+specific to recurrent memory. The reboot triggers are not established without
+operator logs. Exclude both nodes from new submissions pending qualification;
+this is a localized mitigation, not a claimed repair of either host.
 
 Newly generated full runs checkpoint every **500 optimizer steps**, limiting
 normal recovery exposure to roughly 0.98B tokens instead of 9.83B. Full-geometry
@@ -481,7 +483,7 @@ export METIS_REPO=/home/users/vollmerc/Metis
 export METIS_SCRATCH=/lus/lustre1/vollmerc
 export METIS_RELEASE_ROOT=/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r2
 export METIS_ABLATION_RUNTIME="$METIS_REPO/ops/more-ablation-runtime.sh"
-export METIS_ABLATION_EXCLUDE_NODES='parrypeak[020,026,063-064]'
+export METIS_ABLATION_EXCLUDE_NODES='parrypeak[007,020,026,063-064]'
 
 cd "$METIS_REPO"
 PYTHONPATH=src python -m metis_ablation.campaign plan --wave all
