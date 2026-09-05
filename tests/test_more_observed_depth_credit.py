@@ -226,7 +226,10 @@ class ObservedDepthCreditTests(unittest.TestCase):
         enabled = self.config(True)
         self.assertNotIn("observed_depth_credit", default.to_dict())
         self.assertTrue(enabled.to_dict()["observed_depth_credit"])
-        self.assertTrue(Metis16Config.from_mapping(enabled.to_dict()).observed_depth_credit)
+        # Tiny fixtures use their dedicated validator, not production N-gram geometry.
+        with patch.object(Metis16Config, "validate", Metis16Config._validate_tiny):
+            restored = Metis16Config.from_mapping(enabled.to_dict())
+        self.assertTrue(restored.observed_depth_credit)
         self.assertEqual(default.logical_parameter_audit(), enabled.logical_parameter_audit())
         left = Metis16ForCausalLM(default)
         right = Metis16ForCausalLM(enabled)
