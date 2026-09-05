@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import multiprocessing
 import re
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -15,14 +18,28 @@ from .policy import policy_config
 from .prep import prepare_chunk, prepare_runtime, reblock_object
 
 
+def _ready() -> bool:
+    return True
+
+
+def _screen(path: Path, output: Path, config: dict[str, Any], intake_only: bool) -> dict[str, Any]:
+    if intake_only:
+        from .intake_screening import screen_intake_chunk
+
+        return screen_intake_chunk(path, output, config)
+    return prepare_chunk(path, output, config)
+
+
 def prepare_canaries(
-    root: Path, object_ids: list[str], *, maximum_raw_bytes: int = 16_000_000,
+    root: Path, object_ids: list[str], *, maximum_raw_bytes: int = 16_000_000, workers: int = 1,
 ) -> list[dict[str, Any]]:
     if (
         type(maximum_raw_bytes) is not int or maximum_raw_bytes < 1
         or not object_ids or len(object_ids) != len(set(object_ids))
     ):
         raise ValueError("Canaries need unique object IDs and a positive total byte ceiling")
+    if type(workers) is not int or not 1 <= workers <= 64:
+        raise ValueError("Canary worker count must be between 1 and 64")
     if any(not isinstance(object_id, str) or re.fullmatch(r"[0-9a-f]{64}", object_id) is None
            for object_id in object_ids):
         raise ValueError("Canaries must name exact SHA-256 object identities")
@@ -40,21 +57,35 @@ def prepare_canaries(
     }
     prepare_runtime(config, require_ready=True)
     results = []
-    for record in records:
-        spec, raw = ObjectSpec.from_dict(record["spec"]), RawReceipt.from_dict(record)
-        output = root / "canaries" / spec.object_id
-        normalized = reblock_object(spec, raw, output / "reblock", config)
-        screened = {}
-        for chunk in normalized["chunks"]:
-            value = prepare_chunk(root / chunk["ready_receipt"], output / "prepared", config)
-            screened[value["chunk_id"]] = value
-        result = admit_source(
-            root, spec, normalized, screened,
-            generation=f"canary-{digest_json(normalized['inputs'])}",
-            minimum_acceptance=float(config["source_minimum_acceptance"]),
-        )
-        results.append({key: value for key, value in result.items() if key != "eligible_receipts"})
-        print(canonical_json(results[-1]), flush=True)
+    with contextlib.ExitStack() as stack:
+        pool = None
+        if workers > 1:
+            pool = stack.enter_context(ProcessPoolExecutor(
+                max_workers=workers, mp_context=multiprocessing.get_context("fork"),
+            ))
+            pool.submit(_ready).result()
+        for record in records:
+            spec, raw = ObjectSpec.from_dict(record["spec"]), RawReceipt.from_dict(record)
+            output = root / "canaries" / spec.object_id
+            normalized = reblock_object(spec, raw, output / "reblock", config)
+            intake_only = spec.policy.get("metadata", {}).get("quality_selection_pending") is True
+            arguments = [
+                (root / chunk["ready_receipt"], output / "prepared", config, intake_only)
+                for chunk in normalized["chunks"]
+            ]
+            receipts = (
+                [future.result() for future in [pool.submit(_screen, *args) for args in arguments]]
+                if pool is not None else [_screen(*args) for args in arguments]
+            )
+            screened = {value["chunk_id"]: value for value in receipts}
+            result = admit_source(
+                root, spec, normalized, screened,
+                generation=f"canary-{digest_json(normalized['inputs'])}",
+                minimum_acceptance=float(config["source_minimum_acceptance"]),
+            )
+            results.append({key: value for key, value in result.items()
+                            if key not in {"eligible_receipts", "intake_receipts"}})
+            print(canonical_json(results[-1]), flush=True)
     return results
 
 
@@ -63,8 +94,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--object", action="append", required=True)
     parser.add_argument("--maximum-raw-bytes", type=int, default=16_000_000)
+    parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args(argv)
-    prepare_canaries(args.root.expanduser().resolve(), args.object, maximum_raw_bytes=args.maximum_raw_bytes)
+    prepare_canaries(args.root.expanduser().resolve(), args.object,
+                     maximum_raw_bytes=args.maximum_raw_bytes, workers=args.workers)
     return 0
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from metis_data17.acquisition import CapacityPending, receipt_path
@@ -64,6 +65,15 @@ class Metis17CanaryTests(unittest.TestCase):
                 prepare_canaries(self.root, [self.spec.object_id], maximum_raw_bytes=1)
         preload.assert_not_called()
         self.assertFalse((self.root / "admissions").exists())
+
+    def test_parallel_canary_preserves_complete_object_admission(self):
+        with patch("metis_data17.canary.policy_config", return_value=self.policy), patch(
+            "metis_data17.canary.ProcessPoolExecutor",
+            side_effect=lambda max_workers, **_: ThreadPoolExecutor(max_workers=max_workers),
+        ):
+            results = prepare_canaries(self.root, [self.spec.object_id], workers=3)
+        self.assertEqual(results[0]["eligible_documents"], 7)
+        self.assertEqual(results[0]["status"], "admitted")
 
     def test_duplicate_objects_are_not_recounted_as_independent_canaries(self):
         with self.assertRaises(ValueError):
