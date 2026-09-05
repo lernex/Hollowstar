@@ -1,0 +1,188 @@
+{
+  "benchmarks": [
+    {
+      "dataset": "cais/mmlu",
+      "evaluation_examples": 14042,
+      "expected_leaf_tasks": 57,
+      "label": "MMLU",
+      "metrics": {
+        "acc,none": 0.24597635664435266
+      },
+      "num_fewshot": 5,
+      "primary_metric": "acc,none",
+      "score_percent": 24.597635664435266,
+      "standard_errors": {
+        "acc_stderr,none": 0.003631970848701817
+      },
+      "task": "mmlu"
+    },
+    {
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "evaluation_examples": 12032,
+      "expected_leaf_tasks": 14,
+      "label": "MMLU-Pro (MC, non-CoT)",
+      "metrics": {
+        "acc,none": 0.11652260638297872
+      },
+      "num_fewshot": 5,
+      "primary_metric": "acc,none",
+      "score_percent": 11.652260638297872,
+      "standard_errors": {
+        "acc_stderr,none": 0.0029252400831567007
+      },
+      "task": "more_mmlu_pro_mc"
+    },
+    {
+      "dataset": "allenai/ai2_arc",
+      "evaluation_examples": 2376,
+      "label": "ARC-Easy",
+      "metrics": {
+        "acc,none": 0.5206228956228957,
+        "acc_norm,none": 0.460016835016835
+      },
+      "num_fewshot": 0,
+      "primary_metric": "acc_norm,none",
+      "score_percent": 46.0016835016835,
+      "standard_errors": {
+        "acc_norm_stderr,none": 0.010226927233491499,
+        "acc_stderr,none": 0.010251052755716113
+      },
+      "task": "arc_easy"
+    },
+    {
+      "dataset": "allenai/ai2_arc",
+      "evaluation_examples": 1172,
+      "label": "ARC-Challenge",
+      "metrics": {
+        "acc,none": 0.2150170648464164,
+        "acc_norm,none": 0.2525597269624573
+      },
+      "num_fewshot": 0,
+      "primary_metric": "acc_norm,none",
+      "score_percent": 25.25597269624573,
+      "standard_errors": {
+        "acc_norm_stderr,none": 0.012696728980207706,
+        "acc_stderr,none": 0.012005717634133608
+      },
+      "task": "arc_challenge"
+    },
+    {
+      "dataset": "Rowan/hellaswag",
+      "evaluation_examples": 10042,
+      "label": "HellaSwag",
+      "metrics": {
+        "acc,none": 0.312885879306911,
+        "acc_norm,none": 0.3510256920932085
+      },
+      "num_fewshot": 0,
+      "primary_metric": "acc_norm,none",
+      "score_percent": 35.10256920932085,
+      "standard_errors": {
+        "acc_norm_stderr,none": 0.004763155068744865,
+        "acc_stderr,none": 0.004627207073171287
+      },
+      "task": "hellaswag"
+    },
+    {
+      "dataset": "allenai/winogrande",
+      "evaluation_examples": 1267,
+      "label": "Winogrande",
+      "metrics": {
+        "acc,none": 0.5019731649565904
+      },
+      "num_fewshot": 0,
+      "primary_metric": "acc,none",
+      "score_percent": 50.19731649565904,
+      "standard_errors": {
+        "acc_stderr,none": 0.014052376259225636
+      },
+      "task": "winogrande"
+    },
+    {
+      "dataset": "baber/piqa",
+      "evaluation_examples": 1838,
+      "label": "PIQA",
+      "metrics": {
+        "acc,none": 0.6637649619151251,
+        "acc_norm,none": 0.6545157780195865
+      },
+      "num_fewshot": 0,
+      "primary_metric": "acc_norm,none",
+      "score_percent": 65.45157780195865,
+      "standard_errors": {
+        "acc_norm_stderr,none": 0.01109480289361775,
+        "acc_stderr,none": 0.01102234670897024
+      },
+      "task": "piqa"
+    },
+    {
+      "dataset": "aps/super_glue",
+      "evaluation_examples": 3270,
+      "label": "BoolQ",
+      "metrics": {
+        "acc,none": 0.6051987767584098
+      },
+      "num_fewshot": 0,
+      "primary_metric": "acc,none",
+      "score_percent": 60.51987767584098,
+      "standard_errors": {
+        "acc_stderr,none": 0.008549304887647416
+      },
+      "task": "boolq"
+    },
+    {
+      "dataset": "allenai/openbookqa",
+      "evaluation_examples": 500,
+      "label": "OpenBookQA",
+      "metrics": {
+        "acc,none": 0.194,
+        "acc_norm,none": 0.302
+      },
+      "num_fewshot": 0,
+      "primary_metric": "acc_norm,none",
+      "score_percent": 30.2,
+      "standard_errors": {
+        "acc_norm_stderr,none": 0.020553269174209188,
+        "acc_stderr,none": 0.017701827855304626
+      },
+      "task": "openbookqa"
+    },
+    {
+      "dataset": "EleutherAI/lambada_openai",
+      "evaluation_examples": 5153,
+      "label": "LAMBADA",
+      "metrics": {
+        "acc,none": 0.2072579080147487,
+        "perplexity,none": 67.47754077945704
+      },
+      "num_fewshot": 0,
+      "primary_metric": "acc,none",
+      "score_percent": 20.72579080147487,
+      "standard_errors": {
+        "acc_stderr,none": 0.005647205438650319,
+        "perplexity_stderr,none": 2.5807118837344025
+      },
+      "task": "lambada_openai"
+    }
+  ],
+  "chat_template": false,
+  "checkpoint_sha256": "2b196f38bd19a3d3ef03a3c6345adab466bc319034c4ccfe6bba5e6a2ccffe87",
+  "collected_at_utc": "2026-09-05T20:42:46.296183+00:00",
+  "completed_steps": 25429,
+  "context_length": 4096,
+  "evaluation_examples": 51692,
+  "evaluator_revision": "37eed214c2398375a77149a1e6e196e494730d6b",
+  "execution_precision": "bf16",
+  "fewshot_seed": 1234,
+  "harness_version": "0.4.13",
+  "job_id": 496031,
+  "native_source_revision": "ba9809284cf787d3e69df96620048dd96345d66f",
+  "row": "dense-flop-matched",
+  "run_identity_sha256": "736f74c8a6fe978d535cea0ce9f2905acaee43f957646abcada76c54512797e6",
+  "schema": "more.benchmark-results/v1",
+  "status": "completed",
+  "stored_parameters": 1437743410,
+  "suite_sha256": "26c30e448cbe93760702455305ff0fca5b73887643fc27463d8e03e6cb9e44af",
+  "tokenizer_sha256": "2304b0e1c7b1ff18a3797c40d035bc781652485db4f1fc89381bfde44bbfc76c",
+  "training_tokens": 49995448320
+}

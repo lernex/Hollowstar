@@ -20,6 +20,33 @@ claim and has to survive adversarial review.
 pdflatex main.tex && bibtex main && pdflatex main.tex && pdflatex main.tex
 ```
 
+The tracked PDF can also be built with Tectonic:
+
+```bash
+tectonic main.tex
+```
+
+## Completed dense reference benchmarks
+
+The full ten-task results and their checkpoint, dataset, and request provenance
+are in [`reports/more-dense-benchmarks-20260905`](../../../reports/more-dense-benchmarks-20260905/README.md).
+MMLU-Pro is explicitly five-shot direct MC likelihood, not the official CoT
+generation protocol. The other MMLU task is five-shot; the remaining tasks are
+zero-shot. GSM8K is excluded.
+
+The results table is generated from completed aggregate artifacts, not entered
+by hand. From the repository root:
+
+```bash
+python3 scripts/summarize_more_benchmarks.py \
+  --suite configs/more_eval_suite.json \
+  --report reports/more-dense-benchmarks-20260905 \
+  --table docs/papers/more/dense_benchmark_results.tex
+```
+
+The collector rejects diagnostic, incomplete, source-mismatched, or
+protocol-mismatched results. Benchmark samples are not committed.
+
 ## Naming — the acronym is not free
 
 A search on 2026-07-25 found MoRE already in use at least three times:

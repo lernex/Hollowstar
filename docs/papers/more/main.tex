@@ -1,8 +1,8 @@
 % MoRE architecture paper -- WORKING DRAFT
 %
 % Status: skeleton with committed framing. Prose is real where the claim is
-% already decided; every number is a placeholder until the ablation campaign
-% reports (see ablation_campaign.md).
+% already decided. Completed measurements are labelled in Results; \TODO{}
+% marks the remaining unmeasured work (see ablation_campaign.md).
 %
 % TONE POLICY (deliberate -- keep it consistent as the draft grows):
 %   Humour is allowed in the abstract (one dry line, max), the introduction,
@@ -526,7 +526,40 @@ grows, or shrinks across these scales and shapes.}
 
 \subsection{Results}
 
-\TODO{Everything. Primary figure: quality vs executed FLOPs, all rows, one
+\paragraph{Completed dense reference.}
+Table~\ref{tab:dense-flop-benchmarks} reports the dense FLOP-matched control at
+optimizer step 25{,}429, after 49{,}995{,}448{,}320 training tokens.
+The checkpoint contains 1{,}437{,}743{,}410 stored parameters. Evaluation uses
+its original native model source, BF16 execution with the checkpoint's mixed
+parameter-storage policy, the released 65{,}536-token tokenizer and N-gram
+canonical-ID mapping, and its saved single-pass, recurrent-memory-off
+curriculum. The context limit remains 4{,}096 tokens.
+
+The ten benchmarks contain 51{,}692 evaluation examples. We use
+\href{https://github.com/EleutherAI/lm-evaluation-harness/releases/tag/v0.4.13}
+{lm-evaluation-harness v0.4.13 (August 2026)}, with five demonstrations for
+MMLU and MMLU-Pro and zero demonstrations for the remaining tasks.
+All evaluations are likelihood-based, without a chat template.
+MMLU-Pro uses five category-matched direct-answer demonstrations and answer-letter
+likelihoods: this is an explicitly non-CoT MC protocol, not the official
+CoT-generation benchmark. GSM8K is not included. Dataset revisions, full-split
+coverage, and the exact prompt/continuation request hashes are frozen in the
+\href{https://github.com/lernex/Hollowstar/tree/main/reports/more-dense-benchmarks-20260905}
+{benchmark reproducibility record}. The longest input is 3{,}155 tokens; no
+questions or few-shot context were dropped or truncated.
+
+\input{dense_benchmark_results.tex}
+
+The dense control is not yet strong on these general benchmarks:
+MMLU at 24.60\% and Winogrande at 50.20\% are close to their uniform-choice
+baselines of 25\% and 50\%, respectively. Its low training loss should not be
+read as strong downstream performance. LAMBADA final-word perplexity is
+67.48. These measurements establish the completed dense reference; they do
+not establish an advantage for MoRE. The original expert-cache-affected
+sparse runs are excluded from quality comparisons, and corrected sparse
+controls must be evaluated separately.
+
+\TODO{Remaining ablation comparisons. Primary figure: quality vs executed FLOPs, all rows, one
 frontier plot. Secondary: quality vs tokens. Tertiary: quality vs wall-clock ---
 the axis that matters in practice and the one MoRE is most at risk on.}
 

@@ -693,3 +693,11 @@ resumed full training after their expert-learning gates; random-k and
 random-depth await capacity, with no dependencies on failed original jobs.
 The results directory records the job IDs, initial and post-resume gradient
 coverage, checkpoint momentum, and preserved original results.
+
+The completed dense FLOP-matched checkpoint subsequently finished all ten
+requested downstream benchmarks in job `496031` at 20:38:49 UTC. The full
+51,692-example results, including explicitly non-CoT MMLU-Pro MC, are in
+[`reports/more-dense-benchmarks-20260905`](../../../reports/more-dense-benchmarks-20260905/README.md)
+and the paper's Results table. MMLU is 24.60% and MMLU-Pro MC is 11.65%;
+the low training loss should not be mistaken for strong general benchmark
+performance.

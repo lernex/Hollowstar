@@ -1,0 +1,830 @@
+{
+  "schema": "more.native-lm-eval/v1",
+  "status": "completed",
+  "diagnostic": false,
+  "full_score": true,
+  "checkpoint": {
+    "path": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/dense-flop-matched/checkpoints/step-0025429/state.pt",
+    "bytes": 2881985817,
+    "mtime_ns": 1788585420000000000,
+    "sha256": "2b196f38bd19a3d3ef03a3c6345adab466bc319034c4ccfe6bba5e6a2ccffe87"
+  },
+  "run_manifest": {
+    "path": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/dense-flop-matched/run.json",
+    "bytes": 26151,
+    "mtime_ns": 1788540873000000000,
+    "sha256": "e3b31e502ce2a68bc8875a737a8b68885e529b6b3e2e5284a2930b28343481b7"
+  },
+  "run_identity_sha256": "736f74c8a6fe978d535cea0ce9f2905acaee43f957646abcada76c54512797e6",
+  "completed_steps": 25429,
+  "training_tokens": 49995448320,
+  "training_parameter_audit": {
+    "active_per_pass_mean": 869200562,
+    "stored_total": 1437743410
+  },
+  "source": {
+    "repository": "/home/users/vollmerc/more-eval-worktrees/native-ba98092",
+    "checkpoint_revision": "ba9809284cf787d3e69df96620048dd96345d66f",
+    "verified_inference_revision": "ba9809284cf787d3e69df96620048dd96345d66f",
+    "evaluation_checkout_revision": "ba9809284cf787d3e69df96620048dd96345d66f",
+    "model_source_matches_checkpoint": true,
+    "files": [
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_data/__init__.py",
+        "bytes": 105,
+        "mtime_ns": 1788639413485962144,
+        "sha256": "2af7e2de2e9145b51220152eab946a59b703f8142666392daf4b0d6d5834ca0a"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_data/ngram_canonical.py",
+        "bytes": 9833,
+        "mtime_ns": 1788639413489962173,
+        "sha256": "2a2022e6dd5396ce8794b9996bc0bfef0c0fc5f34a7676ac078fe20d44108358"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_data/state.py",
+        "bytes": 11746,
+        "mtime_ns": 1788639413492962195,
+        "sha256": "a0a24d40f9ef197c361f9b3069f5cb77ff366a2a1dd44b9529fa5ac26d683467"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/__init__.py",
+        "bytes": 998,
+        "mtime_ns": 1788639413495962217,
+        "sha256": "de2e0d92bd59ffa5d244f1a05ad4aceb50cf10991e9e6bc251d81b9c8feb3d8a"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/checkpointing.py",
+        "bytes": 64570,
+        "mtime_ns": 1788639413496962225,
+        "sha256": "4b2969d4ae02753f02c1817cb9e17160ce31b837a176935abb733d6d355455a2"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/context_parallel.py",
+        "bytes": 32546,
+        "mtime_ns": 1788639413496962225,
+        "sha256": "9429968b8567dd118d13b9006a8323a5c787bcdd7f477f5102461acee94e3122"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/contracts.py",
+        "bytes": 20997,
+        "mtime_ns": 1788639413496962225,
+        "sha256": "96e9fecb0c41bfc45ecf415aa84021a969f7aa21488e0e06bb7a5203e83a2544"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/data.py",
+        "bytes": 28192,
+        "mtime_ns": 1788639413496962225,
+        "sha256": "d19b617ee7445733b3c7a26655f331d3daaddf64e781a46332d2788d4708800b"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/distributed.py",
+        "bytes": 25857,
+        "mtime_ns": 1788639413496962225,
+        "sha256": "a690c21ba9a8b6154c85a1a4c26cd90fb806278aa54844390d930ef0187b07e2"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/metrics.py",
+        "bytes": 16305,
+        "mtime_ns": 1788639413496962225,
+        "sha256": "2960e1878231fba349ac05514764e1e0ff81c88c8679cb20ce892be88ec8c5a7"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/mhc_kernels.py",
+        "bytes": 42281,
+        "mtime_ns": 1788639413496962225,
+        "sha256": "5417f8f0be6a6af8d2960061b4eb924e08e572d3a5093197ad3a39499c6e7f3f"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/model.py",
+        "bytes": 280767,
+        "mtime_ns": 1788639413498962240,
+        "sha256": "e9216da8568d7564bfe78ba0b73175272ee1a815fcc787660e284dc365ad2543"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/model_config.py",
+        "bytes": 52071,
+        "mtime_ns": 1788639413498962240,
+        "sha256": "e901ba1052d8956b94a82736cdc6ecd974502019e32f8766d358460799028ba2"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/ngram_quantization.py",
+        "bytes": 35825,
+        "mtime_ns": 1788639413499962247,
+        "sha256": "87320ba3f1dab8392579e8f40ac833660c160d2f2e5741e3246a33ae051783ed"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/optimizers.py",
+        "bytes": 19743,
+        "mtime_ns": 1788639413499962247,
+        "sha256": "c246c3489099094c863a58e149cefad11a26444c5443518252a15235f3985c9f"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/posttraining.py",
+        "bytes": 91778,
+        "mtime_ns": 1788639413499962247,
+        "sha256": "43a20cfb8705b537229719449e7896f1bf347f9065d299b637ae60bcd4fbfec0"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/posttraining_cli.py",
+        "bytes": 5342,
+        "mtime_ns": 1788639413499962247,
+        "sha256": "6fefa3232176bc1c31f9aa3a12f51b614a8ea09e5d729ab3a14a29e224b1f10e"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/precision.py",
+        "bytes": 50155,
+        "mtime_ns": 1788639413499962247,
+        "sha256": "2a73a8f84c04f4e0d4683086b8b67181630999b18fc71318c6fa02d23f31e8d7"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/precision_plan.py",
+        "bytes": 18357,
+        "mtime_ns": 1788639413500962254,
+        "sha256": "2b80bedc23d37d3785cf8f20dc184769c46d8abe3a3203b6a3f19c991c99685b"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/routing_kernels.py",
+        "bytes": 11074,
+        "mtime_ns": 1788639413500962254,
+        "sha256": "b87044d738170b54e7d34a2b97c6f6df9b4e5255355b02f4f0dc2912766c465f"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/schedule.py",
+        "bytes": 7460,
+        "mtime_ns": 1788639413500962254,
+        "sha256": "13f6f01f31cdf8d3ae8fecba184f67bda11cd6e3ba0798e58719f5d4ae31fe5f"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/stage_backend.py",
+        "bytes": 442699,
+        "mtime_ns": 1788639413501962262,
+        "sha256": "af02b74815a2a2989fc3169f8e9f7867ddf2c9d89fad426ddf582be39142d636"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/native-ba98092/src/metis_training/train.py",
+        "bytes": 61348,
+        "mtime_ns": 1788639413501962262,
+        "sha256": "b658061bf6f9c6d2b4a13b36332457c98e687ed16322889b4d98e3bd575f023f"
+      }
+    ],
+    "adapter_files": [
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/37eed21/src/metis_ablation/evaluate.py",
+        "bytes": 30363,
+        "mtime_ns": 1788639413385961408,
+        "sha256": "5844adc563037568d77ee234f0c2ddd01c1797c0f1cc741cf04b4ac5309fd59d"
+      },
+      {
+        "path": "/home/users/vollmerc/more-eval-worktrees/37eed21/src/metis_ablation/lm_eval_adapter.py",
+        "bytes": 23730,
+        "mtime_ns": 1788639413385961408,
+        "sha256": "fb12525e88c9fb5260f2b83d3fc9fb52c1476a5349f155fad92f3f3053f4c240"
+      }
+    ]
+  },
+  "tokenizer_release": {
+    "release": {
+      "path": "/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r2/RELEASE.json",
+      "bytes": 53809,
+      "mtime_ns": 1786882187000000000,
+      "sha256": "56a65ddf7b1ad641f4ec86c1f150f20a57db881bdf1f18c8af0543bf3b73c4b0"
+    },
+    "release_sha256": "763948d8fa1e24ad5615257d3e141ec420275d868295e6826090ecffb8cae959",
+    "tokenizer": {
+      "path": "/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r2/tokenizer/tokenizer.json",
+      "bytes": 4706561,
+      "mtime_ns": 1786771591000000000,
+      "sha256": "2304b0e1c7b1ff18a3797c40d035bc781652485db4f1fc89381bfde44bbfc76c"
+    },
+    "ngram_canonical_map_manifest": {
+      "path": "/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r2/tokenizer/NGRAM_CANONICAL_IDS.json",
+      "bytes": 1096,
+      "mtime_ns": 1786771592000000000,
+      "sha256": "2cb08910053cafd4933e30a2c2cdf5fc094ccac96456574dacd7fb2bfacecea4"
+    },
+    "ngram_canonical_ids": {
+      "path": "/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r2/tokenizer/NGRAM_CANONICAL_IDS.uint16",
+      "bytes": 131072,
+      "mtime_ns": 1786771592000000000,
+      "sha256": "6359312eb0b5e892828430d2c9d049021f452580f724265f2f21003565a732a3"
+    },
+    "canonical_map_self_sha256": "0d502c64584cf435bfff6f244ff1dc7d879ca120cd8b060c7616d6dc453c4101",
+    "canonical_semantics_recomputed": true
+  },
+  "packages": {
+    "lm-eval": "0.4.13",
+    "torch": "2.13.0+rocm7.2",
+    "tokenizers": "0.22.2",
+    "transformers": "4.57.6",
+    "datasets": "3.6.0",
+    "mamba-ssm": "2.3.2.post1",
+    "causal-conv1d": "1.6.2.post1",
+    "flash-attn": "2.8.4",
+    "transformer-engine": "2.17.0+ce80fb0",
+    "triton": "3.7.1"
+  },
+  "python": "3.11.7 (main, Jun 17 2024, 15:33:36) [GCC 13.2.1 20231205 (Red Hat 13.2.1-6)]",
+  "platform": "Linux-5.14.0-570.12.1.el9_6.x86_64-x86_64-with-glibc2.34",
+  "harness_api_files": [
+    {
+      "path": "/lus/lustre1/vollmerc/more-eval-runtime/lmeval-0.4.13-20260905/lib/python3.11/site-packages/lm_eval/__init__.py",
+      "bytes": 805,
+      "mtime_ns": 1788621208000000000,
+      "sha256": "e09b8004f0b93ad0153b348e02b73582f5b9319a481f0efd9fb96b9e7d245a54"
+    },
+    {
+      "path": "/lus/lustre1/vollmerc/more-eval-runtime/lmeval-0.4.13-20260905/lib/python3.11/site-packages/lm_eval/evaluator.py",
+      "bytes": 30402,
+      "mtime_ns": 1788621208000000000,
+      "sha256": "628120153cf24471ead0789106e5c18b02855a7cc77a9aa5da8069fdeab57ed5"
+    },
+    {
+      "path": "/lus/lustre1/vollmerc/more-eval-runtime/lmeval-0.4.13-20260905/lib/python3.11/site-packages/lm_eval/api/model.py",
+      "bytes": 21823,
+      "mtime_ns": 1788621208000000000,
+      "sha256": "b8b1db336e168b53d9ca808fe837d5bf8943d9dca76a14cf747e4f3a22d50545"
+    }
+  ],
+  "options": {
+    "checkpoint": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/dense-flop-matched/checkpoints/step-0025429/state.pt",
+    "run_manifest": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/dense-flop-matched/run.json",
+    "expected_run_identity": "736f74c8a6fe978d535cea0ce9f2905acaee43f957646abcada76c54512797e6",
+    "inference_source_revision": null,
+    "release_root": "/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r2",
+    "expected_harness_version": "0.4.13",
+    "tasks": [
+      "more_dense_benchmarks_worker_3"
+    ],
+    "include_path": [
+      "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks",
+      "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/preparation-515edaf"
+    ],
+    "output_dir": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/evaluations/37eed21/worker-3",
+    "preparation_manifest": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/preparation-515edaf/preparation.json",
+    "preparation_worker": 3,
+    "device": "cuda:0",
+    "batch_size": 8,
+    "no_context_reuse": false,
+    "num_fewshot": null,
+    "seed": 0,
+    "fewshot_seed": 1234,
+    "bootstrap_iters": 100000,
+    "bos_token_id": null,
+    "diagnostic_limit": null,
+    "diagnostic_max_context": null
+  },
+  "saved_curriculum": {
+    "continuation_mode": "depth_one",
+    "fixed_routed_k": 4,
+    "max_passes": null,
+    "memory_gate_scale": 0.0,
+    "ngram_gate_scale": 1.0,
+    "pathway_mode": "per_pass",
+    "random_policy_seed": 16062027,
+    "random_policy_step": 0,
+    "routed_k_mode": "adaptive",
+    "stochastic_routing": true,
+    "target_mean_depth": 2.0,
+    "target_mean_routed_k": 4.0,
+    "temperature": 1.0
+  },
+  "effective_curriculum": {
+    "continuation_mode": "depth_one",
+    "routed_k_mode": "adaptive",
+    "fixed_routed_k": 4,
+    "max_passes": null,
+    "memory_gate_scale": 0.0,
+    "ngram_gate_scale": 1.0,
+    "stochastic_routing": false,
+    "temperature": 1.0,
+    "target_mean_depth": 2.0,
+    "target_mean_routed_k": 4.0,
+    "pathway_mode": "per_pass",
+    "random_policy_seed": 16062027,
+    "random_policy_step": 0
+  },
+  "forward_max_passes": 1,
+  "forward_force_depth": 1,
+  "trained_context": 4096,
+  "effective_model_config": {
+    "schema": "metis.model-family/v1",
+    "family": "ablation",
+    "name": "MoRE-Ablation-01-dense-flop-matched",
+    "model_type": "metis16_more",
+    "vocab_size": 65536,
+    "sequence_length": 4096,
+    "final_context_length": 4096,
+    "context_extension_train_length": 4096,
+    "d_model": 4096,
+    "n_layers": 2,
+    "attention_indices": [
+      1
+    ],
+    "n_heads": 64,
+    "n_kv_heads": 16,
+    "head_dim": 64,
+    "no_position_embeddings": true,
+    "attention_pass_lora_rank": 8,
+    "attention_backend": "varlen_fused_required",
+    "mamba_expand": 2,
+    "mamba_d_state": 128,
+    "mamba_d_conv": 4,
+    "mamba_head_dim": 64,
+    "mamba_ngroups": 16,
+    "mamba_chunk_size": 256,
+    "mamba_backend": "fused_required",
+    "n_streams": 4,
+    "mhc_pass_embedding_dim": 64,
+    "mhc_sinkhorn_iterations": 8,
+    "mhc_backend": "fused_required",
+    "latent_dim": 2048,
+    "n_routed_experts": 0,
+    "n_shared_experts": 0,
+    "expert_intermediate_dim": 1152,
+    "min_routed_k": 1,
+    "max_routed_k": 8,
+    "target_mean_routed_k": 4.0,
+    "ffn_mode": "dense",
+    "dense_ffn_intermediate_dim": 53824,
+    "expert_execution": "grouped_gemm",
+    "expert_weight_chunks": 4,
+    "expert_swiglu_fused": false,
+    "world_size": 80,
+    "expert_parallel_size": 1,
+    "expert_replicas": 80,
+    "max_passes": 5,
+    "target_mean_passes": 2.0,
+    "budgeted_depth_values": [
+      1,
+      2,
+      3
+    ],
+    "route_feature_dim": 256,
+    "memory_dim": 256,
+    "memory_heads": 4,
+    "memory_gate_init": -6.0,
+    "continuation_gate_init": 0.0,
+    "router_z_loss_coefficient": 0.001,
+    "expert_balance_coefficient": 0.0,
+    "expert_balance_bias_update_rate": 0.05,
+    "k_budget_coefficient": 1.0,
+    "depth_budget_coefficient": 1.0,
+    "budgeted_k_calibration_coefficient": 0.1,
+    "budgeted_depth_calibration_coefficient": 4.0,
+    "budget_controller_rate": 0.0,
+    "depth_budget_controller_rate": 0.0,
+    "budget_controller_leak": 0.02,
+    "budget_multiplier_limit": 100000.0,
+    "continuation_entropy_coefficient": 0.001,
+    "tie_embeddings": true,
+    "moe_dispatch_chunks": 1,
+    "lm_head_chunk_size": 8192,
+    "activation_recompute_policy": "none",
+    "context_parallel_size": 1,
+    "ngram_memory": {
+      "orders": [
+        2,
+        3
+      ],
+      "tables_per_order": 8,
+      "value_dim": 64,
+      "slots_by_order": {
+        "2": [
+          292969,
+          292973,
+          292979,
+          292993,
+          293021,
+          293071,
+          293081,
+          293087
+        ],
+        "3": [
+          293093,
+          293099,
+          293107,
+          293123,
+          293129,
+          293147,
+          293149,
+          293173
+        ]
+      },
+      "hash_seeds": [
+        2654435761,
+        2246822519,
+        3266489917,
+        668265263,
+        374761393,
+        3550635117,
+        4251991749,
+        3043081225
+      ],
+      "table_mode": "replicated",
+      "sparse_gradients": true,
+      "optimizer": "sparse_adam",
+      "learning_rate_scale": 2.0,
+      "weight_decay": 0.0,
+      "injection_layers": [
+        0,
+        1
+      ],
+      "canonicalization": "tokenizer_sidecar_required"
+    },
+    "precision": {
+      "backend": "auto",
+      "fp8_format": "hybrid_e4m3_e5m2",
+      "fp8_scaling": "blockwise",
+      "parameter_dtype": "bfloat16",
+      "activation_dtype": "bfloat16",
+      "master_weight_dtype": "float32",
+      "optimizer_state_dtype": "float32",
+      "router_dtype": "float32",
+      "reduction_dtype": "float32",
+      "fp8_roles": [
+        "mamba_in_projection",
+        "mamba_out_projection",
+        "attention_qkv_projection",
+        "attention_out_projection",
+        "latent_down_projection",
+        "latent_up_projection",
+        "memory_state_write_projection",
+        "memory_query_projection",
+        "memory_key_projection",
+        "memory_value_projection",
+        "memory_output_projection",
+        "memory_route_projection",
+        "ngram_projection",
+        "lm_head"
+      ],
+      "bf16_roles": [
+        "embedding",
+        "ngram_table",
+        "residual_stream",
+        "mamba_state",
+        "normalization",
+        "gate",
+        "collective",
+        "attention_pass_lora_down",
+        "attention_pass_lora_up",
+        "memory_metadata_write_projection",
+        "mhc_controller",
+        "expert_gate_up_projection",
+        "expert_down_projection"
+      ],
+      "fp32_roles": [
+        "master_weight",
+        "optimizer_state",
+        "router_logits",
+        "sinkhorn",
+        "memory_attention_logits",
+        "loss_accumulation",
+        "mamba_sensitive"
+      ],
+      "expert_collective_wire": "bfloat16",
+      "require_fp8_validation": true,
+      "allow_bf16_fallback": true
+    },
+    "autotune": {
+      "status": "bounded_canary_candidates_not_validated_optima",
+      "micro_batch_sizes": [
+        12,
+        10,
+        8,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1
+      ],
+      "grad_accum_steps": [
+        1,
+        2,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "global_token_batch": {
+        "minimum": 1966080,
+        "maximum": 1966080,
+        "target": 1966080
+      },
+      "learning_rates": [
+        0.00012,
+        0.00018,
+        0.00026
+      ],
+      "preferred_learning_rate": 0.00018,
+      "compile_modes": [
+        "default",
+        "reduce-overhead",
+        "none"
+      ],
+      "precision_profiles": [
+        "fp8",
+        "bf16"
+      ],
+      "dispatch_overlap": [
+        "on",
+        "off"
+      ],
+      "ngram_table_modes": [
+        "replicated",
+        "row_sharded"
+      ],
+      "gates": {
+        "max_hbm_fraction": 0.9,
+        "max_fp8_loss_relative_error": 0.02,
+        "max_ngram_layout_loss_relative_error": 0.001,
+        "max_update_to_weight_ratio": 0.01,
+        "max_grad_norm": 100.0
+      }
+    },
+    "expected_parameter_audit": {}
+  },
+  "execution_precision": "bf16",
+  "constructed_precision": "fp8",
+  "optimizer_loaded": false,
+  "optimizer_shards_opened": 0,
+  "sample_logging": false,
+  "request_cache": false,
+  "evaluation_kind": "likelihood_only",
+  "custom_task_files": [
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/_default_template_yaml",
+      "bytes": 514,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "e2d86873e91ddd480f7333ab5a512c6c6a28a45ebd59627745ad16a4f955cc7e"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/_more_mmlu_pro_mc.yaml",
+      "bytes": 617,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "996ef9d71f70be6a0ffea4018aea519eecde97f7580af689f247009712f314a5"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/biology.yaml",
+      "bytes": 222,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "043ef29937fe8c9d99d90c68a0856e969971dc95ceac3caf760f209cdb215280"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/business.yaml",
+      "bytes": 226,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "99eeff5a520726e4d7e1435772f52341ef3303e0f9c34e1c6fd4b1fe2cd2e14e"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/chemistry.yaml",
+      "bytes": 230,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "68868e3d41169184e587ba6f8d3ab4050b8a606474cd2514e9226a9117e4169a"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/computer_science.yaml",
+      "bytes": 258,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "e32e4848fc6bc7da556527bcacb471479e753abef69fbe5540c6de1bc4cf1a18"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/economics.yaml",
+      "bytes": 230,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "055ffb0f31b0ea3617886a2c67227929c6b96462d13a543caf83f5a06b0980d6"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/engineering.yaml",
+      "bytes": 238,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "04733e25f0d2a4fd6e8a4cec687daa09bc8bcd9ee5d72cb01d33d6ddaf71a38a"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/health.yaml",
+      "bytes": 218,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "ecc9a80f827b28bb849cad888eca68b25ad08939282a30fadc8e9a41587873cc"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/history.yaml",
+      "bytes": 222,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "9be1a4cd5ab9b6065cada097bd6d24c18887833253f70de56ed4ecd9796d8f70"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/law.yaml",
+      "bytes": 206,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "7399c461387e51e3fd8859963f23506d04088cc01c780e28223c891bb5c7a62d"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/math.yaml",
+      "bytes": 210,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "140b574cfdba3a78735c2daf2574fc4dc250eeea143053e3874d7312284f18e4"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/other.yaml",
+      "bytes": 223,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "20121726abf1df223a9180f77888e0810a0dae4d21d3ef6d6053530c382e075f"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/philosophy.yaml",
+      "bytes": 234,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "353a8150687bdf13d62b07316f3ee1578b81cc5af2c2bacab4dbb66764fe45d9"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/physics.yaml",
+      "bytes": 222,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "2f78c28213c21ac983ff7dca8bd8653149e66c46a9c5a7d2ea7cff6d26db20fb"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/psychology.yaml",
+      "bytes": 234,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "642bdf62f630673cb5d0157978299614f5bb8a4f1388a2edb51f0fd00f368ded"
+    },
+    {
+      "path": "/home/users/vollmerc/more-eval-worktrees/515edaf/configs/more_eval_tasks/mmlu_pro_mc/utils.py",
+      "bytes": 2531,
+      "mtime_ns": 1788628124314542301,
+      "sha256": "3de7ac95f24b33c0c31a57177f2dbac0dc8c5fb78e8940b1d37fb54022e13254"
+    },
+    {
+      "path": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/preparation-515edaf/preparation.json",
+      "bytes": 60241,
+      "mtime_ns": 1788628736000000000,
+      "sha256": "109b333e628aae76635a75d41e5cf6fcf3bcd7a7e198cece18f18532a4311958"
+    },
+    {
+      "path": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/preparation-515edaf/worker-0.yaml",
+      "bytes": 148,
+      "mtime_ns": 1788628143000000000,
+      "sha256": "2751180ed18751e4a5764188e02233156f375b3385b452afa0c64a6c58e50939"
+    },
+    {
+      "path": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/preparation-515edaf/worker-1.yaml",
+      "bytes": 160,
+      "mtime_ns": 1788628143000000000,
+      "sha256": "cdbcc372008700efe9b12631252a6ba4ec5d027788a8606611f7ceaa6e49b018"
+    },
+    {
+      "path": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/preparation-515edaf/worker-2.yaml",
+      "bytes": 265,
+      "mtime_ns": 1788628143000000000,
+      "sha256": "5b2a8d58f2558403751629c271a4f8ffc58ca3de009c2d3fe15540c5fd5b866b"
+    },
+    {
+      "path": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/preparation-515edaf/worker-3.yaml",
+      "bytes": 688,
+      "mtime_ns": 1788628143000000000,
+      "sha256": "83a16c41829fd427a133cac13adbe10496b09b0b1698434b7d53693d571ce228"
+    },
+    {
+      "path": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/preparation-515edaf/preparation.json",
+      "bytes": 60241,
+      "mtime_ns": 1788628736000000000,
+      "sha256": "109b333e628aae76635a75d41e5cf6fcf3bcd7a7e198cece18f18532a4311958"
+    }
+  ],
+  "preparation_worker": 3,
+  "prepared_request_identity_checked": true,
+  "parameter_count": 1437743410,
+  "precision_backend_audit": {
+    "requested_profile": "fp8",
+    "effective_profile": "fp8",
+    "torch_version": "2.13.0+rocm7.2",
+    "hip_version": "7.2.53211",
+    "device_name": "AMD Instinct MI300A Accelerator",
+    "device_arch": "gfx942:sramecc+:xnack-",
+    "transformer_engine_available": true,
+    "transformer_engine_version": "2.17.0+ce80fb0",
+    "fp8_format": "hybrid_e4m3_e5m2",
+    "fp8_scaling": "blockwise",
+    "fp8_linear_roles": [
+      "mamba_in_projection",
+      "mamba_out_projection",
+      "attention_qkv_projection",
+      "attention_out_projection",
+      "latent_down_projection",
+      "latent_up_projection",
+      "memory_state_write_projection",
+      "memory_query_projection",
+      "memory_key_projection",
+      "memory_value_projection",
+      "memory_output_projection",
+      "memory_route_projection",
+      "ngram_projection",
+      "lm_head"
+    ],
+    "bf16_roles": [
+      "embedding",
+      "ngram_table",
+      "residual_stream",
+      "mamba_state",
+      "normalization",
+      "gate",
+      "collective",
+      "attention_pass_lora_down",
+      "attention_pass_lora_up",
+      "memory_metadata_write_projection",
+      "mhc_controller",
+      "expert_gate_up_projection",
+      "expert_down_projection"
+    ],
+    "fp32_roles": [
+      "master_weight",
+      "optimizer_state",
+      "router_logits",
+      "sinkhorn",
+      "memory_attention_logits",
+      "loss_accumulation",
+      "mamba_sensitive"
+    ],
+    "fallback_reason": null,
+    "precision_role_plan_sha256": null,
+    "measured_role_dtypes": {},
+    "execution_role_dtypes": {}
+  },
+  "device_name": "AMD Instinct MI300A Accelerator",
+  "sample_counts": {
+    "arc_challenge": {
+      "original": 1172,
+      "effective": 1172
+    },
+    "arc_easy": {
+      "original": 2376,
+      "effective": 2376
+    },
+    "boolq": {
+      "original": 3270,
+      "effective": 3270
+    },
+    "openbookqa": {
+      "original": 500,
+      "effective": 500
+    },
+    "piqa": {
+      "original": 1838,
+      "effective": 1838
+    },
+    "winogrande": {
+      "original": 1267,
+      "effective": 1267
+    }
+  },
+  "harness_results": {
+    "path": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/evaluations/37eed21/worker-3/harness-results.json",
+    "bytes": 19081,
+    "mtime_ns": 1788640224000000000,
+    "sha256": "1bc1f55c68f56fe45416be5320a4c91d008a82175d6cbadd6e30119101dac355"
+  },
+  "elapsed_seconds": 342.2672017390141,
+  "adapter": {
+    "stats": {
+      "forward_calls": 2950,
+      "forward_input_tokens": 1102112,
+      "forward_padded_tokens": 5168,
+      "max_forward_length": 1084,
+      "model_seconds": 287.3344567135209,
+      "loglikelihood_requests": 28938,
+      "rolling_requests": 0,
+      "scored_tokens": 183954,
+      "generation_requests": 0,
+      "generated_tokens": 0,
+      "generation_eos_stops": 0,
+      "generation_text_stops": 0,
+      "generation_token_limit_stops": 0,
+      "generation_possible_context_overflows": 0,
+      "boundary_errors": 0,
+      "context_overflows": 0,
+      "single_token_context_reuse_hits": 5344,
+      "completed_likelihood_pairs": 28938
+    },
+    "request_sha256": {
+      "loglikelihood": "e83da0d7d8b51c7d36d959ca040a3ab748bfbbb030371f085f9363878ad4bddf"
+    },
+    "generation_backend": "full_prefix_no_cache",
+    "generation_cost": "G forwards; P*G + G*(G-1)/2 useful input tokens per unstopped request",
+    "chat_template": null,
+    "padding_side": "right",
+    "bos_token_id": null,
+    "eos_token_id": 0,
+    "pad_token_id": 1,
+    "empty_context_prefix_token_id": 0,
+    "add_special_tokens": false,
+    "token_boundary_policy": "joint encoding; move trailing prompt whitespace; reject unstable prefix",
+    "overflow_policy": "error_without_truncation",
+    "max_context": 4096,
+    "default_max_gen_toks": 256,
+    "logit_chunk_size": 128,
+    "logit_projection": "continuation positions only; native final hidden state and LM head",
+    "reuse_single_token_contexts": true
+  }
+}

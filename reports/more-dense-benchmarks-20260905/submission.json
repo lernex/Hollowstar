@@ -1,0 +1,29 @@
+{
+  "batch_size": 8,
+  "command": [
+    "sbatch",
+    "--parsable",
+    "--output=/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/logs/eval-%j.driver.out",
+    "--error=/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/logs/eval-%j.driver.err",
+    "/home/users/vollmerc/more-eval-worktrees/37eed21/slurm/ablation/dense-eval.sbatch"
+  ],
+  "exports": {
+    "METIS_EVAL_CHECKPOINT": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/dense-flop-matched/checkpoints/step-0025429/state.pt",
+    "METIS_EVAL_OUTPUT": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/evaluations/37eed21",
+    "METIS_EVAL_PREPARATION": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/preparation-515edaf",
+    "METIS_EVAL_RELEASE": "/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r2",
+    "METIS_EVAL_REVISION": "37eed214c2398375a77149a1e6e196e494730d6b",
+    "METIS_EVAL_ROOT": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905",
+    "METIS_EVAL_RUNTIME": "/lus/lustre1/vollmerc/more-eval-runtime/lmeval-0.4.13-20260905",
+    "METIS_EVAL_RUN_MANIFEST": "/lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/dense-flop-matched/run.json",
+    "METIS_EVAL_SOURCE": "/home/users/vollmerc/more-eval-worktrees/37eed21",
+    "METIS_EVAL_TASK_SOURCE": "/home/users/vollmerc/more-eval-worktrees/515edaf",
+    "METIS_NATIVE_SOURCE": "/home/users/vollmerc/more-eval-worktrees/native-ba98092"
+  },
+  "independent_workers": 4,
+  "job_id": 496031,
+  "native_source_revision": "ba9809284cf787d3e69df96620048dd96345d66f",
+  "nodes": 1,
+  "schema": "more.benchmark-submission/v1",
+  "submitted_at_utc": "2026-09-05T20:18:44.805712+00:00"
+}

@@ -1,0 +1,24 @@
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Benchmark & Shots & Examples & Acc.\ (\%) & Acc.\ norm.\ (\%) \\
+\midrule
+MMLU & 5 & 14,042 & 24.60 & -- \\
+MMLU-Pro (MC, non-CoT) & 5 & 12,032 & 11.65 & -- \\
+ARC-Easy & 0 & 2,376 & 52.06 & 46.00 \\
+ARC-Challenge & 0 & 1,172 & 21.50 & 25.26 \\
+HellaSwag & 0 & 10,042 & 31.29 & 35.10 \\
+Winogrande & 0 & 1,267 & 50.20 & -- \\
+PIQA & 0 & 1,838 & 66.38 & 65.45 \\
+BoolQ & 0 & 3,270 & 60.52 & -- \\
+OpenBookQA & 0 & 500 & 19.40 & 30.20 \\
+LAMBADA & 0 & 5,153 & 20.73 & -- \\
+\bottomrule
+\end{tabular}
+\caption{Completed dense FLOP-matched reference after 49.995B training tokens.
+Full evaluation splits; raw and harness choice-length-normalized accuracies
+are shown where available. MMLU-Pro uses direct MC likelihood, not CoT.}
+\label{tab:dense-flop-benchmarks}
+\end{table}
