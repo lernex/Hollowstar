@@ -27,6 +27,57 @@ class TrainingOptimizerSummary:
         return asdict(self)
 
 
+def _restore_checkpoint_state_dtypes(
+    optimizer: Optimizer, saved: Mapping[str, Any], *, require_fp32: bool = False,
+) -> None:
+    """Undo generic parameter-dtype casting without undoing device placement."""
+    parameters = {
+        saved_id: parameter
+        for loaded_group, saved_group in zip(optimizer.param_groups, saved["param_groups"], strict=True)
+        for parameter, saved_id in zip(loaded_group["params"], saved_group["params"], strict=True)
+    }
+    groups = {
+        saved_id: loaded_group
+        for loaded_group, saved_group in zip(optimizer.param_groups, saved["param_groups"], strict=True)
+        for saved_id in saved_group["params"]
+    }
+
+    def restore(original: Any, loaded: Any) -> Any:
+        if isinstance(original, Tensor):
+            if not isinstance(loaded, Tensor):
+                raise RuntimeError("Optimizer checkpoint tensor structure changed during restore")
+            # Converting the already-cast value back to FP32 cannot recover the
+            # master's residual or moment precision. Copy from the checkpoint.
+            return original.detach().to(device=loaded.device, dtype=original.dtype, copy=True)
+        if isinstance(original, dict):
+            if not isinstance(loaded, dict) or original.keys() != loaded.keys():
+                raise RuntimeError("Optimizer checkpoint mapping structure changed during restore")
+            return {key: restore(value, loaded[key]) for key, value in original.items()}
+        if isinstance(original, (list, tuple)):
+            if not isinstance(loaded, type(original)) or len(original) != len(loaded):
+                raise RuntimeError("Optimizer checkpoint sequence structure changed during restore")
+            values = [restore(value, target) for value, target in zip(original, loaded, strict=True)]
+            return tuple(values) if isinstance(original, tuple) else values
+        return loaded
+
+    for key, original in saved["state"].items():
+        target = parameters.get(key, key)
+        group = groups.get(key, {})
+        if isinstance(original, dict) and (require_fp32 or group.get("master_weights", False)):
+            expected = {
+                "master_param": torch.float32, "exp_avg": torch.float32,
+                "exp_avg_sq": torch.float32, "momentum_scale": torch.float32,
+                "momentum_buffer": torch.int8 if group.get("muon_state_bits") == 8 else torch.float32,
+            }
+            for name, dtype in expected.items():
+                if name in original and (not isinstance(original[name], Tensor) or original[name].dtype != dtype):
+                    raise RuntimeError(
+                        f"Optimizer checkpoint {name} has lost its required {dtype} storage; "
+                        "restoring cannot reconstruct discarded precision."
+                    )
+        optimizer.state[target] = restore(original, optimizer.state[target])
+
+
 class FP32MasterSparseAdam(Optimizer):
     """Sparse Adam with FP32 master rows and FP32 moments.
 
@@ -49,6 +100,10 @@ class FP32MasterSparseAdam(Optimizer):
             [{"params": list(params), "lr": lr, "_metis_lr_scale": 1.0}],
             {"lr": lr, "betas": betas, "eps": eps, "weight_decay": 0.0},
         )
+
+    def load_state_dict(self, state_dict: Mapping[str, Any]) -> None:
+        super().load_state_dict(state_dict)
+        _restore_checkpoint_state_dtypes(self, state_dict, require_fp32=True)
 
     @torch.no_grad()
     def step(self, closure: Any = None) -> Any:
@@ -140,6 +195,7 @@ class OptimizerBundle:
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         self.dense.load_state_dict(state["dense"])
+        _restore_checkpoint_state_dtypes(self.dense, state["dense"])
         sparse_state = state.get("sparse")
         if sparse_state is not None:
             if self.sparse is None:
