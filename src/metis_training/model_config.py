@@ -503,6 +503,8 @@ class Metis16Config:
     observed_depth_credit: bool = False
     joint_compute_router: bool = False
     joint_router_hidden_dim: int = 128
+    causal_compute_budget: bool = False
+    causal_compute_price: float = 0.0
     # Dual step size for the width and depth budget controllers. Zero keeps the
     # fixed-coefficient penalty exactly as it was, which is what production
     # Praxis and Logos run. Any positive value turns the coefficient above into
@@ -588,6 +590,10 @@ class Metis16Config:
         payload = asdict(self)
         if not self.observed_depth_credit:
             payload.pop("observed_depth_credit")
+        if not self.causal_compute_budget:
+            payload.pop("causal_compute_budget")
+            if self.causal_compute_price == 0.0:
+                payload.pop("causal_compute_price")
         if not self.joint_compute_router:
             payload.pop("joint_compute_router")
             if self.joint_router_hidden_dim == 128:
@@ -923,6 +929,22 @@ class Metis16Config:
         self.autotune.validate()
 
     def _validate_joint_router(self) -> None:
+        import math
+
+        if not isinstance(self.causal_compute_budget, bool):
+            raise ValueError("causal_compute_budget must be boolean.")
+        if (
+            isinstance(self.causal_compute_price, bool)
+            or not isinstance(self.causal_compute_price, (int, float))
+            or not math.isfinite(self.causal_compute_price)
+            or self.causal_compute_price < 0
+        ):
+            raise ValueError("causal_compute_price must be finite and nonnegative.")
+        if self.causal_compute_budget:
+            if not self.joint_compute_router:
+                raise ValueError("Causal compute budgeting requires the joint utility router.")
+            if self.target_mean_passes != 2.0 or self.target_mean_routed_k != round(self.target_mean_routed_k):
+                raise ValueError("Causal budgeting uses a fixed two-pass, integer-width reference.")
         if self.joint_router_hidden_dim < 1:
             raise ValueError("joint_router_hidden_dim must be positive.")
         if self.joint_compute_router:

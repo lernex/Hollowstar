@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from math import prod
 from typing import TYPE_CHECKING, Sequence
 
 import torch
@@ -25,12 +26,14 @@ class JointComputeCosts:
     expert_costs: tuple[int, ...]
     reference_per_token: int
     router_per_token: int
+    removed_policy_per_pass: int = 0
+    head_per_token: int = 0
 
     @classmethod
     def from_config(cls, config: Metis16Config) -> JointComputeCosts:
         from .metrics import estimate_train_flops
 
-        reference = replace(config, joint_compute_router=False)
+        reference = replace(config, joint_compute_router=False, causal_compute_budget=False)
         expert = 6 * 3 * config.latent_dim * config.expert_intermediate_dim
         previous = 0
         increments = []
@@ -54,6 +57,22 @@ class JointComputeCosts:
                 observed_mean_routed_k=config.target_mean_routed_k,
             )
         )
+        removed_policy = 0
+        head = 6 * config.vocab_size * config.d_model
+        if config.causal_compute_budget:
+            continuation = (
+                (3 * config.d_model + config.route_feature_dim) * config.route_feature_dim
+                + 2 * config.route_feature_dim + 1
+            )
+            width_heads = config.n_layers * (
+                config.latent_dim + config.route_feature_dim + 1
+            ) * (config.max_routed_k - config.min_routed_k + 1)
+            removed_policy = 6 * (continuation + width_heads)
+            increments = [cost - removed_policy for cost in increments]
+            # A lean fixed two-pass control needs no policy predictions and
+            # projects to vocabulary only at its terminal exit. Outcome
+            # training still pays for every head it actually requests.
+            reference_cost -= 2 * removed_policy + head
         if min(increments) <= 0 or reference_cost <= 0:
             raise ValueError("Joint routing requires positive audited compute costs.")
         return cls(
@@ -61,6 +80,8 @@ class JointComputeCosts:
             (expert,) * config.n_layers,
             reference_cost,
             6 * utility_router_parameter_count(config),
+            removed_policy,
+            head,
         )
 
     def pass_cost(self, pass_index: int, widths: Tensor, active_mask: Tensor) -> Tensor:
@@ -255,18 +276,40 @@ class JointComputeRouter(nn.Module):
         *,
         exploration: float,
         generator: torch.Generator | None,
+        causal_keys: Tensor | None = None,
+        causal_seed: int = 0,
     ) -> tuple[Tensor, Tensor]:
         if not 0.0 <= exploration <= 1.0:
             raise ValueError("Utility exploration must lie in [0, 1] loss units.")
         depth = prediction.depth_utilities.detach()
         width = prediction.width_utilities.detach()
         if exploration:
-            depth_noise = torch.rand(
-                depth.shape, device=depth.device, dtype=depth.dtype, generator=generator
-            )
-            width_noise = torch.rand(
-                width.shape, device=width.device, dtype=width.dtype, generator=generator
-            )
+            if causal_keys is None:
+                depth_noise = torch.rand(
+                    depth.shape, device=depth.device, dtype=depth.dtype, generator=generator
+                )
+                width_noise = torch.rand(
+                    width.shape, device=width.device, dtype=width.dtype, generator=generator
+                )
+            else:
+                if causal_keys.shape != prediction.active_mask.shape or causal_keys.dtype != torch.int64:
+                    raise ValueError("Causal exploration keys must be int64 [batch, sequence].")
+
+                def noise(values: Tensor, stream: int) -> Tensor:
+                    # Stateless common random numbers depend on a token's own
+                    # prefix position, never its row index or the batch shape.
+                    prime = 2_147_483_647
+                    coordinates = torch.arange(
+                        prod(values.shape[2:]), device=values.device, dtype=torch.int64
+                    ).reshape(*([1] * 2), *values.shape[2:])
+                    keys = causal_keys.reshape(*causal_keys.shape, *([1] * (values.ndim - 2)))
+                    mixed = (keys.remainder(prime) + coordinates * 1_000_003 + causal_seed % prime + stream) % prime
+                    mixed = (mixed * mixed + 48_271 * mixed + 12_820_163) % prime
+                    mixed = (mixed * mixed + 69_621 * mixed + 9_173) % prime
+                    return (mixed.double() / prime).to(values.dtype)
+
+                depth_noise = noise(depth, 17)
+                width_noise = noise(width, 104729)
             depth = depth + (depth_noise * 2.0 - 1.0) * exploration
             depth[..., 0] = 0.0
             width = width + (width_noise * 2.0 - 1.0) * exploration
