@@ -41,14 +41,15 @@ def require_distributed_locks(path: Path) -> None:
 
 @contextmanager
 def metadata_lock(
-    path: Path, *, timeout: float = 3600, create: bool = True,
+    path: Path, *, timeout: float | None = 3600, create: bool = True,
 ) -> Iterator[int]:
     """Kernel/DLM ownership survives host changes and is released on worker death.
 
     Persistent lock inodes must not be unlinked while another process can open
     them. Legacy mkdir locks require a quiescent migration, never a TTL guess.
+    Indefinite admission waits queue in the kernel to avoid DLM polling storms.
     """
-    if timeout < 0:
+    if timeout is not None and timeout < 0:
         raise ValueError("Lock timeout cannot be negative")
     path = Path(path).absolute()
     require_distributed_locks(path)
@@ -59,17 +60,19 @@ def metadata_lock(
         )
     flags = os.O_RDWR | os.O_NOFOLLOW | (os.O_CREAT if create else 0)
     descriptor = os.open(path, flags, 0o600)
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + timeout if timeout is not None else None
     acquired = False
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ValueError("Dedup locks require regular files")
         while True:
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(descriptor, fcntl.LOCK_EX | (fcntl.LOCK_NB if deadline is not None else 0))
                 acquired = True
                 break
             except BlockingIOError:
+                if deadline is None:
+                    raise
                 if time.monotonic() >= deadline:
                     raise TimeoutError(f"Dedup lock is held by a live owner: {path}") from None
                 time.sleep(min(0.05, max(0, deadline - time.monotonic())))

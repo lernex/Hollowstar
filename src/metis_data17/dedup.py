@@ -52,7 +52,9 @@ class _CommitView:
 
 
 def _lock(root: Path, name: str):
-    return metadata_lock(root / "locks" / name, timeout=LOCK_TIMEOUT)
+    return metadata_lock(
+        root / "locks" / name, timeout=None if name == "ingest-publication" else LOCK_TIMEOUT,
+    )
 
 
 def _batch_key(batch_id: str) -> str:
@@ -347,7 +349,11 @@ def _publish_batch(
     reported_backpressure = False
     while True:
         with contextlib.ExitStack() as bucket_locks:
-            if not defer_compaction:
+            if defer_compaction:
+                # Publish is already serial; queue its callers away from the
+                # shared lock so hundreds of ingesters cannot starve maintenance.
+                bucket_locks.enter_context(_lock(root, "ingest-publication"))
+            else:
                 for bucket in sorted(run["bucket"] for run in runs):
                     bucket_locks.enter_context(_lock(root, f"bucket-{bucket:06d}"))
             with _lock(root, "publication"):

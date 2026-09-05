@@ -1235,6 +1235,40 @@ class Metis17DedupTests(unittest.TestCase):
         self.assertEqual(len(list(iter_occurrences(self.output))), 9)
         self.assertTrue(all(row["priority"] == 2 for row in iter_survivors(self.output)))
 
+    def test_only_one_publisher_competes_with_maintenance_for_the_shared_transaction(self):
+        original_lock = dedup._lock
+        publisher_requests, shared_requests = [], []
+        all_queued = threading.Event()
+        shared_started = threading.Event()
+        counting = threading.Lock()
+
+        def observed_lock(root, name):
+            with counting:
+                if name == "ingest-publication":
+                    publisher_requests.append(threading.get_ident())
+                    if len(publisher_requests) == 3:
+                        all_queued.set()
+                elif name == "publication":
+                    shared_requests.append(threading.get_ident())
+                    shared_started.set()
+            return original_lock(root, name)
+
+        with ThreadPoolExecutor(max_workers=3) as pool, patch.object(
+            dedup, "_lock", side_effect=observed_lock,
+        ), original_lock(self.output, "publication"):
+            futures = [
+                pool.submit(
+                    dedup._publish_batch, self.output, [], {"runs": []},
+                    self.output / f"published-{index}.json", [], None, None, defer_compaction=True,
+                ) for index in range(3)
+            ]
+            self.assertTrue(all_queued.wait(5))
+            self.assertTrue(shared_started.wait(5))
+            self.assertEqual(len(shared_requests), 1)
+        for future in futures:
+            future.result(timeout=5)
+        self.assertEqual(len(list(self.output.glob("published-*.json"))), 3)
+
     def test_release_limits_automatically_enable_quota_and_exhaustion_is_unpublished(self):
         from metis_data17.acquisition import CapacityPending
 
