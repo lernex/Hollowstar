@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import Any, BinaryIO, Mapping
 
 from .common import ObjectSpec, digest_json, read_receipt, under_root, utc_now, write_receipt
+from .dedup_locks import require_distributed_locks
 
 
 def claim(path: Path) -> BinaryIO | None:
+    require_distributed_locks(path.resolve())
     path.parent.mkdir(parents=True, exist_ok=True)
     stream = path.open("a+b")
     try:

@@ -34,6 +34,7 @@ from typing import Any, Iterator, Mapping
 
 from .acquisition import CapacityPending
 from .common import canonical_json, digest_json, read_receipt
+from .dedup_locks import require_distributed_locks
 
 
 ALLOCATION_BYTES = 64 * 1024 * 1024
@@ -122,6 +123,7 @@ def _validate_counters(value: Mapping[str, Any], schema: str) -> None:
 class WorkingBudget:
     def __init__(self, root: Path, *, allocation_bytes: int = ALLOCATION_BYTES) -> None:
         self.root = Path(root).expanduser().resolve()
+        require_distributed_locks(self.root)
         if type(allocation_bytes) is not int or allocation_bytes < 1:
             raise ValueError("A positive storage allocation increment is required")
         self.allocation_bytes = allocation_bytes

@@ -180,6 +180,21 @@ def download_order_key(spec: ObjectSpec, resumable: set[str]) -> tuple[int, int,
     return lane, -spec.priority, spec.object_id
 
 
+def select_download_group(
+    choices: list[tuple[tuple[int, int, str], str]],
+    specs: dict[str, ObjectSpec],
+    active: Iterable[ObjectSpec],
+) -> tuple[tuple[int, int, str], str]:
+    active_origins = {urlsplit(spec.url).hostname for spec in active}
+    idle_origin = [
+        item for item in choices
+        if urlsplit(specs[item[0][2]].url).hostname not in active_origins
+    ]
+    # An independently throttled origin must not leave a whole NIC idle.
+    # Within each origin the same high-quality-first ordering still applies.
+    return min(idle_origin or choices)
+
+
 def resolve_command(root: Path, *, source_ids: set[str] | None = None) -> dict[str, Any]:
     run = load_run(root)
     results: list[dict[str, Any]] = []
@@ -232,8 +247,9 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
     active: dict[Future[RawReceipt], ObjectSpec] = {}
     blocked_sources: set[str] = set()
     retry_at: dict[str, float] = {}
-    paused_capacity = False
+    capacity_blocked: dict[str, ObjectSpec] = {}
     limit_stamp = 0
+    budget_stamp = 0
     status_path = root / "status" / f"download-{host}.json"
     baseline = _interface_counters()
     commit = code_commit()
@@ -268,9 +284,13 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                         loaded_pages.add(page)
                 limits = _limits(root)
                 new_stamp = (root / "limits.json").stat().st_mtime_ns
-                if new_stamp != limit_stamp:
-                    paused_capacity = False
-                    limit_stamp = new_stamp
+                new_budget_stamp = budget_path.stat().st_mtime_ns if budget_path.exists() else 0
+                if new_stamp != limit_stamp or new_budget_stamp != budget_stamp:
+                    for spec in capacity_blocked.values():
+                        group = str(spec.policy.get("admission_group", spec.source_id))
+                        heapq.heappush(pending.setdefault(group, []), download_order_key(spec, resumable))
+                    capacity_blocked.clear()
+                    limit_stamp, budget_stamp = new_stamp, new_budget_stamp
                 completed = [future for future in active if future.done()]
                 for future in completed:
                     spec = active.pop(future)
@@ -278,8 +298,9 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                     try:
                         receipt = future.result()
                     except CapacityPending:
-                        paused_capacity = True
-                        heapq.heappush(pending.setdefault(group, []), download_order_key(spec, resumable))
+                        # A large object or exhausted source must not pause
+                        # smaller, higher-value work from independent sources.
+                        capacity_blocked[spec.object_id] = spec
                     except PermissionError:
                         blocked_sources.add(spec.source_id)
                         append_event(root, f"download-errors/{host}", {
@@ -302,7 +323,7 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                             committed.add(spec.object_id)
                             completed_bytes += receipt.byte_count
                             preview_counts[group] = preview_counts.get(group, 0) + 1
-                if not stop.is_set() and not paused_capacity:
+                if not stop.is_set():
                     while len(active) < (workers or int(settings["workers_per_host"])):
                         choices: list[tuple[tuple[int, int, str], str]] = []
                         for group, heap in pending.items():
@@ -331,7 +352,7 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                             choices.append((heap[0], group))
                         if not choices:
                             break
-                        key, group = min(choices)
+                        key, group = select_download_group(choices, specs, active.values())
                         heapq.heappop(pending[group])
                         spec = specs[key[2]]
                         future = pool.submit(
@@ -346,8 +367,9 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                     "pid": os.getpid(),
                     "code_commit": commit,
                     "updated_at": utc_now(),
-                    "status": "downloading" if active else ("capacity_pending" if paused_capacity else "waiting_for_catalogue_or_admission"),
-                    "intake_paused_for_capacity": paused_capacity,
+                    "status": "downloading" if active else ("capacity_pending" if capacity_blocked else "waiting_for_catalogue_or_admission"),
+                    "intake_paused_for_capacity": bool(capacity_blocked) and not active,
+                    "capacity_blocked_objects": len(capacity_blocked),
                     "worker_limit": workers or int(settings["workers_per_host"]),
                     "active_objects": [item.object_id for item in active.values()],
                     "catalogued_objects": len(specs),
@@ -367,6 +389,9 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
 
 
 def status(root: Path) -> dict[str, Any]:
+    from .policy import policy_config
+    from .storage import WorkingBudget
+
     run = load_run(root)
     downloaders = {
         path.stem.removeprefix("download-"): json.loads(path.read_text())
@@ -384,7 +409,11 @@ def status(root: Path) -> dict[str, Any]:
         "downloaders": downloaders,
         "prep_workers": prep,
         "intake": read_receipt(intake) if intake.exists() else None,
-        "policy_ready": (root / "policy" / "CURRENT.json").exists(),
+        "working_storage": (
+            WorkingBudget(root).snapshot()
+            if (root / "state" / "working-budget" / "total.json").exists() else None
+        ),
+        "policy_ready": policy_config(root)["policy_ready"],
         "tokenizer_ready": (root / "tokenizer" / "TOKENIZER_RELEASE.json").exists(),
     }
 
@@ -401,6 +430,17 @@ def main(argv: list[str] | None = None) -> int:
     download = sub.add_parser("download")
     download.add_argument("--root", type=Path, required=True)
     download.add_argument("--workers", type=int)
+    prepare = sub.add_parser("prep")
+    prepare.add_argument("--root", type=Path, required=True)
+    prepare.add_argument("--workers", type=int, default=32)
+    prepare.add_argument("--raw-readers", type=int)
+    prepare.add_argument("--idle-seconds", type=float, default=600)
+    prepare.add_argument("--maximum-seconds", type=float, default=42000)
+    supervise = sub.add_parser("supervise-prep")
+    supervise.add_argument("--root", type=Path, required=True)
+    supervise.add_argument("--python", type=Path, required=True)
+    supervise.add_argument("--maximum-nodes", type=int, default=4)
+    supervise.add_argument("--workers", type=int, default=32)
     policy = sub.add_parser("import-policy")
     policy.add_argument("--root", type=Path, required=True)
     policy.add_argument("--source-directory", type=Path, required=True)
@@ -418,6 +458,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result["ok"] else 1
     elif args.command == "download":
         download_service(root, workers=args.workers)
+    elif args.command == "prep":
+        from .worker import prep_service
+
+        prep_service(
+            root, workers=args.workers, raw_readers=args.raw_readers,
+            idle_seconds=args.idle_seconds, maximum_seconds=args.maximum_seconds,
+        )
+    elif args.command == "supervise-prep":
+        from .runtime import supervise_prep
+
+        supervise_prep(
+            root, code_root(), args.python.resolve(),
+            maximum_nodes=args.maximum_nodes, workers_per_node=args.workers,
+        )
     elif args.command == "import-policy":
         from .policy import import_policy
 

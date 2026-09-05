@@ -1,9 +1,11 @@
 # Metis-1.7 data preparation: verified objects, parallel download and prep
 
-Date: **2026-09-04**
+Date: **2026-09-05**
 
-Status: **implementation contract for a new 1.7 path, not a running pipeline
-or a capability already provided by the 1.6 CLI**.
+Status: **separate 1.7 implementation and capacity-bounded startup**. The new
+`metis_data17` path does not bypass or modify the 1.6 build graph. The complete
+200 TB allocation remains a plan, not a claim that all 55 ledger rows have
+been activated or downloaded.
 
 The [acquisition plan](metis17_200tb_pretraining_corpus_research.md) and
 [200 TB ledger](metis17_200tb_acquisition_ledger.csv) define the candidate
@@ -292,10 +294,27 @@ No bulk IDs are produced with a disposable provisional tokenizer. While
 waiting for the final artifact, continue normalization, scoring, signatures
 and eligible sample collection.
 
+The production artifact must contain **131,072 vocabulary entries, including
+the seven configured special tokens**, with individual digit splitting
+serialized before byte-level pretokenization. A YAML flag alone is not proof
+of that behavior. Small test tokenizers are explicitly non-production; do
+not pad an undersized learned vocabulary with dummy entries.
+
 Once frozen, cache IDs by **final text hash + tokenizer hash + tokenization
-policy**. At a vocabulary above 65,536, budget uint32 and test high token IDs.
+policy**. Use little-endian **uint32**, not the 1.6 uint16 representation.
 Record document offsets and exact token counts alongside IDs. Selection,
 replay and TST/NTP views reference these IDs rather than re-encoding text.
+Offsets count token elements, not bytes. Mutable cache/sampling indexes use
+bounded, verified node-local scratch; the durable IDs and receipts stay on
+shared storage. Cache reuse is partition/session scoped. Separate workers
+may encode the same content independently; no global cross-worker
+tokenize-once guarantee is implied.
+
+The configured representative sample target is **160 GB of text**, with at
+least **1 GB in each required web, code, math, science and multilingual
+category**. Meeting only the category minima is insufficient to freeze the
+production tokenizer. Acquisition order must not turn this into a tokenizer
+trained on the first few gigabytes of English.
 
 Document deletion, changed sampling weights or a different dedup winner can
 often be expressed as metadata masks over unchanged text/IDs. But repeated-
@@ -338,7 +357,7 @@ Do not edit that history or claim those settings were already off.
 For the new 1.7 profile, the starting policy is:
 
 ```yaml
-# Proposed 1.7 policy, not a modification to the 1.6 profile.
+# Implemented 1.7 starting policy, not a modification to the 1.6 profile.
 decontamination:
   minimum_matching_ngrams: 2
   minimum_short_matching_ngrams: 0
@@ -349,7 +368,7 @@ decontamination:
 ```
 
 Retain exact/normalized matching, the 13-gram core, contiguous-run evidence,
-12-gram code overlap and explicit genealogy. The proposed zero values are
+12-gram code overlap and explicit genealogy. The zero values are
 based on measured false positives, **not** a claim that bagging prevents
 contamination. Re-measure known-copy detection and removal rates by length,
 language and domain on real 1.7 samples before freezing this policy.
@@ -442,24 +461,47 @@ download + 7 days independent prep + 2 days final work is roughly 21 days
 serially; sufficient overlapping resources can approach 14 days plus
 warm-up/drain instead. Measure the actual rates before using that as an ETA.
 
-## 9. Implementation gap: why this is not one existing flag
+## 9. The separate implementation and its remaining boundaries
 
-| Current code | Required new 1.7 work |
+| Surface | New implementation and contract |
 |---|---|
-| [`download._download_hf_file`](../src/metis_data/download.py) returns verified file size/SHA; `run_download_task` publishes its completion after all task items | Reuse verification and emit object readiness immediately in the new path; keep 1.6 task semantics intact |
-| [`state.atomic_json` and task locks](../src/metis_data/state.py) provide publication/coordination primitives | Scope receipts and locks to immutable object/batch identities; add efficient ready-list discovery |
-| [`cli.cmd_submit` / resume](../src/metis_data/cli.py) require `download.build_ready` even when the handoff flag is disabled | Add a separate verified-object ingestion/dispatch path; do not bypass the final build gate |
-| [`prepare_build_inputs`](../src/metis_data/build_inputs.py) requires every download task complete and rejects changed frozen inputs | Use immutable batch/object work manifests, then an explicit final sealed union |
-| [`_normalize_task`](../src/metis_data/stage_runner.py) reads the global build input list/contract and final opt-out policy through handoff | Reuse/extract normalization logic behind per-object inputs and independently frozen policy artifacts; never fabricate the global handoff |
-| [`BUILD_GRAPH`](../src/metis_data/slurm.py) chains whole stages; decontamination index is late | Separate ready-object work from comparison/release barriers; build holdouts/index independently and early |
-| Counting/packing and selection still embody 1.6 representations | Implement reusable IDs, projected metadata and indexed views under new generation contracts |
+| [`common.py`](../src/metis_data17/common.py), [`acquisition.py`](../src/metis_data17/acquisition.py) | Stable content-object identity, HTTP range resume, integrity-bound RAW_READY receipts, per-source/global intake reservations; retained raw files |
+| [`catalogue.py`](../src/metis_data17/catalogue.py) | Complete paginated HF inventories, HPLT JSONL/MD5 manifests and small CC object-path lists; independently sealed source counts/bytes |
+| [`prep.py`](../src/metis_data17/prep.py), [`prep_readers.py`](../src/metis_data17/prep_readers.py) | One-pass streaming reblocking, inline-content adapters, immutable READY chunks and exact document coverage at EOF |
+| [`policy.py`](../src/metis_data17/policy.py), [`prep_policy.py`](../src/metis_data17/prep_policy.py) | Separately frozen benchmark/opt-out inputs and 1.7 matching thresholds; cached policies and verified memory maps loaded once before each node forks |
+| [`worker.py`](../src/metis_data17/worker.py) | Incremental per-producer journals, process-safe object claims, small raw-reader pool plus independent chunk work, explicit failures and measured source-canary admission |
+| [`dedup.py`](../src/metis_data17/dedup.py) | Metadata-only exact occurrences/winners and geometric sorted-run compaction; higher configured quality priority wins independently of arrival order |
+| [`dedup_signatures.py`](../src/metis_data17/dedup_signatures.py) | Actual scoped MinHash/span/code signatures; signature production is not completed near-duplicate deletion |
+| [`tokenizer.py`](../src/metis_data17/tokenizer.py) | Artifact-validated 131,072-entry digit-split tokenizer, stratified sampling and bounded local-scratch uint32 ID caches |
+| [`runtime.py`](../src/metis_data17/runtime.py), [`prepare.sbatch`](../slurm/metis17/prepare.sbatch) | Commit-pinned CPU workers on idle Slurm nodes, explicit interpreter/environment, low-priority supervision and bounded restart behavior |
 
-This also needs an actual 1.7 manifest/profile and supported vocabulary/dtype
-contract. The static-content path must not require enabling the legacy
-`dynamic_materializers_enabled` gate merely to prepare packaged objects;
-use an explicit allowed-driver contract instead. No guessed launcher
-command is supplied here: a command is only
-documented as runnable after these surfaces are wired and demonstrated.
+The streaming producer publishes `part-*.READY.json` while scanning a raw
+object. Workers can filter those chunks immediately, but the result remains
+`ELIGIBLE_PENDING_OBJECT_COMPLETION` until the producer seals complete
+coverage at EOF. Promotion reuses the screened data. Only immutable
+`ELIGIBLE.json` receipts with `eligible=true`, `training_ready=true` and
+complete object evidence may enter deduplication or tokenizer sampling.
+`FILTERED.json`, normalized chunks and mutable current-state aliases are
+not equivalent eligibility evidence.
+
+Receipt hash domains are explicit: `stage_receipt_sha256` means the
+canonical payload seal, `digest_json(read_receipt(path))`. A full JSON-file
+checksum has a separately named field. Parquet `sha256` is always the
+full-file checksum. These domains must never be accepted interchangeably.
+
+Quality-prioritized acquisition does not itself implement quality-aware
+deduplication. The exact index retains all occurrence provenance and ranks
+winners by configured source/partition priority, known record quality and
+stable tie breakers. A later better occurrence can become the winner.
+Unknown quality stays unknown; this comparator is not an undisclosed
+learned quality model.
+
+**Still separate from this launch:** activating the rest of the 55-row
+ledger, learned/raw-web quality selection, closing near/span comparison
+scopes, final mixture/replay feasibility, and wiring final selection and
+packing to the new ID references. No partial index is described as a final
+35T training release. Unknown crawl scope does not authorize global
+cross-snapshot English near-deletion.
 
 ## 10. Evidence required before the 200 TB run
 
@@ -486,6 +528,56 @@ documented as runnable after these surfaces are wired and demonstrated.
 - Per-worker verification is scoped, and bounded queues/RSS remain within
   the approved storage and compute allocation on real representative objects.
 
-These are implementation acceptance criteria, not results already obtained
-by writing this document. The present change updates the acquisition and
-prep plans only; the live 1.6 pipeline remains unchanged.
+These are acceptance criteria, not results obtained merely by writing this
+document. Local tests and live startup evidence have different scopes; neither
+establishes the final corpus's quality or a 10-11-day completion guarantee.
+The live 1.6 pipeline remains unchanged.
+
+## 11. Bounded startup and operational interpretation
+
+The initial activation in
+[`configs/metis17/pipeline.yaml`](../configs/metis17/pipeline.yaml) contains
+eight source families: complete CC-Math, CC-Code, the permitted Dolma science
+view, complete CC-v2 and CC-v2.1, HPLT English WDS10, HPLT non-English, and
+August 2026 WET. Complete Nemotron catalogues are not permission to exceed
+the current intake ceiling. English WDS9, the other WET months, NEWS and
+the remaining ledger selections are not silently added to frozen `RUN.json`.
+
+The initial limits are **400 GB raw and 2 TB total working storage**, with
+`capacity_confirmation: pending`. Lustre reporting petabytes free does not
+prove the user's inherited/default quota. These are a bounded start while
+the full-run capacity is unresolved, not a reduction of the 200 TB plan.
+No administrator confirmation is inferred from an old 1.6 log.
+
+Acquisition uses the independent `ens2f3` 1 Gb/s routes on login1 and login2:
+HF on the first, independent HPLT/CC origins on the second. In-flight
+partials precede new work; new work is quality ordered, with independent
+origins allowed to fill otherwise idle bandwidth. A source/object that
+cannot fit a reservation does not stall smaller admissible objects from
+other sources. Capacity limits are not raised automatically.
+
+Two canary objects per admission group are initially permitted. Successful
+whole-object screening and at least the configured 10% acceptance are
+needed before opening the group's bulk lane. Zero yield, missing source
+URLs needed for opt-out enforcement, or pending quality selection remain
+visible reasons for review, not reasons to fabricate an admission marker.
+An admitted source still undergoes document-level screening on later data.
+
+The supported entry point is `python -m metis_data17.cli`. Its `init`,
+`resolve`, `download`, `import-policy`, `prep`, `supervise-prep` and `status`
+commands belong to this separate path. Slurm receives the immutable
+`METIS17_CODE`, `METIS17_ROOT`, `METIS17_PYTHON` and `METIS17_WORKERS`
+values explicitly; it does not inherit an HF credential via `--export=ALL`.
+Only owned 1.7 services may be restarted. Do not pull into or modify a live
+1.6/MoRE checkout.
+
+CPU workers use renewable 12-hour allocations, stop accepting new objects
+before the walltime boundary, and relinquish idle allocations rather than
+holding otherwise usable nodes indefinitely. Slurm backfill can take
+longer than 20 seconds even when `sinfo` reports idle nodes; a short
+`srun --immediate` failure is not proof that compute is unavailable.
+
+Use `status/download-*.json`, `status/prep-*.json`, sealed event journals,
+Slurm job logs and actual interface deltas together. A live Screen session,
+an old progress file or a completed source catalogue alone does not prove
+that bytes are moving or preparation is keeping up.

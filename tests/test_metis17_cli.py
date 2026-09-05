@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,8 +10,11 @@ from unittest.mock import patch
 import yaml
 
 from metis_data17.acquisition import CapacityPending
-from metis_data17.cli import _limits, append_event, download_order_key, init_run, read_events, status
-from metis_data17.common import ObjectSpec, read_receipt, write_receipt
+from metis_data17.cli import (
+    _limits, append_event, download_order_key, download_service, init_run,
+    read_events, select_download_group, status,
+)
+from metis_data17.common import ObjectSpec, RawReceipt, digest_json, read_receipt, write_receipt
 
 
 class Metis17CliTests(unittest.TestCase):
@@ -41,6 +45,35 @@ class Metis17CliTests(unittest.TestCase):
         write_receipt(self.root / "limits.json", limits)
         with self.assertRaises(CapacityPending):
             _limits(self.root)
+
+    def test_download_and_derived_storage_share_capacity_confirmation_rules(self):
+        from metis_data17.storage import WorkingBudget
+
+        cases = [
+            ("pending", 400_000_000_000, 2_000_000_000_000, True),
+            ("administrator-confirmed", 200_000_000_000_000, 800_000_000_000_000, True),
+            ("unlimited", 200_000_000_000_000, 800_000_000_000_000, True),
+            ("pending", 400_000_000_001, 2_000_000_000_000, False),
+            ("pending", 400_000_000_000, 2_000_000_000_001, False),
+            ("administrator-confirmed", 200_000_000_000_001, 800_000_000_000_000, False),
+            ("assumed-approved", 400_000_000_000, 2_000_000_000_000, False),
+            ("pending", True, 2_000_000_000_000, False),
+            ("pending", 0, 2_000_000_000_000, False),
+        ]
+        for confirmation, raw, working, allowed in cases:
+            with self.subTest(confirmation=confirmation, raw=raw, working=working):
+                write_receipt(self.root / "limits.json", {
+                    "capacity_confirmation": confirmation, "max_raw_bytes": raw,
+                    "max_working_bytes": working,
+                })
+                if allowed:
+                    self.assertEqual(_limits(self.root)["max_raw_bytes"],
+                                     WorkingBudget(self.root).snapshot()["max_raw_bytes"])
+                else:
+                    with self.assertRaises((ValueError, CapacityPending)):
+                        _limits(self.root)
+                    with self.assertRaises((ValueError, CapacityPending)):
+                        WorkingBudget(self.root)
 
     def test_digit_splitting_cannot_be_disabled_by_configuration(self):
         value = yaml.safe_load(self.config.read_text())
@@ -89,6 +122,92 @@ class Metis17CliTests(unittest.TestCase):
         resumable = {partial.object_id}
         ordered = sorted([low, high, partial], key=lambda item: download_order_key(item, resumable))
         self.assertEqual(ordered, [partial, high, low])
+
+    def test_independent_origin_gets_a_slot_without_changing_per_origin_priority(self):
+        def spec(origin, name, priority):
+            return ObjectSpec.create(
+                source_id="source", url=f"https://{origin}/{name}", revision="r",
+                relative_key=name, wire_format="parquet", adapter="text", priority=priority,
+            )
+        busy = spec("slow.test", "busy", 99)
+        high = spec("slow.test", "next", 98)
+        other = spec("fast.test", "fresh", 50)
+        specs = {s.object_id: s for s in (busy, high, other)}
+        candidates = [(download_order_key(high, set()), "high"), (download_order_key(other, set()), "fresh")]
+        self.assertEqual(select_download_group(candidates, specs, [busy])[1], "fresh")
+        self.assertEqual(select_download_group(candidates, specs, [busy, other])[1], "high")
+
+    def test_oversized_candidate_does_not_pause_other_downloads(self):
+        from concurrent.futures import Future
+
+        class ImmediatePool:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def submit(self, function, *args, **kwargs):
+                future = Future()
+                try:
+                    future.set_result(function(*args, **kwargs))
+                except CapacityPending as exc:
+                    future.set_exception(exc)
+                return future
+
+        stop = threading.Event()
+        config = {"download": {
+            "hosts": {"fixture-host": ["example.test"]}, "workers_per_host": 1,
+            "attempts": 1, "timeout_seconds": 1, "admission_objects_per_group": 2,
+            "poll_seconds": 0.01,
+        }}
+        write_receipt(self.root / "RUN.json", {"config": config, "config_sha256": digest_json(config)})
+        write_receipt(self.root / "limits.json", {
+            "capacity_confirmation": "pending", "max_raw_bytes": 5, "max_working_bytes": 50,
+        })
+        specs = [
+            ObjectSpec.create(
+                source_id="source", url=f"https://example.test/{name}", revision="r",
+                relative_key=name, wire_format="parquet", adapter="text", priority=priority,
+            )
+            for name, priority in (("large", 100), ("small", 90))
+        ]
+        write_receipt(self.root / "catalogue" / "active" / "source.json", {
+            "directory": "catalogue/fixture", "source_hash": "fixture",
+        })
+        write_receipt(self.root / "catalogue" / "fixture" / "page-000000.json", {
+            "source_hash": "fixture", "objects": [spec.to_dict() for spec in specs],
+        })
+        attempted = []
+        ticks = []
+
+        def download(spec, *_args, **_kwargs):
+            attempted.append(spec.relative_key)
+            if spec.relative_key == "large":
+                raise CapacityPending("Does not fit remaining reservation")
+            return RawReceipt(spec.object_id, spec.source_id, "raw/small", 5, "a" * 64,
+                              "fixture-host", "2026-09-05T00:00:00+00:00")
+
+        def tick(_seconds):
+            ticks.append(1)
+            if len(ticks) >= 5:
+                stop.set()
+
+        with patch("metis_data17.cli._stop_event", return_value=stop), patch(
+            "metis_data17.cli.socket.gethostname", return_value="fixture-host",
+        ), patch("metis_data17.cli.code_commit", return_value="a" * 40), patch(
+            "metis_data17.cli.ThreadPoolExecutor", ImmediatePool,
+        ), patch("metis_data17.cli.download_object", side_effect=download), patch(
+            "metis_data17.cli.time.sleep", side_effect=tick,
+        ):
+            download_service(self.root)
+        self.assertEqual(attempted, ["large", "small"])
+        progress = json.loads((self.root / "status" / "download-fixture-host.json").read_text())
+        self.assertEqual(progress["completed_objects"], 1)
+        self.assertEqual(progress["capacity_blocked_objects"], 1)
 
 
 if __name__ == "__main__":

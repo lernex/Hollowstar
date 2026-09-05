@@ -75,6 +75,22 @@ class Metis17CanaryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "preparation_policies_pending"):
             fixtures.prepare_runtime(missing, require_ready=True)
 
+    def test_shared_storage_and_admission_refuse_node_local_network_locks(self):
+        from pathlib import Path
+        from metis_data17.admission import claim
+        from metis_data17.storage import WorkingBudget
+
+        for filesystem, option in (("lustre", "localflock"), ("lustre", "noflock"),
+                                   ("nfs4", "local_lock=flock")):
+            with self.subTest(filesystem=filesystem, option=option), patch(
+                "metis_data17.dedup_locks._mounts",
+                return_value=((Path("/"), filesystem, frozenset({option})),),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "distributed"):
+                    WorkingBudget(self.root)
+                with self.assertRaisesRegex(RuntimeError, "distributed"):
+                    claim(self.root / "locks" / "canary.flock")
+
     def test_canary_rechecks_the_actual_eligibility_receipt_flags(self):
         normalized = fixtures.reblock_object(self.spec, self.raw, self.output, self.fixture.config)
         screened = {}
