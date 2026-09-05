@@ -55,6 +55,7 @@ resume_args=()
 if [ "${METIS_PILOT_RESUME:-0}" != 1 ]; then resume_args+=(--no-resume); fi
 if [ "${METIS_TERMINAL_CRITIC:-0}" = 1 ]; then
   resume_args+=(--terminal-action-critic --terminal-critic-exploration "${METIS_TERMINAL_EXPLORATION:-0.05}")
+  resume_args+=(--terminal-reference-bootstrap-steps "${METIS_TERMINAL_BOOTSTRAP_STEPS:-0}")
 fi
 exec python -B -m metis_ablation.train \
   --row "$METIS_PILOT_ROW" --output "$METIS_PILOT_OUTPUT" \

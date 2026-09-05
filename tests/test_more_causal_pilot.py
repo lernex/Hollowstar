@@ -144,6 +144,36 @@ class CausalPilotTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "explicit causal"):
             self.fixture.train("invalid-terminal", stop_after_steps=1, terminal_action_critic=True)
 
+    def test_reference_bootstrap_is_sealed_and_expires_at_its_absolute_step(self):
+        self.set_row("more-core")
+        self.fixture.train(
+            "bootstrap", compute_allocation_mode="causal", stop_after_steps=1,
+            terminal_action_critic=True, terminal_reference_bootstrap_steps=1,
+            require_routed_expert_gradients=True,
+        )
+        first = self.fixture.manifest("bootstrap")
+        self.fixture.train(
+            "bootstrap", compute_allocation_mode="causal", stop_after_steps=2,
+            terminal_action_critic=True, terminal_reference_bootstrap_steps=1,
+            require_routed_expert_gradients=True,
+        )
+        second = self.fixture.manifest("bootstrap")
+        self.assertEqual(first["run_identity_sha256"], second["run_identity_sha256"])
+        self.assertEqual(first["model"]["terminal_reference_bootstrap_steps"], 1)
+        path = self.fixture.root / "bootstrap/more-core/telemetry/rank-00000.jsonl"
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        self.assertEqual(
+            [row["telemetry"]["terminal_reference_bootstrap_active"] for row in rows], [1, 0]
+        )
+        for row in rows:
+            self.assertLessEqual(row["telemetry"]["global_joint_budget_fraction"], 1)
+        with self.assertRaisesRegex(RuntimeError, "identity changed"):
+            self.fixture.train(
+                "bootstrap", compute_allocation_mode="causal", stop_after_steps=3,
+                terminal_action_critic=True, terminal_reference_bootstrap_steps=2,
+                require_routed_expert_gradients=True,
+            )
+
     def test_cli_matched_pilot_geometry_preserves_global_batch_and_declared_schedule(self):
         with patch("metis_ablation.train.train_row", return_value={}) as trainer:
             main([

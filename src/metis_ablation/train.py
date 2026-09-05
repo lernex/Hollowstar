@@ -869,6 +869,7 @@ def train_row(
     terminal_action_critic: bool = False,
     terminal_critic_exploration: float = 0.05,
     require_routed_expert_gradients: bool = False,
+    terminal_reference_bootstrap_steps: int = 0,
 ) -> dict[str, Any]:
     runtime = initialize_runtime(device=device_override)
     lease = None
@@ -905,6 +906,7 @@ def train_row(
             terminal_action_critic=terminal_action_critic,
             terminal_critic_exploration=terminal_critic_exploration,
             require_routed_expert_gradients=require_routed_expert_gradients,
+            terminal_reference_bootstrap_steps=terminal_reference_bootstrap_steps,
         )
     finally:
         _release_row_lease(lease)
@@ -940,6 +942,7 @@ def _train_row_inner(
     terminal_action_critic: bool = False,
     terminal_critic_exploration: float = 0.05,
     require_routed_expert_gradients: bool = False,
+    terminal_reference_bootstrap_steps: int = 0,
 ) -> dict[str, Any]:
     if stop_after_steps is not None:
         if type(stop_after_steps) is not int or stop_after_steps <= 0:
@@ -998,12 +1001,15 @@ def _train_row_inner(
         raise ValueError("terminal_action_critic requires an explicit causal allocation mode")
     if terminal_critic_exploration != 0.05 and not terminal_action_critic:
         raise ValueError("terminal_critic_exploration requires terminal_action_critic")
+    if terminal_reference_bootstrap_steps and not terminal_action_critic:
+        raise ValueError("terminal_reference_bootstrap_steps requires terminal_action_critic")
     if causal:
         config = replace(
             config, joint_compute_router=True, causal_compute_budget=True,
             causal_compute_price=causal_compute_price, budgeted_depth_values=(),
             terminal_action_critic=terminal_action_critic,
             terminal_critic_exploration=terminal_critic_exploration,
+            terminal_reference_bootstrap_steps=terminal_reference_bootstrap_steps,
         )
         if compute_allocation_mode == "causal-fixed":
             if (
@@ -1859,6 +1865,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--terminal-critic-exploration", type=float, default=0.05)
     parser.add_argument(
+        "--terminal-reference-bootstrap-steps", type=int, default=0,
+        help="Explicit fixed-reference behavior prior during these initial optimizer steps; never used for evaluation",
+    )
+    parser.add_argument(
         "--require-routed-expert-gradients", action="store_true",
         help="Fail the first backward of each launch if routed expert weights are disconnected or entirely untrained",
     )
@@ -1975,6 +1985,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         terminal_action_critic=args.terminal_action_critic,
         terminal_critic_exploration=args.terminal_critic_exploration,
         require_routed_expert_gradients=args.require_routed_expert_gradients,
+        terminal_reference_bootstrap_steps=args.terminal_reference_bootstrap_steps,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
