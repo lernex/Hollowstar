@@ -20,6 +20,7 @@ from metis_ablation.routing_credit_probe import (
     assert_file_unchanged,
     assert_disjoint_windows,
     credit_alignment,
+    compare_fixed_policies,
     depth_credit_probe,
     evaluate_in_memory,
     fit_utility_in_memory,
@@ -146,6 +147,57 @@ class CheckpointQualityControlTests(unittest.TestCase):
         ])
         with self.assertRaisesRegex(ValueError, "checkpoint's own trained policy"):
             run_probe(args)
+
+    def test_fixed_interventions_preserve_weights_and_primary_policy(self):
+        config = replace(
+            tiny_config(), joint_compute_router=True, joint_router_hidden_dim=8,
+            causal_compute_budget=True, terminal_action_critic=True,
+        )
+        torch.manual_seed(812)
+        model = Metis16ForCausalLM(config).eval()
+        batch = tiny_batch(config)
+        curriculum = CurriculumState(
+            compute_allocation_mode="joint", continuation_mode="budgeted",
+            routed_k_mode="budgeted", memory_gate_scale=0, stochastic_routing=False,
+            allow_untrained_joint_router=True,
+        )
+        runtime = FrozenRuntimeState(model)
+        original_weights = {name: p.detach().clone() for name, p in model.named_parameters()}
+        before = evaluate_in_memory(model, batch, curriculum, seed=9, runtime_state=runtime)
+        records = compare_fixed_policies(
+            model, batch, curriculum, [(1, 2), (2, 4), (3, 1)],
+            seed=9, runtime_state=runtime, repeat_forwards=2, minimum_loss_delta=1e-5,
+        )
+        after = evaluate_in_memory(model, batch, curriculum, seed=9, runtime_state=runtime)
+        torch.testing.assert_close(before.output.loss, after.output.loss, rtol=0, atol=0)
+        torch.testing.assert_close(before.output.chosen_depths, after.output.chosen_depths)
+        for name, parameter in model.named_parameters():
+            torch.testing.assert_close(parameter, original_weights[name], rtol=0, atol=0)
+        for record, (depth, width) in zip(records, [(1, 2), (2, 4), (3, 1)]):
+            self.assertEqual(record["mean_chosen_depth"], depth)
+            self.assertEqual(record["mean_chosen_k_over_active_layer_pass_tokens"], width)
+            self.assertEqual(record["lm_head_forward_rows"], batch.supervised_tokens)
+            self.assertEqual(
+                record["cost"]["expert_assignments"],
+                depth * width * config.n_layers * batch.non_padding_tokens,
+            )
+            self.assertTrue(record["repeat_statistics"]["same_complete_plan_every_repeat"])
+
+    def test_fixed_interventions_are_explicit_and_validate_support(self):
+        args = build_parser().parse_args([
+            "--checkpoint", "missing", "--release-root", "missing", "--output", "unused",
+            "--fixed-policy", "2", "4",
+        ])
+        with self.assertRaisesRegex(ValueError, "never replaces the primary metric"):
+            run_probe(args)
+        model = Metis16ForCausalLM(tiny_config()).eval()
+        for policies in ([(0, 2)], [(2, 9)], [(2, 4), (2, 4)]):
+            with self.subTest(policies=policies), self.assertRaises(ValueError):
+                compare_fixed_policies(
+                    model, tiny_batch(model.config), CurriculumState(), policies, seed=9,
+                    runtime_state=FrozenRuntimeState(model), repeat_forwards=2,
+                    minimum_loss_delta=1e-5,
+                )
 
 
 class PackedMappingTests(unittest.TestCase):

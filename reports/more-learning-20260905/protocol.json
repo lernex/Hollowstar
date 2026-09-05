@@ -1,0 +1,58 @@
+{
+  "schema": "more.learning-investigation/v1",
+  "session": "7517a159-d7da-45f0-a99b-266d0a9a8615",
+  "date": "2026-09-05",
+  "goal": "Lower held-out cross-entropy through useful learned depth and width allocation in MoRE-Core and MoRE-RM.",
+  "resource_limits": {
+    "max_concurrent_apus": 80,
+    "max_elapsed_training_hours": 8,
+    "max_candidate_recipes": 6
+  },
+  "metric": {
+    "module": "metis_ablation.routing_credit_probe",
+    "arguments": [
+      "--quality-only",
+      "--evaluation-gap-blocks", "1",
+      "--sequences", "6",
+      "--sequence-length", "4096",
+      "--repeat-forwards", "3",
+      "--precision", "bf16",
+      "--seed", "16062026"
+    ],
+    "loss_field": "evaluation.mean_lm_loss",
+    "weight_field": "evaluation.supervised_tokens",
+    "direction": "lower",
+    "aggregation": "Token-weighted mean across the three predeclared windows.",
+    "development_steps": [2000, 19000, 25000],
+    "acceptance_steps": [7000, 21000, 24900],
+    "acceptance_gap_blocks": 11,
+    "holdout_boundary": "Token-disjoint from the entire sealed training sampler, not a document-deduplicated holdout.",
+    "comparison_requirements": [
+      "Identical tensor-window hashes and training-token counts.",
+      "Report actual modeled compute, vocabulary work, and measured runtime.",
+      "Do not interpret training-window loss or frozen-head adaptation as full-model convergence.",
+      "Acceptance windows are not inspected or used to choose candidate recipes."
+    ]
+  },
+  "baseline": {
+    "evaluator_revision": "e527b7c58b60a9da5585f777a967c086eee7453d",
+    "checkpoint_next_step": 1000,
+    "training_tokens": 1966080000,
+    "fixed_source": "c7aea46eef2e407ae92ed9e9c0f874e8bf836237",
+    "core_source": "c7aea46eef2e407ae92ed9e9c0f874e8bf836237",
+    "bootstrap_source": "0b5b22c",
+    "original_core_excluded": "The original lineage had disconnected routed-expert learning and is not a valid baseline."
+  },
+  "scope": {
+    "in_scope": ["MoRE-Core", "MoRE-RM", "their tests and aggregate evidence"],
+    "preserve": [
+      "Other architecture repairs and concurrent edits.",
+      "Existing running and queued jobs and their source trees.",
+      "Release inputs and original experiment artifacts.",
+      "Existing dependencies and linear main history."
+    ],
+    "deployment": "Committed immutable experiment sources; no changes to live source trees.",
+    "promotion": "Retain proven correctness repairs; promote architecture changes only with measured evidence."
+  },
+  "remote_artifacts": "/lus/lustre1/vollmerc/more-learning-20260905-7517a159"
+}

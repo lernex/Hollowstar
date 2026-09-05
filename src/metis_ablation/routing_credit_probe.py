@@ -1518,6 +1518,60 @@ def shuffle_plan(
     return shuffled_depths, shuffled_widths
 
 
+def compare_fixed_policies(
+    model: Metis16ForCausalLM,
+    batch: TrainingBatch,
+    curriculum: CurriculumState,
+    policies: Sequence[tuple[int, int]],
+    *,
+    seed: int,
+    runtime_state: FrozenRuntimeState,
+    repeat_forwards: int,
+    minimum_loss_delta: float,
+) -> list[dict[str, Any]]:
+    """Separate learned execution from backbone quality without changing weights."""
+    if model.config.ffn_mode != "moe":
+        raise ValueError("Fixed depth/width interventions require an MoE checkpoint.")
+    if len(set(policies)) != len(policies):
+        raise ValueError("Fixed policy interventions must be distinct.")
+    records = []
+    for depth, width in policies:
+        if not 1 <= depth <= model.config.max_passes:
+            raise ValueError("Intervention depth is outside the checkpoint architecture.")
+        if not model.config.min_routed_k <= width <= model.config.max_routed_k:
+            raise ValueError("Intervention width is outside the checkpoint architecture.")
+        depths = batch.attention_mask.long() * depth
+        active = torch.arange(
+            model.config.max_passes, device=depths.device
+        )[:, None, None] < depths
+        widths = (
+            active[:, None].expand(-1, model.config.n_layers, -1, -1).long() * width
+        )
+        fixed = replace(
+            curriculum, compute_allocation_mode="legacy", continuation_mode="fixed_max",
+            routed_k_mode="fixed", fixed_routed_k=width, max_passes=depth,
+            stochastic_routing=False,
+        )
+        result, statistics = repeated_plan_evaluation(
+            model, batch, fixed, seed=seed, runtime_state=runtime_state,
+            repeat_forwards=repeat_forwards, minimum_loss_delta=minimum_loss_delta,
+            force_depth=depths, force_routed_k=widths,
+        )
+        records.append({
+            "depth": depth,
+            "routed_k": width,
+            **forward_summary(result, batch),
+            "mean_lm_loss": statistics["mean_lm_loss"],
+            "repeat_statistics": statistics,
+            "interpretation": (
+                "Same frozen checkpoint under an explicit fixed policy; not its trained "
+                "policy, not necessarily iso-compute, and not a deployment qualification."
+            ),
+        })
+    runtime_state.restore()
+    return records
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True, type=Path)
@@ -1529,6 +1583,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--quality-only", action="store_true",
         help="Assess the checkpoint's recorded policy, including fixed/dense controls, without credit interventions",
+    )
+    parser.add_argument(
+        "--fixed-policy", type=int, nargs=2, action="append", default=[],
+        metavar=("DEPTH", "WIDTH"),
+        help="Additional frozen-weight diagnostic alongside --quality-only; repeat for each fixed policy",
     )
     parser.add_argument(
         "--evaluation-gap-blocks", type=int, default=0,
@@ -1554,6 +1613,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
+    if args.fixed_policy and not args.quality_only:
+        raise ValueError("--fixed-policy requires --quality-only; it never replaces the primary metric.")
     if args.pairs < 0:
         raise ValueError("--pairs cannot be negative")
     if args.repeat_forwards < 2:
@@ -1705,6 +1766,11 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         repeat_forwards=args.repeat_forwards, minimum_loss_delta=args.minimum_loss_delta,
     )
     if args.quality_only:
+        interventions = compare_fixed_policies(
+            model, batch, curriculum, [tuple(policy) for policy in args.fixed_policy],
+            seed=args.seed, runtime_state=runtime, repeat_forwards=args.repeat_forwards,
+            minimum_loss_delta=args.minimum_loss_delta,
+        ) if args.fixed_policy else []
         runtime.restore()
         for item in (checkpoint_identity, manifest_identity, release_descriptor):
             assert_file_unchanged(item)
@@ -1737,9 +1803,13 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "warmup_forward_calls": len(warmups),
             "warmup_token_count": sum(item["non_padding_tokens"] for item in warmups),
             "warmup_elapsed_seconds": warmup_elapsed,
-            "forward_calls": len(warmups) + args.repeat_forwards,
+            "forward_calls": len(warmups) + args.repeat_forwards * (1 + len(interventions)),
             "nominal_forward_flops_all_calls": (
                 warmup_cost + legacy_noise["nominal_forward_flops_all_calls"]
+                + sum(
+                    item["repeat_statistics"]["nominal_forward_flops_all_calls"]
+                    for item in interventions
+                )
             ),
             "total_wall_seconds_including_loading": time.perf_counter() - started,
             "limitations": [
@@ -1748,6 +1818,8 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 "A single window does not establish superiority or full-training convergence.",
             ],
         }
+        if interventions:
+            report["fixed_policy_interventions"] = interventions
         (output / "report.json").write_text(
             json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n",
             encoding="utf-8",
