@@ -431,99 +431,6 @@ class IdentityTests(OwnedFilesTestCase):
             )
 
     @unittest.skipUnless(
-        "causal_compute_budget" in Metis16Config.__dataclass_fields__,
-        "Causal cost accounting requires the optional causal model",
-    )
-    class CausalProbeCostTests(unittest.TestCase):
-        @classmethod
-        def setUpClass(cls):
-            cls.threads = torch.get_num_threads()
-            torch.set_num_threads(1)
-
-        @classmethod
-        def tearDownClass(cls):
-            torch.set_num_threads(cls.threads)
-
-        def setUp(self):
-            from metis_training.compute_router import JointComputeCosts
-
-            self.config = replace(
-                tiny_config(), joint_compute_router=True, causal_compute_budget=True,
-                joint_router_hidden_dim=8, target_mean_routed_k=4.0,
-            )
-            self.costs = JointComputeCosts.from_config(self.config)
-            self.batch = tiny_batch(self.config)
-            self.fixed = CurriculumState(
-                continuation_mode="fixed_max", routed_k_mode="fixed",
-                fixed_routed_k=4, max_passes=2, memory_gate_scale=0.0,
-                stochastic_routing=False,
-            )
-
-        def test_static_plan_uses_lean_causal_reference_without_invalid_config(self):
-            depths = self.batch.attention_mask.long() * 2
-            widths = fixed_widths(self.config, depths)
-            fixed = plan_cost(self.config, depths, widths, terminal_only=True)
-            outcomes = plan_cost(self.config, depths, widths)
-            count = self.batch.non_padding_tokens
-            self.assertEqual(fixed["nominal_train_flops"], count * self.costs.reference_per_token)
-            self.assertEqual(outcomes["nominal_train_flops"] - fixed["nominal_train_flops"],
-                             count * self.costs.head_per_token)
-            self.assertEqual(fixed["modeled_lm_head_tokens"], count)
-            self.assertEqual(outcomes["modeled_lm_head_tokens"], 2 * count)
-            legacy = plan_cost(
-                replace(self.config, joint_compute_router=False, causal_compute_budget=False),
-                depths, widths,
-            )
-            self.assertEqual(
-                legacy["nominal_train_flops"] - fixed["nominal_train_flops"],
-                count * (2 * self.costs.removed_policy_per_pass + self.costs.head_per_token),
-            )
-
-        def test_fixed_quality_evaluation_and_replays_match_actual_model_ledger(self):
-            model = Metis16ForCausalLM(self.config).eval()
-            runtime = FrozenRuntimeState(model)
-            result = evaluate_in_memory(model, self.batch, self.fixed, seed=7, runtime_state=runtime)
-            self.assertEqual(result.cost["nominal_train_flops"], int(result.output.telemetry["joint_model_flops"]))
-            self.assertEqual(int(result.output.telemetry["joint_router_flops"]), 0)
-            summary = forward_summary(result, self.batch)
-            self.assertEqual(summary["nominal_probe_forward_flops"], result.cost["nominal_forward_flops"])
-            self.assertTrue(result.cost["terminal_only_head"])
-            repeated, statistics = repeated_plan_evaluation(
-                model, self.batch, self.fixed, seed=7, runtime_state=runtime,
-                repeat_forwards=2, minimum_loss_delta=1e-5,
-                force_depth=result.output.chosen_depths, force_routed_k=result.widths,
-            )
-            self.assertEqual(repeated.cost, result.cost)
-            self.assertEqual(statistics["nominal_forward_flops_all_calls"],
-                             2 * int(result.output.telemetry["joint_model_flops"]) / 3.0)
-            result.output.telemetry["executed_lm_head_tokens"] = torch.tensor(self.batch.supervised_tokens)
-            counted = forward_summary(result, self.batch)
-            self.assertEqual(counted["lm_head_tokens"], self.batch.supervised_tokens)
-            self.assertEqual(counted["lm_head_tokens_basis"], "model_execution_counter")
-
-        def test_joint_quality_counts_critic_once_and_outcome_head_per_active_pass(self):
-            model = Metis16ForCausalLM(self.config).eval()
-            with torch.no_grad():
-                model.joint_router.output.bias[:2].copy_(torch.tensor([2.0, 4.0]))
-            joint = replace(
-                self.fixed, compute_allocation_mode="joint", continuation_mode="budgeted",
-                routed_k_mode="budgeted", max_passes=3, allow_untrained_joint_router=True,
-            )
-            result, statistics = repeated_plan_evaluation(
-                model, self.batch, joint, seed=7, runtime_state=FrozenRuntimeState(model),
-                repeat_forwards=2, minimum_loss_delta=1e-5,
-            )
-            ledger = int(result.output.telemetry["joint_model_flops"])
-            critic = int(result.output.telemetry["joint_router_flops"])
-            self.assertGreater(critic, 0)
-            self.assertEqual(result.cost["nominal_train_flops"] + critic, ledger)
-            self.assertFalse(result.cost["terminal_only_head"])
-            self.assertEqual(result.cost["modeled_lm_head_tokens"], result.cost["token_passes"])
-            self.assertEqual(statistics["nominal_forward_flops_all_calls"], 2 * ledger / 3.0)
-            self.assertEqual(forward_summary(result, self.batch)["nominal_probe_forward_flops"], ledger / 3.0)
-
-
-    @unittest.skipUnless(
         "joint_router_hidden_dim" in Metis16Config.__dataclass_fields__,
         "Joint geometry is not present in the independent legacy baseline",
     )
@@ -558,6 +465,99 @@ class IdentityTests(OwnedFilesTestCase):
             validate_utility_provenance(dict(payload, teacher_forward_calls=0), config)
         with self.assertRaisesRegex(ValueError, "geometry"):
             validate_utility_provenance(dict(payload, n_layers=config.n_layers + 1), config)
+
+
+@unittest.skipUnless(
+    "causal_compute_budget" in Metis16Config.__dataclass_fields__,
+    "Causal cost accounting requires the optional causal model",
+)
+class CausalProbeCostTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.threads = torch.get_num_threads()
+        torch.set_num_threads(1)
+
+    @classmethod
+    def tearDownClass(cls):
+        torch.set_num_threads(cls.threads)
+
+    def setUp(self):
+        from metis_training.compute_router import JointComputeCosts
+
+        self.config = replace(
+            tiny_config(), joint_compute_router=True, causal_compute_budget=True,
+            joint_router_hidden_dim=8, target_mean_routed_k=4.0,
+        )
+        self.costs = JointComputeCosts.from_config(self.config)
+        self.batch = tiny_batch(self.config)
+        self.fixed = CurriculumState(
+            continuation_mode="fixed_max", routed_k_mode="fixed",
+            fixed_routed_k=4, max_passes=2, memory_gate_scale=0.0,
+            stochastic_routing=False,
+        )
+
+    def test_static_plan_uses_lean_causal_reference_without_invalid_config(self):
+        depths = self.batch.attention_mask.long() * 2
+        widths = fixed_widths(self.config, depths)
+        fixed = plan_cost(self.config, depths, widths, terminal_only=True)
+        outcomes = plan_cost(self.config, depths, widths)
+        count = self.batch.non_padding_tokens
+        self.assertEqual(fixed["nominal_train_flops"], count * self.costs.reference_per_token)
+        self.assertEqual(outcomes["nominal_train_flops"] - fixed["nominal_train_flops"],
+                         count * self.costs.head_per_token)
+        self.assertEqual(fixed["modeled_lm_head_tokens"], count)
+        self.assertEqual(outcomes["modeled_lm_head_tokens"], 2 * count)
+        legacy = plan_cost(
+            replace(self.config, joint_compute_router=False, causal_compute_budget=False),
+            depths, widths,
+        )
+        self.assertEqual(
+            legacy["nominal_train_flops"] - fixed["nominal_train_flops"],
+            count * (2 * self.costs.removed_policy_per_pass + self.costs.head_per_token),
+        )
+
+    def test_fixed_quality_evaluation_and_replays_match_actual_model_ledger(self):
+        model = Metis16ForCausalLM(self.config).eval()
+        runtime = FrozenRuntimeState(model)
+        result = evaluate_in_memory(model, self.batch, self.fixed, seed=7, runtime_state=runtime)
+        self.assertEqual(result.cost["nominal_train_flops"], int(result.output.telemetry["joint_model_flops"]))
+        self.assertEqual(int(result.output.telemetry["joint_router_flops"]), 0)
+        summary = forward_summary(result, self.batch)
+        self.assertEqual(summary["nominal_probe_forward_flops"], result.cost["nominal_forward_flops"])
+        self.assertTrue(result.cost["terminal_only_head"])
+        repeated, statistics = repeated_plan_evaluation(
+            model, self.batch, self.fixed, seed=7, runtime_state=runtime,
+            repeat_forwards=2, minimum_loss_delta=1e-5,
+            force_depth=result.output.chosen_depths, force_routed_k=result.widths,
+        )
+        self.assertEqual(repeated.cost, result.cost)
+        self.assertEqual(statistics["nominal_forward_flops_all_calls"],
+                         2 * int(result.output.telemetry["joint_model_flops"]) / 3.0)
+        result.output.telemetry["executed_lm_head_tokens"] = torch.tensor(self.batch.supervised_tokens)
+        counted = forward_summary(result, self.batch)
+        self.assertEqual(counted["lm_head_tokens"], self.batch.supervised_tokens)
+        self.assertEqual(counted["lm_head_tokens_basis"], "model_execution_counter")
+
+    def test_joint_quality_counts_critic_once_and_outcome_head_per_active_pass(self):
+        model = Metis16ForCausalLM(self.config).eval()
+        with torch.no_grad():
+            model.joint_router.output.bias[:2].copy_(torch.tensor([2.0, 4.0]))
+        joint = replace(
+            self.fixed, compute_allocation_mode="joint", continuation_mode="budgeted",
+            routed_k_mode="budgeted", max_passes=3, allow_untrained_joint_router=True,
+        )
+        result, statistics = repeated_plan_evaluation(
+            model, self.batch, joint, seed=7, runtime_state=FrozenRuntimeState(model),
+            repeat_forwards=2, minimum_loss_delta=1e-5,
+        )
+        ledger = int(result.output.telemetry["joint_model_flops"])
+        critic = int(result.output.telemetry["joint_router_flops"])
+        self.assertGreater(critic, 0)
+        self.assertEqual(result.cost["nominal_train_flops"] + critic, ledger)
+        self.assertFalse(result.cost["terminal_only_head"])
+        self.assertEqual(result.cost["modeled_lm_head_tokens"], result.cost["token_passes"])
+        self.assertEqual(statistics["nominal_forward_flops_all_calls"], 2 * ledger / 3.0)
+        self.assertEqual(forward_summary(result, self.batch)["nominal_probe_forward_flops"], ledger / 3.0)
 
 
 class TinyModelProbeTests(unittest.TestCase):
