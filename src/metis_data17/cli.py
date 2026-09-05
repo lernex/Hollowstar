@@ -565,11 +565,13 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--raw-readers", type=int)
     prepare.add_argument("--idle-seconds", type=float, default=600)
     prepare.add_argument("--maximum-seconds", type=float, default=42000)
+    prepare.add_argument("--defer-compaction", action="store_true")
     supervise = sub.add_parser("supervise-prep")
     supervise.add_argument("--root", type=Path, required=True)
     supervise.add_argument("--python", type=Path, required=True)
     supervise.add_argument("--maximum-nodes", type=int, default=4)
     supervise.add_argument("--workers", type=int, default=32)
+    supervise.add_argument("--defer-compaction", action="store_true")
     policy = sub.add_parser("import-policy")
     policy.add_argument("--root", type=Path, required=True)
     policy.add_argument("--source-directory", type=Path, required=True)
@@ -597,6 +599,7 @@ def main(argv: list[str] | None = None) -> int:
         prep_service(
             root, workers=args.workers, raw_readers=args.raw_readers,
             idle_seconds=args.idle_seconds, maximum_seconds=args.maximum_seconds,
+            defer_compaction=args.defer_compaction,
         )
     elif args.command == "supervise-prep":
         from .runtime import supervise_prep
@@ -604,6 +607,7 @@ def main(argv: list[str] | None = None) -> int:
         supervise_prep(
             root, code_root(), args.python.expanduser().absolute(),
             maximum_nodes=args.maximum_nodes, workers_per_node=args.workers,
+            defer_compaction=args.defer_compaction,
         )
     elif args.command == "import-policy":
         from .policy import import_policy

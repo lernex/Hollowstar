@@ -35,9 +35,12 @@ def _submit_prep_workers(
     *,
     maximum_nodes: int = 4,
     workers_per_node: int = 32,
+    defer_compaction: bool = False,
 ) -> dict[str, Any]:
     if maximum_nodes < 1 or workers_per_node < 1:
         raise ValueError("Positive worker/node limits required")
+    if type(defer_compaction) is not bool:
+        raise ValueError("defer_compaction must be a boolean")
     if not python.is_file():
         raise FileNotFoundError("The pinned data interpreter is unavailable")
     script = checkout / "slurm" / "metis17" / "prepare.sbatch"
@@ -85,7 +88,7 @@ def _submit_prep_workers(
             f"--output={logs}/%j.out", f"--error={logs}/%j.err",
             f"--chdir={checkout}",
             f"--export=METIS17_ROOT={root},METIS17_CODE={checkout},METIS17_PYTHON={python},"
-            f"METIS17_WORKERS={workers_per_node}",
+            f"METIS17_WORKERS={workers_per_node},METIS17_DEFER_COMPACTION={int(defer_compaction)}",
             str(script),
         ]
         output = subprocess.check_output(command, text=True).strip()
@@ -99,6 +102,7 @@ def _submit_prep_workers(
             "python": str(python),
             "submitted_at": utc_now(),
             "workers": workers_per_node,
+            "defer_compaction": defer_compaction,
         }
         previous["jobs"].append(job)
         active.append(job)
@@ -113,6 +117,7 @@ def submit_prep_workers(
     *,
     maximum_nodes: int = 4,
     workers_per_node: int = 32,
+    defer_compaction: bool = False,
 ) -> dict[str, Any]:
     from .worker import claim
 
@@ -123,6 +128,7 @@ def submit_prep_workers(
         return _submit_prep_workers(
             root, checkout, python,
             maximum_nodes=maximum_nodes, workers_per_node=workers_per_node,
+            defer_compaction=defer_compaction,
         )
     finally:
         lock.close()
@@ -131,6 +137,7 @@ def submit_prep_workers(
 def supervise_prep(
     root: Path, checkout: Path, python: Path, *,
     maximum_nodes: int = 4, workers_per_node: int = 32,
+    defer_compaction: bool = False,
 ) -> None:
     from .cli import _stop_event, safe_error
     from .worker import EventTail, claim, failure_blocks, observe_failure, worker_configuration
@@ -167,6 +174,7 @@ def supervise_prep(
                 result = submit_prep_workers(
                     root, checkout, python, maximum_nodes=min(maximum_nodes, len(pending)),
                     workers_per_node=workers_per_node,
+                    defer_compaction=defer_compaction,
                 )
             else:
                 result = {"status": "waiting_for_new_raw_objects"}
