@@ -572,13 +572,15 @@ def evaluate_in_memory(
     seed: int, runtime_state: FrozenRuntimeState | None = None,
     continuation_grad: bool = False, force_depth: Tensor | None = None,
     force_routed_k: Tensor | None = None, return_router_observations: bool = False,
+    return_terminal_router_observations: bool = False,
 ) -> ProbeForward:
     """Evaluate without updating weights; callers own returned in-memory data."""
-    if force_routed_k is not None or return_router_observations:
+    if force_routed_k is not None or return_router_observations or return_terminal_router_observations:
         signature = inspect.signature(model.forward).parameters
         for required, requested in (
             ("force_routed_k", force_routed_k is not None),
             ("return_router_observations", return_router_observations),
+            ("return_terminal_router_observations", return_terminal_router_observations),
         ):
             if requested and required not in signature:
                 raise CapabilityError(f"Model.forward does not implement {required}")
@@ -596,6 +598,8 @@ def evaluate_in_memory(
         extras["force_routed_k"] = force_routed_k
     if return_router_observations:
         extras["return_router_observations"] = True
+    if return_terminal_router_observations:
+        extras["return_terminal_router_observations"] = True
     gradients = observed = None
     with frozen_model(model, continuation_grad=continuation_grad), torch.random.fork_rng(devices=cuda_devices), probe_precision_context(model):
         torch.manual_seed(seed)
@@ -690,11 +694,21 @@ def forward_summary(result: ProbeForward, batch: TrainingBatch) -> dict[str, Any
     return summary
 
 
+def plan_fingerprint(depths: Tensor, widths: Tensor) -> str:
+    digest = hashlib.sha256()
+    for tensor in (depths, widths):
+        values = tensor.detach().cpu().contiguous()
+        digest.update(json.dumps([str(values.dtype), list(values.shape)]).encode())
+        digest.update(values.numpy().tobytes())
+    return digest.hexdigest()
+
+
 def repeated_plan_evaluation(
     model: Metis16ForCausalLM, batch: TrainingBatch, curriculum: CurriculumState, *,
     seed: int, runtime_state: FrozenRuntimeState, repeat_forwards: int,
     minimum_loss_delta: float, force_depth: Tensor | None = None,
     force_routed_k: Tensor | None = None, return_router_observations: bool = False,
+    return_terminal_router_observations: bool = False,
 ) -> tuple[ProbeForward, dict[str, Any]]:
     """Distinguish natural plan variability from noise of an enforced plan."""
     if repeat_forwards < 2:
@@ -716,6 +730,7 @@ def repeated_plan_evaluation(
             model, batch, curriculum, seed=seed, runtime_state=runtime_state,
             force_depth=force_depth, force_routed_k=force_routed_k,
             return_router_observations=return_router_observations,
+            return_terminal_router_observations=return_terminal_router_observations,
         )
         if first is None:
             first = current
@@ -727,13 +742,8 @@ def repeated_plan_evaluation(
             raise RuntimeError("Fixed-plan replay changed the requested depths, widths, or realized cost")
         loss = float(current.output.loss.detach())
         elapsed += current.elapsed_seconds
-        digest = hashlib.sha256()
-        for tensor in (current.output.chosen_depths, current.widths):
-            values = tensor.detach().cpu().contiguous()
-            digest.update(json.dumps([str(values.dtype), list(values.shape)]).encode())
-            digest.update(values.numpy().tobytes())
         records.append({
-            "plan_sha256": digest.hexdigest(),
+            "plan_sha256": plan_fingerprint(current.output.chosen_depths, current.widths),
             "lm_loss": loss, "cost": current.cost,
             "modeled_total_train_flops": int(current.output.telemetry.get(
                 "joint_model_flops", current.cost["nominal_train_flops"],
