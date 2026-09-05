@@ -13,7 +13,7 @@ import yaml
 from metis_data17.acquisition import CapacityPending
 from metis_data17.cli import (
     _limits, append_event, download_order_key, download_service, init_run,
-    main, read_events, select_download_group, status,
+    intake_candidate_fits, main, read_events, select_download_group, status,
 )
 from metis_data17.common import ObjectSpec, RawReceipt, digest_json, read_receipt, write_receipt
 
@@ -179,6 +179,7 @@ class Metis17CliTests(unittest.TestCase):
         write_receipt(self.root / "RUN.json", {"config": config, "config_sha256": digest_json(config)})
         write_receipt(self.root / "limits.json", {
             "capacity_confirmation": "pending", "max_raw_bytes": 5, "max_working_bytes": 50,
+            "max_unknown_object_bytes": 5,
         })
         specs = [
             ObjectSpec.create(
@@ -220,6 +221,24 @@ class Metis17CliTests(unittest.TestCase):
         progress = json.loads((self.root / "status" / "download-fixture-host.json").read_text())
         self.assertEqual(progress["completed_objects"], 1)
         self.assertEqual(progress["capacity_blocked_objects"], 1)
+
+    def test_capacity_hint_avoids_requests_without_losing_resumable_objects(self):
+        spec = ObjectSpec.create(
+            source_id="source", url="https://example.test/object", revision="r",
+            relative_key="object", wire_format="parquet", adapter="text", priority=100,
+            expected_bytes=100,
+        )
+        limits = {"max_raw_bytes": 100, "max_unknown_object_bytes": 50}
+        self.assertFalse(intake_candidate_fits(spec, {"raw_bytes": 90, "inflight": {}}, limits))
+        self.assertTrue(intake_candidate_fits(
+            spec, {"raw_bytes": 0, "inflight": {spec.object_id: {"bytes": 100}}}, limits,
+        ))
+        unknown = ObjectSpec.create(
+            source_id="source", url="https://example.test/unknown", revision="r",
+            relative_key="unknown", wire_format="parquet", adapter="text", priority=100,
+        )
+        self.assertFalse(intake_candidate_fits(unknown, {"raw_bytes": 99, "inflight": {}}, limits))
+        self.assertTrue(intake_candidate_fits(unknown, {"raw_bytes": 0, "inflight": {}}, limits))
 
 
 if __name__ == "__main__":

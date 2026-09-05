@@ -195,6 +195,22 @@ def select_download_group(
     return min(idle_origin or choices)
 
 
+def intake_candidate_fits(
+    spec: ObjectSpec, intake: dict[str, Any], limits: dict[str, Any],
+) -> bool:
+    inflight = intake["inflight"]
+    others = sum(value["bytes"] for key, value in inflight.items() if key != spec.object_id)
+    available = limits["max_raw_bytes"] - intake["raw_bytes"] - others
+    estimate = spec.expected_bytes
+    if estimate is None:
+        estimate = inflight.get(spec.object_id, {}).get(
+            "bytes", limits.get("max_unknown_object_bytes", 32_000_000_000),
+        )
+    # This conservative scheduling hint never grants storage. The downloader
+    # still reserves atomically after learning the actual response length.
+    return estimate <= available
+
+
 def resolve_command(root: Path, *, source_ids: set[str] | None = None) -> dict[str, Any]:
     run = load_run(root)
     results: list[dict[str, Any]] = []
@@ -283,6 +299,7 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                                 heapq.heappush(pending.setdefault(group, []), download_order_key(spec, resumable))
                         loaded_pages.add(page)
                 limits = _limits(root)
+                intake = read_receipt(budget_path) if budget_path.exists() else {"raw_bytes": 0, "inflight": {}}
                 new_stamp = (root / "limits.json").stat().st_mtime_ns
                 new_budget_stamp = budget_path.stat().st_mtime_ns if budget_path.exists() else 0
                 if new_stamp != limit_stamp or new_budget_stamp != budget_stamp:
@@ -327,8 +344,15 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                     while len(active) < (workers or int(settings["workers_per_host"])):
                         choices: list[tuple[tuple[int, int, str], str]] = []
                         for group, heap in pending.items():
-                            while heap and heap[0][2] in committed:
-                                heapq.heappop(heap)
+                            while heap:
+                                candidate = specs[heap[0][2]]
+                                if candidate.object_id in committed:
+                                    heapq.heappop(heap)
+                                elif not intake_candidate_fits(candidate, intake, limits):
+                                    heapq.heappop(heap)
+                                    capacity_blocked[candidate.object_id] = candidate
+                                else:
+                                    break
                             if not heap:
                                 continue
                             candidate = specs[heap[0][2]]
@@ -382,6 +406,11 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                     "interface_now": _interface_counters(),
                     "capacity_confirmation": limits["capacity_confirmation"],
                     "max_raw_bytes": limits["max_raw_bytes"],
+                    "intake_reserved_bytes": sum(value["bytes"] for value in intake["inflight"].values()),
+                    "intake_headroom_bytes": (
+                        limits["max_raw_bytes"] - intake["raw_bytes"]
+                        - sum(value["bytes"] for value in intake["inflight"].values())
+                    ),
                 })
                 if not active and stop.is_set():
                     break

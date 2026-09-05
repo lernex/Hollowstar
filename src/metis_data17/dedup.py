@@ -27,7 +27,7 @@ from typing import Any, Iterator, Sequence
 from .common import digest_json, read_receipt, under_root, write_receipt
 from .dedup_runs import (
     COMPARATOR, _alive, bucket_for, canonical_rows, input_contract, merge_rows, metadata_lock, positive_integer,
-    prepare_inputs, prepared_rows, receipt_file_pin, sort_key, winner_key, write_run,
+    prepare_inputs, prepared_rows, read_reference_metadata, receipt_file_pin, sort_key, winner_key, write_run,
 )
 from .dedup_signatures import generate_signatures, signature_status
 from .dedup_storage import (

@@ -98,6 +98,50 @@ class Metis17DedupTests(unittest.TestCase):
         write_receipt(directory / "ELIGIBLE.json", receipt)
         return path
 
+    def test_large_pdf_metadata_uses_a_verified_reference_without_dropping_the_document(self):
+        rows = [self.row(str(index)) for index in range(8)]
+        metadata = {
+            "pre_sa_key": "A source derivation and supporting observations. " * 25000,
+            "license": "CC0", "no_references": [{"text": "Preserved alternate rendering"}],
+        }
+        rows[4]["metadata_json"] = json.dumps(metadata)
+        self.assertGreater(len(rows[4]["metadata_json"]), 1_048_576)
+        path = self.shard("long-paper-metadata", rows)
+        result = ingest_eligible([path], self.output, batch_id="pdf", bucket_count=4)
+        self.assertEqual(result["admitted_input_rows"], 8)
+        survivors = list(iter_survivors(self.output))
+        row = next(item for item in survivors if item["doc_id"] == "4")
+        self.assertLess(len(row["metadata_json"]), 4096)
+        self.assertEqual(dedup.read_reference_metadata(row), metadata)
+        self.assertEqual(winner_key(row), winner_key({**row, "metadata_json": rows[4]["metadata_json"]}))
+        self.assertEqual(row["prepared_row"], 4)
+        self.assertEqual(row["content_hash"], rows[4]["content_hash"])
+        signatures = generate_signatures(
+            [path], self.root / "signatures", batch_id="pdf",
+            snapshot="source-snapshot", semantic_namespace="science",
+        )
+        self.assertEqual(signatures["documents"], 8)
+
+    def test_metadata_reference_checks_row_binding_and_same_size_source_corruption(self):
+        row = self.row("paper")
+        row["metadata_json"] = json.dumps({"pre_sa_key": "Document context. " * 10000})
+        path = self.shard("metadata-reference", [row])
+        ingest_eligible([path], self.output, batch_id="paper", bucket_count=1)
+        reference, = list(iter_survivors(self.output))
+        self.assertEqual(dedup.read_reference_metadata(reference), json.loads(row["metadata_json"]))
+        tampered = json.loads(reference["metadata_json"])
+        tampered[dedup_runs.METADATA_REFERENCE]["row"] = 1
+        with self.assertRaisesRegex(ValueError, "immutable prepared row"):
+            dedup.read_reference_metadata({**reference, "metadata_json": json.dumps(tampered)})
+        previous = path.stat()
+        with path.open("r+b") as stream:
+            first = stream.read(1)
+            stream.seek(0)
+            stream.write(bytes([first[0] ^ 1]))
+        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, "source checksum changed"):
+            dedup.read_reference_metadata(reference)
+
     def production_chunk(self, name, rows):
         chunk_id = digest_json(["chunk", name])
         fingerprint = digest_json(["normalized", name])

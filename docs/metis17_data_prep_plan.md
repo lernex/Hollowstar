@@ -489,12 +489,27 @@ canonical payload seal, `digest_json(read_receipt(path))`. A full JSON-file
 checksum has a separately named field. Parquet `sha256` is always the
 full-file checksum. These domains must never be accepted interchangeably.
 
+Eligibility and reducer generations are separate. A reducer-only change
+rebuilds its metadata/signatures without changing the saved eligibility
+generation or tokenizer input identity. Failed work records the worker
+implementation and capacity identity, so a corrected worker or explicitly
+expanded capacity can retry without deleting valid inputs or completions.
+
 Quality-prioritized acquisition does not itself implement quality-aware
 deduplication. The exact index retains all occurrence provenance and ranks
 winners by configured source/partition priority, known record quality and
 stable tie breakers. A later better occurrence can become the winner.
 Unknown quality stays unknown; this comparator is not an undisclosed
 learned quality model.
+
+Index metadata is not another copy of the corpus. Real Dolma PDF metadata
+includes full alternate document text in `pre_sa_key` and `no_references`;
+one observed 407k-character paper carried more than 1 MB of repeated
+metadata. Index records inline at most 64 KiB and otherwise retain a sealed
+prepared-row metadata reference. `dedup.read_reference_metadata` resolves it
+with checksum/row validation and reads only the metadata column. The source
+text, eligibility decisions, winner comparator and original metadata remain
+unchanged; long papers are not dropped to satisfy an index-size heuristic.
 
 **Still separate from this launch:** activating the rest of the 55-row
 ledger, learned/raw-web quality selection, closing near/span comparison
@@ -555,6 +570,11 @@ partials precede new work; new work is quality ordered, with independent
 origins allowed to fill otherwise idle bandwidth. A source/object that
 cannot fit a reservation does not stall smaller admissible objects from
 other sources. Capacity limits are not raised automatically.
+Known objects that cannot fit are postponed before making a network
+request. Unknown-size objects need conservative headroom before another
+probe; in-flight reservations remain resumable. A full intake budget must
+not turn into thousands of pointless HF/CC requests that resemble active
+payload downloading.
 
 Two canary objects per admission group are initially permitted. Successful
 whole-object screening and at least the configured 10% acceptance are
@@ -571,6 +591,18 @@ values explicitly; it does not inherit an HF credential via `--export=ALL`.
 Only owned 1.7 services may be restarted. Do not pull into or modify a live
 1.6/MoRE checkout.
 
+Two real startup failures are now covered by the launcher:
+
+- Run Python with `-B` and `PYTHONDONTWRITEBYTECODE=1`. On September 5,
+  `py-spy` found the first canary blocked in importlib `_write_atomic` on
+  a Lustre lock, before processing any corpus data. Disabling bytecode
+  writes allowed the same committed canary to finish.
+- Preserve the virtualenv launcher's absolute path, **not its resolved
+  symlink target**. Resolving `runtime-login2/bin/python` selected the system
+  interpreter and lost the qualified packages in the first Slurm rollout.
+  Runtime paths are now recorded with each submitted job; corrected
+  code/runtime pairs have independent restart-storm guards.
+
 CPU workers use renewable 12-hour allocations, stop accepting new objects
 before the walltime boundary, and relinquish idle allocations rather than
 holding otherwise usable nodes indefinitely. Slurm backfill can take
@@ -581,3 +613,27 @@ Use `status/download-*.json`, `status/prep-*.json`, sealed event journals,
 Slurm job logs and actual interface deltas together. A live Screen session,
 an old progress file or a completed source catalogue alone does not prove
 that bytes are moving or preparation is keeping up.
+
+### September 5 startup evidence
+
+The isolated release root is `/lus/lustre1/vollmerc/metis-1.7`. Code is
+deployed into commit-addressed checkouts beneath `code/`; the existing
+1.6/MoRE checkout is not a deployment target.
+
+Slurm canary job **495905**, using `8d539a4` with bytecode writes disabled,
+accepted **31 of 36** real documents: science `5/5` and `24/29`, and two
+HPLT language canaries `1/1` each. Its source admissions opened the science
+download lane automatically. This established the real policy/format path,
+not corpus-scale throughput.
+
+The corrected continuous deployment is **`51c4b36`**. Jobs **495920,
+495922, 495923 and 495924** were started on four available nodes, each with
+32 chunk workers and two raw-reader slots. At **07:25:44 UTC**, the first
+worker had completed 109 objects and indexed 264 documents while
+acquisition remained in progress. These were initially tiny canary objects;
+their objects/second must not be extrapolated to large HPLT archives.
+
+The 400 GB raw / 2 TB working ceiling is still in force. Both user and
+group quota reports explicitly inherit defaults, whose inspection requires
+administrator permission. The machine's free-space report is not an
+approval to expand this bounded start to the complete 200 TB plan.

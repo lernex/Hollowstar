@@ -7,6 +7,7 @@ import math
 import os
 import re
 import contextlib
+from functools import lru_cache
 from itertools import groupby
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
@@ -14,7 +15,7 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .common import digest_json, read_receipt, sha256_file, under_root
+from .common import canonical_json, digest_json, read_receipt, sha256_file, under_root
 from .dedup_locks import metadata_lock
 from .dedup_receipts import eligible_stage
 from .dedup_storage import storage_descriptor
@@ -36,7 +37,9 @@ REFERENCE_SCHEMA = pa.schema([
 ])
 WINNER_SCHEMA = pa.schema(list(REFERENCE_SCHEMA) + [pa.field("occurrence_count", pa.int64())])
 METADATA_COLUMNS = [name for name in PREP_SCHEMA.names if name != "text"]
-MAX_METADATA_BYTES = 1_048_576
+MAX_METADATA_BYTES = 65_536
+MAX_SOURCE_METADATA_BYTES = 128_000_000
+METADATA_REFERENCE = "_metis17_metadata_reference"
 COMPARATOR = "priority-desc,known-quality-desc,score-desc,stable-evidence-asc/v1"
 
 
@@ -97,6 +100,72 @@ def _reject_constant(value: str) -> None:
     raise ValueError(f"Nonfinite JSON value: {value}")
 
 
+def _metadata_object(value: Any) -> tuple[dict[str, Any], bytes]:
+    if not isinstance(value, str):
+        raise ValueError("metadata_json must be a JSON object string")
+    encoded = value.encode("utf-8")
+    if len(encoded) > MAX_SOURCE_METADATA_BYTES:
+        raise ValueError("Prepared metadata exceeds the canonical record bound")
+    parsed = json.loads(value, parse_constant=_reject_constant)
+    if not isinstance(parsed, dict):
+        raise ValueError("metadata_json must encode an object")
+    return parsed, encoded
+
+
+def _index_metadata(value: str, artifact: Mapping[str, Any], index: int) -> str:
+    parsed, encoded = _metadata_object(value)
+    if len(encoded) <= MAX_METADATA_BYTES and METADATA_REFERENCE not in parsed:
+        return value
+    # Real PDF metadata can contain full alternate text (pre_sa_key and
+    # no_references). Keep its verified location, not copies in every LSM run.
+    return canonical_json({METADATA_REFERENCE: {
+        "schema": "metis17.prepared-metadata-reference/v1",
+        "path": artifact["path"], "row": index, "prepared_sha256": artifact["sha256"],
+        "metadata_sha256": hashlib.sha256(encoded).hexdigest(), "metadata_bytes": len(encoded),
+    }})
+
+
+@lru_cache(maxsize=16)
+def _verified_metadata_source(path: str, checksum: str, stamp: tuple[int, ...]) -> None:
+    if sha256_file(Path(path)) != checksum:
+        raise ValueError("Prepared metadata source checksum changed")
+
+
+def read_reference_metadata(reference_row: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve bounded index metadata without reading the document text column."""
+    parsed, _ = _metadata_object(reference_row["metadata_json"])
+    if METADATA_REFERENCE not in parsed:
+        return parsed
+    item = parsed[METADATA_REFERENCE]
+    if (
+        set(parsed) != {METADATA_REFERENCE} or not isinstance(item, dict)
+        or item.get("schema") != "metis17.prepared-metadata-reference/v1"
+        or item.get("path") != reference_row["prepared_path"]
+        or item.get("row") != reference_row["prepared_row"]
+        or item.get("prepared_sha256") != reference_row["prepared_sha256"]
+        or type(item.get("row")) is not int or item["row"] < 0
+    ):
+        raise ValueError("Metadata reference disagrees with its immutable prepared row")
+    validate_hash(item.get("metadata_sha256"), "metadata_sha256")
+    path = Path(item["path"])
+    stat = path.stat()
+    stamp = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    _verified_metadata_source(str(path), item["prepared_sha256"], stamp)
+    offset = item["row"]
+    with contextlib.closing(pq.ParquetFile(path)) as parquet:
+        for group in range(parquet.num_row_groups):
+            count = parquet.metadata.row_group(group).num_rows
+            if offset < count:
+                table = parquet.read_row_group(group, columns=["metadata_json"], use_threads=False)
+                value = table.column("metadata_json")[offset].as_py()
+                metadata, encoded = _metadata_object(value)
+                if len(encoded) != item["metadata_bytes"] or hashlib.sha256(encoded).hexdigest() != item["metadata_sha256"]:
+                    raise ValueError("Referenced metadata bytes differ from their seal")
+                return metadata
+            offset -= count
+    raise ValueError("Metadata reference row is outside its prepared shard")
+
+
 def validate_prepared_schema(schema: pa.Schema) -> None:
     for field in PREP_SCHEMA:
         if schema.get_field_index(field.name) < 0 or schema.field(field.name).type != field.type:
@@ -112,13 +181,9 @@ def reference(row: dict[str, Any], artifact: Mapping[str, Any], index: int) -> d
     size = row.get("character_count")
     if type(size) is not int or size < 0:
         raise ValueError("character_count must be a nonnegative int64")
-    metadata = row.get("metadata_json")
-    if not isinstance(metadata, str) or len(metadata.encode("utf-8")) > MAX_METADATA_BYTES:
-        raise ValueError("metadata_json must be bounded JSON metadata, not corpus text")
-    parsed = json.loads(metadata, parse_constant=_reject_constant)
-    if not isinstance(parsed, dict):
-        raise ValueError("metadata_json must encode an object")
+    metadata = _index_metadata(row.get("metadata_json"), artifact, index)
     result = {name: row[name] for name in METADATA_COLUMNS}
+    result["metadata_json"] = metadata
     result.update(
         occurrence_id=digest_json([
             row["source_id"], row["object_id"], row["doc_id"], row["content_hash"],
