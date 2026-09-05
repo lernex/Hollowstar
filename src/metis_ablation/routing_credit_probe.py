@@ -30,7 +30,7 @@ from metis_training.data import (
     TrainingBatch,
 )
 from metis_training.metrics import estimate_train_flops
-from metis_training.model import AdaptiveDroplessMoE, CurriculumState, Metis16ForCausalLM
+from metis_training.model import AdaptiveDroplessMoE, CurriculumState, DenseFFN, Metis16ForCausalLM
 from metis_training.model_config import Metis16Config
 from metis_training.precision import build_precision_policy
 
@@ -188,9 +188,9 @@ class RoutingCapture:
 
     def __enter__(self) -> "RoutingCapture":
         for layer_index, layer in enumerate(self.model.layers):
-            if not isinstance(layer.moe, AdaptiveDroplessMoE):
+            if not isinstance(layer.moe, (AdaptiveDroplessMoE, DenseFFN)):
                 self.__exit__()
-                raise CapabilityError("Routing probes require AdaptiveDroplessMoE layers")
+                raise CapabilityError("Model assessment requires an instrumented MoE or dense FFN")
 
             def hook(_module, _args, kwargs, output, index=layer_index):
                 key = (int(kwargs["pass_index"]), index)
@@ -235,7 +235,11 @@ class RoutingCapture:
             valid = unpacked[mask]
             if not bool(torch.isfinite(valid).all()) or not torch.equal(valid, valid.round()):
                 raise ValueError("Actual chosen k must be finite integers")
-            if bool(((valid < config.min_routed_k) | (valid > config.max_routed_k)).any()):
+            invalid = (
+                valid.ne(0) if config.ffn_mode == "dense"
+                else (valid < config.min_routed_k) | (valid > config.max_routed_k)
+            )
+            if bool(invalid.any()):
                 raise ValueError("Actual chosen k is outside model bounds")
             widths[p, layer] = unpacked.long()
         return widths
@@ -309,7 +313,10 @@ def plan_cost(config: Metis16Config, depths: Tensor, widths: Tensor) -> dict[str
         raise ValueError("Cost plans require integer depths and widths")
     if bool(((depths < 0) | (depths > config.max_passes)).any()):
         raise ValueError("Depth plan is outside the architectural cap")
-    expert_cost = 18 * config.latent_dim * config.expert_intermediate_dim
+    expert_cost = (
+        0 if config.ffn_mode == "dense"
+        else 18 * config.latent_dim * config.expert_intermediate_dim
+    )
     reference = replace(config, joint_compute_router=False) if hasattr(config, "joint_compute_router") else config
     previous = 0
     modeled = 0
@@ -317,7 +324,11 @@ def plan_cost(config: Metis16Config, depths: Tensor, widths: Tensor) -> dict[str
     for p in range(config.max_passes):
         active = depths > p
         valid = widths[p, :, active]
-        if valid.numel() and bool(((valid < config.min_routed_k) | (valid > config.max_routed_k)).any()):
+        invalid = (
+            valid.ne(0) if config.ffn_mode == "dense"
+            else (valid < config.min_routed_k) | (valid > config.max_routed_k)
+        )
+        if valid.numel() and bool(invalid.any()):
             raise ValueError("Active plan widths are outside routed-k bounds")
         if bool((widths[p, :, ~active] != 0).any()):
             raise ValueError("Inactive plan widths must be zero")
@@ -1409,6 +1420,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--step", type=int, default=7000)
     parser.add_argument(
+        "--quality-only", action="store_true",
+        help="Assess the checkpoint's recorded policy, including fixed/dense controls, without credit interventions",
+    )
+    parser.add_argument(
         "--evaluation-gap-blocks", type=int, default=0,
         help="Use an unsampled stride-gap block, disjoint from the entire declared training run",
     )
@@ -1445,6 +1460,10 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     if args.fit_steps and args.utility_checkpoint is not None:
         raise ValueError("Fitting starts a fresh head; do not combine it with --utility-checkpoint")
     joint_requested = args.policy == "joint" or args.fit_steps > 0
+    if args.quality_only and (
+        joint_requested or args.utility_checkpoint is not None or args.joint_caps is not None
+    ):
+        raise ValueError("Quality-only assessment uses the checkpoint's own trained policy and weights")
     if joint_requested and not args.fit_steps and args.utility_checkpoint is None:
         raise CapabilityError("Joint evaluation requires fitted utility weights or --fit-steps")
     if not joint_requested and (args.utility_checkpoint is not None or args.joint_caps is not None):
@@ -1473,15 +1492,17 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     if args.fit_steps and not 2 <= args.fit_max_depth <= config.max_passes:
         raise ValueError("--fit-max-depth must lie within the checkpoint architecture")
     caps = args.joint_caps or [config.max_passes]
-    if len(caps) != len(set(caps)) or any(not 2 <= cap <= config.max_passes for cap in caps):
+    if joint_requested and (
+        len(caps) != len(set(caps)) or any(not 2 <= cap <= config.max_passes for cap in caps)
+    ):
         raise ValueError("Joint caps must be distinct integers within [2, model.max_passes]")
     if args.sequence_length > config.final_context_length:
         raise ValueError("Requested probe sequence exceeds the model context limit")
     curriculum = CurriculumState.from_value(identity["curriculum"])
     curriculum = replace(curriculum, stochastic_routing=False, random_policy_step=args.step)
-    if hasattr(curriculum, "compute_allocation_mode"):
+    if hasattr(curriculum, "compute_allocation_mode") and not args.quality_only:
         curriculum = replace(curriculum, compute_allocation_mode="legacy")
-    if curriculum.continuation_mode not in {"adaptive", "budgeted"}:
+    if not args.quality_only and curriculum.continuation_mode not in {"adaptive", "budgeted"}:
         raise CapabilityError("Depth-credit probe requires a learned continuation policy")
     inventory = ReleaseInventory.from_release_root(args.release_root)
     release_descriptor = identify_file(inventory.root / "RELEASE.json")
@@ -1496,7 +1517,10 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         raise CapabilityError("Probe precision policy supports explicit cpu or cuda devices")
     model, numerical = load_frozen_model(
         config, payload["model"], device=device, precision=precision,
-        enable_joint=joint_requested,
+        enable_joint=(
+            bool(getattr(config, "joint_compute_router", False))
+            if args.quality_only else joint_requested
+        ),
         checkpoint_precision=identity["precision_profile"],
         initialization_seed=args.seed,
     )
@@ -1572,6 +1596,55 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         model, batch, curriculum, seed=args.seed, runtime_state=runtime,
         repeat_forwards=args.repeat_forwards, minimum_loss_delta=args.minimum_loss_delta,
     )
+    if args.quality_only:
+        runtime.restore()
+        for item in (checkpoint_identity, manifest_identity, release_descriptor):
+            assert_file_unchanged(item)
+        if source_identity() != source:
+            raise RuntimeError("Source identity changed during checkpoint assessment")
+        report = {
+            "schema": "more.checkpoint-quality/v1",
+            "status": "complete",
+            "source": source,
+            "checkpoint": checkpoint_identity,
+            "run_manifest": manifest_identity,
+            "run_identity_sha256": manifest["run_identity_sha256"],
+            "base_model_config_sha256": json_sha256(identity["model"]),
+            "training_source_revision": identity.get("source_revision"),
+            "training_curriculum": identity["curriculum"],
+            "release": {"descriptor": release_descriptor, **identity["release"]},
+            "sampling": sampling,
+            "seed": args.seed,
+            "policy": "recorded_checkpoint_policy",
+            "numerical_policy": numerical,
+            "precision_changed_from_checkpoint": precision != identity["precision_profile"],
+            "evaluation": {
+                **forward_summary(legacy, batch),
+                "mean_lm_loss": legacy_noise["mean_lm_loss"],
+                "repeat_statistics": legacy_noise,
+                "modeled_total_train_flops": int(legacy.output.telemetry.get(
+                    "joint_model_flops", legacy.cost["nominal_train_flops"]
+                )),
+            },
+            "warmup_forward_calls": len(warmups),
+            "warmup_token_count": sum(item["non_padding_tokens"] for item in warmups),
+            "warmup_elapsed_seconds": warmup_elapsed,
+            "forward_calls": len(warmups) + args.repeat_forwards,
+            "nominal_forward_flops_all_calls": (
+                warmup_cost + legacy_noise["nominal_forward_flops_all_calls"]
+            ),
+            "total_wall_seconds_including_loading": time.perf_counter() - started,
+            "limitations": [
+                "Checkpoint-policy likelihood, not a counterfactual credit assessment.",
+                "Token-disjoint evaluation is not deduplicated document holdout.",
+                "A single window does not establish superiority or full-training convergence.",
+            ],
+        }
+        (output / "report.json").write_text(
+            json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        return report
     legacy_replay, legacy_replay_noise = repeated_plan_evaluation(
         model, batch, curriculum, seed=args.seed, runtime_state=runtime,
         repeat_forwards=args.repeat_forwards, minimum_loss_delta=args.minimum_loss_delta,

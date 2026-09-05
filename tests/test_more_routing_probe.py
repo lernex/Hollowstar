@@ -35,6 +35,7 @@ from metis_ablation.routing_credit_probe import (
     plan_cost,
     plan_repeat_statistics,
     repeated_plan_evaluation,
+    run_probe,
     repeat_noise,
     select_depth_pairs,
     save_utility_artifact,
@@ -46,6 +47,7 @@ from metis_ablation.routing_credit_probe import (
     validate_utility_provenance,
 )
 from metis_training.data import TrainingBatch
+from metis_training.metrics import estimate_train_flops
 from metis_training.model import CurriculumState, Metis16ForCausalLM
 from metis_training.model_config import Metis16Config
 
@@ -84,6 +86,64 @@ class OwnedFilesTestCase(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.root)
+
+
+class CheckpointQualityControlTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.threads = torch.get_num_threads()
+        torch.set_num_threads(1)
+
+    @classmethod
+    def tearDownClass(cls):
+        torch.set_num_threads(cls.threads)
+
+    def test_dense_control_has_zero_expert_work_and_correct_loss(self):
+        config = replace(
+            tiny_config(), ffn_mode="dense", dense_ffn_intermediate_dim=64,
+            n_routed_experts=0, n_shared_experts=0,
+        )
+        model = Metis16ForCausalLM(config).eval()
+        batch = tiny_batch(config)
+        curriculum = CurriculumState(continuation_mode="depth_one", stochastic_routing=False)
+        result = evaluate_in_memory(model, batch, curriculum, seed=9)
+        with torch.no_grad():
+            expected = model(
+                batch.input_ids, batch.labels, curriculum=curriculum,
+                attention_mask=batch.attention_mask, document_ids=batch.document_ids,
+                reset_mask=batch.reset_mask, canonical_ids=batch.canonical_ids,
+            )
+        torch.testing.assert_close(result.output.loss, expected.loss)
+        self.assertEqual(result.cost["expert_assignments"], 0)
+        self.assertEqual(int(result.widths.sum()), 0)
+        self.assertEqual(
+            result.cost["nominal_train_flops"],
+            estimate_train_flops(config, tokens=batch.non_padding_tokens, observed_mean_passes=1.0),
+        )
+
+    def test_frozen_pathway_control_is_assessed_without_changing_its_policy(self):
+        config = tiny_config()
+        model = Metis16ForCausalLM(config).eval()
+        batch = tiny_batch(config)
+        curriculum = CurriculumState(
+            continuation_mode="fixed_max", max_passes=2, routed_k_mode="fixed",
+            fixed_routed_k=4, pathway_mode="frozen", stochastic_routing=False,
+        )
+        result, statistics = repeated_plan_evaluation(
+            model, batch, curriculum, seed=9, runtime_state=FrozenRuntimeState(model),
+            repeat_forwards=2, minimum_loss_delta=1e-5,
+        )
+        self.assertTrue(bool(result.output.chosen_depths.eq(2).all()))
+        self.assertEqual(result.cost["expert_assignments"], 2 * config.n_layers * 4 * batch.non_padding_tokens)
+        self.assertTrue(statistics["same_complete_plan_every_repeat"])
+
+    def test_quality_only_cannot_silently_refit_a_checkpoint(self):
+        args = build_parser().parse_args([
+            "--checkpoint", "missing", "--release-root", "missing", "--output", "unused",
+            "--quality-only", "--fit-steps", "1",
+        ])
+        with self.assertRaisesRegex(ValueError, "checkpoint's own trained policy"):
+            run_probe(args)
 
 
 class PackedMappingTests(unittest.TestCase):
