@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import fnmatch
 import sys
 import tempfile
 import threading
@@ -84,6 +85,37 @@ class Metis17CliTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             init_run(self.root, config)
 
+    def test_recipe_corrects_legacy_training_target_without_mutating_run(self):
+        value = yaml.safe_load(self.config.read_text())
+        value["tokenizer"]["sample_target_bytes"] = 160_000_000_000
+        path = Path(self.tmp.name) / "legacy.yaml"
+        path.write_text(yaml.safe_dump(value))
+        with patch("metis_data17.cli.code_commit", return_value="a" * 40):
+            init_run(self.root, path)
+        before = (self.root / "RUN.json").read_bytes()
+        self.assertEqual(main(["freeze-tokenizer-recipe", "--root", str(self.root),
+                               "--config", str(self.config.with_name("tokenizer-recipe.yaml"))]), 0)
+        recipe = read_receipt(self.root / "tokenizer" / "RECIPE.json")
+        self.assertEqual(recipe["tokenizer"]["sample_target_bytes"], 150_000_000_000)
+        self.assertEqual(recipe["tokenizer"]["vocabulary_size"], 131072)
+        self.assertEqual(recipe["tokenizer"]["min_sample_bytes_per_category"], 30_000_000_000)
+        self.assertEqual((self.root / "RUN.json").read_bytes(), before)
+
+    def test_status_uses_validated_active_generation_not_a_flat_artifact_filename(self):
+        with patch("metis_data17.cli.code_commit", return_value="a" * 40):
+            init_run(self.root, self.config)
+        flat = self.root / "tokenizer" / "TOKENIZER_RELEASE.json"
+        flat.parent.mkdir(exist_ok=True)
+        flat.write_text("{}")
+        expected = {"ready": False, "status": "WAITING"}
+        with patch("metis_data17.policy.policy_config", return_value={"policy_ready": True}), patch(
+            "metis_data17.worker.worker_configuration", return_value=({"generation": "b" * 64}, {}),
+        ), patch("metis_data17.tokenizer_pipeline.tokenizer_status", return_value=expected) as current:
+            result = status(self.root)
+        current.assert_called_once_with(self.root, generation="b" * 64)
+        self.assertFalse(result["tokenizer_ready"])
+        self.assertEqual(result["tokenizer"], expected)
+
     def test_supervision_preserves_the_virtualenv_launcher_symlink(self):
         launcher = Path(self.tmp.name) / "runtime" / "bin" / "python"
         launcher.parent.mkdir(parents=True)
@@ -95,6 +127,15 @@ class Metis17CliTests(unittest.TestCase):
         self.assertEqual(supervise.call_args.args[2], launcher)
         self.assertTrue(supervise.call_args.args[2].is_symlink())
 
+    def test_deferred_compaction_reaches_both_worker_and_supervisor(self):
+        with patch("metis_data17.worker.prep_service") as worker:
+            self.assertEqual(main(["prep", "--root", str(self.root), "--defer-compaction"]), 0)
+        self.assertIs(worker.call_args.kwargs["defer_compaction"], True)
+        with patch("metis_data17.runtime.supervise_prep") as supervise:
+            self.assertEqual(main(["supervise-prep", "--root", str(self.root),
+                                   "--python", sys.executable, "--defer-compaction"]), 0)
+        self.assertIs(supervise.call_args.kwargs["defer_compaction"], True)
+
     def test_no_reconstruction_source_kind(self):
         value = yaml.safe_load(self.config.read_text())
         value["sources"][0]["kind"] = "github_repositories"
@@ -102,6 +143,19 @@ class Metis17CliTests(unittest.TestCase):
         config.write_text(yaml.safe_dump(value))
         with self.assertRaises(ValueError):
             init_run(self.root, config)
+
+    def test_complement_selectors_match_real_hive_paths_and_exclude_token_indexes(self):
+        path = self.config.with_name("expansion-complements.yaml")
+        sources = {source["id"]: source for source in yaml.safe_load(path.read_text())["sources"]}
+        essential = sources["essential_web_2023_2024"]["allow_patterns"]
+        self.assertTrue(any(fnmatch.fnmatchcase("data/crawl=CC-MAIN-2024-38/part.parquet", pattern)
+                            for pattern in essential))
+        self.assertFalse(any(fnmatch.fnmatchcase("data/crawl=CC-MAIN-2022-49/part.parquet", pattern)
+                             for pattern in essential))
+        code = sources["dolma35_materialized_code"]
+        self.assertTrue(any(fnmatch.fnmatchcase("swallow-code/allenai/dolma2-tokenizer/0000.csv.gz", pattern)
+                            for pattern in code["deny_patterns"]))
+        self.assertEqual(code["expected_inventory_bytes"] + 1_098_537_316, 2_458_368_343_174)
 
     def test_expansion_activates_a_separate_batch_without_mutating_frozen_run(self):
         with patch("metis_data17.cli.code_commit", return_value="a" * 40):

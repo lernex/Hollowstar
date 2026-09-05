@@ -526,6 +526,14 @@ def status(root: Path) -> dict[str, Any]:
         for path in (root / "status").glob("prep-*.json")
     }
     intake = root / "state" / "intake-budget.json"
+    policy = policy_config(root)
+    tokenizer = {"status": "WAITING", "ready": False, "activity": "waiting_for_verified_policy"}
+    if policy["policy_ready"]:
+        from .worker import worker_configuration
+        from .tokenizer_pipeline import tokenizer_status
+
+        config, _ = worker_configuration(root)
+        tokenizer = tokenizer_status(root, generation=config["generation"])
     return {
         "release": run["release"],
         "root": str(root),
@@ -537,8 +545,13 @@ def status(root: Path) -> dict[str, Any]:
             WorkingBudget(root).snapshot()
             if (root / "state" / "working-budget" / "total.json").exists() else None
         ),
-        "policy_ready": policy_config(root)["policy_ready"],
-        "tokenizer_ready": (root / "tokenizer" / "TOKENIZER_RELEASE.json").exists(),
+        "policy_ready": policy["policy_ready"],
+        "tokenizer_ready": tokenizer["ready"],
+        "tokenizer": tokenizer,
+        "tokenizer_worker": (
+            json.loads((root / "status" / "tokenizer.json").read_text())
+            if (root / "status" / "tokenizer.json").exists() else None
+        ),
     }
 
 
@@ -571,7 +584,16 @@ def main(argv: list[str] | None = None) -> int:
     supervise.add_argument("--python", type=Path, required=True)
     supervise.add_argument("--maximum-nodes", type=int, default=4)
     supervise.add_argument("--workers", type=int, default=32)
+    supervise.add_argument("--tokenizer", action="store_true")
     supervise.add_argument("--defer-compaction", action="store_true")
+    tokenizer = sub.add_parser("tokenizer")
+    tokenizer.add_argument("--root", type=Path, required=True)
+    tokenizer.add_argument("--scratch-dir", type=Path, required=True)
+    tokenizer.add_argument("--poll-seconds", type=float, default=30)
+    tokenizer.add_argument("--maximum-seconds", type=float, default=172_000)
+    recipe = sub.add_parser("freeze-tokenizer-recipe")
+    recipe.add_argument("--root", type=Path, required=True)
+    recipe.add_argument("--config", type=Path, default=code_root() / "configs/metis17/tokenizer-recipe.yaml")
     policy = sub.add_parser("import-policy")
     policy.add_argument("--root", type=Path, required=True)
     policy.add_argument("--source-directory", type=Path, required=True)
@@ -607,8 +629,27 @@ def main(argv: list[str] | None = None) -> int:
         supervise_prep(
             root, code_root(), args.python.expanduser().absolute(),
             maximum_nodes=args.maximum_nodes, workers_per_node=args.workers,
+            tokenizer=args.tokenizer,
             defer_compaction=args.defer_compaction,
         )
+    elif args.command == "tokenizer":
+        from .tokenizer_service import tokenizer_service
+
+        tokenizer_service(
+            root, scratch_dir=args.scratch_dir.expanduser().absolute(),
+            poll_seconds=args.poll_seconds, maximum_seconds=args.maximum_seconds,
+        )
+    elif args.command == "freeze-tokenizer-recipe":
+        from .tokenizer_pipeline import freeze_tokenizer_recipe
+
+        settings = yaml.safe_load(args.config.read_text())
+        if (
+            not isinstance(settings, dict) or settings.get("schema") != "metis17.tokenizer-settings/v1"
+            or not isinstance(settings.get("tokenizer"), dict)
+        ):
+            raise ValueError("A versioned tokenizer-settings configuration is required")
+        current = load_run(root)["config"]["tokenizer"]
+        print(canonical_json(freeze_tokenizer_recipe(root, {**current, **settings["tokenizer"]})))
     elif args.command == "import-policy":
         from .policy import import_policy
 

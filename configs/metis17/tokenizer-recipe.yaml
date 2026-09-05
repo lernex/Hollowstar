@@ -1,0 +1,20 @@
+schema: metis17.tokenizer-settings/v1
+tokenizer:
+  sample_target_bytes: 150000000000
+  min_sample_bytes_per_category: 30000000000
+  required_categories: [web, code, math, science, multilingual]
+  required_source_minimum_bytes:
+    nemotron_cc_math: 1000000000
+    nemotron_cc_code: 1000000000
+    dolma35_science_permissive: 1000000000
+    nemotron_cc_v2: 1000000000
+    hplt3_nonenglish: 1000000000
+    fineweb2_filtered_train: 1000000000
+  required_language_minimum_bytes:
+    arb_Arab: 250000000
+    cmn_Hans: 250000000
+    deu_Latn: 250000000
+    fra_Latn: 250000000
+    jpn_Jpan: 250000000
+    rus_Cyrl: 250000000
+    spa_Latn: 250000000

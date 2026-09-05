@@ -1269,6 +1269,13 @@ class Metis17DedupTests(unittest.TestCase):
             future.result(timeout=5)
         self.assertEqual(len(list(self.output.glob("published-*.json"))), 3)
 
+    def test_immutable_layout_validation_does_not_reenter_the_publication_queue(self):
+        expected = dedup._initialize(self.output, 8)
+        with patch.object(dedup, "_lock", side_effect=AssertionError("Immutable layout took a write lock")):
+            self.assertEqual(dedup._initialize(self.output, 8), expected)
+            with self.assertRaisesRegex(ValueError, "layout/policy changed"):
+                dedup._initialize(self.output, 4)
+
     def test_release_limits_automatically_enable_quota_and_exhaustion_is_unpublished(self):
         from metis_data17.acquisition import CapacityPending
 

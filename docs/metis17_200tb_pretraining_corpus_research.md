@@ -833,6 +833,13 @@ takes approximately **10.1 days of transfer**, excluding source-specific
 slowdowns, interruptions and remaining preparation. Sharing HF on both
 hosts is necessary to avoid stranding an uplink in a long HF-only tail.
 
+After sharing **HF, CC and HPLT on both hosts**, the later September 5
+120-second sample measured **119.875 MB/s** and **121.350 MB/s RX**,
+respectively, with **zero RX drops or errors**. Both downloaders had
+96 active transfer slots. The fully sealed payload counter excludes
+still-growing partial objects; it must not be used alone as an instantaneous
+download-rate measurement.
+
 The P0+P1 priority tranche has **63.23 TB of HF allocation**; the other
 57.651 TB uses independent origins. Full Nemotron inclusion is now explicit
 in this priority tranche. It can make useful progress substantially

@@ -73,13 +73,20 @@ def _initialize(root: Path, bucket_count: int) -> dict[str, Any]:
         "input_identity": "immutable-shard-path,sha256/v1",
         "stage_receipt_hash": "canonical-payload-sha256/v1",
     }
+    path = root / "INDEX.json"
+
+    def validate() -> None:
+        existing = read_receipt(path)
+        existing.setdefault("stage_receipt_hash", "canonical-payload-sha256/v1")
+        if existing != expected:
+            raise ValueError("Dedup layout/policy changed; use a new index, not a new task count")
+
+    if path.exists():
+        validate()
+        return expected
     with _lock(root, "publication"):
-        path = root / "INDEX.json"
         if path.exists():
-            existing = read_receipt(path)
-            existing.setdefault("stage_receipt_hash", "canonical-payload-sha256/v1")
-            if existing != expected:
-                raise ValueError("Dedup layout/policy changed; use a new index, not a new task count")
+            validate()
         else:
             write_receipt(path, expected)
     return expected

@@ -2,10 +2,13 @@
 
 Date: **2026-09-05**
 
-Status: **separate 1.7 implementation and capacity-bounded startup**. The new
-`metis_data17` path does not bypass or modify the 1.6 build graph. The complete
-200 TB allocation remains a plan, not a claim that all 55 ledger rows have
-been activated or downloaded.
+Status: **separate 1.7 implementation with overlapping acquisition and
+preparation**. The new `metis_data17` path does not modify the 1.6 build
+graph. The target is approximately **200 TB of actual compressed payload**,
+including **25.7 TB fresh WET**, not a reserve-inclusive budget. Expanded
+text, intermediates and uint32 IDs have a separate working-storage limit.
+Candidate ceilings exceed 200 TB so blocked sources and whole-object slack
+do not silently shrink that target; this is not a completed-download claim.
 
 The [acquisition plan](metis17_200tb_pretraining_corpus_research.md) and
 [200 TB ledger](metis17_200tb_acquisition_ledger.csv) define the candidate
@@ -310,11 +313,20 @@ shared storage. Cache reuse is partition/session scoped. Separate workers
 may encode the same content independently; no global cross-worker
 tokenize-once guarantee is implied.
 
-The configured representative sample target is **160 GB of text**, with at
-least **1 GB in each required web, code, math, science and multilingual
-category**. Meeting only the category minima is insufficient to freeze the
-production tokenizer. Acquisition order must not turn this into a tokenizer
-trained on the first few gigabytes of English.
+The production training sample is **150 GB of usable UTF-8 text**, with
+**30 GB in each required web, code, math, science and multilingual category**.
+Whole documents may produce a bounded, reported overshoot; holdout bytes
+cannot satisfy the training requirement. The explicit recipe also requires
+six named curated sources and native Arabic, Simplified Chinese, German,
+French, Japanese, Russian and Spanish coverage. These are sampling gates,
+not claims that every incoming document is representative.
+
+The live acquisition `RUN.json` was frozen with the old 160 GB setting.
+Do not edit it. Seal `configs/metis17/tokenizer-recipe.yaml` separately
+against that exact RUN and eligibility generation. Sampling, training and
+later ID-cache admission must use the same recipe identity. Freeze the
+actual admitted sample input set and provenance; hashing only that set is
+not a guarantee of identical samples under different arrival schedules.
 
 Document deletion, changed sampling weights or a different dedup winner can
 often be expressed as metadata masks over unchanged text/IDs. But repeated-
@@ -473,6 +485,7 @@ warm-up/drain instead. Measure the actual rates before using that as an ETA.
 | [`dedup.py`](../src/metis_data17/dedup.py) | Metadata-only exact occurrences/winners and geometric sorted-run compaction; higher configured quality priority wins independently of arrival order |
 | [`dedup_signatures.py`](../src/metis_data17/dedup_signatures.py) | Actual scoped MinHash/span/code signatures; signature production is not completed near-duplicate deletion |
 | [`tokenizer.py`](../src/metis_data17/tokenizer.py) | Artifact-validated 131,072-entry digit-split tokenizer, stratified sampling and bounded local-scratch uint32 ID caches |
+| [`tokenizer_pipeline.py`](../src/metis_data17/tokenizer_pipeline.py), [`tokenizer_service.py`](../src/metis_data17/tokenizer_service.py) | Sealed recipe, eligible-only sampling, one training owner, generation-bound readiness and replay-safe partition caching |
 | [`runtime.py`](../src/metis_data17/runtime.py), [`prepare.sbatch`](../slurm/metis17/prepare.sbatch) | Commit-pinned CPU workers on idle Slurm nodes, explicit interpreter/environment, low-priority supervision and bounded restart behavior |
 
 The streaming producer publishes `part-*.READY.json` while scanning a raw
@@ -502,6 +515,68 @@ stable tie breakers. A later better occurrence can become the winner.
 Unknown quality stays unknown; this comparator is not an undisclosed
 learned quality model.
 
+**September 5 compaction repair:** profiling the actual old workers found
+`ingest_eligible -> compact_dedup -> metadata_lock`, with active-object slots
+blocked and most CPUs idle. There were three synchronous maintenance sites,
+including a hidden WorkingBudget pre-publication guard. Opt-in
+`--defer-compaction` bypasses all three while retaining bounded within-batch
+sorting, quota enforcement, occurrence leaves and atomic publication.
+The first pilot exposed a second bottleneck: publishers still held every
+affected bucket lock, while one maintenance lane could not keep up. The
+real index reached **217-229 active runs per bucket**, and fresh stack
+traces again showed `_publish_batch -> metadata_lock`.
+
+Deferred publishers now append under the short publication transaction
+without waiting for the long bucket merge. A compactor re-reads that
+transaction's current run set and replaces only its pinned inputs, retaining
+concurrent arrivals. Per-bucket leases let independent nodes compact
+**disjoint** buckets; a durable round-robin cursor covers the complete
+partition. Each node reserves one maintenance process slot, so backpressure
+cannot occupy every process needed to relieve it. Maintenance normally
+amortizes at least eight equal-tier runs and performs one merge per lease.
+Publication waits explicitly at **256 active runs per bucket** rather than
+letting fan-in and control-file size grow without bound. Maintenance
+continues while a stopping worker drains admitted work.
+
+This does not dedicate extra nodes or make first arrival the winner. Only
+the exact-index generation changes; normalization and eligibility artifacts
+remain reusable.
+
+A subsequent profile of the **actual publication-lock owner** found the
+same batch manifest being JSON-encoded and hashed again for each of its
+64 buckets. Verification now caches the digest and run lookup **only
+within one locked publication transaction**, while checking every bucket's
+individual pin. On the same locked **21,865-run live index**, the old
+view took **16.46 seconds**, versus **8.44 seconds** for the cached view
+run first; the complete returned run sets were identical. This is not a
+persistent cache that could hide later receipt changes.
+
+The fleet startup also exposed eager per-node receipt discovery: every
+coordinator reread every `RAW_READY` receipt before assigning any work.
+With almost 29,000 objects, all worker pools sat idle for several minutes.
+Discovery now decodes the already-sealed event journal; the claimed reblock
+task verifies the actual immutable receipt **before reading source text**.
+Negative source-admission lookups are shared within each scheduling tick.
+This scheduling-only change does not change either data generation and is
+for subsequent launches; already-working processes need not be restarted.
+
+Publication admission uses a separate kernel-queued lock. Only one ingester
+contends with the independent compactors for the shared transaction; the
+rest do not create a distributed-lock polling storm. Existing immutable
+index-layout validation also avoids that write-lock queue. Acquiring it
+again for every batch would defeat the admission separation.
+
+All six declared decontamination thresholds were compared with the actual
+sealed live index on September 5 and matched. Startup now rejects a
+disagreement or an unknown declared knob instead of accepting an inert
+configuration. The shared source index and 1.6 jobs are not changed.
+
+The existing **10% canary admission floor is only a gross-failure guard**,
+not proof that retention is correct. Source/language/domain/length retention,
+long-document behavior and raw-WET learned-quality selection still need
+their explicit quality evidence. In particular, a WET compliance pass
+remains quality-selection-pending, not training eligible.
+
 Index metadata is not another copy of the corpus. Real Dolma PDF metadata
 includes full alternate document text in `pre_sa_key` and `no_references`;
 one observed 407k-character paper carried more than 1 MB of repeated
@@ -511,8 +586,8 @@ with checksum/row validation and reads only the metadata column. The source
 text, eligibility decisions, winner comparator and original metadata remain
 unchanged; long papers are not dropped to satisfy an index-size heuristic.
 
-**Still separate from this launch:** activating the rest of the 55-row
-ledger, learned/raw-web quality selection, closing near/span comparison
+**Still separate from this launch:** unreviewed small candidates in the
+larger ledger, learned/raw-web quality selection, closing near/span comparison
 scopes, final mixture/replay feasibility, and wiring final selection and
 packing to the new ID references. No partial index is described as a final
 35T training release. Unknown crawl scope does not authorize global

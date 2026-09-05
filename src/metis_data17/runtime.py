@@ -28,13 +28,14 @@ def idle_nodes() -> list[dict[str, Any]]:
     return [nodes[name] for name in sorted(nodes)]
 
 
-def _submit_prep_workers(
+def _submit_workers(
     root: Path,
     checkout: Path,
     python: Path,
     *,
     maximum_nodes: int = 4,
     workers_per_node: int = 32,
+    stage: str = "prep",
     defer_compaction: bool = False,
 ) -> dict[str, Any]:
     if maximum_nodes < 1 or workers_per_node < 1:
@@ -43,10 +44,14 @@ def _submit_prep_workers(
         raise ValueError("defer_compaction must be a boolean")
     if not python.is_file():
         raise FileNotFoundError("The pinned data interpreter is unavailable")
-    script = checkout / "slurm" / "metis17" / "prepare.sbatch"
+    scripts = {"prep": ("prepare.sbatch", "12:00:00"), "tokenizer": ("tokenizer.sbatch", "2-00:00:00")}
+    if stage not in scripts:
+        raise ValueError("Unsupported Metis-1.7 worker stage")
+    script_name, time_limit = scripts[stage]
+    script = checkout / "slurm" / "metis17" / script_name
     if not script.is_file():
         raise FileNotFoundError("The committed 1.7 Slurm wrapper is unavailable")
-    registry_path = root / "state" / "prep-jobs.json"
+    registry_path = root / "state" / f"{stage}-jobs.json"
     previous = read_receipt(registry_path) if registry_path.exists() else {"jobs": []}
     live_ids: set[str] = set()
     if previous["jobs"]:
@@ -60,7 +65,7 @@ def _submit_prep_workers(
     free = idle_nodes()[:needed] if needed else []
     if not free and not active:
         return {"active_jobs": [], "registered_jobs": previous["jobs"], "status": "waiting_for_idle_nodes"}
-    logs = root / "logs" / "prep"
+    logs = root / "logs" / stage
     logs.mkdir(parents=True, exist_ok=True)
     commit = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
@@ -81,10 +86,10 @@ def _submit_prep_workers(
         # Idle snapshots bound admission, not placement: a pinned node can
         # become busy while another suitable node stays idle.
         command = [
-            "sbatch", "--parsable", "--job-name=metis17-prep", "--partition=parry",
+            "sbatch", "--parsable", f"--job-name=metis17-{stage}", "--partition=parry",
             "--nodes=1", "--ntasks=1", "--exclusive",
             f"--cpus-per-task={node['cpus']}", f"--mem={memory_mb}M",
-            "--time=12:00:00", "--nice=10000", "--requeue",
+            f"--time={time_limit}", "--nice=10000", "--requeue",
             f"--output={logs}/%j.out", f"--error={logs}/%j.err",
             f"--chdir={checkout}",
             f"--export=METIS17_ROOT={root},METIS17_CODE={checkout},METIS17_PYTHON={python},"
@@ -125,7 +130,7 @@ def submit_prep_workers(
     if lock is None:
         raise RuntimeError("Another preparation submission is already in progress")
     try:
-        return _submit_prep_workers(
+        return _submit_workers(
             root, checkout, python,
             maximum_nodes=maximum_nodes, workers_per_node=workers_per_node,
             defer_compaction=defer_compaction,
@@ -134,9 +139,25 @@ def submit_prep_workers(
         lock.close()
 
 
+def submit_tokenizer_worker(
+    root: Path, checkout: Path, python: Path, *, workers: int = 64,
+) -> dict[str, Any]:
+    from .worker import claim
+
+    lock = claim(root / "locks" / "tokenizer-submission.flock")
+    if lock is None:
+        raise RuntimeError("Another tokenizer submission is already in progress")
+    try:
+        return _submit_workers(
+            root, checkout, python, maximum_nodes=1, workers_per_node=workers, stage="tokenizer",
+        )
+    finally:
+        lock.close()
+
+
 def supervise_prep(
     root: Path, checkout: Path, python: Path, *,
-    maximum_nodes: int = 4, workers_per_node: int = 32,
+    maximum_nodes: int = 4, workers_per_node: int = 32, tokenizer: bool = False,
     defer_compaction: bool = False,
 ) -> None:
     from .cli import _stop_event, safe_error
@@ -170,6 +191,7 @@ def supervise_prep(
             limits_sha256 = digest_json(read_receipt(root / "limits.json"))
             failed = {object_id for object_id, value in failures.items() if failure_blocks(value, limits_sha256)}
             pending = acquired - completed - failed
+            tokenizer_worker = submit_tokenizer_worker(root, checkout, python) if tokenizer else None
             if pending:
                 result = submit_prep_workers(
                     root, checkout, python, maximum_nodes=min(maximum_nodes, len(pending)),
@@ -178,6 +200,8 @@ def supervise_prep(
                 )
             else:
                 result = {"status": "waiting_for_new_raw_objects"}
+            if tokenizer:
+                result["tokenizer_worker"] = tokenizer_worker
             atomic_json(status_path, {
                 "schema": "metis17.prep-supervisor/v1",
                 "host": socket.gethostname(), "pid": os.getpid(), "generation": generation,

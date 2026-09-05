@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from metis_data17.common import read_receipt, utc_now, write_receipt
-from metis_data17.runtime import idle_nodes, submit_prep_workers
+from metis_data17.runtime import idle_nodes, submit_prep_workers, submit_tokenizer_worker, supervise_prep
 
 
 class Metis17RuntimeTests(unittest.TestCase):
@@ -42,7 +43,9 @@ class Metis17RuntimeTests(unittest.TestCase):
         with patch("metis_data17.runtime.idle_nodes", return_value=[
             {"name": "node01", "cpus": 192, "memory_mb": 512000},
         ]), patch("metis_data17.runtime.subprocess.check_output", side_effect=output):
-            result = submit_prep_workers(self.root, self.code, Path(sys.executable), maximum_nodes=4)
+            result = submit_prep_workers(
+                self.root, self.code, Path(sys.executable), maximum_nodes=4, defer_compaction=True,
+            )
         self.assertEqual([job["job_id"] for job in result["active_jobs"]], ["101"])
         command = next(row for row in commands if row[0] == "sbatch")
         self.assertIn("--nodes=1", command)
@@ -52,9 +55,11 @@ class Metis17RuntimeTests(unittest.TestCase):
         self.assertNotIn("ALL", exports)
         self.assertNotIn("HF_TOKEN", exports)
         self.assertIn("METIS17_WORKERS=32", exports)
+        self.assertIn("METIS17_DEFER_COMPACTION=1", exports)
         registry = read_receipt(self.root / "state" / "prep-jobs.json")
         self.assertEqual(registry["jobs"][0]["code_commit"], "a" * 40)
         self.assertEqual(registry["jobs"][0]["python"], str(Path(sys.executable)))
+        self.assertIs(registry["jobs"][0]["defer_compaction"], True)
 
     def test_active_jobs_are_not_duplicated_when_controller_restarts(self):
         write_receipt(self.root / "state" / "prep-jobs.json", {
@@ -82,6 +87,50 @@ class Metis17RuntimeTests(unittest.TestCase):
             result = submit_prep_workers(self.root, self.code, Path(sys.executable))
         command.assert_not_called()
         self.assertEqual(result["status"], "waiting_for_idle_nodes")
+
+    def test_tokenizer_has_an_independent_single_node_registry_and_long_training_window(self):
+        script = self.code / "slurm" / "metis17" / "tokenizer.sbatch"
+        script.write_text("#!/usr/bin/env bash\nexit 0\n")
+        commands = []
+
+        def output(argv, **kwargs):
+            commands.append(argv)
+            return "a" * 40 if argv[0] == "git" else "105\n"
+
+        with patch("metis_data17.runtime.idle_nodes", return_value=[
+            {"name": "node01", "cpus": 192, "memory_mb": 512000},
+            {"name": "node02", "cpus": 192, "memory_mb": 512000},
+        ]), patch("metis_data17.runtime.subprocess.check_output", side_effect=output):
+            result = submit_tokenizer_worker(self.root, self.code, Path(sys.executable))
+        self.assertEqual(len(result["active_jobs"]), 1)
+        submitted = next(command for command in commands if command[0] == "sbatch")
+        self.assertIn("--job-name=metis17-tokenizer", submitted)
+        self.assertIn("--time=2-00:00:00", submitted)
+        self.assertTrue((self.root / "state" / "tokenizer-jobs.json").is_file())
+        self.assertFalse((self.root / "state" / "prep-jobs.json").exists())
+
+    def test_tokenizer_admission_precedes_filling_all_idle_nodes_with_prep(self):
+        from metis_data17.cli import append_event
+
+        append_event(self.root, "raw/host", {"object_id": "first"})
+        write_receipt(self.root / "limits.json", {"fixture": True})
+        stop = threading.Event()
+        order = []
+
+        def submit(stage):
+            order.append(stage)
+            return {"status": "submitted"}
+
+        with patch("metis_data17.worker.worker_configuration", return_value=(
+            {"generation": "a" * 64, "index_generation": "b" * 64}, {},
+        )), patch("metis_data17.cli._stop_event", return_value=stop), patch.object(
+            stop, "wait", side_effect=lambda _seconds: stop.set(),
+        ), patch("metis_data17.runtime.submit_tokenizer_worker", side_effect=lambda *_args: submit("tokenizer")), patch(
+            "metis_data17.runtime.submit_prep_workers", side_effect=lambda *_args, **_kwargs: submit("prep"),
+        ) as prep:
+            supervise_prep(self.root, self.code, Path(sys.executable), tokenizer=True, defer_compaction=True)
+        self.assertEqual(order, ["tokenizer", "prep"])
+        self.assertIs(prep.call_args.kwargs["defer_compaction"], True)
 
     def test_corrected_code_or_runtime_is_not_blocked_by_previous_failed_launches(self):
         write_receipt(self.root / "state" / "prep-jobs.json", {

@@ -37,8 +37,8 @@ tokenizer:
   vocabulary_size: 131072
   split_digits: true
   token_dtype: uint32
-  sample_target_bytes: 160000000000
-  min_sample_bytes_per_category: 1000000000
+  sample_target_bytes: 150000000000
+  min_sample_bytes_per_category: 30000000000
   required_categories: [web, code, math, science, multilingual]
   special_tokens:
     - <|endoftext|>
