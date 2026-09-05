@@ -193,11 +193,7 @@ def prepare(args: argparse.Namespace) -> None:
             {"group": group, "task": [members[name] for name in names]},
             sort_keys=False,
         ))
-        # Loading a YAML path preserves upstream groups and their aggregation rules.
-        loaded = manager.load(str(config_path))
         expected = {leaf for leaf, owner in leaf_owner.items() if owner in names}
-        if set(loaded["tasks"]) != expected:
-            raise ValueError(f"Worker {worker_id} did not load exactly its assigned tasks")
         manifest["workers"].append({
             "worker": worker_id,
             "group": group,
@@ -206,6 +202,16 @@ def prepare(args: argparse.Namespace) -> None:
             "benchmarks": names,
             "leaf_tasks": sorted(expected),
         })
+    # Registered names avoid the pinned harness's malformed name for group paths.
+    manager = TaskManager(include_path=[
+        str(ROOT / "configs" / "more_eval_tasks"), str(args.output),
+    ])
+    for worker in manifest["workers"]:
+        loaded = manager.load(worker["group"])
+        if set(loaded["tasks"]) != set(worker["leaf_tasks"]):
+            raise ValueError(
+                f"Worker {worker['worker']} did not load exactly its assigned tasks"
+            )
         for name, task in sorted(loaded["tasks"].items()):
             owner = leaf_owner[name]
             spec = specs[owner]
