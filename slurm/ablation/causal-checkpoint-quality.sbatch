@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=3
 #SBATCH --cpus-per-task=48
 #SBATCH --exclusive
-#SBATCH --exclude=parrypeak[007,020,026,063-064]
+#SBATCH --exclude=parrypeak[007,012,020,026,056,063-064]
 #SBATCH --time=00:30:00
 
 set -euo pipefail

@@ -144,6 +144,35 @@ class CausalPilotTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "explicit causal"):
             self.fixture.train("invalid-terminal", stop_after_steps=1, terminal_action_critic=True)
 
+    def test_causal_rm_requires_explicit_metadata_and_resumes_the_same_recipe(self):
+        self.set_row("more-rm")
+        arguments = dict(
+            compute_allocation_mode="causal", causal_memory_metadata="legacy_confidence",
+            terminal_action_critic=True, terminal_critic_exploration=0.5,
+            require_routed_expert_gradients=True,
+        )
+        self.fixture.train("rm", stop_after_steps=2, **arguments)
+        first = self.fixture.manifest("rm")
+        self.assertEqual(first["model"]["causal_memory_metadata"], "legacy_confidence")
+        self.assertEqual(first["curriculum"]["memory_gate_scale"], 1.0)
+        self.fixture.train("rm", stop_after_steps=3, **arguments)
+        self.assertEqual(first["run_identity_sha256"], self.fixture.manifest("rm")["run_identity_sha256"])
+        rows = [
+            json.loads(line) for line in (
+                self.fixture.root / "rm/more-rm/telemetry/rank-00000.jsonl"
+            ).read_text().splitlines()
+        ]
+        self.assertGreater(sum(row["telemetry"]["causal_memory_metadata_tokens"] for row in rows), 0)
+        for row in rows:
+            self.assertLessEqual(row["telemetry"]["global_joint_budget_fraction"], 1)
+        with self.assertRaisesRegex(ValueError, "explicit causal"):
+            self.fixture.train(
+                "invalid-rm", stop_after_steps=1, causal_memory_metadata="legacy_confidence",
+            )
+        self.set_row("more-core")
+        with self.assertRaisesRegex(ValueError, "positive finite memory"):
+            self.fixture.train("invalid-core-metadata", stop_after_steps=1, **arguments)
+
     def test_reference_bootstrap_is_sealed_and_expires_at_its_absolute_step(self):
         self.set_row("more-core")
         self.fixture.train(
@@ -190,6 +219,17 @@ class CausalPilotTests(unittest.TestCase):
         self.assertIsNone(trainer.call_args.kwargs["max_steps"])
         self.assertEqual(trainer.call_args.kwargs["schedule_total_steps"], 25429)
         self.assertTrue(trainer.call_args.kwargs["keep_all_checkpoints"])
+
+    def test_cli_causal_rm_metadata_reaches_the_trainer_explicitly(self):
+        with patch("metis_ablation.train.train_row", return_value={}) as trainer:
+            main([
+                "--row", "more-rm", "--output", "unused",
+                "--compute-allocation-mode", "causal", "--terminal-action-critic",
+                "--causal-memory-metadata", "legacy_confidence", "--stop-after-steps", "3",
+            ])
+        self.assertEqual(trainer.call_args.args[0].name, "more-rm")
+        self.assertEqual(trainer.call_args.kwargs["causal_memory_metadata"], "legacy_confidence")
+        self.assertTrue(trainer.call_args.kwargs["terminal_action_critic"])
 
     def test_quality_launcher_covers_each_permanent_window_exactly_once(self):
         root = self.fixture.root
@@ -301,6 +341,19 @@ class CausalPilotTests(unittest.TestCase):
             self.assertEqual(marker.read_text(), "preserve")
             self.assertIn("--terminal-action-critic", launch["argv"])
             self.assertIn("--stop-after-steps", launch["argv"])
+        for experiment, row, metadata in (
+            ("terminal-core", "more-core", "disabled"),
+            ("terminal-rm", "more-rm", "legacy_confidence"),
+        ):
+            with self.subTest(experiment=experiment):
+                result = subprocess.run(
+                    ["bash", str(launcher)],
+                    env={**environment, "METIS_PILOT_EXPERIMENT": experiment},
+                    text=True, capture_output=True, check=True,
+                )
+                arguments = json.loads(result.stdout)["argv"]
+                self.assertEqual(arguments[arguments.index("--row") + 1], row)
+                self.assertEqual(arguments[arguments.index("--causal-memory-metadata") + 1], metadata)
 
 
 if __name__ == "__main__":

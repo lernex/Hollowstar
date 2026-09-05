@@ -865,6 +865,7 @@ def train_row(
     observed_depth_credit: bool = False,
     keep_all_checkpoints: bool = False,
     causal_compute_price: float = 0.0,
+    causal_memory_metadata: str = "disabled",
     activation_recompute_policy: str | None = None,
     terminal_action_critic: bool = False,
     terminal_critic_exploration: float = 0.05,
@@ -902,6 +903,7 @@ def train_row(
             observed_depth_credit=observed_depth_credit,
             keep_all_checkpoints=keep_all_checkpoints,
             causal_compute_price=causal_compute_price,
+            causal_memory_metadata=causal_memory_metadata,
             activation_recompute_policy=activation_recompute_policy,
             terminal_action_critic=terminal_action_critic,
             terminal_critic_exploration=terminal_critic_exploration,
@@ -938,6 +940,7 @@ def _train_row_inner(
     observed_depth_credit: bool = False,
     keep_all_checkpoints: bool = False,
     causal_compute_price: float = 0.0,
+    causal_memory_metadata: str = "disabled",
     activation_recompute_policy: str | None = None,
     terminal_action_critic: bool = False,
     terminal_critic_exploration: float = 0.05,
@@ -997,6 +1000,8 @@ def _train_row_inner(
     metered_policy = joint_policy or causal
     if causal_compute_price != 0.0 and not causal:
         raise ValueError("causal_compute_price requires an explicit causal allocation mode")
+    if causal_memory_metadata != "disabled" and not causal:
+        raise ValueError("causal_memory_metadata requires an explicit causal allocation mode")
     if terminal_action_critic and not causal:
         raise ValueError("terminal_action_critic requires an explicit causal allocation mode")
     if terminal_critic_exploration != 0.05 and not terminal_action_critic:
@@ -1007,6 +1012,7 @@ def _train_row_inner(
         config = replace(
             config, joint_compute_router=True, causal_compute_budget=True,
             causal_compute_price=causal_compute_price, budgeted_depth_values=(),
+            causal_memory_metadata=causal_memory_metadata,
             terminal_action_critic=terminal_action_critic,
             terminal_critic_exploration=terminal_critic_exploration,
             terminal_reference_bootstrap_steps=terminal_reference_bootstrap_steps,
@@ -1860,6 +1866,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--causal-compute-price", type=float, default=0.0)
     parser.add_argument(
+        "--causal-memory-metadata", choices=("disabled", "legacy_confidence"),
+        default="disabled",
+        help="Explicit RM compatibility feature; execution remains controlled by the causal allocator",
+    )
+    parser.add_argument(
         "--terminal-action-critic", action="store_true",
         help="Explicit terminal-action CE objective, with one vocabulary head per actual token exit",
     )
@@ -1981,6 +1992,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         observed_depth_credit=args.observed_depth_credit,
         keep_all_checkpoints=args.keep_all_checkpoints,
         causal_compute_price=args.causal_compute_price,
+        causal_memory_metadata=args.causal_memory_metadata,
         activation_recompute_policy=args.activation_recompute_policy,
         terminal_action_critic=args.terminal_action_critic,
         terminal_critic_exploration=args.terminal_critic_exploration,

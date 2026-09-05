@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=48
 #SBATCH --exclusive
-#SBATCH --exclude=parrypeak[007,020,026,063-064]
+#SBATCH --exclude=parrypeak[007,012,020,026,056,063-064]
 #SBATCH --time=04:00:00
 
 set -euo pipefail
@@ -18,11 +18,14 @@ set -euo pipefail
 : "${METIS_PILOT_STOP_AFTER_STEPS:?set an absolute resumable boundary}"
 : "${METIS_ABLATION_RUNTIME:?set the pinned runtime activation script}"
 export METIS_TERMINAL_CRITIC=0
+export METIS_CAUSAL_MEMORY_METADATA=disabled
 case "$METIS_PILOT_EXPERIMENT" in
   causal-core) export METIS_PILOT_ROW=more-core METIS_PILOT_MODE=causal ;;
+  causal-rm) export METIS_PILOT_ROW=more-rm METIS_PILOT_MODE=causal METIS_CAUSAL_MEMORY_METADATA=legacy_confidence ;;
   fixed-rerouted) export METIS_PILOT_ROW=loop-fixed METIS_PILOT_MODE=causal-fixed ;;
   fixed-frozen) export METIS_PILOT_ROW=loop-pathway-frozen METIS_PILOT_MODE=causal-fixed ;;
   terminal-core) export METIS_PILOT_ROW=more-core METIS_PILOT_MODE=causal METIS_TERMINAL_CRITIC=1 ;;
+  terminal-rm) export METIS_PILOT_ROW=more-rm METIS_PILOT_MODE=causal METIS_TERMINAL_CRITIC=1 METIS_CAUSAL_MEMORY_METADATA=legacy_confidence ;;
   terminal-fixed-rerouted) export METIS_PILOT_ROW=loop-fixed METIS_PILOT_MODE=causal-fixed METIS_TERMINAL_CRITIC=1 ;;
   terminal-fixed-frozen) export METIS_PILOT_ROW=loop-pathway-frozen METIS_PILOT_MODE=causal-fixed METIS_TERMINAL_CRITIC=1 ;;
   *) echo "Unsupported qualification experiment: $METIS_PILOT_EXPERIMENT" >&2; exit 2 ;;
@@ -62,6 +65,7 @@ exec python -B -m metis_ablation.train \
   --release-root "$METIS_RELEASE_ROOT" \
   --compute-allocation-mode "$METIS_PILOT_MODE" \
   --causal-compute-price "${METIS_CAUSAL_COMPUTE_PRICE:-0}" \
+  --causal-memory-metadata "$METIS_CAUSAL_MEMORY_METADATA" \
   --joint-router-exploration "${METIS_JOINT_EXPLORATION:-0.05}" \
   --joint-utility-coefficient "${METIS_JOINT_UTILITY_COEFFICIENT:-1}" \
   --diagnostic-apus "$WORLD_SIZE" \

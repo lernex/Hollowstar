@@ -135,8 +135,12 @@ reference, without a trained adaptive critic or unused intermediate readouts.
 The `loop-fixed` and `loop-pathway-frozen` rows distinguish rerouted from
 frozen expert identities. Execution settings and actual replay work must also
 be matched or reported, rather than attributing every difference to routing.
-The initial causal qualification lane is Core with recurrent-memory
-contributions disabled; it is not an RM qualification.
+Core keeps recurrent-memory contributions disabled. RM is a separate explicit
+lane: `--row more-rm --causal-memory-metadata legacy_confidence` preserves its
+continuous confidence feature through the frozen legacy encoder, while only
+the causal allocator chooses execution. The extra metadata forward work is
+charged against the same Core reference cap. The implementation and a short
+RM run do not establish a quality advantage over Core.
 
 ## Interfaces
 
@@ -158,6 +162,11 @@ python -m metis_ablation.train \
 Add `--terminal-action-critic --terminal-critic-exploration 0.05` only for
 the separately identified terminal-value experiment. Use a new output root
 for a different policy or objective.
+
+The isolated launcher names this combination `terminal-rm`; `terminal-core`
+remains the no-memory comparison. Both use frequent checkpoints and the routed
+expert-gradient gate. Existing legacy RM checkpoints are not silently
+reinterpreted as causal RM.
 
 The flags are recorded in curriculum/model identity. They must not be
 introduced into an existing campaign by weakening its resume checks. Fixed
