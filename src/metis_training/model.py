@@ -6162,6 +6162,12 @@ class Metis16ForCausalLM(nn.Module):
                 raise ValueError("Forced widths require an MoE pathway.")
         joint_mode = curriculum_state.compute_allocation_mode == "joint"
         collect_joint_outcomes = joint_mode or return_router_observations
+        observed_depth_credit = (
+            self.config.observed_depth_credit
+            and curriculum_state.continuation_mode in {"adaptive", "budgeted"}
+            and force_depth is None
+            and not joint_mode
+        )
         if joint_mode:
             if force_depth is not None or force_routed_k is not None:
                 raise ValueError("An explicit plan and learned joint allocation are mutually exclusive.")
@@ -6285,6 +6291,7 @@ class Metis16ForCausalLM(nn.Module):
         activation_recompute_used = False
         pass_survival_gate = attention_mask.float()
         ponder_loss_sum = embeddings.float().sum() * 0.0
+        previous_token_losses: Tensor | None = None
         exit_mass_sum = torch.zeros(
             (), device=input_ids.device, dtype=torch.float32
         )
@@ -7085,7 +7092,32 @@ class Metis16ForCausalLM(nn.Module):
                 exit_mass_by_token + exit_gate.detach().float()
             )
             if labels is not None:
-                if current_token_losses is not None:
+                if observed_depth_credit:
+                    if current_token_losses is None:
+                        _, current_token_losses = self._chunked_weighted_causal_loss_sum(
+                            self.final_norm(streams.mean(dim=-2)),
+                            labels,
+                            active_mask.float(),
+                            compute_mask=active_mask,
+                            return_token_losses=True,
+                        )
+                    if previous_token_losses is None:
+                        ponder_loss_sum = ponder_loss_sum + current_token_losses.sum()
+                    else:
+                        # Telescope over observed transitions, not exits whose
+                        # missing future CE would implicitly be treated as zero.
+                        # The hard mask is essential: an unexecuted transition
+                        # has no measured improvement and supplies no local credit.
+                        observed_change = torch.where(
+                            active_mask,
+                            current_token_losses - previous_token_losses,
+                            0.0,
+                        )
+                        ponder_loss_sum = ponder_loss_sum + (
+                            pass_survival_gate.float() * observed_change
+                        ).sum()
+                    previous_token_losses = current_token_losses
+                elif current_token_losses is not None:
                     ponder_loss_sum = ponder_loss_sum + (
                         current_token_losses * exit_gate.float()
                     ).sum()
@@ -7284,6 +7316,10 @@ class Metis16ForCausalLM(nn.Module):
                 "joint_utility_observations": joint_observation_count,
                 "joint_utility_upper_gap": joint_gap,
             })
+        if self.config.observed_depth_credit:
+            telemetry["observed_depth_credit_enabled"] = final_hidden.new_tensor(
+                int(observed_depth_credit), dtype=torch.long
+            )
         return Metis16CausalLMOutput(
             logits=logits,
             loss=causal_loss,

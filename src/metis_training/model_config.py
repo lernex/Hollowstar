@@ -500,6 +500,7 @@ class Metis16Config:
     depth_budget_coefficient: float = 1.0e-2
     budgeted_k_calibration_coefficient: float = 0.0
     budgeted_depth_calibration_coefficient: float = 0.0
+    observed_depth_credit: bool = False
     joint_compute_router: bool = False
     joint_router_hidden_dim: int = 128
     # Dual step size for the width and depth budget controllers. Zero keeps the
@@ -585,6 +586,8 @@ class Metis16Config:
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
+        if not self.observed_depth_credit:
+            payload.pop("observed_depth_credit")
         if not self.joint_compute_router:
             payload.pop("joint_compute_router")
             if self.joint_router_hidden_dim == 128:
@@ -752,6 +755,7 @@ class Metis16Config:
         if self.budgeted_depth_calibration_coefficient < 0.0:
             raise ValueError("budgeted_depth_calibration_coefficient cannot be negative.")
         self._validate_joint_router()
+        self._validate_depth_credit()
         if any(
             layer < 0 or layer >= self.n_layers
             for layer in self.ngram_memory.injection_layers
@@ -905,6 +909,7 @@ class Metis16Config:
             raise ValueError("_validate_tiny is only valid for tiny configs.")
         self._validate_memory_policies()
         self._validate_joint_router()
+        self._validate_depth_credit()
         if self.mhc_backend != "torch_reference":
             raise ValueError("Tiny/CPU tests require the torch mHC reference backend.")
         if self.ngram_memory.orders != (2, 3):
@@ -929,6 +934,12 @@ class Metis16Config:
                 raise ValueError("Joint compute routing requires a recurrent compute budget.")
             if self.expert_parallel_size != 1 or self.context_parallel_size != 1:
                 raise ValueError("Joint compute routing currently requires replicated experts without CP.")
+
+    def _validate_depth_credit(self) -> None:
+        if not isinstance(self.observed_depth_credit, bool):
+            raise ValueError("observed_depth_credit must be boolean.")
+        if self.observed_depth_credit and self.family not in _RELAXED_FAMILIES:
+            raise ValueError("Observed depth credit is opt-in for research families only.")
 
     @property
     def expert_entropy_normalizer(self) -> float:
