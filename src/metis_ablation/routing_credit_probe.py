@@ -305,8 +305,14 @@ def swap_plan(
     return swapped_depths, swapped_widths
 
 
-def plan_cost(config: Metis16Config, depths: Tensor, widths: Tensor) -> dict[str, Any]:
-    """Integer ledger using audited train-FLOP prefix increments, not mean k."""
+def plan_cost(
+    config: Metis16Config, depths: Tensor, widths: Tensor, *, terminal_only: bool = False,
+) -> dict[str, Any]:
+    """Audit a complete trajectory, excluding the separately reported critic.
+
+    Causal fixed controls use one terminal head; outcome policies pay at each
+    active pass. Identical depth/width plans therefore need an explicit head regime.
+    """
     if widths.shape != (config.max_passes, config.n_layers, *depths.shape):
         raise ValueError("Widths do not match the model's full plan geometry")
     if depths.dtype not in (torch.int32, torch.int64) or widths.dtype not in (torch.int32, torch.int64):
@@ -317,7 +323,17 @@ def plan_cost(config: Metis16Config, depths: Tensor, widths: Tensor) -> dict[str
         0 if config.ffn_mode == "dense"
         else 18 * config.latent_dim * config.expert_intermediate_dim
     )
-    reference = replace(config, joint_compute_router=False) if hasattr(config, "joint_compute_router") else config
+    causal = bool(getattr(config, "causal_compute_budget", False))
+    costs = None
+    if causal:
+        from metis_training.compute_router import JointComputeCosts
+
+        costs = JointComputeCosts.from_config(config)
+        reference = None
+    else:
+        if terminal_only:
+            raise ValueError("Terminal-only cost accounting requires a causal-budget model")
+        reference = replace(config, joint_compute_router=False) if hasattr(config, "joint_compute_router") else config
     previous = 0
     modeled = 0
     active_counts, assignments, histograms = [], [], []
@@ -332,28 +348,57 @@ def plan_cost(config: Metis16Config, depths: Tensor, widths: Tensor) -> dict[str
             raise ValueError("Active plan widths are outside routed-k bounds")
         if bool((widths[p, :, ~active] != 0).any()):
             raise ValueError("Inactive plan widths must be zero")
-        prefix = round(estimate_train_flops(
-            reference, tokens=1, observed_mean_passes=float(p + 1),
-            observed_mean_routed_k=1.0,
-        ) - (p + 1) * config.n_layers * expert_cost)
-        base = prefix - previous
-        previous = prefix
+        if costs is None:
+            prefix = round(estimate_train_flops(
+                reference, tokens=1, observed_mean_passes=float(p + 1),
+                observed_mean_routed_k=1.0,
+            ) - (p + 1) * config.n_layers * expert_cost)
+            base = prefix - previous
+            previous = prefix
+        else:
+            base = costs.base_pass_costs[p]
         count = int(active.sum())
         layer_assignments = [int(widths[p, layer].sum()) for layer in range(config.n_layers)]
-        modeled += count * base + sum(layer_assignments) * expert_cost
+        modeled += count * base + (
+            sum(layer_assignments) * expert_cost if costs is None else
+            sum(value * cost for value, cost in zip(layer_assignments, costs.expert_costs, strict=True))
+        )
         active_counts.append(count)
         assignments.append(layer_assignments)
         histograms.append([histogram(widths[p, layer][active]) for layer in range(config.n_layers)])
-    return {
+    tokens = int((depths > 0).sum())
+    token_passes = int(depths.sum())
+    if costs is not None and terminal_only:
+        modeled -= (token_passes - tokens) * costs.head_per_token
+    result = {
         "nominal_train_flops": modeled,
         "nominal_forward_flops": modeled / 3.0,
         "active_tokens_by_pass": active_counts,
         "expert_assignments_by_pass_layer": assignments,
         "chosen_k_by_pass_layer": histograms,
-        "tokens": int((depths > 0).sum()),
-        "token_passes": int(depths.sum()),
+        "tokens": tokens,
+        "token_passes": token_passes,
         "expert_assignments": sum(map(sum, assignments)),
     }
+    if costs is not None:
+        result.update({
+            "accounting_basis": "causal_shared_cost_ledger",
+            "terminal_only_head": terminal_only,
+            "modeled_lm_head_tokens": tokens if terminal_only else token_passes,
+            "removed_legacy_policy_train_flops": token_passes * costs.removed_policy_per_pass,
+            "critic_included": False,
+        })
+    return result
+
+
+def _terminal_only_cost(
+    config: Metis16Config, curriculum: CurriculumState, return_router_observations: bool,
+) -> bool:
+    return bool(
+        getattr(config, "causal_compute_budget", False)
+        and curriculum.compute_allocation_mode != "joint"
+        and not return_router_observations
+    )
 
 
 def histogram(values: Tensor) -> dict[str, int]:
@@ -567,14 +612,23 @@ def evaluate_in_memory(
     reconstructed = output.active_masks.sum(dim=0)
     if not torch.equal(reconstructed, output.chosen_depths):
         raise RuntimeError("Chosen depth does not match the actual active-pass history")
-    cost = plan_cost(model.config, output.chosen_depths, widths)
+    cost = plan_cost(
+        model.config, output.chosen_depths, widths,
+        terminal_only=_terminal_only_cost(model.config, curriculum, return_router_observations),
+    )
+    if getattr(model.config, "causal_compute_budget", False):
+        if "joint_model_flops" not in output.telemetry or "joint_router_flops" not in output.telemetry:
+            raise CapabilityError("Causal evaluation requires the model's actual compute ledger")
+        if cost["nominal_train_flops"] + int(output.telemetry["joint_router_flops"]) != int(output.telemetry["joint_model_flops"]):
+            raise RuntimeError("Reconstructed causal depth/width/head cost differs from the model ledger")
     return ProbeForward(output, widths, elapsed, gradients, observed, cost)
 
 
 def forward_summary(result: ProbeForward, batch: TrainingBatch) -> dict[str, Any]:
     depths = result.output.chosen_depths[batch.attention_mask]
     routed = result.widths[result.widths > 0]
-    return {
+    total_flops = int(result.output.telemetry.get("joint_model_flops", result.cost["nominal_train_flops"]))
+    summary = {
         "lm_loss": float(result.output.loss.detach()),
         "supervised_tokens": int((batch.labels != -100).sum()),
         "non_padding_tokens": int(batch.attention_mask.sum()),
@@ -584,7 +638,16 @@ def forward_summary(result: ProbeForward, batch: TrainingBatch) -> dict[str, Any
         "mean_chosen_k_over_active_layer_pass_tokens": float(routed.float().mean()),
         "elapsed_seconds_including_hooks_and_gradient": result.elapsed_seconds,
         "cost": result.cost,
+        "modeled_total_train_flops": total_flops,
+        "nominal_probe_forward_flops": total_flops / 3.0,
     }
+    if "modeled_lm_head_tokens" in result.cost:
+        actual = result.output.telemetry.get("executed_lm_head_tokens")
+        summary.update({
+            "lm_head_tokens": int(actual) if actual is not None else result.cost["modeled_lm_head_tokens"],
+            "lm_head_tokens_basis": "model_execution_counter" if actual is not None else "nominal_nonpadding_fallback",
+        })
+    return summary
 
 
 def repeated_plan_evaluation(
@@ -602,7 +665,10 @@ def repeated_plan_evaluation(
     records = []
     elapsed = nominal_forward = 0.0
     expected_cost = (
-        plan_cost(model.config, force_depth, force_routed_k)
+        plan_cost(
+            model.config, force_depth, force_routed_k,
+            terminal_only=_terminal_only_cost(model.config, curriculum, return_router_observations),
+        )
         if force_depth is not None else None
     )
     for _ in range(repeat_forwards):
@@ -1545,7 +1611,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             )
             warmups.append(forward_summary(warmup_result, warmup_batch))
         del warmup_batch, warmup_result
-    warmup_cost = sum(item["cost"]["nominal_forward_flops"] for item in warmups)
+    warmup_cost = sum(item["nominal_probe_forward_flops"] for item in warmups)
     warmup_elapsed = sum(item["elapsed_seconds_including_hooks_and_gradient"] for item in warmups)
     if args.fit_steps:
         def fitting_batches():
