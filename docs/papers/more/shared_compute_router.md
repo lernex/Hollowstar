@@ -5,6 +5,15 @@ campaign. Existing defaults, exact-marginal controls, and production Praxis and
 Logos remain unchanged. A feasible allocation or a fitted utility head is not
 evidence that the model has improved.
 
+**Causality finding, September 2026.** The original sequence-wide quota
+rankings and this document's original batch-global price/repair allocator can
+change earlier predictions when only future tokens change. A causal attention
+mask does not make those routing decisions causal. The global allocator is an
+offline allocation oracle, not a qualified autoregressive serving policy.
+The separate `causal_compute_budget` work must establish full-model prefix
+invariance and quality before any promotion; a new utility head alone does not
+repair this issue.
+
 **September 4, 2026 assessment: not qualified for a campaign restart.** Heads
 fitted for 32, 256, and 1,024 updates improved the existing allocation in some
 held-out comparisons, but did not establish superiority over uniform
@@ -170,3 +179,11 @@ supports a separately identified restart.
 
 The single-price, receding-horizon combination here is an experimental design.
 Neither source proves its allocation optimality, convergence, or superiority.
+
+[Mixture-of-Recursions, October 2025 revision,
+Appendix A.2](https://arxiv.org/html/2507.10524v3#A1.SS2) explicitly distinguishes
+future-aware training-time top-k routing from causal per-token deployment
+rules. Its attention masking and auxiliary BCE do not by themselves make a
+sequence-wide ranking causal. This is relevant to the reproduced prefix
+violation, not evidence that the current implementation already satisfies a
+causal deployment contract.
