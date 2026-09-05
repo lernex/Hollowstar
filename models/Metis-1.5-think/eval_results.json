@@ -1,0 +1,121 @@
+{
+  "protocol": "0-shot; custom JAX loglikelihood harness (acc_norm=length-normalized); GSM8K greedy gen w/ chat template; full test splits; training data benchmark-decontaminated",
+  "Metis-1.5-base": {
+    "arc_easy": {
+      "acc": 0.4621,
+      "acc_norm": 0.4133,
+      "primary": 0.4133,
+      "n": 2376
+    },
+    "arc_challenge": {
+      "acc": 0.2372,
+      "acc_norm": 0.2585,
+      "primary": 0.2585,
+      "n": 1172
+    },
+    "hellaswag": {
+      "acc": 0.2917,
+      "acc_norm": 0.3044,
+      "primary": 0.3044,
+      "n": 10042
+    },
+    "piqa": {
+      "acc": 0.5544,
+      "acc_norm": 0.5473,
+      "primary": 0.5473,
+      "n": 1838
+    },
+    "winogrande": {
+      "acc": 0.5146,
+      "acc_norm": null,
+      "primary": 0.5146,
+      "n": 1267
+    },
+    "openbookqa": {
+      "acc": 0.18,
+      "acc_norm": 0.296,
+      "primary": 0.296,
+      "n": 500
+    },
+    "boolq": {
+      "acc": 0.4765,
+      "acc_norm": null,
+      "primary": 0.4765,
+      "n": 3270
+    },
+    "mmlu": {
+      "acc": 0.2359,
+      "acc_norm": null,
+      "primary": 0.2359,
+      "n": 14042
+    },
+    "lambada": {
+      "acc": 0.1698,
+      "acc_norm": null,
+      "primary": 0.1698,
+      "n": 5153
+    }
+  },
+  "Metis-1.5-think": {
+    "arc_easy": {
+      "acc": 0.4419,
+      "acc_norm": 0.4171,
+      "primary": 0.4171,
+      "n": 2376
+    },
+    "arc_challenge": {
+      "acc": 0.25,
+      "acc_norm": 0.2824,
+      "primary": 0.2824,
+      "n": 1172
+    },
+    "hellaswag": {
+      "acc": 0.2945,
+      "acc_norm": 0.31,
+      "primary": 0.31,
+      "n": 10042
+    },
+    "piqa": {
+      "acc": 0.5593,
+      "acc_norm": 0.5457,
+      "primary": 0.5457,
+      "n": 1838
+    },
+    "winogrande": {
+      "acc": 0.5178,
+      "acc_norm": null,
+      "primary": 0.5178,
+      "n": 1267
+    },
+    "openbookqa": {
+      "acc": 0.208,
+      "acc_norm": 0.286,
+      "primary": 0.286,
+      "n": 500
+    },
+    "boolq": {
+      "acc": 0.5719,
+      "acc_norm": null,
+      "primary": 0.5719,
+      "n": 3270
+    },
+    "mmlu": {
+      "acc": 0.2329,
+      "acc_norm": null,
+      "primary": 0.2329,
+      "n": 14042
+    },
+    "lambada": {
+      "acc": 0.1731,
+      "acc_norm": null,
+      "primary": 0.1731,
+      "n": 5153
+    },
+    "gsm8k": {
+      "acc": 0.0758,
+      "acc_norm": null,
+      "primary": 0.0758,
+      "n": 1319
+    }
+  }
+}

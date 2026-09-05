@@ -40,14 +40,13 @@ from .distributed import (
 from .optimizers import OptimizerBundle, clip_grad_norm_
 from .posttraining import (
     CHECKPOINT_RECEIPT_SCHEMA,
-    DPD_STAGE_IDS,
     EXPECTED_STAGE_IDS,
     PipelineContractError,
+    REASONING_MODES,
+    RLVR_GSPO_STAGE_IDS,
     SPECIALIST_STAGE_IDS,
     avg_at_k,
-    bradley_terry_pairwise_loss,
     difficulty_adaptive_length_reward,
-    dual_preference_distillation_loss,
     evaluate_metric_gate,
     gated_code_efficiency_reward,
     gspo_token_loss,
@@ -61,7 +60,6 @@ MMAP_BUNDLE_SCHEMA = "metis.posttraining-mmap/v1"
 EVALUATION_RESULTS_SCHEMA = "metis.evaluation-results/v1"
 CAMPAIGN_STATE_SCHEMA = "metis.inprocess-posttraining-state/v1"
 STAGE_RECEIPT_SCHEMA = "metis.inprocess-stage-receipt/v1"
-REWARD_MODEL_SCHEMA = "metis.pairwise-reward-model/v1"
 RELEASE_CANDIDATE_SCHEMA = "metis.release-candidate/v1"
 RELEASE_INDEX_SCHEMA = "metis.posttraining-release-index/v1"
 RELEASE_UMBRELLA_SCHEMA = "metis.posttraining-release-umbrella/v1"
@@ -89,20 +87,12 @@ BASE_TOKEN_CURSOR = 1_000_000_000_000
 
 _DATA_SCHEMAS = {
     "context_extension": "metis.context-extension-data/v1",
-    "cold_start_sft": "metis.sft-data/v1",
-    "overall_sft": "metis.sft-data/v1",
-    "deepseek_dpd_pilot": "metis.external-dpd-data/v1",
-    "deepseek_dpd": "metis.external-dpd-data/v1",
-    **{stage_id: "metis.rlvr-data/v1" for stage_id in SPECIALIST_STAGE_IDS},
+    "cold_start_sft": "metis.sft-data/v2",
+    "overall_sft": "metis.sft-data/v2",
+    **{stage_id: "metis.rlvr-data/v2" for stage_id in RLVR_GSPO_STAGE_IDS},
     "opd_consolidation": "metis.opd-data/v1",
-    "pairwise_reward_model": "metis.preference-data/v1",
-    "preference_alignment": "metis.preference-prompts/v1",
     "evaluation": EVALUATION_RESULTS_SCHEMA,
 }
-
-
-def _is_dpd_stage(stage_id: str) -> bool:
-    return stage_id in DPD_STAGE_IDS
 
 
 def _is_specialist_stage(stage_id: str) -> bool:
@@ -110,7 +100,7 @@ def _is_specialist_stage(stage_id: str) -> bool:
 
 
 def _is_gspo_stage(stage_id: str) -> bool:
-    return _is_specialist_stage(stage_id) or stage_id == "preference_alignment"
+    return stage_id in RLVR_GSPO_STAGE_IDS
 
 _SUPERVISED_ARRAYS = {
     "input_ids",
@@ -134,28 +124,22 @@ _CONTEXT_EVALUATION_ARRAYS = {
     "context_evaluation_split_fingerprint",
 }
 _COMPACT_CAUSAL_LAYOUT = "metis.compact-causal/v1"
-_DPD_ARRAYS = {
-    "split_fingerprint",
-    "positive_input_ids",
-    "positive_attention_mask",
-    "positive_response_mask",
-    "positive_reference_token_log_probs",
-    "negative_input_ids",
-    "negative_attention_mask",
-    "negative_response_mask",
-    "negative_reference_token_log_probs",
-}
 _RLVR_ARRAYS = {
     "split_fingerprint",
+    "base_prompt_fingerprint",
+    "reasoning_mode",
+    "mode_overlap_id",
     "candidate_input_ids",
     "candidate_attention_mask",
     "candidate_response_mask",
     "old_token_log_probs",
     "correctness",
+    "mode_compliance",
     "truncated",
 }
 _OPD_ARRAYS = {
     "split_fingerprint",
+    "reasoning_mode",
     "input_ids",
     "attention_mask",
     "response_mask",
@@ -164,24 +148,6 @@ _OPD_ARRAYS = {
     "teacher_union_count",
     "teacher_route",
 }
-_PAIRWISE_ARRAYS = {
-    "preferred_input_ids",
-    "preferred_attention_mask",
-    "rejected_input_ids",
-    "rejected_attention_mask",
-}
-_PREFERENCE_ARRAYS = {
-    "candidate_input_ids",
-    "candidate_attention_mask",
-    "candidate_response_mask",
-    "old_token_log_probs",
-    "reward_scores",
-    "truncated",
-    "reference_member",
-}
-FROZEN_REWARD_SCORES_SCHEMA = "metis.frozen-reward-scores/v1"
-
-
 def _content_fingerprint(
     domain: str,
     fields: Sequence[tuple[str, np.ndarray]],
@@ -202,45 +168,6 @@ def _content_fingerprint(
         digest.update(b"\0")
         digest.update(contiguous.tobytes(order="C"))
     return np.frombuffer(digest.digest(), dtype=np.uint8).copy()
-
-
-def _dpd_content_fingerprints(
-    arrays: Mapping[str, np.ndarray],
-    *,
-    prefix: str = "",
-) -> np.ndarray:
-    records = int(np.asarray(arrays[f"{prefix}positive_input_ids"]).shape[0])
-    rows: list[np.ndarray] = []
-    for record in range(records):
-        fields: list[tuple[str, np.ndarray]] = []
-        for side in ("positive", "negative"):
-            fields.extend(
-                [
-                    (
-                        f"{side}_input_ids",
-                        np.asarray(
-                            arrays[f"{prefix}{side}_input_ids"][record],
-                            dtype="<i8",
-                        ),
-                    ),
-                    (
-                        f"{side}_attention_mask",
-                        np.asarray(
-                            arrays[f"{prefix}{side}_attention_mask"][record],
-                            dtype=np.uint8,
-                        ),
-                    ),
-                    (
-                        f"{side}_response_mask",
-                        np.asarray(
-                            arrays[f"{prefix}{side}_response_mask"][record],
-                            dtype=np.uint8,
-                        ),
-                    ),
-                ]
-            )
-        rows.append(_content_fingerprint("metis/dpd-sample/v1", fields))
-    return np.stack(rows)
 
 
 def _rlvr_prompt_fingerprints(
@@ -556,8 +483,6 @@ class MMapStageBundle:
         canonical_id_lookup: np.ndarray,
         canonical_map_self_sha256: str,
         canonical_ids_sha256: str,
-        reward_model_manifest_sha256: str | None = None,
-        verify_frozen_reward_array_hashes: bool = True,
     ) -> "MMapStageBundle":
         envelope = requirement.payload
         metadata = _require_mapping(envelope.get("metadata"), "sealed data metadata")
@@ -731,8 +656,7 @@ class MMapStageBundle:
             "mmap bundle working_set",
         )
         if (
-            _is_dpd_stage(stage_id)
-            or _is_gspo_stage(stage_id)
+            _is_gspo_stage(stage_id)
             or stage_id == "opd_consolidation"
         ):
             _validate_working_set_contract(working_set, stage_id=stage_id)
@@ -838,12 +762,6 @@ class MMapStageBundle:
         )
         loaded.validate_layout(vocabulary_size=vocabulary_size)
         loaded.validate_live_profile_autotune()
-        if stage_id == "preference_alignment":
-            loaded.validate_frozen_reward_scores(
-                parent_checkpoint_sha256=parent_checkpoint_sha256,
-                reward_model_manifest_sha256=reward_model_manifest_sha256,
-                verify_array_hashes=verify_frozen_reward_array_hashes,
-            )
         if stage_id == "context_extension":
             unique_active_tokens = int(
                 bundle.get("unique_active_tokens", -1)
@@ -872,16 +790,10 @@ class MMapStageBundle:
                 if compact_supervised
                 else _SUPERVISED_ARRAYS
             )
-        elif _is_dpd_stage(self.stage_id):
-            required = _DPD_ARRAYS
-        elif _is_specialist_stage(self.stage_id):
+        elif _is_gspo_stage(self.stage_id):
             required = _RLVR_ARRAYS
         elif self.stage_id == "opd_consolidation":
             required = _OPD_ARRAYS
-        elif self.stage_id == "pairwise_reward_model":
-            required = _PAIRWISE_ARRAYS
-        elif self.stage_id == "preference_alignment":
-            required = _PREFERENCE_ARRAYS
         else:
             required = set()
         missing = sorted(required - set(self.arrays))
@@ -919,62 +831,6 @@ class MMapStageBundle:
             self._require_mask("attention_mask")
             self._require_mask("reset_mask")
             self._validate_supervised_boundaries(vocabulary_size=vocabulary_size)
-        elif _is_dpd_stage(self.stage_id):
-            if self.manifest.get("document_layout") != (
-                "single_prompt_response_per_record"
-            ):
-                raise StageBackendError(
-                    "DPD bundles must prove one prompt-response document per record"
-                )
-            external_sequence_dpd = (
-                self.manifest.get("teacher_interface")
-                == "cross_tokenizer_sequence_preferences"
-            )
-            if external_sequence_dpd:
-                if (
-                    self.manifest.get("full_teacher_distribution") is not False
-                    or self.teacher_distributions
-                ):
-                    raise StageBackendError(
-                        "cross-tokenizer DPD may not pretend to carry aligned "
-                        "teacher vocabulary distributions"
-                    )
-            elif set(self.teacher_distributions) != {"positive", "negative"}:
-                raise StageBackendError(
-                    "same-tokenizer DPD requires positive and negative "
-                    "full-vocabulary teacher distributions"
-                )
-            for prefix in ("positive", "negative"):
-                ids = self.arrays[f"{prefix}_input_ids"]
-                attention = self.arrays[f"{prefix}_attention_mask"]
-                mask = self.arrays[f"{prefix}_response_mask"]
-                reference = self.arrays[f"{prefix}_reference_token_log_probs"]
-                if ids.shape != (self.records, self.sequence_length):
-                    raise StageBackendError(f"{prefix}_input_ids has the wrong shape")
-                if attention.shape != ids.shape:
-                    raise StageBackendError(
-                        f"{prefix}_attention_mask has the wrong shape"
-                    )
-                expected_token_shape = (self.records, self.sequence_length - 1)
-                if mask.shape != expected_token_shape or reference.shape != expected_token_shape:
-                    raise StageBackendError(f"{prefix} DPD masks/log-probabilities have wrong shape")
-                self._require_integer(f"{prefix}_input_ids")
-                self._require_mask(f"{prefix}_attention_mask")
-                self._require_mask(f"{prefix}_response_mask")
-                self._require_floating(f"{prefix}_reference_token_log_probs")
-                active = np.asarray(attention).astype(np.bool_, copy=False)
-                response = np.asarray(mask).astype(np.bool_, copy=False)
-                if np.any(active[:, 1:] & ~active[:, :-1]) or np.any(
-                    response & ~(active[:, :-1] & active[:, 1:])
-                ):
-                    raise StageBackendError(
-                        f"{prefix} DPD masks violate single-document padding"
-                    )
-            self._validated_split_fingerprints(
-                "split_fingerprint",
-                records=self.records,
-                expected=_dpd_content_fingerprints(self.arrays),
-            )
         elif _is_gspo_stage(self.stage_id):
             ids = self.arrays["candidate_input_ids"]
             if ids.ndim != 3 or ids.shape[0] != self.records or ids.shape[2] != self.sequence_length:
@@ -1013,76 +869,139 @@ class MMapStageBundle:
                 raise StageBackendError(
                     "GSPO attention/response masks violate single-document padding"
                 )
-            if _is_specialist_stage(self.stage_id):
-                self._validated_split_fingerprints(
-                    "split_fingerprint",
-                    records=self.records,
-                    expected=_rlvr_prompt_fingerprints(self.arrays),
+            self._validated_split_fingerprints(
+                "split_fingerprint",
+                records=self.records,
+                expected=_rlvr_prompt_fingerprints(self.arrays),
+            )
+            if self.arrays["correctness"].shape != (self.records, group):
+                raise StageBackendError("correctness has the wrong shape")
+            if self.arrays["mode_compliance"].shape != (self.records, group):
+                raise StageBackendError("mode_compliance has the wrong shape")
+            self._require_floating("correctness")
+            self._require_floating("mode_compliance")
+            compliance = np.asarray(self.arrays["mode_compliance"])
+            if (
+                not np.isfinite(compliance).all()
+                or np.any(compliance < 0)
+                or np.any(compliance > 1)
+            ):
+                raise StageBackendError(
+                    "mode_compliance must contain finite values in [0,1]"
                 )
-                if self.arrays["correctness"].shape != (self.records, group):
-                    raise StageBackendError("correctness has the wrong shape")
-                self._require_floating("correctness")
-                required_metadata = {
-                    "on_policy": True,
-                    "single_use_rollouts": True,
-                    "rollout_policy": "parent_checkpoint",
-                    "policy_updates_before_generation": 0,
-                    "samples_per_prompt": 16,
-                }
-                for field, expected in required_metadata.items():
-                    if self.manifest.get(field) != expected:
-                        raise StageBackendError(
-                            f"true GSPO requires bundle {field}={expected!r}"
-                        )
-                if int(self.training.get("epochs", 0)) != 1:
-                    raise StageBackendError("on-policy rollout bundles are single-use")
-                if self.stage_id == "specialist_code":
-                    efficiency = self.arrays.get("efficiency_reward")
-                    if (
-                        efficiency is None
-                        or efficiency.shape != (self.records, group)
-                        or not np.issubdtype(efficiency.dtype, np.floating)
-                    ):
-                        raise StageBackendError(
-                            "code RLVR requires floating efficiency_reward [N,G]"
-                        )
-                if self.stage_id == "specialist_agentic":
-                    advantages = self.arrays.get("token_advantages")
-                    if (
-                        advantages is None
-                        or advantages.shape != token_shape
-                        or not np.issubdtype(advantages.dtype, np.floating)
-                    ):
-                        raise StageBackendError(
-                            "agentic RLVR requires floating token_advantages [N,G,T-1]"
-                        )
-            else:
-                if self.arrays["reference_member"].shape != (self.records, group):
-                    raise StageBackendError("reference_member has the wrong shape")
-                self._require_mask("reference_member")
-                if self.arrays["reward_scores"].shape != (self.records, group):
-                    raise StageBackendError("reward_scores has the wrong shape")
-                self._require_floating("reward_scores")
-                rewards = np.asarray(self.arrays["reward_scores"])
-                if not np.isfinite(rewards).all():
-                    raise StageBackendError("frozen reward_scores must be finite")
+            modes = np.asarray(self.arrays["reasoning_mode"])
+            overlap_ids = np.asarray(self.arrays["mode_overlap_id"])
+            base_fingerprints = np.asarray(
+                self.arrays["base_prompt_fingerprint"]
+            )
+            if (
+                modes.shape != (self.records,)
+                or overlap_ids.shape != (self.records,)
+                or base_fingerprints.shape != (self.records, 32)
+            ):
+                raise StageBackendError(
+                    "reasoning modes and mode-overlap fingerprints have invalid shapes"
+                )
+            self._require_integer("reasoning_mode")
+            self._require_integer("mode_overlap_id")
+            self._require_integer("base_prompt_fingerprint")
+            if (
+                set(np.unique(modes).tolist()) != {0, 1, 2}
+                or np.any(overlap_ids < -1)
+                or self.manifest.get("reasoning_mode_ids")
+                != {"direct": 0, "think": 1, "think_max": 2}
+            ):
+                raise StageBackendError(
+                    "GSPO bundles must explicitly contain direct, think, and think_max"
+                )
+            overlap_groups = [
+                int(value) for value in np.unique(overlap_ids) if int(value) >= 0
+            ]
+            if not overlap_groups:
+                raise StageBackendError(
+                    "GSPO bundles must contain same-prompt three-mode overlap groups"
+                )
+            for overlap_id in overlap_groups:
+                indices = np.flatnonzero(overlap_ids == overlap_id)
+                if (
+                    indices.size != len(REASONING_MODES)
+                    or set(modes[indices].tolist()) != {0, 1, 2}
+                    or not np.all(
+                        base_fingerprints[indices]
+                        == base_fingerprints[indices[0]]
+                    )
+                ):
+                    raise StageBackendError(
+                        "each mode-overlap group must bind one shared base prompt "
+                        "to direct, think, and think_max exactly once"
+                    )
+            response_tokens = response.sum(axis=(1, 2), dtype=np.int64)
+            total_response_tokens = int(response_tokens.sum())
+            if total_response_tokens <= 0:
+                raise StageBackendError("GSPO bundle contains no response tokens")
+            observed_token_share = {
+                mode: float(response_tokens[modes == index].sum())
+                / total_response_tokens
+                for index, mode in enumerate(REASONING_MODES)
+            }
+            declared_token_share = self.manifest.get(
+                "response_token_share_by_mode"
+            )
+            if (
+                not isinstance(declared_token_share, Mapping)
+                or set(declared_token_share) != set(REASONING_MODES)
+                or any(
+                    not math.isclose(
+                        float(declared_token_share[mode]),
+                        observed_token_share[mode],
+                        rel_tol=0.0,
+                        abs_tol=1.0e-9,
+                    )
+                    for mode in REASONING_MODES
+                )
+                or self.manifest.get("target_token_share_by_mode_audited")
+                is not True
+            ):
+                raise StageBackendError(
+                    "GSPO bundle reasoning-mode token shares are not sealed exactly"
+                )
+            required_metadata = {
+                "on_policy": True,
+                "single_use_rollouts": True,
+                "rollout_policy": "parent_checkpoint",
+                "policy_updates_before_generation": 0,
+                "samples_per_prompt": 16,
+                "mode_overlap_validated": True,
+            }
+            for field, expected in required_metadata.items():
+                if self.manifest.get(field) != expected:
+                    raise StageBackendError(
+                        f"true GSPO requires bundle {field}={expected!r}"
+                    )
+            if int(self.training.get("epochs", 0)) != 1:
+                raise StageBackendError("on-policy rollout bundles are single-use")
+            if self.stage_id == "specialist_code":
+                efficiency = self.arrays.get("efficiency_reward")
+                if (
+                    efficiency is None
+                    or efficiency.shape != (self.records, group)
+                    or not np.issubdtype(efficiency.dtype, np.floating)
+                ):
+                    raise StageBackendError(
+                        "code RLVR requires floating efficiency_reward [N,G]"
+                    )
+            if self.stage_id == "specialist_agentic":
+                advantages = self.arrays.get("token_advantages")
+                if (
+                    advantages is None
+                    or advantages.shape != token_shape
+                    or not np.issubdtype(advantages.dtype, np.floating)
+                ):
+                    raise StageBackendError(
+                        "agentic RLVR requires floating token_advantages [N,G,T-1]"
+                    )
         elif self.stage_id == "opd_consolidation":
             self._validate_opd_layout(vocabulary_size=vocabulary_size)
-        elif self.stage_id == "pairwise_reward_model":
-            for prefix in ("preferred", "rejected"):
-                if self.arrays[f"{prefix}_input_ids"].shape != (
-                    self.records,
-                    self.sequence_length,
-                ):
-                    raise StageBackendError(f"{prefix}_input_ids has the wrong shape")
-                if self.arrays[f"{prefix}_attention_mask"].shape != (
-                    self.records,
-                    self.sequence_length,
-                ):
-                    raise StageBackendError(f"{prefix}_attention_mask has the wrong shape")
-                self._require_integer(f"{prefix}_input_ids")
-                self._require_mask(f"{prefix}_attention_mask")
-
     def _validate_opd_layout(self, *, vocabulary_size: int) -> None:
         ids = self.arrays["input_ids"]
         attention = self.arrays["attention_mask"]
@@ -1091,6 +1010,7 @@ class MMapStageBundle:
         union_logits = self.arrays["teacher_union_logits"]
         union_count = self.arrays["teacher_union_count"]
         routes = self.arrays["teacher_route"]
+        reasoning_modes = self.arrays["reasoning_mode"]
         if (
             ids.shape != (self.records, self.sequence_length)
             or attention.shape != ids.shape
@@ -1100,6 +1020,7 @@ class MMapStageBundle:
             or union_logits.shape != union_ids.shape
             or union_count.shape != response.shape
             or routes.shape != (self.records,)
+            or reasoning_modes.shape != (self.records,)
             or union_ids.shape[-1] != 64
         ):
             raise StageBackendError("OPD top-k-union arrays have invalid shapes")
@@ -1110,10 +1031,12 @@ class MMapStageBundle:
         self._require_floating("teacher_union_logits")
         self._require_integer("teacher_union_count")
         self._require_integer("teacher_route")
+        self._require_integer("reasoning_mode")
         active = np.asarray(attention).astype(np.bool_, copy=False)
         response_bool = np.asarray(response).astype(np.bool_, copy=False)
         counts = np.asarray(union_count)
         routes_array = np.asarray(routes)
+        reasoning_mode_array = np.asarray(reasoning_modes)
         if (
             np.any(active[:, 1:] & ~active[:, :-1])
             or np.any(response_bool & ~(active[:, :-1] & active[:, 1:]))
@@ -1123,9 +1046,12 @@ class MMapStageBundle:
             or np.any(routes_array >= len(SPECIALIST_STAGE_IDS))
             or set(np.unique(routes_array).tolist())
             != set(range(len(SPECIALIST_STAGE_IDS)))
+            or set(np.unique(reasoning_mode_array).tolist()) != {0, 1, 2}
+            or self.manifest.get("reasoning_mode_ids")
+            != {"direct": 0, "think": 1, "think_max": 2}
         ):
             raise StageBackendError(
-                "OPD masks, union counts, or specialist routing are invalid"
+                "OPD masks, union counts, specialist routing, or reasoning modes are invalid"
             )
         rows_per_chunk = max(1, 1_000_000 // self.sequence_length)
         for start in range(0, self.records, rows_per_chunk):
@@ -1158,6 +1084,10 @@ class MMapStageBundle:
             or int(self.training["epochs"]) != 1
             or int(self.manifest.get("top_k_per_model", -1)) != 32
             or self.manifest.get("union_student_and_teacher_top_k") is not True
+            or self.manifest.get("prompt_mode_preserved_for_teacher_prefill")
+            is not True
+            or self.manifest.get("domain_mode_target_token_share_audited")
+            is not True
             or not isinstance(specialist_checkpoints, Mapping)
             or set(specialist_checkpoints) != set(SPECIALIST_STAGE_IDS)
             or not all(
@@ -1428,86 +1358,14 @@ class MMapStageBundle:
             )
         return np.ascontiguousarray(array)
 
-    def validate_frozen_reward_scores(
-        self,
-        *,
-        parent_checkpoint_sha256: str,
-        reward_model_manifest_sha256: str | None,
-        verify_array_hashes: bool,
-    ) -> None:
-        if self.stage_id != "preference_alignment":
-            return
-        if not _is_sha256(reward_model_manifest_sha256):
-            raise StageBackendError(
-                "preference alignment requires the exact frozen reward-model "
-                "manifest hash"
-            )
-        contract = _require_mapping(
-            self.manifest.get("reward_score_contract"),
-            "preference reward_score_contract",
-        )
-        expected = {
-            "schema": FROZEN_REWARD_SCORES_SCHEMA,
-            "reward_model_manifest_sha256": reward_model_manifest_sha256,
-            "reward_model_parent_checkpoint_sha256": parent_checkpoint_sha256,
-            "scoring_backbone_checkpoint_sha256": parent_checkpoint_sha256,
-            "scoring_mode": "frozen_backbone_and_pairwise_head",
-            "policy_updates_during_scoring": 0,
-            "canonical_map_self_sha256": self.canonical_map_self_sha256,
-            "canonical_ids_sha256": self.canonical_ids_sha256,
-        }
-        for field, value in expected.items():
-            if contract.get(field) != value:
-                raise StageBackendError(
-                    f"frozen reward score contract {field} is not bound to "
-                    "the exact reward model and policy parent"
-                )
-        if contract.get("contract_sha256") != _canonical_hash(
-            contract, omit={"contract_sha256"}
-        ):
-            raise StageBackendError("frozen reward score contract failed its self-hash")
-        array_hashes = _require_mapping(
-            contract.get("array_sha256"), "reward_score_contract.array_sha256"
-        )
-        required_arrays = (
-            "candidate_input_ids",
-            "candidate_attention_mask",
-            "reward_scores",
-        )
-        if set(array_hashes) != set(required_arrays):
-            raise StageBackendError(
-                "frozen reward score contract must hash the exact candidates "
-                "and per-candidate scores"
-            )
-        for name in required_arrays:
-            expected_hash = array_hashes.get(name)
-            if not _is_sha256(expected_hash) or (
-                verify_array_hashes
-                and sha256_file(self.specs[name].path) != expected_hash
-            ):
-                raise StageBackendError(
-                    f"frozen reward score array hash changed: {name}"
-                )
-
     def validate_live_profile_autotune(self) -> None:
-        """Validate the sealed, held-out arrays used by live profile trials.
+        """Validate disjoint held-out replay data for every GSPO stage."""
 
-        The precomputed profile-selection metrics remain useful as an
-        independently produced expectation, but they are never sufficient to
-        promote a production profile.  DPD-pilot and RLVR bundles must also
-        carry a disjoint held-out evaluator payload that can be replayed by the
-        live family ranks from each identically restored parent checkpoint.
-        """
-
-        if (
-            self.stage_id != "deepseek_dpd_pilot"
-            and not _is_specialist_stage(self.stage_id)
-        ):
+        if not _is_gspo_stage(self.stage_id):
             return
         if self.manifest.get("profile_selection") is None:
-            # Loading remains composable for low-level layout/working-set
-            # diagnostics.  The production campaign calls the live tuner
-            # before any optimizer step and fails closed there.
+            # Low-level layout diagnostics may load before materialization has
+            # selected a live profile. The production campaign fails closed.
             return
         evidence = _require_mapping(
             self.manifest.get("profile_selection"),
@@ -1521,11 +1379,6 @@ class MMapStageBundle:
             live.get("evaluator"),
             f"{self.stage_id} live evaluator",
         )
-        expected_implementation = (
-            "metis.dpd-preference-replay/v1"
-            if self.stage_id == "deepseek_dpd_pilot"
-            else "metis.rlvr-offline-policy-replay/v1"
-        )
         steps = live.get("training_optimizer_steps")
         tolerance = evaluator.get("reproduction_tolerance")
         if (
@@ -1534,7 +1387,8 @@ class MMapStageBundle:
             or live.get("live_autotune_sha256")
             != _canonical_hash(live, omit={"live_autotune_sha256"})
             or evaluator.get("schema") != LIVE_PROFILE_EVALUATOR_SCHEMA
-            or evaluator.get("implementation") != expected_implementation
+            or evaluator.get("implementation")
+            != "metis.rlvr-offline-policy-replay/v1"
             or evaluator.get("evaluator_sha256")
             != _canonical_hash(evaluator, omit={"evaluator_sha256"})
             or isinstance(steps, bool)
@@ -1565,23 +1419,18 @@ class MMapStageBundle:
 
         prefix = "autotune_evaluation_"
         evaluation_fingerprint = f"{prefix}split_fingerprint"
-        if self.stage_id == "deepseek_dpd_pilot":
-            required = {
-                f"{prefix}{side}_{field}"
-                for side in ("positive", "negative")
-                for field in ("input_ids", "attention_mask", "response_mask")
-            } | {f"{prefix}role", evaluation_fingerprint}
-        else:
-            required = {
-                evaluation_fingerprint,
-                f"{prefix}candidate_input_ids",
-                f"{prefix}candidate_attention_mask",
-                f"{prefix}candidate_response_mask",
-                f"{prefix}correctness",
-                f"{prefix}truncated",
-            }
-            if self.stage_id == "specialist_code":
-                required.add(f"{prefix}efficiency_reward")
+        required = {
+            evaluation_fingerprint,
+            f"{prefix}candidate_input_ids",
+            f"{prefix}candidate_attention_mask",
+            f"{prefix}candidate_response_mask",
+            f"{prefix}correctness",
+            f"{prefix}mode_compliance",
+            f"{prefix}reasoning_mode",
+            f"{prefix}truncated",
+        }
+        if self.stage_id == "specialist_code":
+            required.add(f"{prefix}efficiency_reward")
         hashes = _require_mapping(
             evaluator.get("array_sha256"),
             f"{self.stage_id} live evaluator array_sha256",
@@ -1592,121 +1441,88 @@ class MMapStageBundle:
             )
         for name in sorted(required):
             expected = hashes.get(name)
-            if not _is_sha256(expected) or sha256_file(self.specs[name].path) != expected:
+            if (
+                not _is_sha256(expected)
+                or sha256_file(self.specs[name].path) != expected
+            ):
                 raise StageBackendError(
                     f"{self.stage_id} live evaluator array hash changed: {name}"
                 )
         training_fingerprints = self._validated_split_fingerprints(
             "split_fingerprint",
             records=self.records,
-            expected=(
-                _dpd_content_fingerprints(self.arrays)
-                if self.stage_id == "deepseek_dpd_pilot"
-                else _rlvr_prompt_fingerprints(self.arrays)
-            ),
+            expected=_rlvr_prompt_fingerprints(self.arrays),
         )
         evaluation_fingerprints = self._validated_split_fingerprints(
             evaluation_fingerprint,
             records=records,
-            expected=(
-                _dpd_content_fingerprints(self.arrays, prefix=prefix)
-                if self.stage_id == "deepseek_dpd_pilot"
-                else _rlvr_prompt_fingerprints(self.arrays, prefix=prefix)
-            ),
+            expected=_rlvr_prompt_fingerprints(self.arrays, prefix=prefix),
         )
-        training_rows = {
+        overlap = {
             row.tobytes() for row in training_fingerprints
-        }
-        evaluation_rows = {
+        } & {
             row.tobytes() for row in evaluation_fingerprints
         }
-        overlap = training_rows & evaluation_rows
         if overlap:
             raise StageBackendError(
                 f"{self.stage_id} live evaluator overlaps the training split "
-                f"on {len(overlap)} sealed prompt/sample fingerprints"
+                f"on {len(overlap)} sealed prompt fingerprints"
             )
 
-        if self.stage_id == "deepseek_dpd_pilot":
-            roles = np.asarray(self.arrays[f"{prefix}role"])
-            if (
-                roles.shape != (records,)
-                or not np.issubdtype(roles.dtype, np.integer)
-                or set(np.unique(roles).tolist()) != {1, 2, 3}
-            ):
-                raise StageBackendError(
-                    "DPD live evaluator roles must cover primary, reasoning, "
-                    "and self-correction"
-                )
-            for side in ("positive", "negative"):
-                ids = np.asarray(self.arrays[f"{prefix}{side}_input_ids"])
-                attention = np.asarray(
-                    self.arrays[f"{prefix}{side}_attention_mask"]
-                )
-                response = np.asarray(
-                    self.arrays[f"{prefix}{side}_response_mask"]
-                )
-                if (
-                    ids.shape != (records, self.sequence_length)
-                    or attention.shape != ids.shape
-                    or response.shape != (records, self.sequence_length - 1)
-                    or not np.issubdtype(ids.dtype, np.integer)
-                    or np.any(ids < 0)
-                    or np.any(ids >= self.canonical_id_lookup.shape[0])
-                    or np.any(response.astype(bool) & ~(
-                        attention[:, :-1].astype(bool)
-                        & attention[:, 1:].astype(bool)
-                    ))
-                    or np.any(response.sum(axis=-1) <= 0)
-                ):
-                    raise StageBackendError(
-                        f"DPD live evaluator {side} arrays are invalid"
-                    )
-        else:
-            ids = np.asarray(self.arrays[f"{prefix}candidate_input_ids"])
-            attention = np.asarray(
-                self.arrays[f"{prefix}candidate_attention_mask"]
-            )
-            response = np.asarray(
-                self.arrays[f"{prefix}candidate_response_mask"]
-            )
-            correctness = np.asarray(self.arrays[f"{prefix}correctness"])
-            truncated = np.asarray(self.arrays[f"{prefix}truncated"])
-            expected_tokens = (records, 16, self.sequence_length)
-            if (
-                ids.shape != expected_tokens
-                or attention.shape != expected_tokens
-                or response.shape != (records, 16, self.sequence_length - 1)
-                or correctness.shape != (records, 16)
-                or truncated.shape != (records, 16)
-                or not np.isfinite(correctness).all()
-                or np.any(correctness < 0)
-                or np.any(correctness > 1)
-                or np.any(response.astype(bool) & ~(
+        ids = np.asarray(self.arrays[f"{prefix}candidate_input_ids"])
+        attention = np.asarray(
+            self.arrays[f"{prefix}candidate_attention_mask"]
+        )
+        response = np.asarray(
+            self.arrays[f"{prefix}candidate_response_mask"]
+        )
+        correctness = np.asarray(self.arrays[f"{prefix}correctness"])
+        compliance = np.asarray(self.arrays[f"{prefix}mode_compliance"])
+        modes = np.asarray(self.arrays[f"{prefix}reasoning_mode"])
+        truncated = np.asarray(self.arrays[f"{prefix}truncated"])
+        expected_tokens = (records, 16, self.sequence_length)
+        if (
+            ids.shape != expected_tokens
+            or attention.shape != expected_tokens
+            or response.shape != (records, 16, self.sequence_length - 1)
+            or correctness.shape != (records, 16)
+            or compliance.shape != (records, 16)
+            or modes.shape != (records,)
+            or truncated.shape != (records, 16)
+            or set(np.unique(modes).tolist()) != {0, 1, 2}
+            or not np.isfinite(correctness).all()
+            or not np.isfinite(compliance).all()
+            or np.any(correctness < 0)
+            or np.any(correctness > 1)
+            or np.any(compliance < 0)
+            or np.any(compliance > 1)
+            or np.any(
+                response.astype(bool)
+                & ~(
                     attention[:, :, :-1].astype(bool)
                     & attention[:, :, 1:].astype(bool)
-                ))
-                or np.any(response.sum(axis=-1) <= 0)
-            ):
+                )
+            )
+            or np.any(response.sum(axis=-1) <= 0)
+        ):
+            raise StageBackendError(
+                f"{self.stage_id} live evaluator arrays are invalid"
+            )
+        pass_rates = correctness.astype(np.float64).mean(axis=1)
+        if np.any(pass_rates < 0.10) or np.any(pass_rates > 0.90):
+            raise StageBackendError(
+                f"{self.stage_id} live evaluator violates strict avg@16 filtering"
+            )
+        if self.stage_id == "specialist_code":
+            efficiency = np.asarray(
+                self.arrays[f"{prefix}efficiency_reward"]
+            )
+            if efficiency.shape != (records, 16) or not np.isfinite(
+                efficiency
+            ).all():
                 raise StageBackendError(
-                    f"{self.stage_id} live evaluator arrays are invalid"
+                    "RLVR-code live efficiency rewards are invalid"
                 )
-            pass_rates = correctness.astype(np.float64).mean(axis=1)
-            if np.any(pass_rates < 0.10) or np.any(pass_rates > 0.90):
-                raise StageBackendError(
-                    f"{self.stage_id} live evaluator violates strict avg@16 filtering"
-                )
-            if self.stage_id == "specialist_code":
-                efficiency = np.asarray(
-                    self.arrays[f"{prefix}efficiency_reward"]
-                )
-                if efficiency.shape != (records, 16) or not np.isfinite(
-                    efficiency
-                ).all():
-                    raise StageBackendError(
-                        "RLVR-code live efficiency rewards are invalid"
-                    )
-
     def iter_rank_batches(
         self,
         topology: ParallelTopology,
@@ -2302,9 +2118,8 @@ def _validate_runtime_working_set(
     micro_batch = int(bundle.training["micro_batch_size"])
     group = int(bundle.working_set.get("candidate_micro_group_size", 1))
     sequences = micro_batch * group
-    # Student logits are accumulated in FP32 for stable logsumexp. DPD also
-    # holds one FP32 teacher vocab chunk and two [B,C] normalizers.
-    multiplier = 2 if _is_dpd_stage(bundle.stage_id) else 1
+    # Student logits are accumulated in FP32 for stable logsumexp.
+    multiplier = 1
     estimated_device = (
         sequences * token_chunk * vocabulary_size * 4 * multiplier
         + sequences * token_chunk * 16
@@ -2418,8 +2233,7 @@ def _run_live_working_set_autotune(
             ).get("live_canary"),
             f"{bundle.stage_id}.autotune.live_canary",
         )
-        if bundle.stage_id == "deepseek_dpd_pilot"
-        or _is_specialist_stage(bundle.stage_id)
+        if _is_gspo_stage(bundle.stage_id)
         else {}
     )
     require_autotune = raw_live_policy.get(
@@ -4101,194 +3915,6 @@ def _topk_union_reverse_kl(
     return total / count.to(dtype=torch.float32)
 
 
-class _StreamingTeacherKD(torch.autograd.Function):
-    @staticmethod
-    def _teacher_lse(
-        *,
-        distribution: ChunkedTeacherDistribution,
-        record_indices: np.ndarray,
-        token_start: int,
-        token_end: int,
-        device: torch.device,
-        temperature: float,
-    ) -> Tensor:
-        result: Tensor | None = None
-        for _vocab_start, _vocab_end, cpu_values in distribution.token_slice(
-            record_indices, token_start, token_end
-        ):
-            values = torch.from_numpy(cpu_values).to(
-                device=device,
-                dtype=torch.float32,
-                non_blocking=device.type == "cuda",
-            )
-            if not torch.isfinite(values).all():
-                raise StageBackendError("DPD teacher logits contain non-finite values")
-            chunk_lse = torch.logsumexp(values / temperature, dim=-1)
-            result = chunk_lse if result is None else torch.logaddexp(result, chunk_lse)
-        if result is None:
-            raise StageBackendError("DPD teacher distribution has no vocabulary chunks")
-        return result
-
-    @staticmethod
-    def forward(
-        ctx: Any,
-        student_logits: Tensor,
-        response_mask: Tensor,
-        distribution: ChunkedTeacherDistribution,
-        record_indices: np.ndarray,
-        token_start: int,
-        temperature: float,
-    ) -> Tensor:
-        token_end = token_start + student_logits.shape[1]
-        teacher_lse = _StreamingTeacherKD._teacher_lse(
-            distribution=distribution,
-            record_indices=record_indices,
-            token_start=token_start,
-            token_end=token_end,
-            device=student_logits.device,
-            temperature=temperature,
-        )
-        student_scaled = student_logits.float() / temperature
-        student_log_probs = student_scaled - torch.logsumexp(
-            student_scaled, dim=-1, keepdim=True
-        )
-        token_loss = torch.zeros_like(teacher_lse)
-        for vocab_start, vocab_end, cpu_values in distribution.token_slice(
-            record_indices, token_start, token_end
-        ):
-            teacher_scaled = torch.from_numpy(cpu_values).to(
-                device=student_logits.device,
-                dtype=torch.float32,
-                non_blocking=student_logits.device.type == "cuda",
-            ) / temperature
-            teacher_probability = torch.exp(
-                teacher_scaled - teacher_lse.unsqueeze(-1)
-            )
-            token_loss = token_loss - (
-                teacher_probability
-                * student_log_probs[..., vocab_start:vocab_end]
-            ).sum(dim=-1) * (temperature**2)
-        ctx.distribution = distribution
-        ctx.record_indices = record_indices
-        ctx.token_start = token_start
-        ctx.temperature = temperature
-        ctx.save_for_backward(student_logits, response_mask.bool())
-        return (
-            token_loss * response_mask.bool().to(token_loss.dtype)
-        ).sum(dim=-1)
-
-    @staticmethod
-    def backward(ctx: Any, gradient_output: Tensor) -> tuple[Any, ...]:
-        student_logits, response_mask = ctx.saved_tensors
-        temperature = float(ctx.temperature)
-        token_start = int(ctx.token_start)
-        token_end = token_start + student_logits.shape[1]
-        teacher_lse = _StreamingTeacherKD._teacher_lse(
-            distribution=ctx.distribution,
-            record_indices=ctx.record_indices,
-            token_start=token_start,
-            token_end=token_end,
-            device=student_logits.device,
-            temperature=temperature,
-        )
-        gradient = torch.softmax(student_logits.float() / temperature, dim=-1)
-        for vocab_start, vocab_end, cpu_values in ctx.distribution.token_slice(
-            ctx.record_indices, token_start, token_end
-        ):
-            teacher_scaled = torch.from_numpy(cpu_values).to(
-                device=student_logits.device,
-                dtype=torch.float32,
-                non_blocking=student_logits.device.type == "cuda",
-            ) / temperature
-            teacher_probability = torch.exp(
-                teacher_scaled - teacher_lse.unsqueeze(-1)
-            )
-            gradient[..., vocab_start:vocab_end].sub_(teacher_probability)
-        gradient.mul_(temperature)
-        gradient.mul_(response_mask.unsqueeze(-1).to(gradient.dtype))
-        if gradient_output.ndim != 1 or gradient_output.shape[0] != gradient.shape[0]:
-            raise StageBackendError(
-                "streaming KD record-gradient shape is invalid"
-            )
-        gradient.mul_(gradient_output.float().view(-1, 1, 1))
-        return (
-            gradient.to(student_logits.dtype),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-
-
-def _streaming_teacher_kd_backward(
-    *,
-    model: nn.Module,
-    hidden_states: Tensor,
-    distribution: ChunkedTeacherDistribution,
-    record_indices: np.ndarray,
-    response_mask: Tensor,
-    token_chunk_size: int,
-    temperature: float,
-    loss_scale: float,
-) -> tuple[float, int]:
-    """Backprop exact full-vocabulary KD one token/vocab chunk at a time."""
-
-    if temperature <= 0:
-        raise StageBackendError("DPD temperature must be positive")
-    if response_mask.shape != hidden_states.shape[:2]:
-        raise StageBackendError("DPD response mask does not align with hidden states")
-    response_lengths = response_mask.sum(dim=1)
-    if torch.any(response_lengths <= 0):
-        raise StageBackendError(
-            "every DPD response must contain distillation tokens"
-        )
-    valid_total = int(response_lengths.sum().item())
-    records = int(response_mask.shape[0])
-    head = _lm_head(model)
-    detached_record_sums = torch.zeros(
-        records,
-        device=hidden_states.device,
-        dtype=torch.float32,
-    )
-    for token_start in range(0, hidden_states.shape[1], token_chunk_size):
-        token_end = min(hidden_states.shape[1], token_start + token_chunk_size)
-        token_mask = response_mask[:, token_start:token_end].bool()
-        # Empty local token chunks still execute the vocabulary projection and
-        # zero-gradient KD autograd path. Other ranks may have response tokens
-        # here, and DelayedScaling requires an identical head-context schedule.
-        with _head_execution_context(model):
-            student_logits = head(hidden_states[:, token_start:token_end])
-        chunk_record_sums = _StreamingTeacherKD.apply(
-            student_logits,
-            token_mask,
-            distribution,
-            record_indices,
-            token_start,
-            temperature,
-        )
-        if chunk_record_sums.shape != (records,):
-            raise StageBackendError(
-                "streaming KD did not return one loss sum per record"
-            )
-        detached_record_sums.add_(chunk_record_sums.detach().float())
-        per_record_means = (
-            chunk_record_sums
-            / response_lengths.to(chunk_record_sums.dtype)
-        )
-        (per_record_means.sum() * loss_scale).backward(retain_graph=True)
-        del student_logits
-    mean_record_loss = float(
-        (
-            detached_record_sums
-            / response_lengths.to(detached_record_sums.dtype)
-        )
-        .mean()
-        .item()
-    )
-    return mean_record_loss, valid_total
-
-
 def _set_learning_rate(optimizer: OptimizerBundle, learning_rate: float) -> None:
     for group in optimizer.param_groups:
         scale = float(group.get("_metis_lr_scale", 1.0))
@@ -4300,8 +3926,6 @@ def _optimizer_state_policy(stage: Mapping[str, Any]) -> str:
     expected = (
         {"none"}
         if stage["id"] in {"evaluation", "publish_gate"}
-        else {"reset"}
-        if stage["id"] == "pairwise_reward_model"
         else {"preserve", "reset"}
     )
     if policy not in expected:
@@ -4448,52 +4072,6 @@ def _accumulate_expert_selection_counts(
         if current is None
         else current + detached
     )
-
-
-def _last_active_hidden(hidden: Tensor, attention_mask: Tensor) -> Tensor:
-    lengths = attention_mask.long().sum(dim=-1)
-    if torch.any(lengths <= 0):
-        raise StageBackendError("reward-model sequence has no active token")
-    indices = (lengths - 1).clamp_min(0)
-    return hidden[torch.arange(hidden.shape[0], device=hidden.device), indices]
-
-
-class PairwiseRewardHead(nn.Module):
-    """Small FP32 side head with an explicit train-time pair-position nuisance."""
-
-    def __init__(self, hidden_size: int, *, device: torch.device) -> None:
-        super().__init__()
-        self.norm = nn.LayerNorm(hidden_size, dtype=torch.float32, device=device)
-        self.projection = nn.Linear(
-            hidden_size, 1, bias=False, dtype=torch.float32, device=device
-        )
-        self.pair_position_bias = nn.Parameter(
-            torch.zeros(2, dtype=torch.float32, device=device)
-        )
-
-    def forward(
-        self,
-        hidden: Tensor,
-        attention_mask: Tensor,
-        *,
-        pair_position: Tensor | None = None,
-    ) -> Tensor:
-        pooled = _last_active_hidden(hidden.float(), attention_mask)
-        score = self.projection(self.norm(pooled)).squeeze(-1)
-        if pair_position is None:
-            # Inference is position-neutral. The nuisance parameter exists only
-            # so training can explicitly expose and penalize pair-order bias.
-            return score
-        if pair_position.shape != score.shape or pair_position.dtype not in {
-            torch.int32,
-            torch.int64,
-        }:
-            raise StageBackendError(
-                "pair_position must be an integer tensor matching reward scores"
-            )
-        if torch.any((pair_position < 0) | (pair_position > 1)):
-            raise StageBackendError("pair_position values must be zero or one")
-        return score + self.pair_position_bias[pair_position.long()]
 
 
 def _module_extra_state_snapshot(model: nn.Module) -> dict[str, Any]:
@@ -4669,26 +4247,6 @@ def _run_stage_kernel_canary_impl(
                 return_logits=False,
             )
             objective = _output_value(output, "loss")
-        elif _is_dpd_stage(bundle.stage_id):
-            input_ids = batch["positive_input_ids"].long()
-            output = _model_forward(
-                forward_model,
-                input_ids,
-                attention_mask=batch["positive_attention_mask"].bool(),
-                canonical_ids=_canonicalize_ids(bundle, input_ids),
-                return_logits=False,
-            )
-            hidden = _output_value(output, "final_hidden_state")[:, :-1]
-            token_chunk = min(
-                int(bundle.working_set["token_chunk_size"]),
-                hidden.shape[1],
-            )
-            objective = -_selected_token_log_probs_from_hidden(
-                model,
-                hidden[:, :token_chunk],
-                input_ids[:, 1 : token_chunk + 1],
-                token_chunk_size=token_chunk,
-            ).mean()
         elif _is_gspo_stage(bundle.stage_id):
             micro_group = int(bundle.working_set["candidate_micro_group_size"])
             ids = batch["candidate_input_ids"][:, :micro_group].reshape(
@@ -4745,17 +4303,6 @@ def _run_stage_kernel_canary_impl(
                 token_chunk_size=token_chunk,
                 temperature=1.0,
             )
-        elif bundle.stage_id == "pairwise_reward_model":
-            ids = batch["preferred_input_ids"].long()
-            output = _model_forward(
-                forward_model,
-                ids,
-                attention_mask=batch["preferred_attention_mask"].bool(),
-                canonical_ids=_canonicalize_ids(bundle, ids),
-                deterministic=True,
-                return_logits=False,
-            )
-            objective = _output_value(output, "final_hidden_state").float().square().mean()
         else:
             raise StageBackendError(
                 f"no kernel canary exists for {bundle.stage_id}"
@@ -5592,426 +5139,6 @@ def _validated_profile_selection(
     )
 
 
-def _selected_dpd_profile(
-    stage: Mapping[str, Any],
-    bundle: MMapStageBundle,
-) -> ProfileSelection:
-    if stage["id"] != "deepseek_dpd_pilot":
-        fields = (
-            "beta",
-            "token_distillation_weight",
-            "sequence_preference_weight",
-            "temperature",
-        )
-        profile = _normalized_profile(
-            bundle.manifest.get("selected_profile"),
-            fields=fields,
-            label="full DPD selected_profile",
-        )
-        profile_sha = _canonical_hash(profile)
-        evidence_sha = bundle.manifest.get("selection_evidence_sha256")
-        if (
-            bundle.manifest.get("selected_profile_sha256") != profile_sha
-            or not _is_sha256(evidence_sha)
-            or not _is_sha256(bundle.manifest.get("pilot_output_receipt_sha256"))
-        ):
-            raise StageBackendError(
-                "full DPD profile is not bound to its promoted pilot evidence"
-            )
-        return ProfileSelection(
-            profile=profile,
-            profile_sha256=profile_sha,
-            evidence_sha256=str(evidence_sha),
-            selected_metrics={},
-            gate_name="inherited_deepseek_dpd_pilot_promotion",
-        )
-    default_profile, fields, candidates = _dpd_profile_candidates(stage)
-    del default_profile
-    gate = _require_mapping(
-        stage.get("promotion_gate"),
-        "deepseek_dpd_pilot.promotion_gate",
-    )
-
-    def eligible(metrics: Mapping[str, float]) -> bool:
-        nonfinite = _metric(metrics, "loss_nonfinite_steps", integral=True)
-        _metric(metrics, "evaluation_records", integral=True, positive=True)
-        primary_regression = _metric(metrics, "primary_regression")
-        reasoning_gain = _metric(metrics, "reasoning_gain")
-        self_correction_gain = _metric(metrics, "self_correction_gain")
-        return bool(
-            (
-                gate.get("require_no_primary_regression") is not True
-                or primary_regression <= 0.0
-            )
-            and reasoning_gain >= float(gate["minimum_reasoning_gain"])
-            and self_correction_gain
-            >= float(gate["minimum_self_correction_gain"])
-            and nonfinite <= int(gate["maximum_loss_nonfinite_steps"])
-        )
-
-    def ordering(metrics: Mapping[str, float]) -> tuple[float, ...]:
-        reasoning = _metric(metrics, "reasoning_gain")
-        self_correction = _metric(metrics, "self_correction_gain")
-        regression = _metric(metrics, "primary_regression")
-        return (
-            -(reasoning + self_correction - max(regression, 0.0)),
-            -reasoning,
-            -self_correction,
-            regression,
-        )
-
-    return _validated_profile_selection(
-        stage=stage,
-        bundle=bundle,
-        candidates=candidates,
-        fields=fields,
-        gate_name="dpd_promotion_gate",
-        eligible=eligible,
-        ordering=ordering,
-    )
-
-
-def _dpd_profile_candidates(
-    stage: Mapping[str, Any],
-) -> tuple[dict[str, float], tuple[str, ...], list[dict[str, float]]]:
-    objective = _require_mapping(stage.get("objective"), f"{stage['id']}.objective")
-    default_profile = {
-        "beta": float(objective.get("beta", 0.1)),
-        "token_distillation_weight": float(
-            objective.get("token_distillation_weight", 1.0)
-        ),
-        "sequence_preference_weight": float(
-            objective.get("sequence_preference_weight", 1.0)
-        ),
-        "temperature": 1.0,
-    }
-    fields = tuple(default_profile)
-    autotune = _require_mapping(
-        stage.get("autotune"), "deepseek_dpd_pilot.autotune"
-    )
-    candidate_values = [
-        [
-            float(value)
-            for value in _require_list(
-                autotune.get(candidate_name),
-                f"deepseek_dpd_pilot.autotune.{candidate_name}",
-            )
-        ]
-        for candidate_name in (
-            "beta_candidates",
-            "token_distillation_weight_candidates",
-            "sequence_preference_weight_candidates",
-            "temperature_candidates",
-        )
-    ]
-    all_candidates = [
-        dict(zip(fields, values, strict=True))
-        for values in product(*candidate_values)
-    ]
-    if default_profile not in all_candidates:
-        raise StageBackendError("DPD default profile is outside its candidate grid")
-    maximum = int(autotune.get("maximum_candidates", 0))
-    if maximum <= 0 or maximum > len(all_candidates):
-        raise StageBackendError("DPD maximum_candidates is invalid")
-    candidates = [default_profile]
-    candidates.extend(
-        sorted(
-            (row for row in all_candidates if row != default_profile),
-            key=_canonical_hash,
-        )[: maximum - 1]
-    )
-    return default_profile, fields, candidates
-
-
-def _run_dpd_stage(
-    *,
-    stage: Mapping[str, Any],
-    bundle: MMapStageBundle,
-    model: nn.Module,
-    optimizer: OptimizerBundle,
-    runtime: Runtime,
-    topology: ParallelTopology,
-    start_epoch: int,
-    start_global_batch: int,
-    start_optimizer_step: int,
-    start_cursor: int,
-    checkpoint_callback: Any,
-    signal_coordinator: SignalCoordinator | None = None,
-    forward_model: nn.Module | None = None,
-    selection_override: ProfileSelection | None = None,
-    maximum_optimizer_steps: int | None = None,
-    resume_metrics: Mapping[str, float] | None = None,
-) -> dict[str, Any]:
-    if bundle.sequence_length != int(stage["sequence_length"]):
-        raise StageBackendError(f"{stage['id']} sequence-length contract changed")
-    external_sequence_dpd = (
-        bundle.manifest.get("teacher_interface")
-        == "cross_tokenizer_sequence_preferences"
-    )
-    if external_sequence_dpd:
-        if (
-            bundle.manifest.get("full_teacher_distribution") is not False
-            or bundle.teacher_distributions
-        ):
-            raise StageBackendError(
-                "cross-tokenizer sequence DPD cannot carry aligned token distributions"
-            )
-    elif bundle.manifest.get("full_teacher_distribution") is not True:
-        raise StageBackendError(
-            "same-tokenizer DPD requires full_teacher_distribution=true"
-        )
-    selection = selection_override or _selected_dpd_profile(stage, bundle)
-    profile = selection.profile
-    if external_sequence_dpd and profile["token_distillation_weight"] != 0.0:
-        raise StageBackendError(
-            "cross-tokenizer sequence DPD must have zero token-KD weight"
-        )
-    total_steps = _total_optimizer_steps(bundle, topology)
-    accumulation = int(bundle.training["gradient_accumulation"])
-    checkpoint_interval = int(bundle.training["checkpoint_interval_steps"])
-    optimizer_step = start_optimizer_step
-    campaign_cursor = start_cursor
-    accumulated_weight = 0
-    accumulated_tokens = 0
-    accumulation_index = 0
-    expert_selection_counts: Tensor | None = None
-    last = {
-        str(name): float(value)
-        for name, value in (resume_metrics or {}).items()
-        if name != "grad_norm"
-    }
-    last_grad_norm = float((resume_metrics or {}).get("grad_norm", 0.0))
-    optimizer.zero_grad(set_to_none=True)
-    model.train()
-    execution_model = forward_model if forward_model is not None else model
-    execution_model.train()
-
-    token_chunk_size = int(bundle.working_set["token_chunk_size"])
-    for epoch, global_batch, record_indices in bundle.iter_rank_indices(
-        topology,
-        start_epoch=start_epoch,
-        start_global_batch=start_global_batch,
-    ):
-        cpu_batch = {
-            name: np.array(array[record_indices], copy=True)
-            for name, array in bundle.arrays.items()
-        }
-        batch = _to_device(cpu_batch, runtime.device)
-        positive_ids = batch["positive_input_ids"].long()
-        negative_ids = batch["negative_input_ids"].long()
-        positive_attention = batch["positive_attention_mask"].bool()
-        negative_attention = batch["negative_attention_mask"].bool()
-        positive_output = _model_forward(
-            execution_model,
-            positive_ids,
-            attention_mask=positive_attention,
-            canonical_ids=_canonicalize_ids(bundle, positive_ids),
-            return_logits=False,
-        )
-        negative_output = _model_forward(
-            execution_model,
-            negative_ids,
-            attention_mask=negative_attention,
-            canonical_ids=_canonicalize_ids(bundle, negative_ids),
-            return_logits=False,
-        )
-        expert_selection_counts = _accumulate_expert_selection_counts(
-            expert_selection_counts, positive_output
-        )
-        expert_selection_counts = _accumulate_expert_selection_counts(
-            expert_selection_counts, negative_output
-        )
-        positive_hidden = _output_value(positive_output, "final_hidden_state")[:, :-1]
-        negative_hidden = _output_value(negative_output, "final_hidden_state")[:, :-1]
-        records = int(positive_ids.shape[0])
-        if external_sequence_dpd:
-            positive_kd = 0.0
-            negative_kd = 0.0
-        else:
-            positive_kd, _positive_tokens = _streaming_teacher_kd_backward(
-                model=model,
-                hidden_states=positive_hidden,
-                distribution=bundle.teacher_distributions["positive"],
-                record_indices=record_indices,
-                response_mask=batch["positive_response_mask"].bool(),
-                token_chunk_size=token_chunk_size,
-                temperature=profile["temperature"],
-                loss_scale=(
-                    profile["token_distillation_weight"] * 0.5
-                ),
-            )
-            negative_kd, _negative_tokens = _streaming_teacher_kd_backward(
-                model=model,
-                hidden_states=negative_hidden,
-                distribution=bundle.teacher_distributions["negative"],
-                record_indices=record_indices,
-                response_mask=batch["negative_response_mask"].bool(),
-                token_chunk_size=token_chunk_size,
-                temperature=profile["temperature"],
-                loss_scale=(
-                    profile["token_distillation_weight"] * 0.5
-                ),
-            )
-        positive_policy_log_probs = _selected_token_log_probs_from_hidden(
-            model,
-            positive_hidden,
-            positive_ids[:, 1:],
-            token_chunk_size=token_chunk_size,
-        )
-        negative_policy_log_probs = _selected_token_log_probs_from_hidden(
-            model,
-            negative_hidden,
-            negative_ids[:, 1:],
-            token_chunk_size=token_chunk_size,
-        )
-        positive_mask = batch["positive_response_mask"].bool()
-        negative_mask = batch["negative_response_mask"].bool()
-        policy_positive_sequence = (
-            positive_policy_log_probs * positive_mask
-        ).sum(dim=-1, keepdim=True)
-        policy_negative_sequence = (
-            negative_policy_log_probs * negative_mask
-        ).sum(dim=-1, keepdim=True)
-        reference_positive_sequence = (
-            batch["positive_reference_token_log_probs"] * positive_mask
-        ).sum(dim=-1, keepdim=True)
-        reference_negative_sequence = (
-            batch["negative_reference_token_log_probs"] * negative_mask
-        ).sum(dim=-1, keepdim=True)
-        dummy_logits = torch.zeros(
-            records, 1, 1, device=runtime.device, dtype=torch.float32
-        )
-        dummy_mask = torch.ones(
-            records, 1, device=runtime.device, dtype=torch.bool
-        )
-        objective = dual_preference_distillation_loss(
-            positive_student_logits=dummy_logits,
-            positive_teacher_logits=dummy_logits,
-            positive_mask=dummy_mask,
-            negative_student_logits=dummy_logits,
-            negative_teacher_logits=dummy_logits,
-            negative_mask=dummy_mask,
-            policy_positive_token_log_probs=policy_positive_sequence,
-            policy_negative_token_log_probs=policy_negative_sequence,
-            reference_positive_token_log_probs=reference_positive_sequence,
-            reference_negative_token_log_probs=reference_negative_sequence,
-            beta=profile["beta"],
-            token_distillation_weight=0.0,
-            sequence_preference_weight=profile[
-                "sequence_preference_weight"
-            ],
-            temperature=1.0,
-        )
-        auxiliary = 0.5 * (
-            _output_value(positive_output, "auxiliary_loss", objective["loss"] * 0.0)
-            + _output_value(negative_output, "auxiliary_loss", objective["loss"] * 0.0)
-        )
-        streamed_kd = 0.5 * (positive_kd + negative_kd)
-        loss = objective["loss"] + auxiliary
-        if not torch.isfinite(loss):
-            raise StageBackendError(f"{stage['id']} produced a non-finite loss")
-        (loss * records).backward()
-        accumulated_weight += records
-        accumulated_tokens += int(positive_attention.sum().item()) + int(
-            negative_attention.sum().item()
-        )
-        accumulation_index += 1
-        last = {
-            name: float(value.detach().float().item())
-            for name, value in objective.items()
-            if isinstance(value, Tensor) and value.numel() == 1
-        }
-        last["token_distillation"] = streamed_kd
-        last["positive_token_distillation"] = positive_kd
-        last["negative_token_distillation"] = negative_kd
-        last["cross_tokenizer_sequence_dpd"] = float(
-            external_sequence_dpd
-        )
-        last["loss"] = (
-            profile["token_distillation_weight"] * streamed_kd
-            + float(loss.detach().item())
-        )
-        next_epoch, next_batch = _batch_position_after(
-            bundle, topology, epoch=epoch, global_batch=global_batch
-        )
-        if accumulation_index < accumulation:
-            continue
-        _set_learning_rate(
-            optimizer,
-            _scheduled_learning_rate(
-                bundle.training,
-                optimizer_step=optimizer_step,
-                total_steps=total_steps,
-            ),
-        )
-        _, last_grad_norm = _main_optimizer_step(
-            model=model,
-            optimizer=optimizer,
-            topology=topology,
-            runtime=runtime,
-            local_weight=accumulated_weight,
-            gradient_clip=float(bundle.training["gradient_clip"]),
-            expert_selection_counts=expert_selection_counts,
-        )
-        campaign_cursor += _all_reduce_int(
-            accumulated_tokens, topology, runtime.device
-        )
-        optimizer_step += 1
-        accumulation_index = 0
-        accumulated_weight = 0
-        accumulated_tokens = 0
-        expert_selection_counts = None
-        progress = StageProgress(
-            epoch=next_epoch,
-            next_global_batch=next_batch,
-            optimizer_step=optimizer_step,
-            campaign_token_cursor=campaign_cursor,
-            loss=last.get("loss", 0.0),
-            grad_norm=last_grad_norm,
-            metrics={**last, "grad_norm": last_grad_norm},
-        )
-        if _signal_requested(
-            signal_coordinator, topology=topology, runtime=runtime
-        ):
-            checkpoint_callback(progress, False)
-            raise PostTrainingRequeue(
-                signal_coordinator.reason or "remote-rank-signal"
-            )
-        if (
-            checkpoint_interval > 0
-            and optimizer_step % checkpoint_interval == 0
-            and optimizer_step < total_steps
-        ):
-            checkpoint_callback(progress, False)
-        if (
-            maximum_optimizer_steps is not None
-            and optimizer_step >= maximum_optimizer_steps
-        ):
-            break
-    if maximum_optimizer_steps is not None:
-        if maximum_optimizer_steps <= 0 or optimizer_step != maximum_optimizer_steps:
-            raise StageBackendError(
-                f"{stage['id']} live canary could not execute its exact step budget"
-            )
-        if accumulation_index:
-            raise StageBackendError(
-                f"{stage['id']} live canary ended mid accumulation"
-            )
-    elif accumulation_index or optimizer_step != total_steps:
-        raise StageBackendError(f"{stage['id']} did not consume its exact mmap bundle")
-    return {
-        "optimizer_steps": optimizer_step,
-        "campaign_token_cursor": campaign_cursor,
-        "grad_norm": last_grad_norm,
-        "selected_profile": dict(profile),
-        "selected_profile_sha256": selection.profile_sha256,
-        "selection_evidence_sha256": selection.evidence_sha256,
-        "promotion_gate_passed": True,
-        "selection_gate": selection.gate_name,
-        **last,
-    }
-
-
 def _run_opd_stage(
     *,
     stage: Mapping[str, Any],
@@ -6205,6 +5332,7 @@ def _rlvr_rewards(
     batch: Mapping[str, Tensor],
     *,
     length_coefficient: float,
+    mode_compliance_weight: float,
 ) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
     correctness = batch["correctness"].float()
     if not torch.isfinite(correctness).all() or torch.any(
@@ -6220,7 +5348,7 @@ def _rlvr_rewards(
     correct_weight = correctness.sum(dim=-1).clamp_min(1.0)
     mean_correct_length = (lengths * correctness).sum(dim=-1) / correct_weight
     maximum_length = response_mask.shape[-1]
-    shaped = difficulty_adaptive_length_reward(
+    think_shaped = difficulty_adaptive_length_reward(
         correctness=correctness,
         response_lengths=lengths,
         pass_rate=pass_rates[:, None],
@@ -6229,8 +5357,23 @@ def _rlvr_rewards(
         coefficient=length_coefficient,
         deadband_fraction=0.10,
     )
+    reasoning_mode = batch["reasoning_mode"].long()
+    if (
+        reasoning_mode.shape != (correctness.shape[0],)
+        or torch.any((reasoning_mode < 0) | (reasoning_mode > 2))
+    ):
+        raise StageBackendError("RLVR reasoning_mode must be [N] with IDs 0..2")
+    think_prompt = reasoning_mode.eq(1).unsqueeze(-1)
+    # Efficiency shaping is intentionally exclusive to ordinary think mode.
+    # Direct responses have no visible reasoning trace to compress, while
+    # think_max receives a larger generation budget without a verbosity reward.
+    shaped = correctness + torch.where(
+        think_prompt,
+        think_shaped - correctness,
+        torch.zeros_like(correctness),
+    )
     diagnostics = thinking_length_diagnostics(
-        correctness=correctness,
+        correctness=correctness * think_prompt,
         response_lengths=lengths,
         pass_rate=pass_rates[:, None],
         mean_correct_length=mean_correct_length[:, None],
@@ -6245,6 +5388,16 @@ def _rlvr_rewards(
             batch["efficiency_reward"].float(),
         )
         shaped = code + (shaped - correctness)
+    compliance = batch["mode_compliance"].float()
+    if (
+        compliance.shape != correctness.shape
+        or not torch.isfinite(compliance).all()
+        or torch.any((compliance < 0) | (compliance > 1))
+        or not math.isfinite(mode_compliance_weight)
+        or mode_compliance_weight <= 0
+    ):
+        raise StageBackendError("RLVR mode-compliance reward contract is invalid")
+    shaped = shaped - mode_compliance_weight * (1.0 - compliance)
     return shaped, pass_rates, lengths, diagnostics
 
 
@@ -6445,96 +5598,6 @@ def _eval_selected_token_log_probs(
     return torch.cat(chunks, dim=1)
 
 
-def _evaluate_live_dpd_profile(
-    *,
-    bundle: MMapStageBundle,
-    model: nn.Module,
-    forward_model: nn.Module,
-    runtime: Runtime,
-    topology: ParallelTopology,
-    evaluator: Mapping[str, Any],
-) -> dict[str, float]:
-    prefix = "autotune_evaluation_"
-    records = int(evaluator["records"])
-    micro_batch = int(evaluator.get("micro_batch_size", 1))
-    if micro_batch <= 0:
-        raise StageBackendError("live evaluator micro_batch_size must be positive")
-    token_chunk = int(bundle.working_set["token_chunk_size"])
-    role_sums = [0.0, 0.0, 0.0]
-    role_counts = [0.0, 0.0, 0.0]
-    was_training = model.training
-    model.eval()
-    forward_model.eval()
-    try:
-        with torch.no_grad():
-            for indices in _live_evaluation_indices(
-                records=records,
-                micro_batch_size=micro_batch,
-                topology=topology,
-            ):
-                cpu_batch = {
-                    name: np.array(array[indices], copy=True)
-                    for name, array in bundle.arrays.items()
-                    if name.startswith(prefix)
-                }
-                batch = _to_device(cpu_batch, runtime.device)
-                sequence_scores: dict[str, Tensor] = {}
-                for side in ("positive", "negative"):
-                    ids = batch[f"{prefix}{side}_input_ids"].long()
-                    attention = batch[f"{prefix}{side}_attention_mask"].bool()
-                    response = batch[f"{prefix}{side}_response_mask"].bool()
-                    output = _model_forward(
-                        forward_model,
-                        ids,
-                        attention_mask=attention,
-                        canonical_ids=_canonicalize_ids(bundle, ids),
-                        deterministic=True,
-                        return_logits=False,
-                    )
-                    hidden = _output_value(output, "final_hidden_state")[:, :-1]
-                    token_log_probs = _eval_selected_token_log_probs(
-                        model,
-                        hidden,
-                        ids[:, 1:],
-                        token_chunk_size=token_chunk,
-                    )
-                    sequence_scores[side] = (
-                        (token_log_probs * response).sum(dim=-1)
-                        / response.sum(dim=-1).clamp_min(1)
-                    )
-                scores = torch.sigmoid(
-                    sequence_scores["positive"] - sequence_scores["negative"]
-                )
-                if not torch.isfinite(scores).all():
-                    raise StageBackendError(
-                        "DPD live evaluator produced non-finite preference scores"
-                    )
-                roles = batch[f"{prefix}role"].long()
-                for role in (1, 2, 3):
-                    selected = scores[roles == role]
-                    role_sums[role - 1] += float(selected.sum().item())
-                    role_counts[role - 1] += float(selected.numel())
-    finally:
-        model.train(was_training)
-        forward_model.train(was_training)
-    reduced = _all_reduce_float_vector(
-        [*role_sums, *role_counts],
-        topology=topology,
-        runtime=runtime,
-    )
-    sums, counts = reduced[:3], reduced[3:]
-    if any(count <= 0 for count in counts) or int(sum(counts)) != records:
-        raise StageBackendError(
-            "DPD live evaluator did not reproduce every sealed role"
-        )
-    return {
-        "primary_score": sums[0] / counts[0],
-        "reasoning_score": sums[1] / counts[1],
-        "self_correction_score": sums[2] / counts[2],
-        "evaluation_records": float(records),
-    }
-
-
 def _evaluate_live_gspo_profile(
     *,
     stage: Mapping[str, Any],
@@ -6591,6 +5654,12 @@ def _evaluate_live_gspo_profile(
                 reward_batch: dict[str, Tensor] = {
                     "correctness": correctness,
                     "candidate_response_mask": response,
+                    "reasoning_mode": batch[
+                        f"{prefix}reasoning_mode"
+                    ].long(),
+                    "mode_compliance": batch[
+                        f"{prefix}mode_compliance"
+                    ].float(),
                 }
                 if stage["id"] == "specialist_code":
                     reward_batch["efficiency_reward"] = batch[
@@ -6600,6 +5669,11 @@ def _evaluate_live_gspo_profile(
                     str(stage["id"]),
                     reward_batch,
                     length_coefficient=float(profile["length_coefficient"]),
+                    mode_compliance_weight=float(
+                        _require_mapping(
+                            stage.get("reward"), f"{stage['id']}.reward"
+                        )["mode_compliance_weight"]
+                    ),
                 )
                 sequence_log_probs = torch.empty(
                     (ids.shape[0], 16),
@@ -6709,24 +5783,6 @@ def _live_metrics_from_evaluations(
     candidate: Mapping[str, float],
     nonfinite_steps: int,
 ) -> dict[str, float]:
-    if stage_id == "deepseek_dpd_pilot":
-        if int(parent["evaluation_records"]) != int(candidate["evaluation_records"]):
-            raise StageBackendError("DPD live evaluator record count changed")
-        return {
-            "primary_regression": (
-                float(parent["primary_score"]) - float(candidate["primary_score"])
-            ),
-            "reasoning_gain": (
-                float(candidate["reasoning_score"])
-                - float(parent["reasoning_score"])
-            ),
-            "self_correction_gain": (
-                float(candidate["self_correction_score"])
-                - float(parent["self_correction_score"])
-            ),
-            "loss_nonfinite_steps": float(nonfinite_steps),
-            "evaluation_records": float(candidate["evaluation_records"]),
-        }
     if int(parent["rollout_prompts"]) != int(candidate["rollout_prompts"]):
         raise StageBackendError("GSPO live evaluator prompt count changed")
     return {
@@ -6748,32 +5804,6 @@ def _live_profile_gate(
     stage: Mapping[str, Any],
     metrics: Mapping[str, float],
 ) -> tuple[bool, tuple[float, ...], str]:
-    if stage["id"] == "deepseek_dpd_pilot":
-        gate = _require_mapping(
-            stage.get("promotion_gate"),
-            "deepseek_dpd_pilot.promotion_gate",
-        )
-        regression = _metric(metrics, "primary_regression")
-        reasoning = _metric(metrics, "reasoning_gain")
-        correction = _metric(metrics, "self_correction_gain")
-        nonfinite = _metric(metrics, "loss_nonfinite_steps", integral=True)
-        _metric(metrics, "evaluation_records", integral=True, positive=True)
-        passed = bool(
-            (
-                gate.get("require_no_primary_regression") is not True
-                or regression <= 0.0
-            )
-            and reasoning >= float(gate["minimum_reasoning_gain"])
-            and correction >= float(gate["minimum_self_correction_gain"])
-            and nonfinite <= int(gate["maximum_loss_nonfinite_steps"])
-        )
-        ordering = (
-            -(reasoning + correction - max(regression, 0.0)),
-            -reasoning,
-            -correction,
-            regression,
-        )
-        return passed, ordering, "dpd_promotion_gate"
     _default, _candidates, gate = _gspo_profile_candidates(stage)
     reward = _metric(metrics, "reward_gain")
     entropy = _metric(metrics, "entropy_delta")
@@ -6975,18 +6005,11 @@ def _run_live_profile_autotune(
     signal_coordinator: SignalCoordinator | None,
     active_resume: bool = False,
 ) -> ProfileSelection:
-    if (
-        stage["id"] != "deepseek_dpd_pilot"
-        and not _is_specialist_stage(str(stage["id"]))
-    ):
+    if not _is_gspo_stage(str(stage["id"])):
         raise StageBackendError("live profile autotune called for an unsupported stage")
     # This first validation keeps the independently generated evidence useful
     # as a second implementation/oracle, but its selected row is not promoted.
-    external_selection = (
-        _selected_dpd_profile(stage, bundle)
-        if stage["id"] == "deepseek_dpd_pilot"
-        else _selected_gspo_profile(stage, bundle)
-    )
+    external_selection = _selected_gspo_profile(stage, bundle)
     del external_selection
     evidence = _require_mapping(
         bundle.manifest.get("profile_selection"),
@@ -7007,11 +6030,7 @@ def _run_live_profile_autotune(
         f"{stage['id']}.autotune.live_canary",
     )
     steps = int(live_contract.get("training_optimizer_steps", 0))
-    expected_evaluator = (
-        "metis.dpd-preference-replay/v1"
-        if stage["id"] == "deepseek_dpd_pilot"
-        else "metis.rlvr-offline-policy-replay/v1"
-    )
+    expected_evaluator = "metis.rlvr-offline-policy-replay/v1"
     if (
         pipeline_policy.get("schema")
         != "metis.posttraining-live-canary-policy/v1"
@@ -7038,11 +6057,8 @@ def _run_live_profile_autotune(
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**63:
         raise StageBackendError("live profile autotune seed is invalid")
     tolerance = float(evaluator["reproduction_tolerance"])
-    if stage["id"] == "deepseek_dpd_pilot":
-        _default, fields, candidates = _dpd_profile_candidates(stage)
-    else:
-        _default, candidates, _gate = _gspo_profile_candidates(stage)
-        fields = ("clip_low", "clip_high", "length_coefficient")
+    _default, candidates, _gate = _gspo_profile_candidates(stage)
+    fields = ("clip_low", "clip_high", "length_coefficient")
     expected_trials = _expected_profile_trials(evidence, fields=fields)
     candidate_rows = [dict(row) for row in candidates]
     if set(expected_trials) != {
@@ -7186,14 +6202,10 @@ def _run_live_profile_autotune(
         baselines = _require_mapping(
             receipt.get("baselines"), "live-autotune baselines"
         )
-        required_baseline_keys = (
-            {"deepseek_dpd"}
-            if stage["id"] == "deepseek_dpd_pilot"
-            else {
-                f"{candidate['length_coefficient']:.17g}"
-                for candidate in candidate_rows
-            }
-        )
+        required_baseline_keys = {
+            f"{candidate['length_coefficient']:.17g}"
+            for candidate in candidate_rows
+        }
         for key in sorted(required_baseline_keys):
             if key in baselines:
                 continue
@@ -7204,31 +6216,21 @@ def _run_live_profile_autotune(
                 active_resume=False,
             )
             _seed_live_trial(seed, runtime)
-            if stage["id"] == "deepseek_dpd_pilot":
-                baseline = _evaluate_live_dpd_profile(
-                    bundle=bundle,
-                    model=model,
-                    forward_model=forward_model,
-                    runtime=runtime,
-                    topology=topology,
-                    evaluator=evaluator,
-                )
-            else:
-                profile = next(
-                    item
-                    for item in candidate_rows
-                    if f"{item['length_coefficient']:.17g}" == key
-                )
-                baseline = _evaluate_live_gspo_profile(
-                    stage=stage,
-                    profile=profile,
-                    bundle=bundle,
-                    model=model,
-                    forward_model=forward_model,
-                    runtime=runtime,
-                    topology=topology,
-                    evaluator=evaluator,
-                )
+            profile = next(
+                item
+                for item in candidate_rows
+                if f"{item['length_coefficient']:.17g}" == key
+            )
+            baseline = _evaluate_live_gspo_profile(
+                stage=stage,
+                profile=profile,
+                bundle=bundle,
+                model=model,
+                forward_model=forward_model,
+                runtime=runtime,
+                topology=topology,
+                evaluator=evaluator,
+            )
             mutable_baselines = dict(baselines)
             baseline_row = {
                 "metrics": baseline,
@@ -7280,40 +6282,22 @@ def _run_live_profile_autotune(
             nonfinite_steps = 0
             candidate_failure: str | None = None
             try:
-                if stage["id"] == "deepseek_dpd_pilot":
-                    _run_dpd_stage(
-                        stage=stage,
-                        bundle=bundle,
-                        model=model,
-                        optimizer=optimizer,
-                        runtime=runtime,
-                        topology=topology,
-                        start_epoch=0,
-                        start_global_batch=0,
-                        start_optimizer_step=0,
-                        start_cursor=0,
-                        checkpoint_callback=lambda *_args: None,
-                        forward_model=forward_model,
-                        selection_override=selection,
-                        maximum_optimizer_steps=steps,
-                    )
-                else:
-                    _run_gspo_stage(
-                        stage=stage,
-                        bundle=bundle,
-                        model=model,
-                        optimizer=optimizer,
-                        runtime=runtime,
-                        topology=topology,
-                        start_epoch=0,
-                        start_global_batch=0,
-                        start_optimizer_step=0,
-                        start_cursor=0,
-                        checkpoint_callback=lambda *_args: None,
-                        forward_model=forward_model,
-                        selection_override=selection,
-                        maximum_optimizer_steps=steps,
-                    )
+                _run_gspo_stage(
+                    stage=stage,
+                    bundle=bundle,
+                    model=model,
+                    optimizer=optimizer,
+                    runtime=runtime,
+                    topology=topology,
+                    start_epoch=0,
+                    start_global_batch=0,
+                    start_optimizer_step=0,
+                    start_cursor=0,
+                    checkpoint_callback=lambda *_args: None,
+                    forward_model=forward_model,
+                    selection_override=selection,
+                    maximum_optimizer_steps=steps,
+                )
             except Exception as exception:
                 if _is_device_oom(exception):
                     candidate_failure = "measured_candidate_oom"
@@ -7338,51 +6322,26 @@ def _run_live_profile_autotune(
                 operation="max",
             )[0]
             if nonfinite_steps:
-                live_metrics = (
-                    {
-                        "primary_regression": 0.0,
-                        "reasoning_gain": 0.0,
-                        "self_correction_gain": 0.0,
-                        "loss_nonfinite_steps": 1.0,
-                        "evaluation_records": float(evaluator["records"]),
-                    }
-                    if stage["id"] == "deepseek_dpd_pilot"
-                    else {
-                        "reward_gain": 0.0,
-                        "entropy_delta": 0.0,
-                        "evaluation_regression": 0.0,
-                        "nonfinite_steps": 1.0,
-                        "evaluation_records": float(evaluator["records"]),
-                        "rollout_prompts": float(evaluator["records"]),
-                    }
-                )
+                live_metrics = {
+                    "reward_gain": 0.0,
+                    "entropy_delta": 0.0,
+                    "evaluation_regression": 0.0,
+                    "nonfinite_steps": 1.0,
+                    "evaluation_records": float(evaluator["records"]),
+                    "rollout_prompts": float(evaluator["records"]),
+                }
             else:
-                candidate_evaluation = (
-                    _evaluate_live_dpd_profile(
-                        bundle=bundle,
-                        model=model,
-                        forward_model=forward_model,
-                        runtime=runtime,
-                        topology=topology,
-                        evaluator=evaluator,
-                    )
-                    if stage["id"] == "deepseek_dpd_pilot"
-                    else _evaluate_live_gspo_profile(
-                        stage=stage,
-                        profile=profile,
-                        bundle=bundle,
-                        model=model,
-                        forward_model=forward_model,
-                        runtime=runtime,
-                        topology=topology,
-                        evaluator=evaluator,
-                    )
+                candidate_evaluation = _evaluate_live_gspo_profile(
+                    stage=stage,
+                    profile=profile,
+                    bundle=bundle,
+                    model=model,
+                    forward_model=forward_model,
+                    runtime=runtime,
+                    topology=topology,
+                    evaluator=evaluator,
                 )
-                baseline_key = (
-                    "deepseek_dpd"
-                    if stage["id"] == "deepseek_dpd_pilot"
-                    else f"{profile['length_coefficient']:.17g}"
-                )
+                baseline_key = f"{profile['length_coefficient']:.17g}"
                 baseline = _require_mapping(
                     _require_mapping(
                         receipt["baselines"][baseline_key],
@@ -7523,7 +6482,7 @@ def _run_gspo_stage(
     objective_config = _require_mapping(stage.get("objective"), f"{stage['id']}.objective")
     selection = (
         selection_override or _selected_gspo_profile(stage, bundle)
-        if _is_specialist_stage(str(stage["id"]))
+        if _is_gspo_stage(str(stage["id"]))
         else None
     )
     profile = (
@@ -7590,46 +6549,32 @@ def _run_gspo_stage(
         response_mask = batch["candidate_response_mask"].bool()
         truncated = batch["truncated"].bool()
         thinking_diagnostics: dict[str, Tensor] | None = None
-        if stage["id"] == "preference_alignment":
-            reference_member = batch["reference_member"].bool()
-            if not torch.all(reference_member.sum(dim=-1) == 1):
-                raise StageBackendError(
-                    "preference alignment requires exactly one reference response per prompt"
-                )
-            # These scores were generated once by the frozen pairwise-RM
-            # backbone+head at the exact parent policy checkpoint. Scoring
-            # through ``execution_model`` here would make the reward drift as
-            # the policy trunk is optimized.
-            rewards = batch["reward_scores"].float()
-            if rewards.shape != (batch_size, group_size) or not torch.isfinite(
-                rewards
-            ).all():
-                raise StageBackendError(
-                    "preference alignment has invalid frozen reward_scores"
-                )
-            pass_rates = None
-        else:
-            adaptive_length_active = bool(
-                raw_length_schedule is not None
-                and (
-                    maximum_optimizer_steps is not None
-                    or optimizer_step >= adaptive_length_start_step
-                )
+        adaptive_length_active = bool(
+            raw_length_schedule is not None
+            and (
+                maximum_optimizer_steps is not None
+                or optimizer_step >= adaptive_length_start_step
             )
-            rewards, pass_rates, _lengths, thinking_diagnostics = _rlvr_rewards(
-                str(stage["id"]),
-                batch,
-                length_coefficient=(
-                    profile["length_coefficient"]
-                    if adaptive_length_active
-                    else 0.0
-                ),
-            )
-            for name, value in thinking_diagnostics.items():
-                if not torch.isfinite(value):
-                    raise StageBackendError(
-                        f"{stage['id']} produced non-finite {name}"
-                    )
+        )
+        rewards, pass_rates, _lengths, thinking_diagnostics = _rlvr_rewards(
+            str(stage["id"]),
+            batch,
+            length_coefficient=(
+                profile["length_coefficient"]
+                if adaptive_length_active
+                else 0.0
+            ),
+            mode_compliance_weight=float(
+                _require_mapping(
+                    stage.get("reward"), f"{stage['id']}.reward"
+                )["mode_compliance_weight"]
+            ),
+        )
+        for name, value in thinking_diagnostics.items():
+            if not torch.isfinite(value):
+                raise StageBackendError(
+                    f"{stage['id']} produced non-finite {name}"
+                )
         reward_mean = rewards.float().mean(dim=1, keepdim=True)
         reward_std = rewards.float().std(dim=1, keepdim=True, unbiased=False)
         if torch.any(reward_std <= 1.0e-6):
@@ -7824,13 +6769,10 @@ def _run_gspo_stage(
         last["mean_reward"] = (
             reduced_metrics[summary_offset] / global_reward_count
         )
-        if stage["id"] != "preference_alignment":
-            last["adaptive_length_active"] = float(
-                adaptive_length_active
-            )
-            last["adaptive_length_start_step"] = float(
-                adaptive_length_start_step
-            )
+        last["adaptive_length_active"] = float(adaptive_length_active)
+        last["adaptive_length_start_step"] = float(
+            adaptive_length_start_step
+        )
         global_pass_rate_count = reduced_metrics[summary_offset + 3]
         if pass_rates is not None:
             if global_pass_rate_count <= 0:
@@ -7942,236 +6884,7 @@ def _run_gspo_stage(
                 "selection_gate": selection.gate_name,
             }
         )
-    if stage["id"] == "preference_alignment":
-        result.update(
-            {
-                "reward_source": "sealed_frozen_pairwise_scores",
-                "reward_score_contract_sha256": str(
-                    _require_mapping(
-                        bundle.manifest.get("reward_score_contract"),
-                        "preference reward_score_contract",
-                    )["contract_sha256"]
-                ),
-            }
-        )
     return result
-
-
-def _synchronize_head_gradients(
-    head: nn.Module,
-    *,
-    topology: ParallelTopology,
-    global_records: int,
-) -> None:
-    if global_records <= 0:
-        raise StageBackendError("reward-model optimizer step has no records")
-    for parameter in head.parameters():
-        if parameter.grad is None:
-            raise StageBackendError("reward-model head omitted a gradient")
-        if topology.distributed:
-            dist.all_reduce(
-                parameter.grad,
-                op=dist.ReduceOp.SUM,
-                group=topology.dense_data_group,
-            )
-        parameter.grad.div_(float(global_records))
-
-
-def _run_pairwise_stage(
-    *,
-    stage: Mapping[str, Any],
-    bundle: MMapStageBundle,
-    model: nn.Module,
-    runtime: Runtime,
-    topology: ParallelTopology,
-    hidden_size: int,
-    start_epoch: int = 0,
-    start_global_batch: int = 0,
-    start_optimizer_step: int = 0,
-    resume_payload: Mapping[str, Any] | None = None,
-    checkpoint_callback: Any | None = None,
-    signal_coordinator: SignalCoordinator | None = None,
-    forward_model: nn.Module | None = None,
-) -> tuple[PairwiseRewardHead, dict[str, Any]]:
-    head = PairwiseRewardHead(hidden_size, device=runtime.device)
-    if topology.distributed:
-        for parameter in head.parameters():
-            dist.broadcast(parameter.data, src=0, group=topology.dense_data_group)
-    training = bundle.training
-    head_optimizer = torch.optim.AdamW(
-        head.parameters(),
-        lr=float(training["learning_rate"]),
-        betas=(0.9, 0.95),
-        eps=1.0e-8,
-        weight_decay=0.01,
-    )
-    total_steps = _total_optimizer_steps(bundle, topology)
-    accumulation = int(training["gradient_accumulation"])
-    checkpoint_interval = int(training["checkpoint_interval_steps"])
-    optimizer_step = start_optimizer_step
-    if resume_payload is not None:
-        head.load_state_dict(
-            _require_mapping(resume_payload.get("head_state_dict"), "reward head state"),
-            strict=True,
-        )
-        optimizer_state = resume_payload.get("optimizer_state_dict")
-        if not isinstance(optimizer_state, Mapping):
-            raise StageBackendError("reward resume payload omits optimizer state")
-        head_optimizer.load_state_dict(optimizer_state)
-    accumulated_records = 0
-    accumulation_index = 0
-    last: dict[str, float] = {}
-    was_training = model.training
-    model.eval()
-    execution_model = forward_model if forward_model is not None else model
-    execution_model.eval()
-    head.train()
-    head_optimizer.zero_grad(set_to_none=True)
-    for epoch, global_batch, cpu_batch in bundle.iter_rank_batches(
-        topology,
-        start_epoch=start_epoch,
-        start_global_batch=start_global_batch,
-    ):
-        batch = _to_device(cpu_batch, runtime.device)
-        with torch.no_grad():
-            preferred = _model_forward(
-                execution_model,
-                batch["preferred_input_ids"].long(),
-                attention_mask=batch["preferred_attention_mask"].bool(),
-                canonical_ids=_canonicalize_ids(
-                    bundle, batch["preferred_input_ids"].long()
-                ),
-                deterministic=True,
-            )
-            rejected = _model_forward(
-                execution_model,
-                batch["rejected_input_ids"].long(),
-                attention_mask=batch["rejected_attention_mask"].bool(),
-                canonical_ids=_canonicalize_ids(
-                    bundle, batch["rejected_input_ids"].long()
-                ),
-                deterministic=True,
-            )
-        preferred_hidden = _output_value(
-            preferred, "final_hidden_state"
-        ).detach()
-        rejected_hidden = _output_value(
-            rejected, "final_hidden_state"
-        ).detach()
-        preferred_attention = batch["preferred_attention_mask"].bool()
-        rejected_attention = batch["rejected_attention_mask"].bool()
-        first_slot = torch.zeros(
-            preferred_hidden.shape[0],
-            dtype=torch.long,
-            device=preferred_hidden.device,
-        )
-        second_slot = torch.ones_like(first_slot)
-        preferred_scores = head(
-            preferred_hidden,
-            preferred_attention,
-            pair_position=first_slot,
-        )
-        rejected_scores = head(
-            rejected_hidden,
-            rejected_attention,
-            pair_position=second_slot,
-        )
-        # Score the same semantic responses again after explicitly swapping
-        # their presentation slots. These are not aliases of the first pass:
-        # pair_position changes the trainable nuisance term.
-        swapped_preferred_scores = head(
-            preferred_hidden,
-            preferred_attention,
-            pair_position=second_slot,
-        )
-        swapped_rejected_scores = head(
-            rejected_hidden,
-            rejected_attention,
-            pair_position=first_slot,
-        )
-        objective = bradley_terry_pairwise_loss(
-            preferred_scores,
-            rejected_scores,
-            swapped_preferred_scores=swapped_preferred_scores,
-            swapped_rejected_scores=swapped_rejected_scores,
-            swap_consistency_weight=float(stage["swap_consistency_weight"]),
-        )
-        records = int(preferred_scores.numel())
-        (objective["loss"] * records).backward()
-        accumulated_records += records
-        accumulation_index += 1
-        last = {
-            name: float(value.detach().float().item())
-            for name, value in objective.items()
-            if isinstance(value, Tensor) and value.numel() == 1
-        }
-        if accumulation_index < accumulation:
-            continue
-        global_records = _all_reduce_int(
-            accumulated_records, topology, runtime.device
-        )
-        _synchronize_head_gradients(
-            head, topology=topology, global_records=global_records
-        )
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            head.parameters(), float(training["gradient_clip"])
-        )
-        if not torch.isfinite(grad_norm):
-            raise StageBackendError("pairwise reward model produced non-finite gradients")
-        learning_rate = _scheduled_learning_rate(
-            training,
-            optimizer_step=optimizer_step,
-            total_steps=total_steps,
-        )
-        for group in head_optimizer.param_groups:
-            group["lr"] = learning_rate
-        head_optimizer.step()
-        head_optimizer.zero_grad(set_to_none=True)
-        optimizer_step += 1
-        next_epoch, next_batch = _batch_position_after(
-            bundle, topology, epoch=epoch, global_batch=global_batch
-        )
-        if _signal_requested(
-            signal_coordinator, topology=topology, runtime=runtime
-        ):
-            if checkpoint_callback is None:
-                raise StageBackendError(
-                    "signal received but reward-model checkpoint callback is absent"
-                )
-            checkpoint_callback(
-                head,
-                head_optimizer,
-                {
-                    "epoch": next_epoch,
-                    "next_global_batch": next_batch,
-                    "optimizer_step": optimizer_step,
-                },
-            )
-            raise PostTrainingRequeue(
-                signal_coordinator.reason or "remote-rank-signal"
-            )
-        if (
-            checkpoint_callback is not None
-            and checkpoint_interval > 0
-            and optimizer_step % checkpoint_interval == 0
-            and optimizer_step < total_steps
-        ):
-            checkpoint_callback(
-                head,
-                head_optimizer,
-                {
-                    "epoch": next_epoch,
-                    "next_global_batch": next_batch,
-                    "optimizer_step": optimizer_step,
-                },
-            )
-        accumulation_index = 0
-        accumulated_records = 0
-    model.train(was_training)
-    if accumulation_index or optimizer_step != total_steps:
-        raise StageBackendError("pairwise reward model did not consume its exact mmap bundle")
-    head.eval()
-    return head, {"optimizer_steps": optimizer_step, **last}
 
 
 def _policy_audit(policy: Any) -> dict[str, Any]:
@@ -8550,7 +7263,6 @@ def _write_stage_receipt(
     metrics: Mapping[str, Any],
     optimizer_state_policy: str,
     checkpoint_receipt: Path | None = None,
-    reward_model_manifest: Path | None = None,
 ) -> Path:
     path = output_root / "receipts" / f"{stage_id}-output.json"
     payload: dict[str, Any] = {
@@ -8574,9 +7286,6 @@ def _write_stage_receipt(
         ],
         "metrics": dict(metrics),
         "checkpoint_receipt": str(checkpoint_receipt) if checkpoint_receipt else None,
-        "reward_model_manifest": (
-            str(reward_model_manifest) if reward_model_manifest else None
-        ),
         "completed_unix": int(time.time()),
         "receipt_sha256": "",
     }
@@ -8605,7 +7314,6 @@ def _initial_campaign_state(
         "policy_checkpoint_receipt": str(base_receipt),
         "policy_checkpoint_contract": None,
         "campaign_token_cursor": BASE_TOKEN_CURSOR,
-        "reward_model_manifest": None,
         "evaluation_receipt": None,
         "context_gate_receipts": {},
         "context_gate_promotion": None,
@@ -8960,258 +7668,6 @@ def _validate_base_checkpoint(
     return observed
 
 
-def _save_reward_model(
-    *,
-    output_root: Path,
-    family: str,
-    stage_config_sha256: str,
-    parent_checkpoint_sha256: str,
-    precision_role_plan_sha256: str,
-    head: PairwiseRewardHead,
-    hidden_size: int,
-    topology: ParallelTopology,
-) -> Path:
-    root = output_root / "reward_model"
-    weights = root / "reward_head.pt"
-    manifest_path = root / "MANIFEST.json"
-
-    def save_on_rank() -> None:
-        if topology.rank != 0:
-            return
-        _atomic_torch_save(
-            weights,
-            {
-                "schema": REWARD_MODEL_SCHEMA,
-                "hidden_size": hidden_size,
-                "state_dict": {
-                    name: value.detach().cpu()
-                    for name, value in head.state_dict().items()
-                },
-            },
-        )
-        payload: dict[str, Any] = {
-            "schema": REWARD_MODEL_SCHEMA,
-            "family": family,
-            "parent_checkpoint_sha256": parent_checkpoint_sha256,
-            "precision_role_plan_sha256": precision_role_plan_sha256,
-            "stage_config_sha256": stage_config_sha256,
-            "hidden_size": hidden_size,
-            "complete": True,
-            "files": [
-                {
-                    "path": weights.name,
-                    "bytes": weights.stat().st_size,
-                    "sha256": sha256_file(weights),
-                }
-            ],
-            "manifest_sha256": "",
-        }
-        payload["manifest_sha256"] = _canonical_hash(
-            payload, omit={"manifest_sha256"}
-        )
-        _atomic_json(manifest_path, payload)
-
-    _collective_errors(topology, save_on_rank, label="reward-model save")
-    barrier(topology)
-    return manifest_path
-
-
-def _load_reward_model(
-    *,
-    manifest_path: Path,
-    family: str,
-    parent_checkpoint_sha256: str,
-    hidden_size: int,
-    runtime: Runtime,
-    topology: ParallelTopology,
-) -> PairwiseRewardHead:
-    def load_local() -> dict[str, Tensor]:
-        manifest = _read_json(manifest_path, label="pairwise reward-model manifest")
-        if (
-            manifest.get("schema") != REWARD_MODEL_SCHEMA
-            or manifest.get("family") != family
-            or manifest.get("parent_checkpoint_sha256") != parent_checkpoint_sha256
-            or int(manifest.get("hidden_size", -1)) != hidden_size
-            or manifest.get("manifest_sha256")
-            != _canonical_hash(manifest, omit={"manifest_sha256"})
-        ):
-            raise StageBackendError("pairwise reward-model lineage is invalid")
-        files = _require_list(manifest.get("files"), "reward-model files")
-        if len(files) != 1:
-            raise StageBackendError("reward model must contain exactly one side-head artifact")
-        record = _require_mapping(files[0], "reward-model artifact")
-        artifact = _safe_relative(
-            manifest_path.parent.resolve(),
-            str(record.get("path", "")),
-            label="reward-model artifact",
-        )
-        if (
-            artifact.stat().st_size != int(record.get("bytes", -1))
-            or sha256_file(artifact) != record.get("sha256")
-        ):
-            raise StageBackendError("reward-model artifact failed integrity validation")
-        payload = torch.load(artifact, map_location="cpu", weights_only=True)
-        if (
-            payload.get("schema") != REWARD_MODEL_SCHEMA
-            or int(payload.get("hidden_size", -1)) != hidden_size
-        ):
-            raise StageBackendError("reward-model weights have the wrong contract")
-        state_dict = payload.get("state_dict")
-        if not isinstance(state_dict, Mapping):
-            raise StageBackendError("reward-model weights omit state_dict")
-        return dict(state_dict)
-
-    state = _collective_errors(
-        topology, load_local, label="reward-model load"
-    )
-    head = PairwiseRewardHead(hidden_size, device=runtime.device)
-    head.load_state_dict(state, strict=True)
-    head.eval()
-    return head
-
-
-def _validate_reward_model_manifest(
-    *,
-    manifest_path: Path,
-    family: str,
-    parent_checkpoint_sha256: str,
-    precision_role_plan_sha256: str,
-    hidden_size: int,
-) -> str:
-    """Validate frozen RM lineage without materializing its weights in HBM."""
-
-    manifest = _read_json(manifest_path, label="pairwise reward-model manifest")
-    observed = _canonical_hash(manifest, omit={"manifest_sha256"})
-    if (
-        manifest.get("schema") != REWARD_MODEL_SCHEMA
-        or manifest.get("family") != family
-        or manifest.get("parent_checkpoint_sha256")
-        != parent_checkpoint_sha256
-        or manifest.get("precision_role_plan_sha256")
-        != precision_role_plan_sha256
-        or int(manifest.get("hidden_size", -1)) != hidden_size
-        or manifest.get("complete") is not True
-        or manifest.get("manifest_sha256") != observed
-    ):
-        raise StageBackendError("pairwise reward-model lineage is invalid")
-    files = _require_list(manifest.get("files"), "reward-model files")
-    if len(files) != 1:
-        raise StageBackendError(
-            "reward model must contain exactly one side-head artifact"
-        )
-    record = _require_mapping(files[0], "reward-model artifact")
-    artifact = _safe_relative(
-        manifest_path.parent.resolve(),
-        str(record.get("path", "")),
-        label="reward-model artifact",
-    )
-    if (
-        not artifact.is_file()
-        or artifact.is_symlink()
-        or artifact.stat().st_size != int(record.get("bytes", -1))
-        or sha256_file(artifact) != record.get("sha256")
-    ):
-        raise StageBackendError("reward-model artifact failed integrity validation")
-    return observed
-
-
-def _save_reward_training_checkpoint(
-    *,
-    output_root: Path,
-    family: str,
-    stage_config_sha256: str,
-    parent_checkpoint_sha256: str,
-    precision_role_plan_sha256: str,
-    bundle_sha256: str,
-    runtime_batch: Mapping[str, Any],
-    head: PairwiseRewardHead,
-    optimizer: torch.optim.Optimizer,
-    progress: Mapping[str, int],
-    topology: ParallelTopology,
-) -> tuple[Path, str]:
-    step = int(progress["optimizer_step"])
-    path = output_root / "reward_model" / "training" / f"step-{step:09d}.pt"
-
-    def save_on_rank() -> str | None:
-        if topology.rank != 0:
-            return None
-        _atomic_torch_save(
-            path,
-            {
-                "schema": "metis.reward-model-training-checkpoint/v1",
-                "family": family,
-                "stage": "pairwise_reward_model",
-                "stage_config_sha256": stage_config_sha256,
-                "parent_checkpoint_sha256": parent_checkpoint_sha256,
-                "precision_role_plan_sha256": precision_role_plan_sha256,
-                "bundle_sha256": bundle_sha256,
-                "runtime_batch": dict(runtime_batch),
-                "epoch": int(progress["epoch"]),
-                "next_global_batch": int(progress["next_global_batch"]),
-                "optimizer_step": step,
-                "head_state_dict": {
-                    name: value.detach().cpu()
-                    for name, value in head.state_dict().items()
-                },
-                "optimizer_state_dict": optimizer.state_dict(),
-            },
-        )
-        return sha256_file(path)
-
-    observed = _collective_errors(
-        topology, save_on_rank, label="reward training checkpoint"
-    )
-    observed = _broadcast_object(observed if topology.rank == 0 else None, topology)
-    if not isinstance(observed, str) or len(observed) != 64:
-        raise StageBackendError("reward training checkpoint did not produce a hash")
-    barrier(topology)
-    return path, observed
-
-
-def _load_reward_training_checkpoint(
-    *,
-    active: Mapping[str, Any],
-    family: str,
-    stage_config_sha256: str,
-    parent_checkpoint_sha256: str,
-    precision_role_plan_sha256: str,
-    bundle_sha256: str,
-    runtime_batch: Mapping[str, Any],
-    topology: ParallelTopology,
-) -> dict[str, Any]:
-    path = Path(str(active.get("reward_checkpoint_path", ""))).expanduser().resolve()
-
-    def load_local() -> dict[str, Any]:
-        if not path.is_file() or path.is_symlink():
-            raise StageBackendError("reward training checkpoint is missing or unsafe")
-        if sha256_file(path) != active.get("reward_checkpoint_sha256"):
-            raise StageBackendError("reward training checkpoint hash changed")
-        payload = torch.load(path, map_location="cpu", weights_only=False)
-        expected = {
-            "schema": "metis.reward-model-training-checkpoint/v1",
-            "family": family,
-            "stage": "pairwise_reward_model",
-            "stage_config_sha256": stage_config_sha256,
-            "parent_checkpoint_sha256": parent_checkpoint_sha256,
-            "precision_role_plan_sha256": precision_role_plan_sha256,
-            "bundle_sha256": bundle_sha256,
-        }
-        for field, value in expected.items():
-            if payload.get(field) != value:
-                raise StageBackendError(
-                    f"reward training checkpoint lineage mismatch for {field}"
-                )
-        if payload.get("runtime_batch") != dict(runtime_batch):
-            raise StageBackendError(
-                "reward training checkpoint runtime batch lineage mismatch"
-            )
-        return dict(payload)
-
-    return _collective_errors(
-        topology, load_local, label="reward training checkpoint load"
-    )
-
-
 def _evaluation_payload(
     requirement: SealedRequirement,
     *,
@@ -9314,7 +7770,6 @@ def _write_release_candidate(
     family: str,
     policy_checkpoint_sha256: str,
     policy_checkpoint_receipt: str,
-    reward_model_manifest: str,
     evaluation_receipt: str,
     topology: ParallelTopology,
 ) -> Path:
@@ -9328,7 +7783,6 @@ def _write_release_candidate(
             "family": family,
             "policy_checkpoint_sha256": policy_checkpoint_sha256,
             "policy_checkpoint_receipt": policy_checkpoint_receipt,
-            "reward_model_manifest": reward_model_manifest,
             "evaluation_receipt": evaluation_receipt,
             "external_upload": False,
             "complete": True,
@@ -9375,7 +7829,6 @@ def _completed_record(
     checkpoint_path: Path | None = None,
     checkpoint_contract: Mapping[str, str] | None = None,
     checkpoint_receipt: Path | None = None,
-    reward_model_manifest: Path | None = None,
     release_candidate: Path | None = None,
     policy_checkpoint_sha256: str | None = None,
 ) -> dict[str, Any]:
@@ -9394,9 +7847,6 @@ def _completed_record(
         "checkpoint_path": str(checkpoint_path) if checkpoint_path else None,
         "checkpoint_contract": dict(checkpoint_contract) if checkpoint_contract else None,
         "checkpoint_receipt": str(checkpoint_receipt) if checkpoint_receipt else None,
-        "reward_model_manifest": (
-            str(reward_model_manifest) if reward_model_manifest else None
-        ),
         "release_candidate": str(release_candidate) if release_candidate else None,
         "metrics_sha256": _canonical_hash(metrics),
         "completed_unix": int(time.time()),
@@ -9525,7 +7975,6 @@ def _run_posttraining_campaign_impl(
             "complete": True,
             "policy_checkpoint_sha256": state["policy_checkpoint_sha256"],
             "policy_checkpoint_receipt": state["policy_checkpoint_receipt"],
-            "reward_model_manifest": state["reward_model_manifest"],
             "evaluation_receipt": state["evaluation_receipt"],
             "release_candidate": completed[-1].get("release_candidate"),
         }
@@ -9553,18 +8002,6 @@ def _run_posttraining_campaign_impl(
                 topology=topology,
             )
             active = _require_mapping(state["active"], "campaign active")
-        elif active_kind == "reward_model":
-            if state.get("policy_checkpoint_contract") is not None:
-                _load_distributed_checkpoint(
-                    manager=manager,
-                    checkpoint=str(state["policy_checkpoint_path"]),
-                    contract=_require_mapping(
-                        state["policy_checkpoint_contract"],
-                        "policy checkpoint contract",
-                    ),
-                    model=model,
-                    optimizer=optimizer,
-                )
         else:
             raise StageBackendError(f"unknown active checkpoint kind: {active_kind}")
     elif state.get("policy_checkpoint_contract") is not None:
@@ -9651,36 +8088,6 @@ def _run_posttraining_campaign_impl(
                 ),
                 "checkpoint_contract": dict(raw_parent_contract),
             }
-        if _is_dpd_stage(stage_id):
-            overall_sft_records = {
-                str(item.get("stage_id")): item
-                for item in state["completed"]
-                if isinstance(item, Mapping)
-                and item.get("stage_id") == "overall_sft"
-            }
-            if set(overall_sft_records) != {"overall_sft"}:
-                raise StageBackendError(
-                    "DPD cannot bind its unique frozen overall-SFT reference"
-                )
-            overall_sft_record = overall_sft_records["overall_sft"]
-            stage_bindings["dpd_reference_checkpoint"] = {
-                "stage_id": "overall_sft",
-                "checkpoint_path": str(
-                    overall_sft_record["checkpoint_path"]
-                ),
-                "checkpoint_sha256": str(
-                    overall_sft_record["policy_checkpoint_sha256"]
-                ),
-                "checkpoint_receipt": str(
-                    overall_sft_record["checkpoint_receipt"]
-                ),
-                "checkpoint_contract": dict(
-                    _require_mapping(
-                        overall_sft_record["checkpoint_contract"],
-                        "DPD overall-SFT reference checkpoint contract",
-                    )
-                ),
-            }
         if stage_id == "opd_consolidation":
             specialist_records = {
                 str(item.get("stage_id")): item
@@ -9719,7 +8126,7 @@ def _run_posttraining_campaign_impl(
                 for specialist_id in SPECIALIST_STAGE_IDS
             }
             stage_bindings["unified_student_checkpoint"] = {
-                "stage_id": "deepseek_dpd",
+                "stage_id": "hybrid_mode_gspo",
                 "checkpoint_path": str(state["policy_checkpoint_path"]),
                 "checkpoint_sha256": parent_checkpoint_sha256,
                 "checkpoint_receipt": str(
@@ -9732,50 +8139,6 @@ def _run_posttraining_campaign_impl(
                     )
                 ),
             }
-        if stage_id == "preference_alignment":
-            raw_reward_model = state.get("reward_model_manifest")
-            if not raw_reward_model:
-                raise StageBackendError(
-                    "preference alignment cannot bind its frozen reward model"
-                )
-            reward_model_path = Path(
-                str(raw_reward_model)
-            ).expanduser().resolve()
-            local_reward_model_binding = _collective_errors(
-                topology,
-                lambda: (
-                    {
-                        "path": str(reward_model_path),
-                        "file_sha256": sha256_file(reward_model_path),
-                        "manifest_sha256": _validate_reward_model_manifest(
-                            manifest_path=reward_model_path,
-                            family=family,
-                            parent_checkpoint_sha256=parent_checkpoint_sha256,
-                            precision_role_plan_sha256=(
-                                autotune_selection.precision_role_plan_sha256
-                            ),
-                            hidden_size=int(config.d_model),
-                        ),
-                    }
-                    if topology.rank == 0
-                    else None
-                ),
-                label="deferred frozen reward-model binding",
-            )
-            reward_model_binding = _broadcast_object(
-                (
-                    local_reward_model_binding
-                    if topology.rank == 0
-                    else None
-                ),
-                topology,
-            )
-            stage_bindings["reward_model_manifest"] = dict(
-                _require_mapping(
-                    reward_model_binding,
-                    "frozen reward-model binding",
-                )
-            )
         requirements = _resolve_requirements(
             stage,
             family=family,
@@ -9791,7 +8154,6 @@ def _run_posttraining_campaign_impl(
         checkpoint_path: Path | None = None
         checkpoint_contract: dict[str, str] | None = None
         checkpoint_receipt: Path | None = None
-        reward_model_manifest: Path | None = None
         release_candidate: Path | None = None
         stage_policy_checkpoint_sha256: str | None = None
         context_baseline_metrics: dict[str, float] | None = None
@@ -9800,22 +8162,10 @@ def _run_posttraining_campaign_impl(
             "context_extension",
             "cold_start_sft",
             "overall_sft",
-            *DPD_STAGE_IDS,
-            *SPECIALIST_STAGE_IDS,
+            *RLVR_GSPO_STAGE_IDS,
             "opd_consolidation",
-            "preference_alignment",
         }:
             requirement = _data_requirement(requirements, stage_id=stage_id)
-            expected_reward_model_sha256 = (
-                str(
-                    _require_mapping(
-                        stage_bindings["reward_model_manifest"],
-                        "frozen reward-model binding",
-                    )["manifest_sha256"]
-                )
-                if stage_id == "preference_alignment"
-                else None
-            )
             bundle = _collective_errors(
                 topology,
                 lambda: MMapStageBundle.load(
@@ -9828,10 +8178,6 @@ def _run_posttraining_campaign_impl(
                     canonical_id_lookup=canonical_id_lookup,
                     canonical_map_self_sha256=canonical_map_self_sha256,
                     canonical_ids_sha256=canonical_ids_sha256,
-                    reward_model_manifest_sha256=(
-                        expected_reward_model_sha256
-                    ),
-                    verify_frozen_reward_array_hashes=topology.rank == 0,
                 ),
                 label=f"{stage_id} mmap-bundle load",
             )
@@ -9959,76 +8305,6 @@ def _run_posttraining_campaign_impl(
                     raise StageBackendError(
                         "context gate baseline metrics are invalid"
                     )
-            if _is_dpd_stage(stage_id):
-                overall_records = [
-                    item
-                    for item in state["completed"]
-                    if item.get("stage_id") == "overall_sft"
-                ]
-                if len(overall_records) != 1:
-                    raise StageBackendError("DPD cannot locate its frozen overall-SFT reference")
-                reference_sha = overall_records[0]["policy_checkpoint_sha256"]
-                if bundle.manifest.get("reference_checkpoint_sha256") != reference_sha:
-                    raise StageBackendError(
-                        "DPD reference log-probabilities are not bound to frozen overall SFT"
-                    )
-                if stage_id == "deepseek_dpd":
-                    pilot_records = [
-                        item
-                        for item in state["completed"]
-                        if item.get("stage_id") == "deepseek_dpd_pilot"
-                    ]
-                    if len(pilot_records) != 1:
-                        raise StageBackendError("DPD cannot locate its completed pilot")
-                    pilot_receipt = _read_json(
-                        Path(str(pilot_records[0]["output_receipt"])),
-                        label="DPD pilot output receipt",
-                    )
-                    pilot_receipt_sha256 = str(
-                        pilot_receipt.get("receipt_sha256", "")
-                    )
-                    pilot_metrics = _require_mapping(
-                        pilot_receipt.get("metrics"), "DPD pilot metrics"
-                    )
-                    selected = _require_mapping(
-                        pilot_metrics.get("selected_profile"),
-                        "DPD pilot selected_profile",
-                    )
-                    selected_sha256 = _canonical_hash(selected)
-                    evidence_sha256 = pilot_metrics.get(
-                        "selection_evidence_sha256"
-                    )
-                    if (
-                        pilot_receipt_sha256
-                        != pilot_records[0].get("output_receipt_sha256")
-                        or pilot_receipt_sha256
-                        != _canonical_hash(
-                            pilot_receipt, omit={"receipt_sha256"}
-                        )
-                        or pilot_records[0].get("metrics_sha256")
-                        != _canonical_hash(pilot_metrics)
-                        or pilot_metrics.get("promotion_gate_passed") is not True
-                        or pilot_metrics.get("selected_profile_sha256")
-                        != selected_sha256
-                        or not _is_sha256(evidence_sha256)
-                        or _require_mapping(
-                            bundle.manifest.get("selected_profile"),
-                            "DPD selected_profile",
-                        )
-                        != selected
-                        or bundle.manifest.get("selected_profile_sha256")
-                        != selected_sha256
-                        or bundle.manifest.get("selection_evidence_sha256")
-                        != evidence_sha256
-                        or bundle.manifest.get(
-                            "pilot_output_receipt_sha256"
-                        )
-                        != pilot_receipt_sha256
-                    ):
-                        raise StageBackendError(
-                            "full DPD must inherit the exact cryptographically "
-                            "promoted pilot result"
-                        )
             if stage_id == "opd_consolidation":
                 expected_specialist_hashes = {
                     specialist_id: str(
@@ -10056,18 +8332,6 @@ def _run_posttraining_campaign_impl(
                         "OPD rollouts are not bound to the exact unified "
                         "student and all five completed specialist checkpoints"
                     )
-            if stage_id == "preference_alignment" and (
-                bundle.manifest.get("on_policy") is not True
-                or bundle.manifest.get("single_use_rollouts") is not True
-                or bundle.manifest.get("rollout_policy") != "parent_checkpoint"
-                or bundle.manifest.get("policy_updates_before_generation") != 0
-                or int(bundle.training["epochs"]) != 1
-            ):
-                raise StageBackendError(
-                    "preference alignment requires parent-checkpoint, single-use "
-                    "on-policy candidates"
-                )
-
             active_for_stage = (
                 _require_mapping(state["active"], "active stage")
                 if state.get("active") is not None
@@ -10125,9 +8389,7 @@ def _run_posttraining_campaign_impl(
                 active_resume=active_for_stage is not None,
             )
             live_profile_selection: ProfileSelection | None = None
-            if stage_id == "deepseek_dpd_pilot" or _is_specialist_stage(
-                stage_id
-            ):
+            if _is_gspo_stage(stage_id):
                 parent_contract = state.get("policy_checkpoint_contract")
                 if not isinstance(parent_contract, Mapping):
                     raise StageBackendError(
@@ -10425,24 +8687,6 @@ def _run_posttraining_campaign_impl(
                         forward_model=forward_model,
                         resume_metrics=resume_metrics,
                     )
-                elif _is_dpd_stage(stage_id):
-                    metrics = _run_dpd_stage(
-                        stage=stage,
-                        bundle=bundle,
-                        model=model,
-                        optimizer=optimizer,
-                        runtime=runtime,
-                        topology=topology,
-                        start_epoch=start_epoch,
-                        start_global_batch=start_global_batch,
-                        start_optimizer_step=start_optimizer_step,
-                        start_cursor=start_cursor,
-                        checkpoint_callback=checkpoint_callback,
-                        signal_coordinator=signal_coordinator,
-                        forward_model=forward_model,
-                        selection_override=live_profile_selection,
-                        resume_metrics=resume_metrics,
-                    )
                 elif stage_id == "opd_consolidation":
                     metrics = _run_opd_stage(
                         stage=stage,
@@ -10512,10 +8756,8 @@ def _run_posttraining_campaign_impl(
                     "head_execution": (
                         "eager_exact_chunked"
                         if stage_id in {
-                            *DPD_STAGE_IDS,
-                            *SPECIALIST_STAGE_IDS,
+                            *RLVR_GSPO_STAGE_IDS,
                             "opd_consolidation",
-                            "preference_alignment",
                         }
                         else "model_native_chunked"
                     ),
@@ -10641,258 +8883,6 @@ def _run_posttraining_campaign_impl(
             state["policy_checkpoint_contract"] = checkpoint_contract
             state["campaign_token_cursor"] = int(metrics["campaign_token_cursor"])
 
-        elif stage_id == "pairwise_reward_model":
-            requirement = _data_requirement(requirements, stage_id=stage_id)
-            bundle = _collective_errors(
-                topology,
-                lambda: MMapStageBundle.load(
-                    requirement,
-                    stage_id=stage_id,
-                    family=family,
-                    tokenizer_sha256=tokenizer_sha256,
-                    parent_checkpoint_sha256=parent_checkpoint_sha256,
-                    vocabulary_size=int(config.vocab_size),
-                    canonical_id_lookup=canonical_id_lookup,
-                    canonical_map_self_sha256=canonical_map_self_sha256,
-                    canonical_ids_sha256=canonical_ids_sha256,
-                ),
-                label="pairwise mmap-bundle load",
-            )
-            bundle = _load_stage_batch_migration(
-                bundle,
-                family=family,
-                parent_checkpoint_sha256=parent_checkpoint_sha256,
-                precision_role_plan_sha256=(
-                    autotune_selection.precision_role_plan_sha256
-                ),
-                output_root=output_root,
-                topology=topology,
-            )
-            _validate_runtime_working_set(
-                bundle,
-                runtime=runtime,
-                topology=topology,
-                vocabulary_size=int(config.vocab_size),
-            )
-            reward_active = (
-                _require_mapping(state["active"], "active reward-model stage")
-                if state.get("active") is not None
-                else None
-            )
-            if reward_active is not None:
-                if (
-                    reward_active.get("kind") != "reward_model"
-                    or reward_active.get("stage_id") != stage_id
-                    or reward_active.get("bundle_sha256") != bundle.manifest_sha256
-                    or reward_active.get("parent_checkpoint_sha256")
-                    != parent_checkpoint_sha256
-                    or reward_active.get("precision_role_plan_sha256")
-                    != autotune_selection.precision_role_plan_sha256
-                ):
-                    raise StageBackendError(
-                        "active reward-model checkpoint does not match this stage"
-                    )
-                reward_resume = _load_reward_training_checkpoint(
-                    active=reward_active,
-                    family=family,
-                    stage_config_sha256=stage_config_sha256,
-                    parent_checkpoint_sha256=parent_checkpoint_sha256,
-                    precision_role_plan_sha256=(
-                        autotune_selection.precision_role_plan_sha256
-                    ),
-                    bundle_sha256=bundle.manifest_sha256,
-                    runtime_batch=_require_mapping(
-                        reward_active.get("runtime_batch"),
-                        "active reward runtime_batch",
-                    ),
-                    topology=topology,
-                )
-                reward_start_epoch = int(reward_resume["epoch"])
-                reward_start_batch = _resume_global_batch(
-                    reward_active,
-                    bundle,
-                )
-                reward_start_step = int(reward_resume["optimizer_step"])
-            else:
-                reward_resume = None
-                reward_start_epoch = 0
-                reward_start_batch = 0
-                reward_start_step = 0
-
-            def reward_checkpoint_callback(
-                reward_head: PairwiseRewardHead,
-                reward_optimizer: torch.optim.Optimizer,
-                reward_progress: Mapping[str, int],
-            ) -> None:
-                reward_checkpoint, reward_checkpoint_sha = (
-                    _save_reward_training_checkpoint(
-                        output_root=output_root,
-                        family=family,
-                        stage_config_sha256=stage_config_sha256,
-                        parent_checkpoint_sha256=parent_checkpoint_sha256,
-                        precision_role_plan_sha256=(
-                            autotune_selection.precision_role_plan_sha256
-                        ),
-                        bundle_sha256=bundle.manifest_sha256,
-                        runtime_batch=_runtime_batch_payload(bundle),
-                        head=reward_head,
-                        optimizer=reward_optimizer,
-                        progress=reward_progress,
-                        topology=topology,
-                    )
-                )
-                state["active"] = {
-                    "kind": "reward_model",
-                    "stage_id": stage_id,
-                    "stage_config_sha256": stage_config_sha256,
-                    "parent_checkpoint_sha256": parent_checkpoint_sha256,
-                    "precision_role_plan_sha256": (
-                        autotune_selection.precision_role_plan_sha256
-                    ),
-                    "bundle_sha256": bundle.manifest_sha256,
-                    "runtime_batch": _runtime_batch_payload(bundle),
-                    "epoch": int(reward_progress["epoch"]),
-                    "next_global_batch": int(
-                        reward_progress["next_global_batch"]
-                    ),
-                    "optimizer_step": int(reward_progress["optimizer_step"]),
-                    "reward_checkpoint_path": str(reward_checkpoint),
-                    "reward_checkpoint_sha256": reward_checkpoint_sha,
-                }
-                _write_campaign_state(state_path, state, topology)
-
-            def reward_oom_resume() -> dict[str, Any]:
-                current_active = state.get("active")
-                if isinstance(current_active, Mapping) and (
-                    current_active.get("kind") == "reward_model"
-                    and current_active.get("stage_id") == stage_id
-                ):
-                    resume_epoch = int(current_active["epoch"])
-                    resume_batch = _resume_global_batch(
-                        current_active,
-                        bundle,
-                    )
-                    resume_step = int(current_active["optimizer_step"])
-                    safe_path = str(
-                        current_active["reward_checkpoint_path"]
-                    )
-                    safe_sha256 = str(
-                        current_active["reward_checkpoint_sha256"]
-                    )
-                    checkpoint_kind = "reward_model"
-                else:
-                    resume_epoch = reward_start_epoch
-                    resume_batch = reward_start_batch
-                    resume_step = reward_start_step
-                    safe_path = str(state["policy_checkpoint_path"])
-                    safe_sha256 = str(
-                        state["policy_checkpoint_sha256"]
-                    )
-                    checkpoint_kind = "policy_parent"
-                return {
-                    "checkpoint_kind": checkpoint_kind,
-                    "checkpoint_path": safe_path,
-                    "checkpoint_sha256": safe_sha256,
-                    "epoch": resume_epoch,
-                    "next_global_batch": resume_batch,
-                    "optimizer_step": resume_step,
-                    "campaign_token_cursor": int(
-                        state["campaign_token_cursor"]
-                    ),
-                    "runtime_batch": _runtime_batch_payload(bundle),
-                    "checkpoint_safe": True,
-                    "rollback_required": True,
-                }
-
-            try:
-                kernel_canary = _run_stage_kernel_canary(
-                    stage=stage,
-                    bundle=bundle,
-                    model=model,
-                    forward_model=forward_model,
-                    runtime=runtime,
-                    topology=topology,
-                    output_root=output_root,
-                    parent_checkpoint_sha256=parent_checkpoint_sha256,
-                    compile_mode=autotune_selection.compile_mode,
-                )
-            except Exception as exception:
-                _raise_stage_oom(
-                    output_root=output_root,
-                    family=family,
-                    stage_id=stage_id,
-                    parent_checkpoint_sha256=parent_checkpoint_sha256,
-                    precision_role_plan_sha256=(
-                        autotune_selection.precision_role_plan_sha256
-                    ),
-                    bundle=bundle,
-                    topology=topology,
-                    phase="kernel_canary",
-                    resume=reward_oom_resume(),
-                    exception=exception,
-                )
-                raise AssertionError("unreachable after stage OOM")
-
-            try:
-                head, metrics = _run_pairwise_stage(
-                    stage=stage,
-                    bundle=bundle,
-                    model=model,
-                    runtime=runtime,
-                    topology=topology,
-                    hidden_size=int(config.d_model),
-                    start_epoch=reward_start_epoch,
-                    start_global_batch=reward_start_batch,
-                    start_optimizer_step=reward_start_step,
-                    resume_payload=reward_resume,
-                    checkpoint_callback=reward_checkpoint_callback,
-                    signal_coordinator=signal_coordinator,
-                    forward_model=forward_model,
-                )
-            except Exception as exception:
-                _raise_stage_oom(
-                    output_root=output_root,
-                    family=family,
-                    stage_id=stage_id,
-                    parent_checkpoint_sha256=parent_checkpoint_sha256,
-                    precision_role_plan_sha256=(
-                        autotune_selection.precision_role_plan_sha256
-                    ),
-                    bundle=bundle,
-                    topology=topology,
-                    phase="forward_backward",
-                    resume=reward_oom_resume(),
-                    exception=exception,
-                )
-                raise AssertionError("unreachable after stage OOM")
-            metrics.update(
-                {
-                    "runtime_batch": _runtime_batch_payload(bundle),
-                    "kernel_canary_receipt_sha256": kernel_canary[
-                        "receipt_sha256"
-                    ],
-                    "compile_mode": autotune_selection.compile_mode,
-                    "compiled_trunk": (
-                        autotune_selection.compile_mode
-                        not in {"eager", "none"}
-                    ),
-                    "head_execution": "fp32_pairwise_side_head",
-                }
-            )
-            reward_model_manifest = _save_reward_model(
-                output_root=output_root,
-                family=family,
-                stage_config_sha256=stage_config_sha256,
-                parent_checkpoint_sha256=parent_checkpoint_sha256,
-                precision_role_plan_sha256=(
-                    autotune_selection.precision_role_plan_sha256
-                ),
-                head=head,
-                hidden_size=int(config.d_model),
-                topology=topology,
-            )
-            state["reward_model_manifest"] = str(reward_model_manifest)
-
         elif stage_id == "evaluation":
             requirement = _data_requirement(requirements, stage_id=stage_id)
             metrics = _run_evaluation(
@@ -10906,14 +8896,11 @@ def _run_posttraining_campaign_impl(
         elif stage_id == "publish_gate":
             if not state.get("evaluation_receipt"):
                 raise StageBackendError("publish gate cannot locate a passed evaluation receipt")
-            if not state.get("reward_model_manifest"):
-                raise StageBackendError("publish gate cannot locate the pairwise reward model")
             release_candidate = _write_release_candidate(
                 output_root=output_root,
                 family=family,
                 policy_checkpoint_sha256=parent_checkpoint_sha256,
                 policy_checkpoint_receipt=str(state["policy_checkpoint_receipt"]),
-                reward_model_manifest=str(state["reward_model_manifest"]),
                 evaluation_receipt=str(state["evaluation_receipt"]),
                 topology=topology,
             )
@@ -10940,7 +8927,6 @@ def _run_posttraining_campaign_impl(
                 requirements=requirements,
                 metrics=metrics,
                 checkpoint_receipt=checkpoint_receipt,
-                reward_model_manifest=reward_model_manifest,
                 optimizer_state_policy=optimizer_state_policy,
             ),
             label=f"{stage_id} output receipt",
@@ -10958,7 +8944,6 @@ def _run_posttraining_campaign_impl(
             checkpoint_path=checkpoint_path,
             checkpoint_contract=checkpoint_contract,
             checkpoint_receipt=checkpoint_receipt,
-            reward_model_manifest=reward_model_manifest,
             release_candidate=release_candidate,
             policy_checkpoint_sha256=stage_policy_checkpoint_sha256,
         )
@@ -10979,8 +8964,8 @@ def _run_posttraining_campaign_impl(
             barrier(topology)
             # The specialist checkpoint remains sealed in its completed
             # record. The live campaign policy returns to the untouched
-            # DeepSeek-DPD student so the next specialist is an independent
-            # branch and OPD starts from that same unified student.
+            # shared hybrid-mode student so the next specialist is an
+            # independent branch and OPD starts from that same unified policy.
             state.update(branch_unified_state)
         _write_campaign_state(state_path, state, topology)
 
@@ -10989,7 +8974,6 @@ def _run_posttraining_campaign_impl(
         "complete": True,
         "policy_checkpoint_sha256": state["policy_checkpoint_sha256"],
         "policy_checkpoint_receipt": state["policy_checkpoint_receipt"],
-        "reward_model_manifest": state["reward_model_manifest"],
         "evaluation_receipt": state["evaluation_receipt"],
         "release_candidate": state["completed"][-1]["release_candidate"],
     }
@@ -11052,7 +9036,6 @@ __all__ = [
     "ArraySpec",
     "DeferredMaterialization",
     "MMapStageBundle",
-    "PairwiseRewardHead",
     "PostTrainingRequeue",
     "SealedRequirement",
     "StageBackendError",

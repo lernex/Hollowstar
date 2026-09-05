@@ -261,13 +261,11 @@ is calibration, not ignorance:
   (§5). They extend the model past its knowledge; they no longer excuse the absence of it.
 - **Eval:** report closed-book *and* tool-augmented, plus grounding faithfulness and abstention
   calibration. A weak closed-book score is now a finding to investigate, not an expected outcome.
-- **Existence proof:** two related Nanbeige papers, both verified directly (full-text fetch + grep,
-  not summary): **Nanbeige4-3B Technical Report** (arXiv 2512.06266, the base recipe — cold-start
-  SFT, DPD, multi-domain RLVR, pairwise-RM-last; source of most of §5's pipeline) and
-  **Nanbeige4.1-3B** (arXiv 2602.13367, built on top of 4-3B-Base — extended-context SFT + a
-  lightweight agentic-RL stage for tool-use/search, reaching reliable multi-step agentic search).
-  Both are dense 3B models, not MoE — worth remembering when borrowing their RL algorithm choices
-  (see §5's GSPO note).
+- **Current existence proofs:** **Nanbeige4.1-3B** (February 2026, arXiv 2602.13367) shows
+  correctness-gated code efficiency and lightweight agentic RL; **Nanbeige4.2-3B** (July 2026,
+  arXiv 2607.22083) shows hybrid-mode RL followed by length-controlled reasoning RL; MiniCPM5
+  (May 2026) shows deep/hybrid SFT, capability specialists, and same-origin OPD. These are dense or
+  conventional MoE systems, not Metis's recursive MoE, so exact ratios remain measurements.
 - **External validation (Ouro, arXiv 2510.25741):** their own ablation found recursion **"does not
   increase knowledge capacity nor improve capacity scaling"** — looped and non-looped models hold
   the same ~2 bits/parameter of memorized facts. The gain from recursion shows up specifically in
@@ -543,9 +541,10 @@ architecture. So:
   documentation) is inside the trillion. Target 950B unique tokens plus 50B premium replay;
   no generated data is eligible for Phase C. New 65,536-vocab byte-level BPE; packed at 4096 with
   EOS separators, document boundaries, and Mamba state reset at document boundaries.
-- **Keep `<think>` chain-of-thought traces** in SFT (`keep_think=True` on OpenThoughts/OpenR1/
-  Bespoke-Stratos/s1K). 1.5-think emitted *zero* CoT because prep stripped them — the single biggest
-  post-training miss. MoRE's depth axis is the natural substrate for reasoning; pair it with visible CoT.
+- **Install all three response modes in SFT.** Preserve strong reasoning traces, but render every
+  training example through the explicit Metis control contract: `<|direct|>` for trace-free answers,
+  `<|think|>` for efficient normal reasoning, and `<|think_max|>` for correctness-first maximum
+  reasoning. Mode changes the response contract, not MoRE depth or routed k.
 - **Scrub distilled-assistant artifacts at the source**: identity ("OpenAI"), "as an AI language
   model I cannot," refusal boilerplate. Ship a **native identity/persona set** from the start (no
   post-hoc patch like 1.5 needed).
@@ -553,139 +552,61 @@ architecture. So:
   Train clean refusals + benign compliance.
 - **Abstention / "I don't know" data** to curb the confident hallucination 1.5 showed (fabricated
   bios, "gold named after the Greek god").
-- **Add DPO** (cut from 1.5) for helpfulness + refusal calibration + less fabrication.
+- **Do not add a standalone DPO/RM tail.** Put verifiable correctness and strict mode compliance in
+  GSPO; use calibrated rubric or pairwise judges only as data-side rewards where no verifier exists.
 - **Dedup + length/EOS diversity** to kill the degeneration/looping 1.5 showed ("2,4,6,8 → …46").
 
-**Post-training pipeline (final, research-verified 2026-07-06 — synthesizes both Nanbeige papers'
-recipes, not a single paper's literal sequence; see the per-step notes on which parts come from
-where and which parts are our own addition):**
+**Post-training pipeline (final, research-refreshed September 2026; executable contract:
+`configs/metis16/posttraining.yaml`):**
 
-1. **SFT — hybrid mix, not pure-CoT or pure-chat.** Every SFT set must contain *both* legitimate
-   short direct-answer exemplars *and* long-thinking exemplars, tagged so the model represents both
-   modes explicitly. This is the detail that makes step 4's dynamic-length RL possible: if SFT never
-   shows a legitimate short answer, RL can't later teach brevity — it has nowhere to collapse to
-   except degenerate-but-wrong short answers. (Grounded in the "Reasoning Models Can Be Effective
-   Without Thinking" finding, arXiv 2504.09858 — skipping CoT is competitive specifically in
-   low-token-budget settings, which tells you the short-answer capability already sits latent in a
-   properly-SFT'd model; RL's job is allocation between modes that already exist, not inventing a
-   new one.) Structurally follows Nanbeige4-3B's two-stage split: **cold-start SFT** (~30M curated
-   reasoning samples, 32K ctx, math/science/code — builds the CoT foundation) → **overall SFT**
-   (64K ctx, broadens to general/agent/tool-use/code, adds function-calling support; their
-   "Solution Refinement" — iterative teacher-critique-revision against a dynamic per-instruction
-   checklist — plus "CoT Reconstruction" to re-attach a clean reasoning trace after refinement
-   disrupts it, are worth replicating). Keep every 1.5 lesson from below (identity scrub, safety,
-   abstention, dedup).
-2. **DPD (Dual-Level Preference Distillation)** — verified directly from Nanbeige4-3B (arXiv
-   2512.06266, §3.3), not inference: token-level distillation from a strong teacher's probability
-   distribution on **both** positive samples (best teacher rollouts) *and* negative samples (worse
-   rollouts sampled from the student itself, filtered to be clearly inferior), combined with a
-   sequence-level DPO margin loss. Reported gains from DPD alone: ~8% AIME24/25, ~10% GPQA, ~30%
-   BFCL-V4, ~8% Arena-Hard V2. Critically, their paper states directly (verbatim): **"incorporating
-   an RL phase on top of this distillation framework yields substantially larger gains compared to
-   initiating RL directly from the SFT baseline"** — this is why DPD sits *before* RL, not a
-   stylistic choice.
-   - **Purpose, narrowed (our own framing, not Nanbeige's):** three candidate objectives exist inside
-     DPD — (A) reasoning-quality uplift on RLVR's own domains, raising the baseline pass-rate so more
-     prompts land in step 3's productive 10-90% filtering band instead of the "everything wrong, zero
-     signal" zone; (B) self-correction, via the negative-sample loss training the model to recognize
-     *its own* characteristic errors (this specifically needs negatives generated fresh from the
-     post-Overall-SFT checkpoint, not a pre-baked dataset — a real sequencing dependency, DPD can't be
-     data-collected before Overall SFT finishes); (C) style/preference polish. We prioritize A+B —
-     C is already owned by step 5's dedicated pairwise RM, so DPD's dataset should be domain-weighted
-     toward STEM/code/agentic (matching step 3), not a broad general-chat mix.
-   - **Teacher: DeepSeek-V4-Flash** (284B total/13B active MoE, MIT-licensed — verified directly, no
-     distillation restriction), via **DeepInfra** ($0.09/1M input, $0.018/1M cached input, $0.18/1M
-     output — confirmed exact). For STEM/code specifically, positives are selected by the *same free
-     verifiers* step 3's RLVR will use (Python-interpreter equivalence for math, sandboxed execution
-     for code) — no LLM-judge scoring cost needed for those two domains. Target scale: roughly
-     30-60k instructions per domain (STEM/code/agentic), 4-6 samples each — a few hundred dollars at
-     real DeepInfra pricing with per-instruction input caching, not thousands.
-   - **Open risk, deliberately accepted, not resolved:** DeepSeek-V4-Flash (13B active) is ~28× our
-     student's active params (0.464B). Dense-model distillation literature (Qwen2.5-family study,
-     arXiv 2502.12143; Apple's Distillation Scaling Laws, arXiv 2502.08606; Zhang et al.'s "optimal
-     teacher ≈2.5× student" law, arXiv 2311.07052) flags a real "capacity gap" failure mode at large
-     teacher:student ratios — specifically for the *token-level* distillation half, not the DPO-margin
-     half (every mechanism described is about matching the teacher's full probability distribution,
-     which a DPO-style preference margin doesn't require). None of that literature examined a
-     **recursive (MoRE) or MoE** student, so it's not known whether Metis-1.6's effective capacity
-     (up to ~2.3B core capacity exposure via max-depth recursion; ~3.54B stored before controllers including
-     static N-gram memory) mitigates this the way raw
-     dense active-params would predict — this is genuinely untested territory, not just for us but
-     for anyone. **Decision: proceed anyway** — betting on MoRE's capacity being real is the point of
-     testing a novel architecture, not something provable in advance. **Cheap mitigations kept in
-     reserve, not pre-committed:** DeepSeek-V4-Flash's reasoning effort is configurable — dial it down
-     for the token-level distillation component specifically if a small pilot shows degradation
-     (mirrors the literature's validated "Mix Distillation" fix — blending long/short or
-     large/small-teacher traces recovered +7-8 points in the closest analog study). Run a small pilot
-     (a modest slice, checkpoint-and-eval) before committing the full DPD budget, rather than assuming
-     either outcome.
-3. **Multi-domain RLVR — GSPO (not GRPO), with DAPO-derived stabilizers and on-policy filtering.**
-   - **GSPO over GRPO, and this is architecture-driven, not a style preference** — verified directly
-     from the GSPO paper (arXiv 2507.18071, §5.3), tested on Qwen3-30B-A3B (a real MoE model): GRPO's
-     token-level importance ratio breaks under MoE because after each gradient update, ~10% of the
-     experts activated for the *same* rollout change between old and new policy, making the
-     per-token ratio "fluctuate drastically" and destabilizing training. GRPO's fix (Routing
-     Replay — forcing the same experts to fire for ratio computation) works but adds real
-     memory/comms overhead and artificially caps the model's actual capacity. GSPO computes the
-     ratio on **sequence-level** likelihood instead, which doesn't depend on which expert fired per
-     token, eliminating the instability at the root. **This is why Nanbeige's plain GRPO doesn't
-     transfer to us** — both Nanbeige models are dense 3B, so they never hit this failure mode; we
-     are MoE (128 experts), so we would. One honest caveat: GSPO's demonstration is at Qwen3-30B-A3B
-     scale (much bigger active params than our 0.464B) — the mechanism is architectural so it should
-     transfer, but hasn't been validated at our tiny active-param scale specifically.
-   - **DAPO-derived stabilizers** (verified from Nanbeige4-3B §3.4.2, which layers these onto GRPO —
-     port them onto GSPO instead): remove the KL penalty term, mask the loss for truncated/overlong
-     sequences. (DAPO's own full recipe, arXiv 2503.14476, also has Clip-Higher and Dynamic Sampling
-     — Dynamic Sampling filters only exact-0/exact-1 accuracy, a different, stricter criterion than
-     Nanbeige's own on-policy filtering below; worth an A/B, not assumed.)
-   - **On-policy pass-rate filtering, verified exact number: strictly 10–90%.** Using the *preceding*
-     stage's checkpoint, compute avg@16 accuracy per question, keep only questions with pass rate
-     strictly between 10% and 90% (Nanbeige4-3B §3.4.1, verbatim). This band is Nanbeige's own
-     method, not literally DAPO's (DAPO filters only the two extremes, 0% and 100%) — a real,
-     confirmed difference between the two; we're using Nanbeige's softer band.
-   - **Domain order** (Nanbeige4-3B's STEM→coding, extended with 4.1-3B's agentic addendum — our own
-     synthesis, not one paper's literal sequence): **STEM** (math + science, with a tool-augmented
-     agentic verifier calling a Python interpreter for exact symbolic/numeric equivalence checking —
-     avoids false negatives from differently-formatted correct answers) → **coding** (synthetic
-     problems paired with sandboxed executable test functions, binary pass/fail reward; reverse-
-     generation — synthesize solution+tests first, then the natural-language problem — to guarantee
-     correctness) → **agentic/tool-use** (search → read → reason → answer; synth multi-hop QA via
-     knowledge-graph random walks, a real search env with search API + page extractor + sandbox,
-     turn-level rewards for tool-call accuracy/info-gain + full-trajectory credit; kept "lightweight"
-     per 4.1-3B's own framing — the compute-hungry stage, prioritize if budget tightens).
-4. **Dynamic-thinking-length RL — layered onto step 3's reward function, not a separate stage.**
-   Field consensus (AdaptThink arXiv 2505.13417, DAST arXiv 2503.04472, SelfBudgeter arXiv
-   2505.11274, AnytimeReasoner arXiv 2505.13438 — all independently verified): a naive flat length
-   penalty **collapses accuracy** — the model discovers shorter is rewarded and starts truncating on
-   hard problems where it needed the tokens (DAST and SelfBudgeter both name specific baselines,
-   "L1"/"E1," that collapse this way on AIME2025). Every serious method uses a **dual reward**:
-   correctness + a difficulty-conditioned length term, and the length term only has purchase once
-   correctness reward already exists — which is why this rides on top of step 3's RLVR, not before
-   it. **The design win specific to this pipeline:** the difficulty signal needed for length-shaping
-   is the *same* avg@16 pass-rate number already being computed for step 3's on-policy filtering.
-   DAST's own mechanism (verified, exact formula) is built exactly this way — Token Length Budget
-   `L_budget = p·L_mean + (1−p)·L_max`, where `p` is the sampling accuracy on that question. Reward
-   shorter completions on questions the running model already solves reliably (high pass rate);
-   don't penalize length (or mildly reward it) on questions it doesn't (low pass rate). One piece of
-   infrastructure, two jobs. Concretely: `reward = correctness_reward + λ · length_shaping(pass_rate)`,
-   with λ small enough a wrong-but-short answer never beats a correct-but-long one — correctness
-   stays the dominant term, always. (AnytimeReasoner's dense multi-truncation-budget reward is the
-   more sophisticated version of this — better credit assignment, meaningfully more implementation
-   work — noted as a stretch goal, not the first-run default.)
-5. **Pairwise reward model / human-preference alignment — last.** Matches Nanbeige4-3B's own
-   ordering (not 4.1-3B's, which sequences its point-wise/pair-wise stage second — the two papers
-   genuinely differ here; we're following the base paper's order since it's the one with DPD as an
-   antecedent). Rationale: this is the one non-verifiable stage, so it runs after every verifiable
-   stage (STEM, coding, agentic) is locked in, so the reward model's softer signal can't disturb
-   hard-won verifiable gains. Nanbeige's own reasoning for training a *dedicated* pairwise RM rather
-   than using a general LM-as-judge: a general judge needs a lengthy CoT before verdicting (slow) and
-   is prone to reward hacking; a small dedicated pairwise model expresses preference in a few tokens
-   and resists hacking better.
-6. **Eval** — closed-book **and** tool-augmented QA, plus grounding faithfulness and abstention
-   calibration (§1.5). Closed-book is a reported headline metric, not a metric we excuse.
+1. **Context CPT — make the single 4,096 → 131,072 deployment-context jump before alignment.**
+   Continue the base checkpoint at a 163,840-token training length for the sealed 18B-token
+   long-context exposure, with the exact position-scaling, data-lineage, and evaluation gates
+   defined below. This is part of the final base-model boundary and must finish before any SFT
+   stage starts.
+2. **Cold-start SFT — install reasoning and the three response grammars.** Curated math, science,
+   and code examples teach correct reasoning, self-correction, and clean trace boundaries. The
+   prompt mix is 15% `direct`, 60% `think`, and 25% `think_max`. Raw datasets do not need to
+   use these names: a versioned transformation layer preserves source provenance, assigns an
+   explicit mode, renders the corresponding control token, and quarantines ambiguous examples.
+   A measured same-prompt subset is rendered in all three modes.
+3. **Overall SFT — broaden capability without losing mode control.** General chat, knowledge,
+   code, writing, safety, abstention, and tool-use data use a 45% `direct`, 40% `think`, 15%
+   `think_max` prompt mix. Audit target-token share as well as prompt share because long traces
+   can otherwise dominate. Identity scrub, safety calibration, abstention, deduplication,
+   contamination checks, and explicit mode-format validation are hard gates.
+4. **Shared hybrid-mode GSPO — stabilize the policy before branching.** Roll out 16 candidates
+   per prompt from the exact Overall-SFT checkpoint, retain prompts whose avg@16 correctness is
+   strictly between 10% and 90%, and train sequence-ratio GSPO with no KL and truncated samples
+   masked. Correctness or a calibrated rubric judge supplies task reward; strict mode compliance
+   supplies format reward. Length shaping applies only to `think`. `direct` has no trace-length
+   reward and `think_max` has no positive reward for verbosity.
+5. **Five parallel capability GSPO specialists — not three mode specialists.** Reasoning, code,
+   knowledge, writing, and agentic branches all start independently from the shared hybrid-mode
+   checkpoint and all train `direct`, `think`, and `think_max`. Domain-specific prompt mixes
+   are sealed in the contract. Code efficiency is rewarded only after executable correctness;
+   agentic training may use turn-level credit. There is no cross-tokenizer DeepSeek DPD stage and
+   no standalone scalar reward model.
+6. **Same-tokenizer OPD consolidation.** The shared hybrid-mode checkpoint is the unified student;
+   the five completed capability policies are same-origin teachers. OPD consolidates capability
+   using the union of student/teacher top-k support while preserving the prompt's reasoning mode.
+   Domain-by-mode target-token share is audited so a long `think_max` branch cannot dominate.
+7. **Evaluation and local publish gate.** Measure mode compliance, direct-mode trace leakage,
+   incremental hard-task gain from `think_max`, safety and quality by mode, and mean MoRE depth
+   and routed k per mode. All three modes target mean depth 2.0 and mean routed k 4.0; mode is not
+   allowed to condition recursive compute in Metis-1.6. Seal a local release candidate only after
+   the exact OPD checkpoint passes; do not upload externally from the training campaign.
 
-> RL is the budget swing factor — agentic rollouts (search-in-the-loop, many samples/prompt) are
-> compute-hungry. Keep the agentic stage "lightweight" (4.1-3B's word); prioritize if budget tightens.
+The three public tokens are `<|direct|>`, `<|think|>`, and `<|think_max|>`. The source data is
+immutable; `metis.sft-data/v2` and `metis.rlvr-data/v2` are derived, versioned views with explicit
+mode labels, base-prompt fingerprints, target-token audits, and exact checkpoint/tokenizer lineage.
+
+The current 2026 basis is MiniCPM5/UltraData-SFT-2605 (May 2026) for deep-then-hybrid SFT and
+explicit thinking/non-thinking data; A.X K1 (January 2026) for same-prompt mode overlap and paired
+mode GSPO; Nanbeige4.1-3B (February 2026) and Nanbeige4.2-3B (July 2026) for correctness-gated
+efficiency, agentic RL, hybrid-mode RL, and length control; and MOPD/Open-MOPD (June/August 2026)
+for same-origin capability specialists, consolidation, and token-share balancing. See
+`docs/metis16_posttraining_frontier_research.md` for the dated primary-source review.
 
 **Context extension → 131k — single direct jump, not a staged ladder (corrected 2026-07-06).**
 Verified directly across five NVIDIA papers (Nemotron-H arXiv 2504.03624, Nemotron Nano 2 arXiv
@@ -1094,10 +1015,9 @@ cross-job interference as an explicit experimental condition.
 9. **Context extension**: single jump 4096→~164-200k (modest overshoot; deploy at 131k), 80/20
    old/new data mix, 90/10-ish long/short sequence mix — size exact ratios against real long-doc
    data once collected (§5).
-10. Post-training (§5, final order): cold-start SFT → overall SFT (hybrid short/long mix) → DPD →
-   multi-domain RLVR (GSPO + DAPO stabilizers + 10–90% on-policy filtering; STEM → coding →
-   agentic, dynamic-thinking-length reward layered throughout) → pairwise RM/human-preference →
-   eval (reuse `eval_metis.py`) → publish.
+10. Post-training (§5, final order): cold-start three-mode SFT → broad three-mode SFT → shared
+    hybrid-mode GSPO → five parallel capability GSPO specialists (each trains `direct`, `think`,
+    and `think_max`) → same-tokenizer OPD consolidation → eval → local publish gate.
 
 ## 8. Open questions for you
 - ✅ Params **~3.54B stored before small controllers / ~0.464B core active per pass plus fused control/memory work**;
@@ -1126,15 +1046,12 @@ cross-job interference as an explicit experimental condition.
 - Per-pass LoRA/gate on the shared looped attention (Zamba2 finding) — implement as config flag; A/B.
 - Continuation estimator inside the locked per-pass halting architecture: cumulative hazard vs
   ACT/PonderNet-style relaxation — A/B for calibration, quality, and hard-packed gradient health.
-- ✅ **Post-training pipeline locked** (research-verified 2026-07-06, §5): cold-start SFT (hybrid
-  short/long, tagged) → overall SFT → **DPD** (Nanbeige4-3B, arXiv 2512.06266) → multi-domain RLVR
-  on **GSPO** (not GRPO — MoE-specific stability argument, arXiv 2507.18071) + DAPO-derived
-  no-KL/loss-masking + 10–90% on-policy filtering (STEM → coding → agentic) with
-  **dynamic-thinking-length reward layered on top** (DAST-style, reusing the same pass-rate number)
-  → pairwise RM last. Two real open items inside this: (a) GSPO's stability claim is demonstrated at
-  Qwen3-30B-A3B scale, not either our Praxis-A0.46B or Logos-A1.2B scale—worth early class-specific
-  sanity checks; (b) exact λ for the length-shaping term, and exact GSPO clip ranges, need tuning,
-  not just adoption.
+- ✅ **Post-training pipeline locked** (research-refreshed September 2026, §5): cold-start SFT →
+  overall SFT → shared hybrid-mode GSPO → five capability GSPO branches → same-tokenizer OPD →
+  eval → local publish. Every SFT/RL capability stage trains `direct`, `think`, and `think_max`;
+  all modes keep target mean MoRE depth 2.0 and routed k 4.0. DeepSeek DPD and the standalone
+  scalar-RM tail are explicitly cut. Exact GSPO clips, mode token shares, and length coefficient
+  remain canary-tuned rather than assumed universal.
 - ✅ **Context extension locked as single-jump, not staged** (research-verified 2026-07-06, §5):
   4096 → ~164-200k (modest overshoot) → deploy 131k, over ~10–15B tokens, mixing in a small
   fraction of base-length sequences and an ~80/20 old/new data split. Exact overshoot ratio and
