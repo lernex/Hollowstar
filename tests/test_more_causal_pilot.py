@@ -90,7 +90,12 @@ class CausalPilotTests(unittest.TestCase):
                 self.assertAlmostEqual(telemetry["global_joint_budget_fraction"], 1)
                 self.assertEqual(
                     telemetry["global_executed_active_tokens"],
-                    2 * telemetry["global_executed_lm_head_tokens"],
+                    2 * telemetry["global_budgeted_lm_head_tokens"],
+                )
+                self.assertEqual(telemetry["global_executed_lm_head_tokens"], 126)
+                self.assertEqual(
+                    telemetry["global_lm_head_recompute_flops"],
+                    telemetry["global_lm_head_forward_flops"],
                 )
                 frozen = manifest["optimizer"]["frozen_policy_parameters"]
                 self.assertTrue(any(name.startswith("joint_router.") for name in frozen))
@@ -120,7 +125,12 @@ class CausalPilotTests(unittest.TestCase):
             record = json.loads(line)
             telemetry = record["telemetry"]
             self.assertEqual(telemetry["terminal_action_critic_enabled"], 1)
-            self.assertEqual(telemetry["global_executed_lm_head_tokens"], 128)
+            self.assertEqual(telemetry["global_executed_lm_head_tokens"], record["global_supervised_tokens"])
+            self.assertEqual(telemetry["global_budgeted_lm_head_tokens"], 128)
+            self.assertEqual(
+                telemetry["global_lm_head_recompute_flops"],
+                telemetry["global_lm_head_forward_flops"],
+            )
             self.assertLessEqual(telemetry["global_joint_budget_fraction"], 1)
         with self.assertRaisesRegex(ValueError, "explicit causal"):
             self.fixture.train("invalid-terminal", stop_after_steps=1, terminal_action_critic=True)

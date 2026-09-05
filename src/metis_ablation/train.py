@@ -1373,6 +1373,8 @@ def _train_row_inner(
             joint_step_router_flops = 0.0
             joint_step_active_tokens = 0.0
             joint_step_head_tokens = 0.0
+            joint_step_nominal_head_tokens = 0.0
+            joint_step_head_replay_flops = 0.0
             joint_step_budget_flops = 0.0
             joint_step_observations = 0.0
             expert_selection_counts: torch.Tensor | None = None
@@ -1481,12 +1483,18 @@ def _train_row_inner(
                     joint_step_flops += float(telemetry["joint_model_flops"].detach().item())
                     joint_step_router_flops += float(telemetry["joint_router_flops"].detach().item())
                     joint_step_active_tokens += float(telemetry["executed_active_tokens"].detach().item())
+                    nominal_head_tokens = (
+                        batch.attention_mask.sum()
+                        if compute_allocation_mode == "causal-fixed" or terminal_action_critic
+                        else telemetry["executed_active_tokens"]
+                    )
+                    joint_step_nominal_head_tokens += float(nominal_head_tokens.detach().item())
                     joint_step_head_tokens += float(telemetry.get(
-                        "executed_lm_head_tokens",
-                        batch.attention_mask.sum() if (
-                            compute_allocation_mode == "causal-fixed" or terminal_action_critic
-                        )
-                        else telemetry["executed_active_tokens"],
+                        "lm_head_forward_rows", nominal_head_tokens,
+                    ).detach().item())
+                    joint_step_head_replay_flops += float(telemetry.get(
+                        "lm_head_recompute_flops",
+                        nominal_head_tokens * (2 * config.vocab_size * config.d_model),
                     ).detach().item())
                     joint_step_budget_flops += float(telemetry["joint_budget_flops"].detach().item())
                     joint_step_observations += float(telemetry["joint_utility_observations"].detach().item())
@@ -1610,21 +1618,28 @@ def _train_row_inner(
                             [
                                 joint_step_flops, joint_step_router_flops,
                                 joint_step_active_tokens, joint_step_head_tokens,
-                                joint_step_budget_flops,
+                                joint_step_budget_flops, joint_step_nominal_head_tokens,
+                                joint_step_head_replay_flops,
                             ],
                             device=runtime.device,
                             dtype=torch.float64,
                         ),
                         topology,
                     )
-                    model_flops, router_flops, active_tokens, head_tokens, budget_flops = [
+                    (
+                        model_flops, router_flops, active_tokens, head_tokens,
+                        budget_flops, nominal_head_tokens, head_replay_flops,
+                    ) = [
                         float(value.item()) for value in joint_totals
                     ]
-                    replay_flops = (
-                        (model_flops - router_flops) / 3.0
+                    body_replay_flops = (
+                        (model_flops - router_flops - (
+                            6.0 * config.vocab_size * config.d_model * nominal_head_tokens
+                        )) / 3.0
                         if config.activation_recompute_policy in {"pass", "layer"}
-                        else 2.0 * config.vocab_size * config.d_model * head_tokens
+                        else 0.0
                     )
+                    replay_flops = body_replay_flops + head_replay_flops
                     flops = model_flops + replay_flops
                     step_telemetry["global_joint_model_flops"] = model_flops
                     step_telemetry["global_joint_router_flops"] = router_flops
@@ -1632,6 +1647,11 @@ def _train_row_inner(
                     step_telemetry["global_joint_budget_fraction"] = model_flops / max(budget_flops, 1.0)
                     step_telemetry["global_executed_active_tokens"] = active_tokens
                     step_telemetry["global_executed_lm_head_tokens"] = head_tokens
+                    step_telemetry["global_budgeted_lm_head_tokens"] = nominal_head_tokens
+                    step_telemetry["global_lm_head_forward_flops"] = (
+                        2.0 * config.vocab_size * config.d_model * head_tokens
+                    )
+                    step_telemetry["global_lm_head_recompute_flops"] = head_replay_flops
                     step_telemetry["global_checkpoint_replay_flops"] = replay_flops
                 memory = peak_memory_evidence(runtime.device)
                 metrics.write(
