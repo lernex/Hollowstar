@@ -1,0 +1,2 @@
+# Keep the ROCm/Transformer Engine ABI without installing into the live runtime.
+import site; site.addsitedir("/lus/lustre1/vollmerc/more-runtime/venv311/lib/python3.11/site-packages")

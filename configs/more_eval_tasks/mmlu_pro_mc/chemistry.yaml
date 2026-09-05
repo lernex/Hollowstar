@@ -1,0 +1,5 @@
+include: _default_template_yaml
+task: more_mmlu_pro_mc_chemistry
+task_alias: chemistry
+description: "The following are multiple choice questions (with answers) about chemistry.\n\n"
+process_docs: !function utils.process_chemistry

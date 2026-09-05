@@ -1,0 +1,23 @@
+group: more_mmlu_pro_mc
+task:
+  - more_mmlu_pro_mc_biology
+  - more_mmlu_pro_mc_business
+  - more_mmlu_pro_mc_chemistry
+  - more_mmlu_pro_mc_computer_science
+  - more_mmlu_pro_mc_economics
+  - more_mmlu_pro_mc_engineering
+  - more_mmlu_pro_mc_health
+  - more_mmlu_pro_mc_history
+  - more_mmlu_pro_mc_law
+  - more_mmlu_pro_mc_math
+  - more_mmlu_pro_mc_other
+  - more_mmlu_pro_mc_philosophy
+  - more_mmlu_pro_mc_physics
+  - more_mmlu_pro_mc_psychology
+aggregate_metric_list:
+  - metric: acc
+    aggregation: mean
+    weight_by_size: true
+metadata:
+  version: 1.0
+  protocol: direct_multiple_choice_loglikelihood_no_cot

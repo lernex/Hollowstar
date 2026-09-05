@@ -1,0 +1,98 @@
+{
+  "schema": "more.benchmark-suite/v1",
+  "harness_version": "0.4.13",
+  "max_length": 4096,
+  "apply_chat_template": false,
+  "fewshot_seed": 1234,
+  "dataset_revisions": {
+    "cais/mmlu": "c30699e8356da336a370243923dbaf21066bb9fe",
+    "TIGER-Lab/MMLU-Pro": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+    "allenai/ai2_arc": "210d026faf9955653af8916fad021475a3f00453",
+    "Rowan/hellaswag": "218ec52e09a7e7462a5400043bb9a69a41d06b76",
+    "allenai/winogrande": "01e74176c63542e6b0bcb004dcdea22d94fb67b5",
+    "baber/piqa": "142f6d7367fd9877f0fb3b5734ea6a545f54cdd1",
+    "aps/super_glue": "3de24cf8022e94f4ee4b9d55a6f539891524d646",
+    "allenai/openbookqa": "388097ea7776314e93a529163e0fea805b8a6454",
+    "EleutherAI/lambada_openai": "900124bf3b8235c6daf21033af9948b3f07346c4"
+  },
+  "benchmarks": [
+    {
+      "task": "mmlu",
+      "label": "MMLU",
+      "dataset": "cais/mmlu",
+      "expected_leaf_tasks": 57,
+      "num_fewshot": 5,
+      "primary_metric": "acc,none"
+    },
+    {
+      "task": "more_mmlu_pro_mc",
+      "label": "MMLU-Pro (MC, non-CoT)",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "expected_leaf_tasks": 14,
+      "num_fewshot": 5,
+      "primary_metric": "acc,none"
+    },
+    {
+      "task": "arc_easy",
+      "label": "ARC-Easy",
+      "dataset": "allenai/ai2_arc",
+      "num_fewshot": 0,
+      "primary_metric": "acc_norm,none"
+    },
+    {
+      "task": "arc_challenge",
+      "label": "ARC-Challenge",
+      "dataset": "allenai/ai2_arc",
+      "num_fewshot": 0,
+      "primary_metric": "acc_norm,none"
+    },
+    {
+      "task": "hellaswag",
+      "label": "HellaSwag",
+      "dataset": "Rowan/hellaswag",
+      "num_fewshot": 0,
+      "primary_metric": "acc_norm,none"
+    },
+    {
+      "task": "winogrande",
+      "label": "Winogrande",
+      "dataset": "allenai/winogrande",
+      "num_fewshot": 0,
+      "primary_metric": "acc,none"
+    },
+    {
+      "task": "piqa",
+      "label": "PIQA",
+      "dataset": "baber/piqa",
+      "num_fewshot": 0,
+      "primary_metric": "acc_norm,none"
+    },
+    {
+      "task": "boolq",
+      "label": "BoolQ",
+      "dataset": "aps/super_glue",
+      "num_fewshot": 0,
+      "primary_metric": "acc,none"
+    },
+    {
+      "task": "openbookqa",
+      "label": "OpenBookQA",
+      "dataset": "allenai/openbookqa",
+      "num_fewshot": 0,
+      "primary_metric": "acc_norm,none"
+    },
+    {
+      "task": "lambada_openai",
+      "label": "LAMBADA",
+      "dataset": "EleutherAI/lambada_openai",
+      "num_fewshot": 0,
+      "primary_metric": "acc,none"
+    }
+  ],
+  "workers": [
+    ["mmlu"],
+    ["more_mmlu_pro_mc"],
+    ["hellaswag", "lambada_openai"],
+    ["arc_easy", "arc_challenge", "winogrande", "piqa", "boolq", "openbookqa"]
+  ]
+}
