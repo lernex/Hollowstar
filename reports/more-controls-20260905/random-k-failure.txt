@@ -1,0 +1,7 @@
+Source: /lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/random-k/slurm-495818.err
+b3ad63297eee344a05bbf3210a041465fce90e03ece1aade1f9cd3c1c7bafd8c  /lus/lustre1/vollmerc/more-paper-wave1-20260904/more-ablations/random-k/slurm-495818.err
+[rank48]:[E905 00:38:40.263557070 ProcessGroupNCCL.cpp:2174] [PG ID 0 PG GUID 0(default_pg) Rank 48] Process group watchdog thread terminated with exception: NCCL error: unhandled system error (run with NCCL_DEBUG=INFO for details), NCCL version 2.27.7
+  what():  [PG ID 0 PG GUID 0(default_pg) Rank 48] Process group watchdog thread terminated with exception: NCCL error: unhandled system error (run with NCCL_DEBUG=INFO for details), NCCL version 2.27.7
+srun: error: parrypeak063: task 48: Aborted
+metis: no rank-zero telemetry progress for 1200s; terminating stalled step
+srun: error: Timed out waiting for job step to complete

@@ -664,3 +664,24 @@ compared against twelve rows that stayed in parity.
    10% MFU; the deeper XL requires a launch-day HBM/throughput canary).
 6. Wave 3 (5 rows, estimated ~13 h at 10% MFU).
 7. Analysis pass over checkpoints; fill every `\TODO{}` in `main.tex`.
+
+## 10. Recorded control results and recovery, 5 September 2026
+
+The dense FLOP-matched, MoE k=4, and random-depth original runs completed
+their full aligned 50B-token schedules. Exact summaries, sealed manifests,
+matched-step training-loss windows, checkpoint evidence, and queue recovery
+details are recorded in
+[`reports/more-controls-20260905`](../../../reports/more-controls-20260905/README.md).
+
+**Completion is not validity.** The original MoE k=4, MoE k=8, random-k, and
+random-depth checkpoints all have zero learned momentum in all 16 routed
+expert weight chunks, extending the detached-weight cache finding beyond
+Core. The frozen-loop checkpoint has nonzero momentum in all 16. Preserve
+the affected original metrics as historical evidence, not valid
+full-expert-training comparisons. Corrected sparse controls must start
+fresh under a separate source-bound campaign; do not resume the defective
+lineage or overwrite its results.
+
+The unaffected dense parameter-matched and fixed-loop rows were restored
+without changing their original scientific identities. Core/RM recovery
+remains separate.

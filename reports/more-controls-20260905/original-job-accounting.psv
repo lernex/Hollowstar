@@ -1,0 +1,16 @@
+JobIDRaw|JobName|State|ExitCode|Elapsed|Start|End|NNodes|NodeList
+495818|more-random-k|NODE_FAIL|1:0|12:32:54|2026-09-04T11:32:45|2026-09-05T00:05:39|20|parrypeak[027-046]
+495821|more-random-depth|COMPLETED|0:0|18:51:43|2026-09-04T11:32:46|2026-09-05T06:24:29|20|parrypeak[091-110]
+495823|more-moe-k4|COMPLETED|0:0|20:42:03|2026-09-04T11:32:46|2026-09-05T08:14:49|5|parrypeak[111-115]
+495824|more-moe-k8|RUNNING|0:0|21:07:27|2026-09-04T11:32:46|Unknown|5|parrypeak[116-120]
+495825|more-mor-dense-ffn|RUNNING|0:0|08:22:37|2026-09-05T00:17:36|Unknown|20|parrypeak[002,021-022,027-042,048]
+495826|more-mor-fixed-k|CANCELLED|0:0|00:00:00|None|2026-09-04T13:19:12|20|None assigned
+495827|more-fixed-depth-adaptive-k|RUNNING|0:0|02:15:27|2026-09-05T06:24:46|Unknown|10|parrypeak[065-074]
+495828|more-loop-pathway-frozen|RUNNING|0:0|16:48:49|2026-09-04T15:51:24|Unknown|10|parrypeak[001,025,121-128]
+495829|more-loop-fixed|RUNNING|0:0|00:05:58|2026-09-05T08:34:15|Unknown|10|parrypeak[095-104]
+495830|more-dense-param-matched|CANCELLED|0:0|00:00:00|None|2026-09-04T13:19:12|20|None assigned
+495832|more-dense-flop-matched|COMPLETED|0:0|12:24:43|2026-09-04T11:52:27|2026-09-05T00:17:10|20|parrypeak[002-019,021-022]
+495852|more-mor-fixed-k|CANCELLED|0:0|00:00:00|None|2026-09-05T00:59:27|20|None assigned
+495853|more-dense-param-matched|CANCELLED|0:0|00:00:00|None|2026-09-04T19:07:21|20|None assigned
+495818|more-random-k|FAILED|143:0|00:48:35|2026-09-05T00:09:30|2026-09-05T00:58:05|20|parrypeak[051-070]
+495942|more-dense-param-matched|RUNNING|0:0|00:05:57|2026-09-05T08:34:16|Unknown|20|parrypeak[013-019,045-046,105-115]

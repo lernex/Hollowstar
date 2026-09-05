@@ -1,0 +1,10 @@
+{
+  "final_loss": 1.8731389988406055,
+  "fp8_parity_relative_error": 0.0003795073004501987,
+  "resumed_from": null,
+  "row": "random-depth",
+  "start_step": 0,
+  "steps": 25429,
+  "tokens": 49995448320,
+  "wall_clock_s": 67726.824847526
+}

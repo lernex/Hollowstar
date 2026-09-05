@@ -1,0 +1,10 @@
+{
+  "final_loss": 1.5350354667236754,
+  "fp8_parity_relative_error": 0.00017174405802626293,
+  "resumed_from": null,
+  "row": "dense-flop-matched",
+  "start_step": 0,
+  "steps": 25429,
+  "tokens": 49995448320,
+  "wall_clock_s": 44547.645259621
+}
