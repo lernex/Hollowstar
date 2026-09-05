@@ -91,6 +91,11 @@ stall_poll="${METIS_ABLATION_STALL_POLL_SECONDS:-30}"
       last_progress="$now"
     elif [ $((now - last_progress)) -ge "$stall_timeout" ]; then
       echo "metis: no rank-zero telemetry progress for ${stall_timeout}s; terminating stalled step" >&2
+      if ! timeout --kill-after=2s 15s python3 "${METIS_REPO:?set METIS_REPO}/src/metis_ablation/runtime_diagnostics.py" \
+        --run-root "$METIS_ABLATION_OUTPUT/more-core-xl" --job-id "$SLURM_JOB_ID" \
+        --scheduler-timeout 3 >&2; then
+        echo "metis: failure snapshot unavailable; preserving the original stalled-step failure" >&2
+      fi
       kill -TERM "$step_pid" 2>/dev/null || true
       sleep 60
       kill -KILL "$step_pid" 2>/dev/null || true
