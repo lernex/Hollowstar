@@ -138,3 +138,17 @@ Teacher interventions can exceed the reference cap and report that fact with
 runs. Aggregate global costs in the trainer include all accumulation steps and
 ranks. Existing jobs/checkpoints are preserved until real-data evidence
 supports a separately identified restart.
+
+## Related evidence, not validation of this design
+
+- [MUTO, ACL July 2026](https://aclanthology.org/2026.acl-long.1386/) uses
+  observed ground-truth likelihood changes to assess the utility of generated
+  reasoning prefixes. It motivates outcome-based targets, but does not
+  establish a shared depth/expert-width controller.
+- [POISE, May 2026](https://arxiv.org/html/2605.07579v2) studies internal-state
+  value prediction and policy-gradient baselines. Its independence and
+  cross-rollout considerations reinforce that detaching a target does not
+  automatically make a statistical estimator unbiased.
+
+The single-price, receding-horizon combination here is an experimental design.
+Neither source proves its allocation optimality, convergence, or superiority.
