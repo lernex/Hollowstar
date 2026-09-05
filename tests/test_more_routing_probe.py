@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import ast
 import json
 import shutil
 import unittest
@@ -45,6 +46,7 @@ from metis_ablation.routing_credit_probe import (
     teacher_plan,
     validate_checkpoint,
     validate_utility_provenance,
+    _select_probe_device,
 )
 from metis_training.data import TrainingBatch
 from metis_training.metrics import estimate_train_flops
@@ -705,6 +707,53 @@ class TinyModelProbeTests(unittest.TestCase):
         self.assertIsNone(fallback["lm_head_tokens_counter"])
         self.assertNotIn("lm_head_forward_rows", fallback)
         self.assertNotIn("lm_head_recompute_flops", fallback)
+
+    def test_device_selection_precedes_backend_construction_and_forward(self):
+        self.assertEqual(_select_probe_device(torch.device("cpu")), torch.device("cpu"))
+        source = Path(__file__).resolve().parents[1] / "src/metis_ablation/routing_credit_probe.py"
+        tree = ast.parse(source.read_text())
+        for name, operation in (("load_frozen_model", "build_precision_policy"), ("evaluate_in_memory", "model")):
+            function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
+            calls = [node for node in ast.walk(function) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)]
+            selection = next(node for node in calls if node.func.id == "_select_probe_device")
+            backend = next(node for node in calls if node.func.id == operation)
+            self.assertLess(selection.lineno, backend.lineno)
+
+    @unittest.skipUnless(
+        torch.cuda.is_available() and torch.cuda.device_count() >= 2,
+        "Nonzero-device placement requires two visible CUDA/ROCm devices",
+    )
+    def test_nonzero_cuda_is_current_during_construction_and_causal_forward(self):
+        previous = torch.cuda.current_device()
+        try:
+            config = replace(
+                self.config, joint_compute_router=True, causal_compute_budget=True,
+                joint_router_hidden_dim=8, target_mean_routed_k=4.0,
+            )
+            source = Metis16ForCausalLM(config)
+            torch.cuda.set_device(0)
+            model, _ = load_frozen_model(
+                config, source.state_dict(), device=torch.device("cuda:1"),
+                precision="bf16", checkpoint_precision="bf16", enable_joint=False,
+            )
+            self.assertEqual(torch.cuda.current_device(), 1)
+            self.assertTrue(all(parameter.device == torch.device("cuda:1") for parameter in model.parameters()))
+            batch = tiny_batch(config).to(torch.device("cuda:1"))
+            torch.cuda.set_device(0)
+            result = evaluate_in_memory(
+                model, batch,
+                CurriculumState(
+                    compute_allocation_mode="joint", continuation_mode="budgeted",
+                    routed_k_mode="budgeted", memory_gate_scale=0.0,
+                    stochastic_routing=False, allow_untrained_joint_router=True,
+                ),
+                seed=23,
+            )
+            self.assertEqual(torch.cuda.current_device(), 1)
+            self.assertTrue(torch.isfinite(result.output.loss))
+            self.assertEqual(_select_probe_device(torch.device("cuda")), torch.device("cuda:1"))
+        finally:
+            torch.cuda.set_device(previous)
 
     def test_full_captured_plan_is_replayed_and_verified_for_noise(self):
         runtime = FrozenRuntimeState(self.model)

@@ -45,6 +45,15 @@ class CapabilityError(RuntimeError):
     """The requested probe needs an API or artifact that is not available."""
 
 
+def _select_probe_device(device: torch.device) -> torch.device:
+    """Keep implicit TE/Triton allocations on the explicit probe device."""
+    if device.type == "cuda":
+        index = torch.cuda.current_device() if device.index is None else device.index
+        torch.cuda.set_device(index)
+        return torch.device("cuda", index)
+    return device
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -480,6 +489,7 @@ class FrozenRuntimeState:
 
     def __init__(self, model: Metis16ForCausalLM, *, exclude_prefixes: tuple[str, ...] = ()):
         self.model = model
+        _select_probe_device(next(model.parameters()).device)
         self.exclude_prefixes = exclude_prefixes
         self.buffers = {
             name: value.detach().clone() for name, value in model.named_buffers()
@@ -494,6 +504,7 @@ class FrozenRuntimeState:
 
     @torch.no_grad()
     def restore(self) -> None:
+        _select_probe_device(next(self.model.parameters()).device)
         for name, value in self.model.named_buffers():
             if name.startswith(self.exclude_prefixes):
                 continue
@@ -571,7 +582,7 @@ def evaluate_in_memory(
         ):
             if requested and required not in signature:
                 raise CapabilityError(f"Model.forward does not implement {required}")
-    device = batch.input_ids.device
+    device = _select_probe_device(batch.input_ids.device)
     cuda_devices = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
 
     def synchronize():
@@ -1068,6 +1079,7 @@ def load_frozen_model(
     checkpoint_precision = checkpoint_precision or precision
     if precision != checkpoint_precision and precision != "bf16":
         raise CapabilityError("Changing checkpoint backend layout is not supported; use its precision or BF16 reference")
+    device = _select_probe_device(device)
     policy = build_precision_policy(
         effective.precision, profile=checkpoint_precision, device=device,
         production=False, permit_fallback=False,
@@ -1350,7 +1362,7 @@ def fit_utility_in_memory(
             for previous in windows:
                 assert_disjoint_windows(actual_identity, previous)
             windows.append(actual_identity)
-            device = next(model.parameters()).device
+            device = _select_probe_device(next(model.parameters()).device)
             batch = batch.to(device)
             depths, widths = teacher_plan(
                 model.config, batch.attention_mask, max_depth=max_depth, generator=generator,
@@ -1610,6 +1622,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     device = torch.device(args.device)
     if device.type not in {"cpu", "cuda"}:
         raise CapabilityError("Probe precision policy supports explicit cpu or cuda devices")
+    device = _select_probe_device(device)
     model, numerical = load_frozen_model(
         config, payload["model"], device=device, precision=precision,
         enable_joint=(
