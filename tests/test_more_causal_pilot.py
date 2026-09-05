@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import os
+from pathlib import Path
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -137,6 +141,46 @@ class CausalPilotTests(unittest.TestCase):
         self.assertIsNone(trainer.call_args.kwargs["max_steps"])
         self.assertEqual(trainer.call_args.kwargs["schedule_total_steps"], 25429)
         self.assertTrue(trainer.call_args.kwargs["keep_all_checkpoints"])
+
+    def test_quality_launcher_covers_each_permanent_window_exactly_once(self):
+        root = self.fixture.root
+        binary = root / "bin"
+        binary.mkdir()
+        programs = {
+            "git": '#!/bin/bash\nif [ "$3" = rev-parse ]; then echo pinned; fi\n',
+            "srun": '#!/bin/bash\nshift\nfor rank in 0 1 2; do SLURM_LOCALID="$rank" "$@" || exit; done\n',
+            "python": f"#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n",
+        }
+        for name, contents in programs.items():
+            path = binary / name
+            path.write_text(contents)
+            path.chmod(0o755)
+        for name in ("state.pt", "run.json", "runtime.sh"):
+            (root / name).touch()
+        environment = {
+            **os.environ,
+            "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+            "METIS_REPO": str(root), "METIS_EXPECTED_REVISION": "pinned",
+            "METIS_RELEASE_ROOT": str(root), "METIS_QUALITY_CHECKPOINT": str(root / "state.pt"),
+            "METIS_QUALITY_MANIFEST": str(root / "run.json"),
+            "METIS_QUALITY_OUTPUT": str(root / "quality"),
+            "METIS_ABLATION_RUNTIME": str(root / "runtime.sh"),
+            "SLURM_NTASKS": "3", "SLURM_JOB_NUM_NODES": "1",
+        }
+        launcher = Path(__file__).resolve().parents[1] / "slurm/ablation/causal-checkpoint-quality.sbatch"
+        result = subprocess.run(["bash", str(launcher)], env=environment, text=True, capture_output=True, check=True)
+        commands = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(len(commands), 3)
+        self.assertEqual([command[command.index("--step") + 1] for command in commands], ["2000", "19000", "25000"])
+        self.assertEqual([command[command.index("--device") + 1] for command in commands], ["cuda:0", "cuda:1", "cuda:2"])
+        for command in commands:
+            self.assertIn("--quality-only", command)
+            self.assertEqual(command[command.index("--evaluation-gap-blocks") + 1], "8")
+            self.assertEqual(command[command.index("--repeat-forwards") + 1], "5")
+        for field, value in (("SLURM_NTASKS", "2"), ("SLURM_JOB_NUM_NODES", "3")):
+            result = subprocess.run(["bash", str(launcher)], env={**environment, field: value}, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
 
 
 if __name__ == "__main__":
