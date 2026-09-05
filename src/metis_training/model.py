@@ -424,8 +424,6 @@ class CurriculumState:
         if self.compute_allocation_mode == "joint":
             if not config.joint_compute_router:
                 raise ValueError("Joint allocation requires an enabled utility router.")
-            if self.pathway_mode != "per_pass":
-                raise ValueError("Joint allocation requires re-routed expert pathways.")
             if not 0.0 <= self.joint_router_exploration <= 1.0:
                 raise ValueError("Joint exploration must lie in [0, 1] loss units.")
             if not math.isfinite(self.joint_utility_coefficient) or self.joint_utility_coefficient < 0:
@@ -2791,23 +2789,36 @@ class RoutingReplayTape:
 
 
 class PathwayCache:
-    """Pass-one expert identities, addressed in the full token layout.
+    """Pass-one ordered expert identities, addressed in the full token layout.
 
     Later passes run over a packed subset of tokens, so the cache stores the
     unpacked ``[batch, sequence, max_k]`` selection and is gathered through the
     same active-token layout the streams use.  Only integer identity is cached;
-    nothing here carries a gradient.
+    nothing here carries a gradient. Legacy frozen controls retain their
+    first-pass width; explicit width plans and joint allocation instead choose
+    a prefix of the frozen ranking independently on every pass.
     """
 
-    __slots__ = ("_indices", "_widths", "_layout")
+    __slots__ = ("_indices", "_widths", "_layout", "_pass_layouts", "freeze_widths")
 
-    def __init__(self) -> None:
+    def __init__(self, *, freeze_widths: bool = True) -> None:
         self._indices: dict[int, Tensor] = {}
         self._widths: dict[int, Tensor] = {}
         self._layout: ActiveTokenLayout | None = None
+        self._pass_layouts: dict[int, ActiveTokenLayout | None] = {}
+        self.freeze_widths = freeze_widths
 
-    def set_layout(self, layout: "ActiveTokenLayout | None") -> None:
+    def set_layout(
+        self,
+        layout: "ActiveTokenLayout | None",
+        *,
+        pass_index: int | None = None,
+    ) -> None:
         self._layout = layout
+        if pass_index is not None:
+            # Backward revisits earlier, larger active sets after the forward
+            # has advanced the mutable current layout to the final pass.
+            self._pass_layouts[int(pass_index)] = layout
 
     def store(self, layer_index: int, top_indices: Tensor, chosen_k: Tensor) -> None:
         # Write-once.  Pass-level activation recompute replays pass one during
@@ -2823,18 +2834,26 @@ class PathwayCache:
         self._indices[layer_index] = indices
         self._widths[layer_index] = widths
 
-    def lookup(self, layer_index: int) -> tuple[Tensor, Tensor] | None:
+    def lookup(
+        self, layer_index: int, *, pass_index: int | None = None
+    ) -> tuple[Tensor, Tensor] | None:
         indices = self._indices.get(layer_index)
         widths = self._widths.get(layer_index)
         if indices is None or widths is None:
             return None
-        if self._layout is not None:
-            return self._layout.pack(indices), self._layout.pack(widths)
+        layout = self._layout
+        if pass_index is not None and self._pass_layouts:
+            if pass_index not in self._pass_layouts:
+                raise ValueError("Frozen pathway lookup has no layout for this pass.")
+            layout = self._pass_layouts[pass_index]
+        if layout is not None:
+            return layout.pack(indices), layout.pack(widths)
         return indices, widths
 
     def clear(self) -> None:
         self._indices.clear()
         self._widths.clear()
+        self._pass_layouts.clear()
         self._layout = None
 
 
@@ -3838,7 +3857,7 @@ class AdaptiveDroplessMoE(nn.Module):
         # ``pass_index`` is zero-based: the first pass through the shared stack
         # is 0, so pass one stores and every later pass reuses.
         frozen = (
-            pathway_cache.lookup(self.layer_idx)
+            pathway_cache.lookup(self.layer_idx, pass_index=pass_index)
             if pathway_cache is not None and pass_index > 0
             else None
         )
@@ -3865,8 +3884,14 @@ class AdaptiveDroplessMoE(nn.Module):
             # checkpoint boundary; the axis under test is *which* experts, not
             # how they are blended.
             top_indices, cached_k = identity
-            chosen_k = cached_k
-            if frozen is not None:
+            reuse_width = frozen is None or (
+                pathway_cache is not None
+                and pathway_cache.freeze_widths
+                and forced_routed_k is None
+            )
+            if reuse_width:
+                chosen_k = cached_k
+            if frozen is not None and reuse_width:
                 # Pathway-frozen control: pass one decided the width too, so the
                 # k-budget term follows it. A recompute replay must *not* do
                 # this -- it is re-executing a pass whose expected_k already has
@@ -6098,7 +6123,14 @@ class Metis16ForCausalLM(nn.Module):
         curriculum_state = CurriculumState.from_value(curriculum)
         curriculum_state.validate(self.config)
         self._pathway_cache = (
-            PathwayCache() if curriculum_state.pathway_mode == "frozen" else None
+            PathwayCache(
+                freeze_widths=(
+                    force_routed_k is None
+                    and curriculum_state.compute_allocation_mode != "joint"
+                )
+            )
+            if curriculum_state.pathway_mode == "frozen"
+            else None
         )
         # Only pass-level recompute replays a pass, and only training runs it.
         # Everywhere else the tape would be pure overhead, so it is not built.
@@ -6126,8 +6158,8 @@ class Metis16ForCausalLM(nn.Module):
                 raise ValueError("force_routed_k must contain integer widths.")
             if force_routed_k.device != input_ids.device:
                 raise ValueError("Forced widths must be on the input device.")
-            if self.config.ffn_mode != "moe" or curriculum_state.pathway_mode != "per_pass":
-                raise ValueError("Forced widths require a re-routed MoE pathway.")
+            if self.config.ffn_mode != "moe":
+                raise ValueError("Forced widths require an MoE pathway.")
         joint_mode = curriculum_state.compute_allocation_mode == "joint"
         collect_joint_outcomes = joint_mode or return_router_observations
         if joint_mode:
@@ -6458,7 +6490,7 @@ class Metis16ForCausalLM(nn.Module):
             # The pathway cache stores pass-one identities in the unpacked token
             # layout, so it needs this pass's packing map to gather them back.
             if self._pathway_cache is not None:
-                self._pathway_cache.set_layout(token_layout)
+                self._pathway_cache.set_layout(token_layout, pass_index=pass_index)
             pass_arguments = (
                 run_streams,
                 run_route_history,
