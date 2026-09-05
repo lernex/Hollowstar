@@ -1,7 +1,35 @@
 # Metis-1.7 Logos — Token-Superposition pretraining data plan
 
-Status: **research draft, nothing locked.** Target generation: Metis-1.7 Logos.
-Effective date: 2026-07-25
+Status: **historical TST research note; not the current acquisition specification.**
+Target generation: Metis-1.7 Logos.
+Original research date: 2026-07-25. Supersession notice: 2026-09-04.
+
+## Current brief supersedes the July sizing
+
+The current data plan is
+[`metis17_200tb_pretraining_corpus_research.md`](metis17_200tb_pretraining_corpus_research.md),
+with its companion
+[`metis17_200tb_acquisition_ledger.csv`](metis17_200tb_acquisition_ledger.csv).
+It targets **30T source-token exposures at TST bag size 16, followed by 5T
+ordinary NTP exposures: 35T total**, with approximately 25 TB of recent
+Common Crawl inside the approximately 200 TB compressed acquisition envelope.
+The [current preparation contract](metis17_data_prep_plan.md) requires
+complete Nemotron-CC v2/v2.1/CC-Math acquisition, no URL/repository
+reconstruction, and verified-object preparation alongside downloads.
+
+The nominal processed-position budget is `30T / 16 + 5T = 6.875T`. With an
+unchanged processed-position batch size, the TST step fraction is
+`1.875 / 6.875 = 3/11`, or **27.27%**. These are accounting identities, not
+measured FLOPs, wall-clock savings, or NTP-equivalent model quality.
+
+The remainder preserves the July investigation. Its 24-25T/6T sizing,
+source inventories, mixture suggestions, and acquisition projections are
+**superseded**, not additional requirements. Its repetition/memorization
+hypotheses, proposed decontamination relaxation, and claimed guaranteed NTP
+fallback are **not accepted operating policy**. All phases retain the same
+contamination safeguards; TST does not establish a quality floor equivalent
+to training a fresh model on the recovery tokens. Use the September plan's
+evidence limits and measured inventory gates instead.
 
 ## 0. Scope and relationship to Metis-1.6
 
@@ -17,7 +45,7 @@ What is banked here:
 1. **Token-Superposition Training (TST)** as a first-phase pretraining regime for 1.7 Logos.
 2. A **substantially larger token budget**, made affordable by TST's compute↔data exchange.
 
-**Headline configuration (selected 2026-07-25, detail in §3.3):** full TST at `s=16`, **6.0T premium
+**Historical configuration (2026-07-25; superseded, detail in §3.3):** full TST at `s=16`, **6.0T premium
 recovery tokens + 24–25T medium superposition tokens = 30–31T total data**, costing **7.5T** of
 compute in baseline-NTP-token units, for an estimated **~16.5T-NTP-equivalent** of quality. `r`
 falls out at **0.200**; it is derived from the data split, not chosen.
@@ -191,7 +219,7 @@ meaningful `r`; pushing 90% of tokens into the recovery phase drives `r` to ~2% 
 rounding error. TST commits the corpus to being majority-superposition by token count. §4 turns
 that constraint into the design rather than fighting it.
 
-### 3.3 Selected configuration
+### 3.3 Historical selected configuration (superseded)
 
 **Metis-1.7 Logos is sized by its data budget, not by a compute target.** The acquirable corpus is
 the input; compute is whatever falls out. Selected 2026-07-25:
@@ -261,7 +289,7 @@ shows how far medium can be pushed to partially compensate while keeping `r` in 
 premium needs `M ≈ 20T` to hold `r ≈ 0.20`. That is the contingency it exists for, not an
 aspiration.
 
-### 3.5 Downside bound
+### 3.5 Historical downside model (not a guaranteed bound)
 
 The 2.28 exchange rate is measured at 1.05T-baseline-equivalent on a 10B-A1B model. This
 configuration extrapolates it to ~16.5T-equivalent on a 12B model — roughly **13× beyond its
@@ -275,11 +303,13 @@ and check the cost:
 | 4.0 | 12.0T-equiv | substantial decay |
 | ∞ (superposition worthless) | 6.0T-equiv | total failure |
 
-**The downside is bounded and mild.** Total failure means a 6T premium-NTP model that cost 7.5T of
-compute — a 25% compute tax for nothing, with the premium corpus intact and unharmed. That is a
-cheap bet, and it is why this configuration is acceptable despite the extrapolation. It is also why
-§9's fallback is not a fallback in the usual sense: **the 6T premium NTP run is a subset of this
-run, not an alternative to it.** Nothing is staked that is not recoverable by simply continuing.
+**September 2026 correction: this is not a guaranteed downside bound.**
+The table assumes an additive quality model that the paper does not establish.
+An ineffective or harmful first phase need not leave the same initialization
+as a fresh NTP run. Table 2's randomization control is a direct warning:
+continuing through recovery did not recover baseline performance. Preserve
+the premium corpus, but do not promise that continuing always substitutes
+for an independent NTP fallback.
 
 The exchange rate is additionally assumed `r`-invariant when applied at `r=0.20` rather than the
 `r=0.25` at which it was measured. Untested. The likely direction is favourable — a shorter
@@ -329,7 +359,7 @@ Recommended: **3–5T multilingual in the superposition tier, plus 200–400B pr
 the recovery tier.** This is a materially better multilingual model for a rounding error in compute,
 and it is a capability that only becomes affordable because superposition is cheap.
 
-### 4.3 Candidate source pools
+### 4.3 Historical candidate source pools (superseded)
 
 Sizes are approximate published or planning figures, before global cross-source deduplication.
 Overlap between the web reservoirs is heavy; expect substantial shrinkage.
@@ -507,17 +537,17 @@ change, no vocabulary interaction.
 **It must be an arm in the canary.** If output-only captures most of the gain, 1.7 gets a quality
 improvement for zero additional data and near-zero integration risk.
 
-## 7. Replay policy
+## 7. Historical replay hypotheses (not accepted policy)
 
 The paper does not test data repetition in either phase.
 
-**Position: the superposition phase is the safest place to repeat data anywhere in the pipeline.**
-MCE over a bag destroys within-bag ordering, so verbatim sequence memorization is close to
-mechanically impossible — and memorization is the mechanism behind the usual multi-epoch penalty.
-The epoching penalty should therefore be attenuated in this phase specifically.
-
-This is reasoning, not evidence. Cheap canary: superposition phase at 2 epochs of half the pool
-versus 1 epoch of the full pool, matched total tokens.
+**September 2026 correction: no TST-specific replay allowance is established.**
+Losing within-bag order does not eliminate factual memorization, benchmark
+leakage or repetition-related generalization risks. The original claim that
+TST is the safest place to repeat data is withdrawn. A canary can compare
+two passes over half the pool with one pass over the full pool, at matched
+source exposures and measured compute, but acquisition must not assume its
+outcome.
 
 **Practically, replay should not be needed.** The superposition tier is oversubscribed by 30T+
 (§4.3). Treat replay as insurance against acquisition shortfall, not as a planned mechanism.
@@ -550,7 +580,7 @@ Ordered. Each gate is cheap relative to what it protects.
    trip it.
 4. **Confirm the packer handles document-aligned bagging** before any long run (§5.4).
 
-## 9. What this plan does not claim, and the fallback
+## 9. Historical claims and fallback hypothesis (not a quality guarantee)
 
 Not claimed:
 
@@ -569,9 +599,10 @@ than the same-mixture control.
 
 **Fallback, and it is a good one.** If TST fails every gate, 1.7 Logos runs **pure next-token
 prediction on the 6.0T premium tier**, optionally topped up from the upper end of the medium tier.
-That is already 6× the Metis-1.6 budget and is the single largest quality lever available to this
-generation. Per §3.5 this is not a separate plan to switch to — the 6T premium NTP run is a subset
-of the selected configuration, so the fallback is reached by continuing, not by restarting.
+That was the July fallback budget, now superseded by the September brief.
+An independent NTP fallback must be evaluated as an alternative run, not
+assumed to be reached by continuing from any failed TST checkpoint. See
+the corrected evidence limit in §3.5 and the current acquisition plan.
 
 **The 1.7 token budget increase does not depend on TST and should be committed independently.**
 
@@ -595,12 +626,14 @@ of the selected configuration, so the fallback is reached by continuing, not by 
 - Whether Praxis-1.7 also gets TST. The paper's optimal `s` scales with model size (~8 at the
   Praxis class versus 16 at the Logos class); the canary runs at Praxis scale regardless, so this
   resolves itself as a by-product.
-- Decontamination scope for the superposition tier. Running the full 1.6 pipeline (63 registry
-  entries, five matching schemes) over 20T+ instead of 1T is a >20× Rhea CPU scale-up. Exact
-  SHA-256 matching must be retained — bag-of-words can still surface an MCQA answer token — but the
-  fuzzy 13-word, 8-word, and code-skeleton overlap passes are largely defusable for that tier since
-  contiguous spans cannot be reconstructed from bags. Needs a decision with a written rationale, not
-  a silent relaxation.
+- Decontamination scale for the superposition tier. The September plan
+  retains the same benchmark and genealogy safeguards in both phases.
+  The July suggestion to relax fuzzy/code-skeleton matching because of
+  bagging is withdrawn; TST does not establish that protection. Scale the
+  implementation and measure false positives rather than silently weakening
+  the policy. The separate 1.6 length-bias lesson supports proposing
+  short-ngram/code-skeleton off for 1.7 in both phases; the prep contract
+  distinguishes that measured change from the unchanged r2 profile.
 - Global deduplication scope and cost at 30T+ candidates. The governing constraint is that dedup is
   the one stage that cannot stream: retain MinHash bucket keys and the exact-dedup filter
   permanently, discard the text.
