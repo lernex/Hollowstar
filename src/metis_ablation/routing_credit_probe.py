@@ -17,9 +17,9 @@ import subprocess
 import time
 from collections import Counter
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 import torch
 from torch import Tensor
@@ -377,6 +377,22 @@ def repeat_noise(losses: list[float], *, minimum_delta: float = 1e-5) -> dict[st
     }
 
 
+def plan_repeat_statistics(
+    records: list[Mapping[str, Any]], *, minimum_loss_delta: float,
+) -> dict[str, Any]:
+    losses = [float(record["lm_loss"]) for record in records]
+    noise = repeat_noise(losses, minimum_delta=minimum_loss_delta)
+    mean = sum(losses) / len(losses)
+    distinct = len({record["plan_sha256"] for record in records})
+    return {
+        **noise, "distinct_complete_plans": distinct,
+        "same_complete_plan_every_repeat": distinct == 1,
+        "mean_lm_loss": mean,
+        "sample_standard_deviation": math.sqrt(sum((value - mean) ** 2 for value in losses) / (len(losses) - 1)),
+        "min_lm_loss": min(losses), "max_lm_loss": max(losses),
+    }
+
+
 def aggregate_pairs(records: list[Mapping[str, Any]]) -> dict[str, Any]:
     counts = Counter(record["alignment"] for record in records)
     compared = counts["aligned"] + counts["opposed"]
@@ -395,17 +411,25 @@ def aggregate_pairs(records: list[Mapping[str, Any]]) -> dict[str, Any]:
 class FrozenRuntimeState:
     """Replay mutable buffers/FP8 extra state so paired forwards share a start."""
 
-    def __init__(self, model: Metis16ForCausalLM):
+    def __init__(self, model: Metis16ForCausalLM, *, exclude_prefixes: tuple[str, ...] = ()):
         self.model = model
-        self.buffers = {name: value.detach().clone() for name, value in model.named_buffers()}
+        self.exclude_prefixes = exclude_prefixes
+        self.buffers = {
+            name: value.detach().clone() for name, value in model.named_buffers()
+            if not name.startswith(exclude_prefixes)
+        }
         self.extra = {}
         for name, module in model.named_modules():
+            if (name + ".").startswith(exclude_prefixes):
+                continue
             if type(module).get_extra_state is not torch.nn.Module.get_extra_state:
                 self.extra[name] = copy.deepcopy(module.get_extra_state())
 
     @torch.no_grad()
     def restore(self) -> None:
         for name, value in self.model.named_buffers():
+            if name.startswith(self.exclude_prefixes):
+                continue
             if name not in self.buffers or value.shape != self.buffers[name].shape:
                 raise RuntimeError("Mutable buffer inventory changed during frozen evaluation")
             value.copy_(self.buffers[name])
@@ -415,7 +439,11 @@ class FrozenRuntimeState:
 
 
 @contextmanager
-def frozen_model(model: Metis16ForCausalLM, *, continuation_grad: bool = False) -> Iterator[None]:
+def frozen_model(
+    model: Metis16ForCausalLM, *, continuation_grad: bool = False, utility_grad: bool = False,
+) -> Iterator[None]:
+    if continuation_grad and utility_grad:
+        raise ValueError("Continuation diagnostics and utility fitting require separate gradient scopes")
     flags = [(p, p.requires_grad) for p in model.parameters()]
     modes = [(module, module.training) for module in model.modules()]
     replay = model.activation_recompute_policy
@@ -427,6 +455,12 @@ def frozen_model(model: Metis16ForCausalLM, *, continuation_grad: bool = False) 
         if continuation_grad:
             for parameter in model.continuation.parameters():
                 parameter.requires_grad_(True)
+        if utility_grad:
+            router = getattr(model, "joint_router", None)
+            if router is None:
+                raise CapabilityError("Utility fitting requires an enabled joint_router")
+            for parameter in router.parameters():
+                parameter.requires_grad_(True)
         yield
     finally:
         for parameter, flag in flags:
@@ -434,6 +468,15 @@ def frozen_model(model: Metis16ForCausalLM, *, continuation_grad: bool = False) 
         for module, mode in modes:
             module.training = mode
         model.activation_recompute_policy = replay
+
+
+def probe_precision_context(model: Metis16ForCausalLM):
+    if getattr(model, "_routing_probe_bf16_reference", False):
+        factory = getattr(model.precision_policy, "bf16_reference_context", None)
+        if not callable(factory):
+            raise CapabilityError("The original checkpoint backend cannot provide a BF16 reference context")
+        return factory()
+    return nullcontext()
 
 
 @dataclass
@@ -476,13 +519,7 @@ def evaluate_in_memory(
     if return_router_observations:
         extras["return_router_observations"] = True
     gradients = observed = None
-    precision_context = nullcontext()
-    if getattr(model, "_routing_probe_bf16_reference", False):
-        factory = getattr(model.precision_policy, "bf16_reference_context", None)
-        if not callable(factory):
-            raise CapabilityError("The original checkpoint backend cannot provide a BF16 reference context")
-        precision_context = factory()
-    with frozen_model(model, continuation_grad=continuation_grad), torch.random.fork_rng(devices=cuda_devices), precision_context:
+    with frozen_model(model, continuation_grad=continuation_grad), torch.random.fork_rng(devices=cuda_devices), probe_precision_context(model):
         torch.manual_seed(seed)
         synchronize()
         started = time.perf_counter()
@@ -539,6 +576,77 @@ def forward_summary(result: ProbeForward, batch: TrainingBatch) -> dict[str, Any
     }
 
 
+def repeated_plan_evaluation(
+    model: Metis16ForCausalLM, batch: TrainingBatch, curriculum: CurriculumState, *,
+    seed: int, runtime_state: FrozenRuntimeState, repeat_forwards: int,
+    minimum_loss_delta: float, force_depth: Tensor | None = None,
+    force_routed_k: Tensor | None = None, return_router_observations: bool = False,
+) -> tuple[ProbeForward, dict[str, Any]]:
+    """Distinguish natural plan variability from noise of an enforced plan."""
+    if repeat_forwards < 2:
+        raise ValueError("Repeated evaluation requires at least two forwards")
+    if (force_depth is None) != (force_routed_k is None):
+        raise ValueError("Fixed-plan replay requires both depths and complete width histories")
+    first = None
+    records = []
+    elapsed = nominal_forward = 0.0
+    expected_cost = (
+        plan_cost(model.config, force_depth, force_routed_k)
+        if force_depth is not None else None
+    )
+    for _ in range(repeat_forwards):
+        current = evaluate_in_memory(
+            model, batch, curriculum, seed=seed, runtime_state=runtime_state,
+            force_depth=force_depth, force_routed_k=force_routed_k,
+            return_router_observations=return_router_observations,
+        )
+        if first is None:
+            first = current
+        if expected_cost is not None and (
+            current.cost != expected_cost
+            or not torch.equal(current.output.chosen_depths, force_depth)
+            or not torch.equal(current.widths, force_routed_k)
+        ):
+            raise RuntimeError("Fixed-plan replay changed the requested depths, widths, or realized cost")
+        loss = float(current.output.loss.detach())
+        elapsed += current.elapsed_seconds
+        digest = hashlib.sha256()
+        for tensor in (current.output.chosen_depths, current.widths):
+            values = tensor.detach().cpu().contiguous()
+            digest.update(json.dumps([str(values.dtype), list(values.shape)]).encode())
+            digest.update(values.numpy().tobytes())
+        records.append({
+            "plan_sha256": digest.hexdigest(),
+            "lm_loss": loss, "cost": current.cost,
+            "modeled_total_train_flops": int(current.output.telemetry.get(
+                "joint_model_flops", current.cost["nominal_train_flops"],
+            )),
+            "chosen_depth_histogram": histogram(current.output.chosen_depths[batch.attention_mask]),
+        })
+        forward = current.cost["nominal_forward_flops"]
+        if "joint_router_flops" in current.output.telemetry:
+            active_targets = int((current.output.active_masks & batch.labels.ne(-100)[None]).sum())
+            forward += (
+                float(current.output.telemetry["joint_router_flops"]) / 3.0
+                + 2.0 * model.config.d_model * model.config.vocab_size * active_targets
+            )
+        nominal_forward += forward
+    assert first is not None
+    return first, {
+        **plan_repeat_statistics(records, minimum_loss_delta=minimum_loss_delta),
+        "repeat_kind": "fixed_depth_and_width_plan" if force_depth is not None else "natural_policy",
+        "repeats": records, "forward_calls": repeat_forwards,
+        "total_evaluation_seconds": elapsed,
+        "nominal_forward_flops_all_calls": nominal_forward,
+        "interpretation": (
+            "Natural repeats include depth/width allocation variability, not pure numerical noise."
+            if force_depth is None else
+            "Depths and all layer/pass widths are forced and verified. Residual variation includes "
+            "expert-identity ties and kernel numerics; expert identities themselves are not frozen."
+        ),
+    }
+
+
 def depth_credit_probe(
     model: Metis16ForCausalLM, batch: TrainingBatch, curriculum: CurriculumState, *,
     pairs: int, seed: int, runtime_state: FrozenRuntimeState | None = None,
@@ -577,8 +685,8 @@ def depth_credit_probe(
         forward_flops += repeated.cost["nominal_forward_flops"]
     noise = repeat_noise(repeats, minimum_delta=minimum_loss_delta)
     threshold = noise["decisive_absolute_loss_delta_threshold"]
-    if abs(original_loss - replay_loss) > threshold:
-        raise RuntimeError("Forced original plan changes LM loss beyond repeat noise; comparison is confounded")
+    replay_loss = sum(repeats) / len(repeats)
+    reference_parity = abs(original_loss - replay_loss) <= threshold
     gradients = reference.continuation_gradients
     observed = reference.continuation_observed
     assert gradients is not None and observed is not None
@@ -610,9 +718,11 @@ def depth_credit_probe(
             "predicted_score_change_toward_swap": -predicted,
             "global_loss_delta": delta,
             "alignment": (
-                "below_numerical_noise" if abs(delta) <= threshold
+                "reference_replay_mismatch" if not reference_parity
+                else "below_numerical_noise" if abs(delta) <= threshold
                 else credit_alignment(predicted, delta)
             ),
+            "gradient_interpretation_valid": reference_parity,
             "above_numerical_noise_threshold": abs(delta) > threshold,
             "nominal_train_flops_delta": result.cost["nominal_train_flops"] - replay.cost["nominal_train_flops"],
             "same_depth_multiset": True,
@@ -623,6 +733,12 @@ def depth_credit_probe(
         "fixed_routed_k": 4, "reference": summary,
         "forced_original_lm_loss": replay_loss,
         "forced_original_loss_delta": replay_loss - original_loss,
+        "gradient_interpretation_valid": reference_parity,
+        "reference_parity_failure": (
+            None if reference_parity else
+            "Natural gradient-forward loss differs from forced reference beyond fixed-plan noise; "
+            "gradient alignment is invalid and excluded, not silently accepted."
+        ),
         "deterministic_repeat_noise": noise,
         "requested_pairs": pairs, "available_disjoint_pairs": len(candidates),
         "unobserved_credit_pairs_skipped": skipped,
@@ -725,6 +841,12 @@ def load_utility_artifact(
     provenance = validate_utility_provenance(
         payload, model.config, evaluation_window=evaluation_window,
     )
+    expected_precision = {
+        "bf16_reference_context": bool(getattr(model, "_routing_probe_bf16_reference", False)),
+        "backend_profile": getattr(model.precision_policy, "requested_profile", None),
+    }
+    if "teacher_precision" in payload and payload["teacher_precision"] != expected_precision:
+        raise ValueError("Utility artifact teacher/evaluation precision regimes differ")
     weights = payload.get("state_dict")
     if not isinstance(weights, Mapping) or not weights:
         raise ValueError("Utility artifact has no router-only state_dict")
@@ -791,6 +913,19 @@ def validate_utility_provenance(
             "global_token_cursor": start, "next_global_token_cursor": end,
         })
     output["training_windows"] = sanitized
+    if "fit_max_depth" in payload:
+        if type(payload["fit_max_depth"]) is not int or not 2 <= payload["fit_max_depth"] <= config.max_passes:
+            raise ValueError("Utility artifact fit_max_depth is outside its architecture")
+        output["fit_max_depth"] = payload["fit_max_depth"]
+    for name in (
+        "fit_steps", "fit_learning_rate", "visited_depth_histogram", "visited_width_histogram",
+        "nominal_teacher_forward_flops", "nominal_teacher_utility_backward_flops",
+        "teacher_precision", "teacher_curriculum", "head_initialization_seed",
+        "warmup_forward_calls", "warmup_token_count", "warmup_elapsed_seconds",
+        "nominal_warmup_forward_flops", "warmup_window",
+    ):
+        if name in payload:
+            output[name] = payload[name]
     output["target_interpretation"] = (
         "Observed per-exit CE improvement, not an unbiased global counterfactual utility. "
         "Unknown continuation outcomes must remain unlabeled."
@@ -802,6 +937,7 @@ def load_frozen_model(
     config: Metis16Config, weights: Mapping[str, Any], *,
     device: torch.device, precision: str, enable_joint: bool,
     checkpoint_precision: str | None = None,
+    initialization_seed: int = 16062026,
 ) -> tuple[Metis16ForCausalLM, dict[str, Any]]:
     if config.expert_parallel_size != 1 or config.context_parallel_size != 1:
         raise CapabilityError("Probe requires replicated experts and unsharded sequences")
@@ -820,12 +956,18 @@ def load_frozen_model(
         effective.precision, profile=checkpoint_precision, device=device,
         production=False, permit_fallback=False,
     )
-    model = Metis16ForCausalLM(effective, precision_policy=policy)
+    devices = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
+    with torch.random.fork_rng(devices=devices):
+        torch.manual_seed(initialization_seed)
+        model = Metis16ForCausalLM(effective, precision_policy=policy)
     model.apply_parameter_storage_policy(device=device)
     target_keys = set(model.state_dict())
+    new_joint = enable_joint and not getattr(config, "joint_compute_router", False)
+    if new_joint and any(key.startswith("joint_router.") for key in weights):
+        raise ValueError("Checkpoint utility weights are not declared by the original model config")
     loaded = model.load_state_dict(weights, strict=not enable_joint)
     allowed_missing = {
-        key for key in target_keys if enable_joint and key.startswith("joint_router.")
+        key for key in target_keys if new_joint and key.startswith("joint_router.")
     }
     if set(loaded.missing_keys) - allowed_missing or loaded.unexpected_keys:
         raise RuntimeError(
@@ -838,6 +980,7 @@ def load_frozen_model(
     if precision == "bf16" and not callable(getattr(policy, "bf16_reference_context", None)):
         raise CapabilityError("Checkpoint precision policy lacks its BF16 reference context")
     model._routing_probe_bf16_reference = precision == "bf16"
+    model._routing_probe_initialization_seed = initialization_seed
     return model.eval(), {
         "backend_precision_audit": policy.audit.to_dict(),
         "effective_profile": precision,
@@ -845,6 +988,7 @@ def load_frozen_model(
         "bf16_reference_context": precision == "bf16",
         "discarded_checkpoint_state_keys": [],
         "new_joint_state_keys": sorted(set(loaded.missing_keys)),
+        "initialization_seed": initialization_seed,
         "model_config": effective.to_dict(),
         "optimizer_loaded": False, "optimizer_shards_loaded": 0,
         "original_world_size": config.world_size, "probe_world_size": 1,
@@ -855,33 +999,396 @@ def load_frozen_model(
 def joint_policy_probe(
     model: Metis16ForCausalLM, batch: TrainingBatch, curriculum: CurriculumState, *,
     seed: int, runtime_state: FrozenRuntimeState, legacy: ProbeForward,
+    repeat_forwards: int = 3, minimum_loss_delta: float = 1e-5,
+    max_passes: int | None = None, trained_max_depth: int | None = None,
+    legacy_noise: Mapping[str, Any] | None = None,
+    fixed_reference: ProbeForward | None = None,
+    fixed_noise: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if "compute_allocation_mode" not in curriculum.__dataclass_fields__:
         raise CapabilityError("CurriculumState does not support joint allocation")
     joint = replace(
         curriculum, compute_allocation_mode="joint", stochastic_routing=False,
         joint_router_exploration=0.0, allow_untrained_joint_router=False,
+        max_passes=max_passes,
     )
-    result = evaluate_in_memory(model, batch, joint, seed=seed, runtime_state=runtime_state)
+    if repeat_forwards < 2:
+        raise ValueError("Joint comparisons require at least two numerical repeats")
+    elapsed = nominal_forward = 0.0
+    forward_calls = 0
+
+    def repeated_policy(state, *, depths=None, widths=None):
+        nonlocal elapsed, nominal_forward, forward_calls
+        result, metadata = repeated_plan_evaluation(
+            model, batch, state, seed=seed, runtime_state=runtime_state,
+            repeat_forwards=repeat_forwards, minimum_loss_delta=minimum_loss_delta,
+            force_depth=depths, force_routed_k=widths,
+            return_router_observations=depths is not None,
+        )
+        elapsed += metadata["total_evaluation_seconds"]
+        nominal_forward += metadata["nominal_forward_flops_all_calls"]
+        forward_calls += metadata["forward_calls"]
+        return result, metadata
+
+    result, noise = repeated_policy(joint)
     telemetry = result.output.telemetry
-    required = ("joint_model_flops", "joint_router_flops")
+    required = ("joint_model_flops", "joint_router_flops", "joint_unused_budget_flops", "joint_budget_flops")
     if any(key not in telemetry for key in required):
         raise CapabilityError("Joint model must expose joint_model_flops and joint_router_flops")
     delta = result.cost["nominal_train_flops"] - legacy.cost["nominal_train_flops"]
+    depths = result.output.chosen_depths.detach()
+    shuffled_depths, shuffled_widths = shuffle_plan(
+        depths, result.widths, batch.attention_mask, seed=seed + 1,
+        document_ids=batch.document_ids, supervised_mask=batch.labels.ne(-100),
+    )
+    if plan_cost(model.config, shuffled_depths, shuffled_widths) != result.cost:
+        raise RuntimeError("Whole-trajectory shuffle failed exact per-pass/layer cost preservation")
+    replay_curriculum = replace(
+        joint, compute_allocation_mode="legacy", routed_k_mode="fixed", fixed_routed_k=4,
+    )
+    replay, replay_noise = repeated_policy(replay_curriculum, depths=depths, widths=result.widths)
+    shuffled, shuffled_noise = repeated_policy(
+        replay_curriculum, depths=shuffled_depths, widths=shuffled_widths,
+    )
+    for execution, requested_depths, requested_widths in (
+        (replay, depths, result.widths), (shuffled, shuffled_depths, shuffled_widths),
+    ):
+        if (
+            execution.cost != result.cost
+            or not torch.equal(execution.output.chosen_depths, requested_depths)
+            or not torch.equal(execution.widths, requested_widths)
+            or int(execution.output.telemetry["joint_model_flops"]) != int(telemetry["joint_model_flops"])
+        ):
+            raise RuntimeError("Explicit joint-plan replay changed the requested realized cost or trajectory")
+    threshold = max(
+        item["decisive_absolute_loss_delta_threshold"]
+        for item in (noise, replay_noise, shuffled_noise, legacy_noise or noise, fixed_noise or noise)
+    )
+    joint_loss = float(result.output.loss.detach())
+    replay_loss = replay_noise["mean_lm_loss"]
+    shuffled_loss = shuffled_noise["mean_lm_loss"]
+    replay_matches = abs(joint_loss - replay_loss) <= replay_noise["decisive_absolute_loss_delta_threshold"]
+    changed = not (torch.equal(depths, shuffled_depths) and torch.equal(result.widths, shuffled_widths))
+    evaluation_cap = max_passes or model.config.max_passes
+    trained_horizon = trained_max_depth is not None and evaluation_cap <= trained_max_depth
+    legacy_minimum = legacy_noise["min_lm_loss"] if legacy_noise and "min_lm_loss" in legacy_noise else float(legacy.output.loss.detach())
+    beats_legacy = noise["max_lm_loss"] < legacy_minimum - threshold
+    beats_shuffle = changed and replay_matches and noise["max_lm_loss"] < shuffled_noise["min_lm_loss"] - threshold
+    legacy_minimum_cost = (
+        min(record["modeled_total_train_flops"] for record in legacy_noise["repeats"])
+        if legacy_noise and "repeats" in legacy_noise else legacy.cost["nominal_train_flops"]
+    )
+    no_more_compute = max(record["modeled_total_train_flops"] for record in noise["repeats"]) <= legacy_minimum_cost
+    beats_fixed = fixed_cost_ok = None
+    fixed_delta = None
+    if fixed_reference is not None:
+        fixed_minimum = fixed_noise["min_lm_loss"] if fixed_noise else float(fixed_reference.output.loss.detach())
+        fixed_mean = fixed_noise["mean_lm_loss"] if fixed_noise else fixed_minimum
+        beats_fixed = noise["max_lm_loss"] < fixed_minimum - threshold
+        fixed_delta = noise["mean_lm_loss"] - fixed_mean
+        fixed_cost_ok = (
+            max(record["modeled_total_train_flops"] for record in noise["repeats"])
+            <= fixed_reference.cost["nominal_train_flops"]
+        )
     return {
         **forward_summary(result, batch),
         "global_loss_delta_from_legacy": float(result.output.loss.detach() - legacy.output.loss.detach()),
+        "mean_natural_policy_lm_loss": noise["mean_lm_loss"],
         "nominal_backbone_train_flops_delta_from_legacy": delta,
         "exact_equal_backbone_budget": delta == 0,
         "joint_model_flops": float(telemetry["joint_model_flops"]),
         "joint_router_flops": float(telemetry["joint_router_flops"]),
+        "joint_budget_flops": int(telemetry["joint_budget_flops"]),
+        "joint_unused_budget_flops": int(telemetry["joint_unused_budget_flops"]),
+        "max_passes": evaluation_cap,
+        "trained_max_depth": trained_max_depth,
+        "within_recorded_training_horizon": trained_horizon,
+        "natural_policy_variability": noise,
+        "deterministic_repeat_noise": replay_noise,
+        "comparison_absolute_loss_delta_threshold": threshold,
+        "comparison_threshold_includes_natural_policy_variability": True,
+        "forced_original": {
+            **forward_summary(replay, batch), "deterministic_repeat_noise": replay_noise,
+            "mean_lm_loss": replay_loss,
+            "global_loss_delta_from_joint": replay_loss - joint_loss,
+            "matches_joint_within_numerical_noise": replay_matches,
+        },
+        "shuffled": {
+            **forward_summary(shuffled, batch), "deterministic_repeat_noise": shuffled_noise,
+            "mean_lm_loss": shuffled_loss,
+            "global_loss_delta_from_joint": shuffled_loss - joint_loss,
+            "global_loss_delta_from_forced_original": shuffled_loss - replay_loss,
+            "different_plan": changed, "same_realized_plan_cost": True,
+            "shuffle_seed": seed + 1, "shuffle_strata": "sequence/document/supervision status",
+        },
+        "beats_legacy_above_numerical_noise": beats_legacy,
+        "beats_shuffled_above_numerical_noise": beats_shuffle,
+        "uniform_depth2_k4_control_available": fixed_reference is not None,
+        "mean_global_loss_delta_from_uniform_depth2_k4": fixed_delta,
+        "beats_uniform_depth2_k4_above_numerical_noise": beats_fixed,
+        "no_more_modeled_compute_than_uniform_depth2_k4": fixed_cost_ok,
+        "no_more_modeled_compute_than_legacy": no_more_compute,
+        "one_window_quality_checks_passed": bool(
+            beats_legacy and beats_shuffle and beats_fixed and fixed_cost_ok
+            and trained_horizon and no_more_compute
+        ),
         "policy_quality_established": False,
-        "missing_quality_control": "Cost-matched shuffled complete depth/width trajectories",
+        "forward_calls": forward_calls, "total_evaluation_seconds": elapsed,
+        "nominal_forward_flops_all_calls": nominal_forward,
         "interpretation": (
-            "Frozen-weight, same-token policy comparison. Cost differences are reported, "
-            "not normalized away; this is not a convergence or equal-wall-time claim."
+            "One held-out window is not proof of policy quality or convergence. "
+            "Joint-versus-shuffle evidence additionally requires forced-original replay parity; "
+            "a parity failure can expose continuation-confidence differences outside the explicit plan. "
+            "All comparisons preserve the recorded precision. Extra observation LM-head work is "
+            "included in probe execution estimates, not silently added to the model's budget ledger."
         ),
     }
+
+
+def assert_disjoint_windows(left: Mapping[str, Any], right: Mapping[str, Any]) -> None:
+    if (
+        left["tensor_window_sha256"] == right["tensor_window_sha256"]
+        or (
+            left["global_token_cursor"] <= right["next_global_token_cursor"]
+            and right["global_token_cursor"] <= left["next_global_token_cursor"]
+        )
+    ):
+        raise ValueError("Training/evaluation windows overlap, including target lookahead")
+
+
+def teacher_plan(
+    config: Metis16Config, attention_mask: Tensor, *, max_depth: int, generator: torch.Generator,
+) -> tuple[Tensor, Tensor]:
+    if not 2 <= max_depth <= config.max_passes:
+        raise ValueError("Teacher max_depth must lie in [2, model.max_passes]")
+    if config.min_routed_k != 1 or not config.max_routed_k >= 4:
+        raise CapabilityError("Teacher exploration requires widths 1..K and first-pass k=4")
+    shape = attention_mask.shape
+    depths = torch.randint(2, max_depth + 1, shape, generator=generator)
+    widths = torch.randint(
+        1, config.max_routed_k + 1,
+        (config.max_passes, config.n_layers, *shape), generator=generator,
+    )
+    widths[0].fill_(4)
+    depths = depths.to(attention_mask.device) * attention_mask
+    widths = widths.to(attention_mask.device)
+    active = torch.arange(config.max_passes, device=depths.device)[:, None, None] < depths
+    widths *= active[:, None]
+    return depths, widths
+
+
+def fit_utility_in_memory(
+    model: Metis16ForCausalLM, curriculum: CurriculumState,
+    batches: Iterable[tuple[TrainingBatch, Mapping[str, Any]]], *,
+    steps: int, seed: int, learning_rate: float, max_depth: int,
+    evaluation_window: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fit only observed-outcome utility, returning aggregate provenance."""
+    if steps <= 0 or not math.isfinite(learning_rate) or learning_rate <= 0:
+        raise ValueError("Utility fitting requires positive steps and learning rate")
+    router = getattr(model, "joint_router", None)
+    if router is None or not callable(getattr(router, "mark_trained", None)):
+        raise CapabilityError("Utility fitting requires joint_router.mark_trained")
+    if any(name not in inspect.signature(model.forward).parameters for name in (
+        "force_routed_k", "return_router_observations",
+    )):
+        raise CapabilityError("Utility teacher mode requires explicit widths and router observations")
+    if not 2 <= max_depth <= model.config.max_passes:
+        raise ValueError("Fit depth exceeds the model's stored architecture")
+    teacher = replace(
+        curriculum, compute_allocation_mode="legacy", routed_k_mode="fixed",
+        fixed_routed_k=4, stochastic_routing=False, max_passes=max_depth,
+        joint_utility_coefficient=1.0,
+    )
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    parameters = list(router.parameters())
+    optimizer = torch.optim.AdamW(parameters, lr=learning_rate, weight_decay=0.0)
+    # Never replay the head's trained_updates buffer from its pre-fit snapshot.
+    body_runtime = FrozenRuntimeState(model, exclude_prefixes=("joint_router.",))
+    body = {name: parameter for name, parameter in model.named_parameters() if not name.startswith("joint_router.")}
+    if any(parameter.grad is not None for parameter in body.values()):
+        raise ValueError("Frozen body must not carry stale gradients into utility fitting")
+    versions = {name: parameter._version for name, parameter in body.items()}
+    updates_before = int(router.trained_updates.item())
+    if updates_before != 0:
+        raise ValueError("Bounded fitting requires a fresh utility head, not silent artifact continuation")
+    windows: list[dict[str, Any]] = []
+    records = []
+    token_count = observed_count = 0
+    depth_hist: Counter = Counter()
+    width_hist: Counter = Counter()
+    nominal_forward = nominal_router_backward = 0.0
+    started = time.perf_counter()
+    iterator = iter(batches)
+    with frozen_model(model, utility_grad=True):
+        for index in range(steps):
+            try:
+                batch, supplied_identity = next(iterator)
+            except StopIteration as exc:
+                raise ValueError("Fewer distinct teacher batches than requested fit steps") from exc
+            actual_identity = identify_batch(batch)
+            for name, value in actual_identity.items():
+                if supplied_identity.get(name) != value:
+                    raise ValueError(f"Teacher window identity mismatch: {name}")
+            assert_disjoint_windows(actual_identity, evaluation_window)
+            for previous in windows:
+                assert_disjoint_windows(actual_identity, previous)
+            windows.append(actual_identity)
+            device = next(model.parameters()).device
+            batch = batch.to(device)
+            depths, widths = teacher_plan(
+                model.config, batch.attention_mask, max_depth=max_depth, generator=generator,
+            )
+            expected_cost = plan_cost(model.config, depths, widths)
+            body_runtime.restore()
+            optimizer.zero_grad(set_to_none=True)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            call_started = time.perf_counter()
+            devices = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
+            with torch.random.fork_rng(devices=devices), torch.enable_grad(), probe_precision_context(model), RoutingCapture(model) as capture:
+                torch.manual_seed(seed + index)
+                output = model(
+                    batch.input_ids, batch.labels, canonical_ids=batch.canonical_ids,
+                    attention_mask=batch.attention_mask, document_ids=batch.document_ids,
+                    reset_mask=batch.reset_mask, curriculum=teacher,
+                    force_depth=depths, force_routed_k=widths,
+                    return_router_observations=True, return_logits=False,
+                )
+                executed = capture.full_widths(output.active_masks)
+                if not torch.equal(output.chosen_depths, depths) or not torch.equal(executed, widths):
+                    raise RuntimeError("Utility teacher did not execute its explicit trajectory")
+                loss = output.auxiliary_losses.get("joint_utility")
+                count = int(output.telemetry.get("joint_utility_observations", 0))
+                if count <= 0 or not output.router_observations:
+                    raise RuntimeError("No actually visited utility observations; refusing an optimizer update")
+                if loss is None or not loss.requires_grad or not bool(torch.isfinite(loss)):
+                    raise RuntimeError("Utility teacher produced no finite differentiable observed-outcome loss")
+                loss.backward()
+                gradient_norm = torch.nn.utils.clip_grad_norm_(
+                    parameters, 1.0, error_if_nonfinite=True,
+                )
+                if not bool(gradient_norm > 0):
+                    raise RuntimeError("Utility update has no nonzero observed-outcome gradient")
+                if any(parameter.grad is not None for parameter in body.values()):
+                    raise RuntimeError("Utility loss leaked gradients into the frozen backbone")
+                optimizer.step()
+                if any(not bool(torch.isfinite(parameter).all()) for parameter in parameters):
+                    raise RuntimeError("Utility optimizer produced nonfinite weights")
+                router.mark_trained()
+            if any(parameter._version != versions[name] for name, parameter in body.items()):
+                raise RuntimeError("Utility fitting changed a frozen body parameter")
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            elapsed = time.perf_counter() - call_started
+            router_forward = float(output.telemetry["joint_router_flops"]) / 3.0
+            supervised_passes = int((output.active_masks & batch.labels.ne(-100)[None]).sum())
+            # Teacher observations project each exit in addition to the ordinary LM loss.
+            extra_exit_forward = 2.0 * model.config.d_model * model.config.vocab_size * supervised_passes
+            forward = expected_cost["nominal_forward_flops"] + router_forward + extra_exit_forward
+            nominal_forward += forward
+            nominal_router_backward += 2.0 * router_forward
+            token_count += batch.non_padding_tokens
+            observed_count += count
+            depth_hist.update(histogram(depths[batch.attention_mask]))
+            width_hist.update(histogram(widths[widths > 0]))
+            records.append({
+                "update": index + 1, "utility_mse": float(loss.detach()),
+                "observed_targets": count, "gradient_norm_before_clipping": float(gradient_norm),
+                "elapsed_seconds": elapsed, "nominal_forward_flops": forward,
+                "nominal_utility_backward_flops": 2.0 * router_forward,
+            })
+            del output, loss, capture
+        optimizer.zero_grad(set_to_none=True)
+        body_runtime.restore()
+    updates = int(router.trained_updates.item()) - updates_before
+    if updates != steps:
+        raise RuntimeError("Utility trained_updates does not match successful optimizer steps")
+    return {
+        "training_windows": windows, "training_seed": seed,
+        "head_initialization_seed": getattr(model, "_routing_probe_initialization_seed", None),
+        "teacher_curriculum": asdict(teacher),
+        "teacher_precision": {
+            "bf16_reference_context": bool(getattr(model, "_routing_probe_bf16_reference", False)),
+            "backend_profile": getattr(model.precision_policy, "requested_profile", None),
+        },
+        "teacher_token_count": token_count, "teacher_forward_calls": steps,
+        "teacher_backward_calls": steps, "teacher_elapsed_seconds": time.perf_counter() - started,
+        "fit_steps": steps, "fit_learning_rate": learning_rate, "fit_max_depth": max_depth,
+        "utility_optimizer": "AdamW", "utility_weight_decay": 0.0,
+        "utility_gradient_clip_norm": 1.0, "observed_target_count": observed_count,
+        "visited_depth_histogram": dict(sorted(depth_hist.items())),
+        "visited_width_histogram": dict(sorted(width_hist.items())),
+        "nominal_teacher_forward_flops": nominal_forward,
+        "nominal_teacher_utility_backward_flops": nominal_router_backward,
+        "teacher_updates": records,
+        "target_interpretation": "Observed visited per-exit CE improvements, not unbiased global counterfactual utility",
+        "unknown_continuation_targets": "unlabeled",
+    }
+
+
+def save_utility_artifact(
+    model: Metis16ForCausalLM, path: Path, fitting: Mapping[str, Any], *,
+    checkpoint_sha256: str, run_identity_sha256: str,
+    base_model_config_sha256: str, source_revision: str,
+) -> dict[str, Any]:
+    router = getattr(model, "joint_router", None)
+    if router is None or int(router.trained_updates.item()) <= 0:
+        raise CapabilityError("Cannot save an untrained utility artifact")
+    allowed_fitting = {
+        "training_windows", "training_seed", "teacher_token_count", "teacher_forward_calls",
+        "teacher_backward_calls", "teacher_elapsed_seconds", "fit_steps", "fit_learning_rate",
+        "fit_max_depth", "utility_optimizer", "utility_weight_decay", "utility_gradient_clip_norm",
+        "observed_target_count", "visited_depth_histogram", "visited_width_histogram",
+        "nominal_teacher_forward_flops", "nominal_teacher_utility_backward_flops",
+        "teacher_updates", "target_interpretation", "unknown_continuation_targets",
+        "head_initialization_seed", "teacher_curriculum", "teacher_precision",
+        "warmup_forward_calls", "warmup_token_count", "warmup_elapsed_seconds",
+        "nominal_warmup_forward_flops", "warmup_window",
+    }
+    if set(fitting) - allowed_fitting:
+        raise ValueError("Utility artifact accepts only whitelisted aggregate fitting metadata")
+    payload = {
+        "schema": UTILITY_SCHEMA,
+        "state_dict": {name: value.detach().cpu().clone() for name, value in router.state_dict().items()},
+        "source_checkpoint_sha256": checkpoint_sha256,
+        "run_identity_sha256": run_identity_sha256,
+        "base_model_config_sha256": base_model_config_sha256,
+        "source_revision": source_revision, **dict(fitting),
+    }
+    for name in ("joint_router_hidden_dim", "max_passes", "n_layers", "max_routed_k"):
+        payload[name] = getattr(model.config, name)
+    validate_utility_provenance(payload, model.config)
+    with path.open("xb") as handle:
+        torch.save(payload, handle)
+    return {**identify_file(path), "schema": UTILITY_SCHEMA, "trained_updates": int(router.trained_updates.item())}
+
+
+def shuffle_plan(
+    depths: Tensor, widths: Tensor, attention_mask: Tensor, *, seed: int,
+    document_ids: Tensor | None = None, supervised_mask: Tensor | None = None,
+) -> tuple[Tensor, Tensor]:
+    """Permute entire trajectories within sequence/document, preserving work."""
+    if depths.shape != attention_mask.shape or widths.shape[2:] != depths.shape:
+        raise ValueError("Shuffle depth/width/mask shapes do not agree")
+    if document_ids is not None and document_ids.shape != depths.shape:
+        raise ValueError("Shuffle document ids have the wrong shape")
+    if supervised_mask is not None and supervised_mask.shape != depths.shape:
+        raise ValueError("Shuffle supervision mask has the wrong shape")
+    shuffled_depths, shuffled_widths = depths.clone(), widths.clone()
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    for batch_index in range(depths.shape[0]):
+        mask = attention_mask[batch_index]
+        docs = document_ids[batch_index] if document_ids is not None else torch.zeros_like(depths[batch_index])
+        if supervised_mask is not None:
+            docs = 2 * docs.long() + supervised_mask[batch_index].long()
+        for document in docs[mask].unique():
+            indices = torch.nonzero(mask & docs.eq(document), as_tuple=False).flatten()
+            order = torch.randperm(indices.numel(), generator=generator).to(indices.device)
+            source = indices[order]
+            shuffled_depths[batch_index, indices] = depths[batch_index, source]
+            shuffled_widths[:, :, batch_index, indices] = widths[:, :, batch_index, source]
+    return shuffled_depths, shuffled_widths
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -896,11 +1403,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sequence-length", type=int, default=512)
     parser.add_argument("--pairs", type=int, default=8)
     parser.add_argument("--repeat-forwards", type=int, default=3)
+    parser.add_argument("--warmup-forwards", type=int, default=1)
     parser.add_argument("--minimum-loss-delta", type=float, default=1e-5)
     parser.add_argument("--seed", type=int, default=16062026)
     parser.add_argument("--policy", choices=("legacy", "joint"), default="legacy")
     parser.add_argument("--precision", choices=("checkpoint", "bf16", "fp8"), default="checkpoint")
     parser.add_argument("--utility-checkpoint", type=Path)
+    parser.add_argument("--fit-steps", type=int, default=0)
+    parser.add_argument("--fit-start-step", type=int, default=7000)
+    parser.add_argument("--fit-learning-rate", type=float, default=0.0003)
+    parser.add_argument("--fit-max-depth", type=int, default=5)
+    parser.add_argument("--joint-caps", type=int, nargs="+", help="Joint evaluation depth caps, e.g. 3 5")
     return parser
 
 
@@ -910,10 +1423,21 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("--pairs cannot be negative")
     if args.repeat_forwards < 2:
         raise ValueError("--repeat-forwards must be at least two")
+    if args.warmup_forwards < 0:
+        raise ValueError("--warmup-forwards cannot be negative")
     if not math.isfinite(args.minimum_loss_delta) or args.minimum_loss_delta < 0:
         raise ValueError("--minimum-loss-delta must be finite and nonnegative")
-    if (args.policy == "joint") != (args.utility_checkpoint is not None):
-        raise CapabilityError("--policy joint requires --utility-checkpoint, and legacy does not use one")
+    if args.fit_steps < 0:
+        raise ValueError("--fit-steps cannot be negative")
+    if args.fit_steps and args.utility_checkpoint is not None:
+        raise ValueError("Fitting starts a fresh head; do not combine it with --utility-checkpoint")
+    joint_requested = args.policy == "joint" or args.fit_steps > 0
+    if joint_requested and not args.fit_steps and args.utility_checkpoint is None:
+        raise CapabilityError("Joint evaluation requires fitted utility weights or --fit-steps")
+    if not joint_requested and (args.utility_checkpoint is not None or args.joint_caps is not None):
+        raise CapabilityError("Utility artifacts and joint caps require joint evaluation")
+    if args.fit_steps and args.fit_start_step <= args.step < args.fit_start_step + args.fit_steps:
+        raise ValueError("Evaluation sampler step overlaps the utility fitting steps")
     source = source_identity()
     checkpoint = args.checkpoint.expanduser().resolve(strict=True)
     checkpoint = checkpoint / "state.pt" if checkpoint.is_dir() else checkpoint
@@ -930,6 +1454,11 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     identity = validate_checkpoint(payload, manifest)
     checkpoint_step = int(payload["step"])
     config = Metis16Config.from_mapping(identity["model"])
+    if args.fit_steps and not 2 <= args.fit_max_depth <= config.max_passes:
+        raise ValueError("--fit-max-depth must lie within the checkpoint architecture")
+    caps = args.joint_caps or [config.max_passes]
+    if len(caps) != len(set(caps)) or any(not 2 <= cap <= config.max_passes for cap in caps):
+        raise ValueError("Joint caps must be distinct integers within [2, model.max_passes]")
     if args.sequence_length > config.final_context_length:
         raise ValueError("Requested probe sequence exceeds the model context limit")
     curriculum = CurriculumState.from_value(identity["curriculum"])
@@ -950,11 +1479,69 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         raise CapabilityError("Probe precision policy supports explicit cpu or cuda devices")
     model, numerical = load_frozen_model(
         config, payload["model"], device=device, precision=precision,
-        enable_joint=args.policy == "joint",
+        enable_joint=joint_requested,
         checkpoint_precision=identity["precision_profile"],
+        initialization_seed=args.seed,
     )
     del payload
     utility = None
+    fitting = None
+    warmups = []
+    warmup_window = None
+    if args.warmup_forwards:
+        if args.fit_steps:
+            warmup_batch, warmup_window = held_out_batch(
+                inventory, identity, checkpoint_step=checkpoint_step, step=args.fit_start_step,
+                sequences=args.sequences, sequence_length=args.sequence_length,
+            )
+            assert_disjoint_windows(warmup_window, sampling)
+        else:
+            warmup_batch, warmup_window = batch, sampling
+        warmup_batch = warmup_batch.to(device)
+        for _ in range(args.warmup_forwards):
+            warmup_result = evaluate_in_memory(
+                model, warmup_batch, curriculum, seed=args.seed, runtime_state=None,
+            )
+            warmups.append(forward_summary(warmup_result, warmup_batch))
+        del warmup_batch, warmup_result
+    warmup_cost = sum(item["cost"]["nominal_forward_flops"] for item in warmups)
+    warmup_elapsed = sum(item["elapsed_seconds_including_hooks_and_gradient"] for item in warmups)
+    if args.fit_steps:
+        def fitting_batches():
+            for fit_step in range(args.fit_start_step, args.fit_start_step + args.fit_steps):
+                yield held_out_batch(
+                    inventory, identity, checkpoint_step=checkpoint_step, step=fit_step,
+                    sequences=args.sequences, sequence_length=args.sequence_length,
+                )
+
+        fitting = fit_utility_in_memory(
+            model, curriculum, fitting_batches(), steps=args.fit_steps, seed=args.seed,
+            learning_rate=args.fit_learning_rate, max_depth=args.fit_max_depth,
+            evaluation_window=sampling,
+        )
+        fitting.update({
+            "warmup_forward_calls": len(warmups),
+            "warmup_token_count": sum(item["non_padding_tokens"] for item in warmups),
+            "warmup_elapsed_seconds": warmup_elapsed,
+            "nominal_warmup_forward_flops": warmup_cost,
+            "warmup_window": warmup_window,
+        })
+        for item in (checkpoint_identity, manifest_identity, release_descriptor):
+            assert_file_unchanged(item)
+        if source_identity() != source:
+            raise RuntimeError("Source changed during utility fitting; refusing to seal the artifact")
+        saved = save_utility_artifact(
+            model, output / "utility.pt", fitting,
+            checkpoint_sha256=checkpoint_identity["sha256"],
+            run_identity_sha256=manifest["run_identity_sha256"],
+            base_model_config_sha256=json_sha256(identity["model"]),
+            source_revision=source["revision"],
+        )
+        utility = load_utility_artifact(
+            model, Path(saved["path"]), checkpoint_sha256=checkpoint_identity["sha256"],
+            run_identity_sha256=manifest["run_identity_sha256"],
+            base_model_config_sha256=json_sha256(identity["model"]), evaluation_window=sampling,
+        )
     if args.utility_checkpoint is not None:
         utility = load_utility_artifact(
             model, args.utility_checkpoint, checkpoint_sha256=checkpoint_identity["sha256"],
@@ -964,27 +1551,44 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         )
     batch = batch.to(device)
     runtime = FrozenRuntimeState(model)
-    legacy = evaluate_in_memory(model, batch, curriculum, seed=args.seed, runtime_state=runtime)
-    legacy_losses = [float(legacy.output.loss.detach())]
-    legacy_elapsed = legacy.elapsed_seconds
-    for _ in range(args.repeat_forwards - 1):
-        repeated = evaluate_in_memory(model, batch, curriculum, seed=args.seed, runtime_state=runtime)
-        if (
-            repeated.cost != legacy.cost
-            or not torch.equal(repeated.widths, legacy.widths)
-            or not torch.equal(repeated.output.chosen_depths, legacy.output.chosen_depths)
-        ):
-            raise RuntimeError("Repeated legacy evaluation changed its actual routing plan")
-        legacy_losses.append(float(repeated.output.loss.detach()))
-        legacy_elapsed += repeated.elapsed_seconds
-    legacy_noise = repeat_noise(legacy_losses, minimum_delta=args.minimum_loss_delta)
+    legacy, legacy_noise = repeated_plan_evaluation(
+        model, batch, curriculum, seed=args.seed, runtime_state=runtime,
+        repeat_forwards=args.repeat_forwards, minimum_loss_delta=args.minimum_loss_delta,
+    )
+    legacy_replay, legacy_replay_noise = repeated_plan_evaluation(
+        model, batch, curriculum, seed=args.seed, runtime_state=runtime,
+        repeat_forwards=args.repeat_forwards, minimum_loss_delta=args.minimum_loss_delta,
+        force_depth=legacy.output.chosen_depths.detach(), force_routed_k=legacy.widths,
+    )
+    legacy_replay_gap = legacy_replay_noise["mean_lm_loss"] - float(legacy.output.loss.detach())
+    legacy_replay_parity = abs(legacy_replay_gap) <= legacy_replay_noise["decisive_absolute_loss_delta_threshold"]
+    uniform_depths = batch.attention_mask.long() * 2
+    uniform_widths = torch.zeros(
+        (config.max_passes, config.n_layers, *batch.input_ids.shape),
+        dtype=torch.long, device=device,
+    )
+    uniform_widths[:2] = batch.attention_mask.long()[None, None] * 4
+    uniform, uniform_noise = repeated_plan_evaluation(
+        model, batch,
+        replace(curriculum, continuation_mode="fixed_max", routed_k_mode="fixed", fixed_routed_k=4, max_passes=2),
+        seed=args.seed, runtime_state=runtime, repeat_forwards=args.repeat_forwards,
+        minimum_loss_delta=args.minimum_loss_delta,
+        force_depth=uniform_depths, force_routed_k=uniform_widths,
+    )
     depth = depth_credit_probe(
         model, batch, curriculum, pairs=args.pairs, seed=args.seed, runtime_state=runtime,
         repeat_forwards=args.repeat_forwards, minimum_loss_delta=args.minimum_loss_delta,
     )
-    joint = joint_policy_probe(
-        model, batch, curriculum, seed=args.seed, runtime_state=runtime, legacy=legacy,
-    ) if args.policy == "joint" else None
+    joint_evaluations = [
+        joint_policy_probe(
+            model, batch, curriculum, seed=args.seed, runtime_state=runtime, legacy=legacy,
+            repeat_forwards=args.repeat_forwards, minimum_loss_delta=args.minimum_loss_delta,
+            max_passes=cap, trained_max_depth=utility.get("fit_max_depth"),
+            legacy_noise=legacy_noise,
+            fixed_reference=uniform, fixed_noise=uniform_noise,
+        ) for cap in caps
+    ] if joint_requested else []
+    joint = joint_evaluations[0] if joint_evaluations else None
     runtime.restore()
     for item in (checkpoint_identity, manifest_identity, release_descriptor):
         assert_file_unchanged(item)
@@ -1000,28 +1604,71 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "training_source_revision": identity.get("source_revision"),
         "release": {"descriptor": release_descriptor, **identity["release"]},
         "utility_checkpoint": utility,
-        "sampling": sampling, "seed": args.seed, "policy": args.policy,
+        "utility_fitting": fitting,
+        "warmup": {
+            "forward_calls": len(warmups), "window": warmup_window,
+            "forwards": warmups, "elapsed_seconds": warmup_elapsed,
+            "nominal_forward_flops": warmup_cost,
+            "before_runtime_snapshots": True,
+            "interpretation": (
+                "Explicitly counted ordinary legacy warm-up before runtime snapshots. Fitting uses "
+                "a training window, never held-out inputs, for this warm-up. Materialized-weight and "
+                "kernel caches may still vary by shape; natural-policy variability remains reported."
+            ),
+        },
+        "sampling": sampling, "seed": args.seed, "policy": "joint" if joint_requested else "legacy",
         "numerical_policy": numerical,
         "precision_changed_from_checkpoint": precision != identity["precision_profile"],
         "legacy": {
             **forward_summary(legacy, batch),
-            "deterministic_repeat_noise": legacy_noise,
-            "total_repeat_evaluation_seconds": legacy_elapsed,
-            "forward_calls": args.repeat_forwards,
+            "mean_natural_policy_lm_loss": legacy_noise["mean_lm_loss"],
+            "natural_policy_variability": legacy_noise,
+            "deterministic_repeat_noise": legacy_replay_noise,
+            "forced_reference": {
+                **forward_summary(legacy_replay, batch),
+                "mean_lm_loss": legacy_replay_noise["mean_lm_loss"],
+                "mean_loss_delta_from_captured_natural": legacy_replay_gap,
+                "matches_captured_natural_within_fixed_plan_noise": legacy_replay_parity,
+            },
+            "total_repeat_evaluation_seconds": (
+                legacy_noise["total_evaluation_seconds"] + legacy_replay_noise["total_evaluation_seconds"]
+            ),
+            "forward_calls": 2 * args.repeat_forwards,
         },
-        "depth_credit": depth, "joint": joint,
+        "depth_credit": depth, "joint": joint, "joint_evaluations": joint_evaluations,
+        "uniform_depth2_k4": {
+            **forward_summary(uniform, batch),
+            "mean_lm_loss": uniform_noise["mean_lm_loss"],
+            "deterministic_repeat_noise": uniform_noise,
+            "forward_calls": uniform_noise["forward_calls"],
+            "interpretation": "Same frozen backbone and precision, uniform depth 2 and k=4; a candidate must beat this control, not merely approximate it.",
+        },
+        "interpretation_checks": {
+            "legacy_captured_plan_reference_parity": legacy_replay_parity,
+            "depth_gradient_reference_parity": depth["gradient_interpretation_valid"],
+            "joint_captured_plan_reference_parity_by_cap": {
+                str(item["max_passes"]): item["forced_original"]["matches_joint_within_numerical_noise"]
+                for item in joint_evaluations
+            },
+            "failed_reference_checks_invalidate_related_gradient_or_policy_alignment_claims": True,
+        },
         "total_wall_seconds_including_loading": time.perf_counter() - started,
-        "forward_calls": args.repeat_forwards + depth["forward_calls"] + int(joint is not None),
-        "autograd_calls": depth["autograd_calls"],
+        "forward_calls": (
+            len(warmups) + 2 * args.repeat_forwards + depth["forward_calls"] + uniform_noise["forward_calls"]
+            + sum(item["forward_calls"] for item in joint_evaluations)
+            + (fitting["teacher_forward_calls"] if fitting else 0)
+        ),
+        "autograd_calls": depth["autograd_calls"] + (fitting["teacher_backward_calls"] if fitting else 0),
         "nominal_forward_flops_all_calls": (
-            args.repeat_forwards * legacy.cost["nominal_forward_flops"] + depth["nominal_forward_flops_all_calls"]
-            + (
-                joint["cost"]["nominal_forward_flops"] + joint["joint_router_flops"] / 3.0
-                if joint is not None else 0
-            )
+            warmup_cost + legacy_noise["nominal_forward_flops_all_calls"] + legacy_replay_noise["nominal_forward_flops_all_calls"]
+            + uniform_noise["nominal_forward_flops_all_calls"]
+            + depth["nominal_forward_flops_all_calls"]
+            + sum(item["nominal_forward_flops_all_calls"] for item in joint_evaluations)
+            + (fitting["nominal_teacher_forward_flops"] if fitting else 0)
         ),
         "limitations": [
-            "No optimizer resume, updates, training samples, tokens, text, or hidden states are persisted.",
+            "No backbone optimizer resume or backbone updates. Only optional utility-head weights and "
+            "aggregate provenance are persisted, never training samples, tokens, text, or hidden states.",
             "Nominal costs use the existing train-FLOP ledger divided by three for forward estimates; "
             "they are not hardware measurements and exclude padding, hashing, hooks, and state replay.",
             "The original configured sequence length is retained for campaign cost accounting; "
