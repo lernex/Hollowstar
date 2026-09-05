@@ -507,6 +507,7 @@ class Metis16Config:
     causal_compute_price: float = 0.0
     terminal_action_critic: bool = False
     terminal_critic_exploration: float = 0.05
+    terminal_reference_bootstrap_steps: int = 0
     # Dual step size for the width and depth budget controllers. Zero keeps the
     # fixed-coefficient penalty exactly as it was, which is what production
     # Praxis and Logos run. Any positive value turns the coefficient above into
@@ -600,6 +601,8 @@ class Metis16Config:
             payload.pop("terminal_action_critic")
             if self.terminal_critic_exploration == 0.05:
                 payload.pop("terminal_critic_exploration")
+        if self.terminal_reference_bootstrap_steps == 0:
+            payload.pop("terminal_reference_bootstrap_steps")
         if not self.joint_compute_router:
             payload.pop("joint_compute_router")
             if self.joint_router_hidden_dim == 128:
@@ -950,6 +953,14 @@ class Metis16Config:
             raise ValueError("terminal_critic_exploration must lie in [0, 1].")
         if self.terminal_action_critic and not self.causal_compute_budget:
             raise ValueError("The terminal-action critic requires causal compute budgeting.")
+        if (
+            isinstance(self.terminal_reference_bootstrap_steps, bool)
+            or not isinstance(self.terminal_reference_bootstrap_steps, int)
+            or self.terminal_reference_bootstrap_steps < 0
+        ):
+            raise ValueError("terminal_reference_bootstrap_steps must be a nonnegative integer.")
+        if self.terminal_reference_bootstrap_steps and not self.terminal_action_critic:
+            raise ValueError("Reference bootstrap requires the terminal-action critic.")
         if (
             isinstance(self.causal_compute_price, bool)
             or not isinstance(self.causal_compute_price, (int, float))

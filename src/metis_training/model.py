@@ -6244,6 +6244,17 @@ class Metis16ForCausalLM(nn.Module):
             raise ValueError("Terminal observations require terminal_action_critic=True.")
         collect_joint_outcomes = joint_mode or return_router_observations or return_terminal_router_observations
         terminal_utility = self.config.terminal_action_critic and collect_joint_outcomes
+        if self.config.terminal_reference_bootstrap_steps and (
+            isinstance(curriculum_state.random_policy_step, bool)
+            or not isinstance(curriculum_state.random_policy_step, int)
+            or curriculum_state.random_policy_step < 0
+        ):
+            raise ValueError("Reference bootstrap requires a nonnegative integer optimizer step.")
+        terminal_reference_bootstrap = (
+            terminal_utility and joint_mode and self.training and effective_passes > 1
+            and self.config.terminal_reference_bootstrap_steps > 0
+            and curriculum_state.random_policy_step < self.config.terminal_reference_bootstrap_steps
+        )
         observed_depth_credit = (
             self.config.observed_depth_credit
             and curriculum_state.continuation_mode in {"adaptive", "budgeted"}
@@ -6995,6 +7006,8 @@ class Metis16ForCausalLM(nn.Module):
                                     + (effective_passes - 1) * sum(costs.expert_costs) * self.config.max_routed_k
                                 ) / costs.reference_per_token
                             ),
+                            reference_bootstrap=terminal_reference_bootstrap,
+                            reference_routed_k=round(self.config.target_mean_routed_k),
                         )
                         if causal_budget:
                             plan = allocate_causal_budget(
@@ -7509,6 +7522,13 @@ class Metis16ForCausalLM(nn.Module):
                     telemetry["terminal_lm_head_reserved_flops"] = (
                         attention_mask.sum(dtype=torch.int64) * costs.head_per_token
                     )
+                    if self.config.terminal_reference_bootstrap_steps:
+                        telemetry["terminal_reference_bootstrap_active"] = final_hidden.new_tensor(
+                            int(terminal_reference_bootstrap), dtype=torch.int64
+                        )
+                        telemetry["terminal_reference_bootstrap_step"] = final_hidden.new_tensor(
+                            curriculum_state.random_policy_step, dtype=torch.int64
+                        )
         if self.config.observed_depth_credit:
             telemetry["observed_depth_credit_enabled"] = final_hidden.new_tensor(
                 int(observed_depth_credit), dtype=torch.long

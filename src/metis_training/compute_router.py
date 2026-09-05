@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from math import prod
+from math import isfinite, log, prod
 from typing import TYPE_CHECKING, Sequence
 
 import torch
@@ -36,7 +36,7 @@ class JointComputeCosts:
 
         reference = replace(
             config, joint_compute_router=False, causal_compute_budget=False,
-            terminal_action_critic=False,
+            terminal_action_critic=False, terminal_reference_bootstrap_steps=0,
         )
         expert = 6 * 3 * config.latent_dim * config.expert_intermediate_dim
         previous = 0
@@ -268,6 +268,10 @@ class JointComputeRouter(nn.Module):
         self.output.metis_precision_role = "router_logits"
         nn.init.zeros_(self.output.weight)
         nn.init.zeros_(self.output.bias)
+        if config.terminal_reference_bootstrap_steps:
+            # A fixed pre-data scale prior avoids treating zero loss as the
+            # initial value of every action. It cannot reveal future labels.
+            nn.init.constant_(self.output.bias[-1:], -log(config.vocab_size))
         self.register_buffer("trained_updates", torch.zeros((), dtype=torch.int64, device=device))
         self.costs = JointComputeCosts.from_config(config)
 
@@ -353,11 +357,38 @@ class JointComputeRouter(nn.Module):
         causal_keys: Tensor | None = None,
         causal_seed: int = 0,
         exploration_price_margin: float = 1.0,
+        reference_bootstrap: bool = False,
+        reference_routed_k: int | None = None,
     ) -> tuple[Tensor, Tensor]:
         if not 0.0 <= exploration <= 1.0:
             raise ValueError("Utility exploration must lie in [0, 1] loss units.")
         depth = prediction.depth_utilities.detach()
         width = prediction.width_utilities.detach()
+        if reference_bootstrap:
+            if not prediction.terminal_values:
+                raise ValueError("Reference bootstrap requires terminal Q values.")
+            if (
+                isinstance(reference_routed_k, bool)
+                or not isinstance(reference_routed_k, int)
+                or not 1 <= reference_routed_k <= width.shape[-1]
+            ):
+                raise ValueError("Reference bootstrap requires a supported integer routed width.")
+            advantage = 2.0 * exploration_price_margin
+            if not isfinite(advantage) or not 0 < advantage <= torch.finfo(depth.dtype).max:
+                raise ValueError("Reference bootstrap price margin must be finite and positive.")
+            if depth.shape[-1] > 1:
+                # These are temporary behavior scores, never regression
+                # targets. Admission may reduce width or halt to pay the
+                # controller; it does not enforce two independent marginals.
+                depth = depth[..., :1].expand_as(depth).clone()
+                depth[..., 1] += advantage
+                choices = torch.arange(1, width.shape[-1] + 1, device=width.device)
+                penalty = advantage / (
+                    2 * width.shape[-2] * max(1, reference_routed_k - 1)
+                )
+                width = (
+                    -penalty * (choices - reference_routed_k).abs()
+                ).to(width.dtype).view(*([1] * (width.ndim - 1)), -1).expand_as(width)
         if exploration:
             if prediction.terminal_values and causal_keys is None:
                 raise ValueError("Terminal-action exploration requires causal token keys.")
