@@ -9,8 +9,8 @@ from unittest.mock import patch
 import yaml
 
 from metis_data17.acquisition import CapacityPending
-from metis_data17.cli import _limits, append_event, init_run, read_events, status
-from metis_data17.common import read_receipt, write_receipt
+from metis_data17.cli import _limits, append_event, download_order_key, init_run, read_events, status
+from metis_data17.common import ObjectSpec, read_receipt, write_receipt
 
 
 class Metis17CliTests(unittest.TestCase):
@@ -75,6 +75,20 @@ class Metis17CliTests(unittest.TestCase):
         path.write_text(json.dumps(row) + "\n")
         with self.assertRaises(RuntimeError):
             list(read_events(path))
+
+    def test_partial_progress_precedes_new_work_without_changing_quality_order(self):
+        def spec(name, priority):
+            return ObjectSpec.create(
+                source_id="source", url=f"https://example.test/{name}", revision="r",
+                relative_key=name, wire_format="parquet", adapter="text", priority=priority,
+                policy={"bootstrap": True},
+            )
+        partial = spec("partial", 10)
+        high = spec("high", 100)
+        low = spec("low", 20)
+        resumable = {partial.object_id}
+        ordered = sorted([low, high, partial], key=lambda item: download_order_key(item, resumable))
+        self.assertEqual(ordered, [partial, high, low])
 
 
 if __name__ == "__main__":

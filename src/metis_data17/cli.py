@@ -175,6 +175,11 @@ def _interface_counters() -> dict[str, int | None]:
     }
 
 
+def download_order_key(spec: ObjectSpec, resumable: set[str]) -> tuple[int, int, str]:
+    lane = 0 if spec.object_id in resumable else (1 if spec.policy.get("bootstrap") else 2)
+    return lane, -spec.priority, spec.object_id
+
+
 def resolve_command(root: Path, *, source_ids: set[str] | None = None) -> dict[str, Any]:
     run = load_run(root)
     results: list[dict[str, Any]] = []
@@ -232,9 +237,13 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
     status_path = root / "status" / f"download-{host}.json"
     baseline = _interface_counters()
     commit = code_commit()
+    budget_path = root / "state" / "intake-budget.json"
+    resumable = set(read_receipt(budget_path)["inflight"]) if budget_path.exists() else set()
     with file_lock(root / "locks" / f"download-daemon-{host}.lock", timeout=2):
         with ThreadPoolExecutor(max_workers=workers or int(settings["workers_per_host"])) as pool:
             while not stop.is_set() or active:
+                if (root / "STOP").exists():
+                    stop.set()
                 for descriptor_path in sorted((root / "catalogue" / "active").glob("*.json")):
                     descriptor = read_receipt(descriptor_path)
                     directory = (root / descriptor["directory"]).resolve()
@@ -255,11 +264,7 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                             specs[spec.object_id] = spec
                             if spec.object_id not in committed:
                                 group = str(spec.policy.get("admission_group", spec.source_id))
-                                heapq.heappush(pending.setdefault(group, []), (
-                                    0 if spec.policy.get("bootstrap") else 1,
-                                    -spec.priority,
-                                    spec.object_id,
-                                ))
+                                heapq.heappush(pending.setdefault(group, []), download_order_key(spec, resumable))
                         loaded_pages.add(page)
                 limits = _limits(root)
                 new_stamp = (root / "limits.json").stat().st_mtime_ns
@@ -274,7 +279,7 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                         receipt = future.result()
                     except CapacityPending:
                         paused_capacity = True
-                        heapq.heappush(pending.setdefault(group, []), (0 if spec.policy.get("bootstrap") else 1, -spec.priority, spec.object_id))
+                        heapq.heappush(pending.setdefault(group, []), download_order_key(spec, resumable))
                     except PermissionError:
                         blocked_sources.add(spec.source_id)
                         append_event(root, f"download-errors/{host}", {
@@ -282,7 +287,8 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                         })
                     except (DownloadFailure, TimeoutError, OSError) as exc:
                         retry_at[spec.object_id] = time.monotonic() + 120
-                        heapq.heappush(pending.setdefault(group, []), (0 if spec.policy.get("bootstrap") else 1, -spec.priority, spec.object_id))
+                        resumable.add(spec.object_id)
+                        heapq.heappush(pending.setdefault(group, []), download_order_key(spec, resumable))
                         append_event(root, f"download-errors/{host}", {
                             "object_id": spec.object_id, "source_id": spec.source_id, **safe_error(exc),
                         })
@@ -340,7 +346,9 @@ def download_service(root: Path, *, workers: int | None = None) -> None:
                     "pid": os.getpid(),
                     "code_commit": commit,
                     "updated_at": utc_now(),
-                    "status": "capacity_pending" if paused_capacity else ("downloading" if active else "waiting_for_catalogue_or_admission"),
+                    "status": "downloading" if active else ("capacity_pending" if paused_capacity else "waiting_for_catalogue_or_admission"),
+                    "intake_paused_for_capacity": paused_capacity,
+                    "worker_limit": workers or int(settings["workers_per_host"]),
                     "active_objects": [item.object_id for item in active.values()],
                     "catalogued_objects": len(specs),
                     "completed_objects": len(committed),
