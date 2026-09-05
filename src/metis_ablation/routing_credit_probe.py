@@ -312,6 +312,7 @@ def plan_cost(
 
     Causal fixed controls use one terminal head; outcome policies pay at each
     active pass. Identical depth/width plans therefore need an explicit head regime.
+    Terminal-action critics instead prepay one head outside all pass costs.
     """
     if widths.shape != (config.max_passes, config.n_layers, *depths.shape):
         raise ValueError("Widths do not match the model's full plan geometry")
@@ -368,7 +369,11 @@ def plan_cost(
         histograms.append([histogram(widths[p, layer][active]) for layer in range(config.n_layers)])
     tokens = int((depths > 0).sum())
     token_passes = int(depths.sum())
-    if costs is not None and terminal_only:
+    prepaid_terminal = costs is not None and bool(getattr(costs, "terminal_head_only", False))
+    if prepaid_terminal:
+        terminal_only = True
+        modeled += tokens * costs.head_per_token
+    elif costs is not None and terminal_only:
         modeled -= (token_passes - tokens) * costs.head_per_token
     result = {
         "nominal_train_flops": modeled,
@@ -385,6 +390,10 @@ def plan_cost(
             "accounting_basis": "causal_shared_cost_ledger",
             "terminal_only_head": terminal_only,
             "modeled_lm_head_tokens": tokens if terminal_only else token_passes,
+            "head_cost_mode": (
+                "prepaid_terminal" if prepaid_terminal else
+                "terminal_deduction" if terminal_only else "per_active_pass"
+            ),
             "removed_legacy_policy_train_flops": token_passes * costs.removed_policy_per_pass,
             "critic_included": False,
         })
@@ -396,8 +405,10 @@ def _terminal_only_cost(
 ) -> bool:
     return bool(
         getattr(config, "causal_compute_budget", False)
-        and curriculum.compute_allocation_mode != "joint"
-        and not return_router_observations
+        and (
+            getattr(config, "terminal_action_critic", False)
+            or (curriculum.compute_allocation_mode != "joint" and not return_router_observations)
+        )
     )
 
 

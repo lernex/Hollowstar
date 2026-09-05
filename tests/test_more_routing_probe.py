@@ -560,6 +560,70 @@ class CausalProbeCostTests(unittest.TestCase):
         self.assertEqual(forward_summary(result, self.batch)["nominal_probe_forward_flops"], ledger / 3.0)
 
 
+    @unittest.skipUnless(
+        "terminal_action_critic" in Metis16Config.__dataclass_fields__,
+        "Terminal critic is unavailable",
+    )
+    def test_terminal_plan_prepays_one_head_without_double_subtraction(self):
+        config = replace(self.config, terminal_action_critic=True)
+        costs = type(self.costs).from_config(config)
+        depths = self.batch.attention_mask.long() * 2
+        widths = fixed_widths(config, depths)
+        inferred = plan_cost(config, depths, widths)
+        fixed = plan_cost(config, depths, widths, terminal_only=True)
+        self.assertEqual(inferred, fixed)
+        self.assertEqual(fixed["nominal_train_flops"], self.batch.non_padding_tokens * costs.reference_per_token)
+        self.assertEqual(fixed["modeled_lm_head_tokens"], self.batch.non_padding_tokens)
+        self.assertEqual(fixed["head_cost_mode"], "prepaid_terminal")
+        self.assertTrue(fixed["terminal_only_head"])
+
+    @unittest.skipUnless(
+        "terminal_action_critic" in Metis16Config.__dataclass_fields__,
+        "Terminal critic is unavailable",
+    )
+    def test_terminal_fixed_rerouted_and_frozen_quality_match_model_cost(self):
+        config = replace(self.config, terminal_action_critic=True)
+        for pathway in ("per_pass", "frozen"):
+            with self.subTest(pathway=pathway):
+                model = Metis16ForCausalLM(config).eval()
+                result, statistics = repeated_plan_evaluation(
+                    model, self.batch, replace(self.fixed, pathway_mode=pathway),
+                    seed=13, runtime_state=FrozenRuntimeState(model),
+                    repeat_forwards=2, minimum_loss_delta=1e-5,
+                )
+                ledger = int(result.output.telemetry["joint_model_flops"])
+                self.assertEqual(int(result.output.telemetry["joint_router_flops"]), 0)
+                self.assertEqual(result.cost["nominal_train_flops"], ledger)
+                self.assertEqual(result.cost["head_cost_mode"], "prepaid_terminal")
+                self.assertEqual(statistics["nominal_forward_flops_all_calls"], 2 * ledger / 3.0)
+
+    @unittest.skipUnless(
+        "terminal_action_critic" in Metis16Config.__dataclass_fields__,
+        "Terminal critic is unavailable",
+    )
+    def test_terminal_joint_quality_uses_one_head_even_with_joint_curriculum(self):
+        config = replace(self.config, terminal_action_critic=True)
+        model = Metis16ForCausalLM(config).eval()
+        with torch.no_grad():
+            model.joint_router.output.bias[1:3].fill_(2.0)
+        joint = replace(
+            self.fixed, compute_allocation_mode="joint", continuation_mode="budgeted",
+            routed_k_mode="budgeted", max_passes=3, allow_untrained_joint_router=True,
+        )
+        result, statistics = repeated_plan_evaluation(
+            model, self.batch, joint, seed=13, runtime_state=FrozenRuntimeState(model),
+            repeat_forwards=2, minimum_loss_delta=1e-5,
+        )
+        ledger = int(result.output.telemetry["joint_model_flops"])
+        critic = int(result.output.telemetry["joint_router_flops"])
+        self.assertGreater(critic, 0)
+        self.assertEqual(result.cost["nominal_train_flops"] + critic, ledger)
+        self.assertTrue(result.cost["terminal_only_head"])
+        self.assertEqual(result.cost["modeled_lm_head_tokens"], self.batch.non_padding_tokens)
+        self.assertEqual(statistics["nominal_forward_flops_all_calls"], 2 * ledger / 3.0)
+        self.assertEqual(forward_summary(result, self.batch)["nominal_probe_forward_flops"], ledger / 3.0)
+
+
 class TinyModelProbeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
