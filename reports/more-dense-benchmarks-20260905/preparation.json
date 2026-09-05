@@ -1,0 +1,1694 @@
+{
+  "benchmarks": {
+    "arc_challenge": {
+      "evaluation_examples": 1172,
+      "leaf_tasks": [
+        "arc_challenge"
+      ]
+    },
+    "arc_easy": {
+      "evaluation_examples": 2376,
+      "leaf_tasks": [
+        "arc_easy"
+      ]
+    },
+    "boolq": {
+      "evaluation_examples": 3270,
+      "leaf_tasks": [
+        "boolq"
+      ]
+    },
+    "hellaswag": {
+      "evaluation_examples": 10042,
+      "leaf_tasks": [
+        "hellaswag"
+      ]
+    },
+    "lambada_openai": {
+      "evaluation_examples": 5153,
+      "leaf_tasks": [
+        "lambada_openai"
+      ]
+    },
+    "mmlu": {
+      "evaluation_examples": 14042,
+      "leaf_tasks": [
+        "mmlu_abstract_algebra",
+        "mmlu_anatomy",
+        "mmlu_astronomy",
+        "mmlu_business_ethics",
+        "mmlu_clinical_knowledge",
+        "mmlu_college_biology",
+        "mmlu_college_chemistry",
+        "mmlu_college_computer_science",
+        "mmlu_college_mathematics",
+        "mmlu_college_medicine",
+        "mmlu_college_physics",
+        "mmlu_computer_security",
+        "mmlu_conceptual_physics",
+        "mmlu_econometrics",
+        "mmlu_electrical_engineering",
+        "mmlu_elementary_mathematics",
+        "mmlu_formal_logic",
+        "mmlu_global_facts",
+        "mmlu_high_school_biology",
+        "mmlu_high_school_chemistry",
+        "mmlu_high_school_computer_science",
+        "mmlu_high_school_european_history",
+        "mmlu_high_school_geography",
+        "mmlu_high_school_government_and_politics",
+        "mmlu_high_school_macroeconomics",
+        "mmlu_high_school_mathematics",
+        "mmlu_high_school_microeconomics",
+        "mmlu_high_school_physics",
+        "mmlu_high_school_psychology",
+        "mmlu_high_school_statistics",
+        "mmlu_high_school_us_history",
+        "mmlu_high_school_world_history",
+        "mmlu_human_aging",
+        "mmlu_human_sexuality",
+        "mmlu_international_law",
+        "mmlu_jurisprudence",
+        "mmlu_logical_fallacies",
+        "mmlu_machine_learning",
+        "mmlu_management",
+        "mmlu_marketing",
+        "mmlu_medical_genetics",
+        "mmlu_miscellaneous",
+        "mmlu_moral_disputes",
+        "mmlu_moral_scenarios",
+        "mmlu_nutrition",
+        "mmlu_philosophy",
+        "mmlu_prehistory",
+        "mmlu_professional_accounting",
+        "mmlu_professional_law",
+        "mmlu_professional_medicine",
+        "mmlu_professional_psychology",
+        "mmlu_public_relations",
+        "mmlu_security_studies",
+        "mmlu_sociology",
+        "mmlu_us_foreign_policy",
+        "mmlu_virology",
+        "mmlu_world_religions"
+      ]
+    },
+    "more_mmlu_pro_mc": {
+      "evaluation_examples": 12032,
+      "leaf_tasks": [
+        "more_mmlu_pro_mc_biology",
+        "more_mmlu_pro_mc_business",
+        "more_mmlu_pro_mc_chemistry",
+        "more_mmlu_pro_mc_computer_science",
+        "more_mmlu_pro_mc_economics",
+        "more_mmlu_pro_mc_engineering",
+        "more_mmlu_pro_mc_health",
+        "more_mmlu_pro_mc_history",
+        "more_mmlu_pro_mc_law",
+        "more_mmlu_pro_mc_math",
+        "more_mmlu_pro_mc_other",
+        "more_mmlu_pro_mc_philosophy",
+        "more_mmlu_pro_mc_physics",
+        "more_mmlu_pro_mc_psychology"
+      ]
+    },
+    "openbookqa": {
+      "evaluation_examples": 500,
+      "leaf_tasks": [
+        "openbookqa"
+      ]
+    },
+    "piqa": {
+      "evaluation_examples": 1838,
+      "leaf_tasks": [
+        "piqa"
+      ]
+    },
+    "winogrande": {
+      "evaluation_examples": 1267,
+      "leaf_tasks": [
+        "winogrande"
+      ]
+    }
+  },
+  "cache_directory": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/huggingface",
+  "dataset_revisions": {
+    "EleutherAI/lambada_openai": "900124bf3b8235c6daf21033af9948b3f07346c4",
+    "Rowan/hellaswag": "218ec52e09a7e7462a5400043bb9a69a41d06b76",
+    "TIGER-Lab/MMLU-Pro": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+    "allenai/ai2_arc": "210d026faf9955653af8916fad021475a3f00453",
+    "allenai/openbookqa": "388097ea7776314e93a529163e0fea805b8a6454",
+    "allenai/winogrande": "01e74176c63542e6b0bcb004dcdea22d94fb67b5",
+    "aps/super_glue": "3de24cf8022e94f4ee4b9d55a6f539891524d646",
+    "baber/piqa": "142f6d7367fd9877f0fb3b5734ea6a545f54cdd1",
+    "cais/mmlu": "c30699e8356da336a370243923dbaf21066bb9fe"
+  },
+  "fewshot_seed": 1234,
+  "harness_version": "0.4.13",
+  "max_length": 4096,
+  "overflow_requests": 0,
+  "prepared_at_utc": "2026-09-05T17:09:03.687882+00:00",
+  "schema": "more.benchmark-preparation/v1",
+  "source_revision": "515edaf47db8e7c13e24a1712c6a00d89ca47b4c",
+  "status": "ready",
+  "suite_sha256": "26c30e448cbe93760702455305ff0fca5b73887643fc27463d8e03e6cb9e44af",
+  "tasks": {
+    "arc_challenge": {
+      "benchmark": "arc_challenge",
+      "dataset": "allenai/ai2_arc",
+      "dataset_config": "ARC-Challenge",
+      "dataset_revision": "210d026faf9955653af8916fad021475a3f00453",
+      "evaluation_examples": 1172,
+      "evaluation_fingerprint": "a4361c3f3e560fcd",
+      "max_model_input_tokens": 171,
+      "num_fewshot": 0,
+      "overflow_requests": 0,
+      "request_sha256": "c705e2f019d2d14ec4378e14219359f02e3eba0e2029c4af85fc861a92e1d1a9",
+      "requests": 4687,
+      "split_fingerprints": {
+        "test": "a4361c3f3e560fcd",
+        "train": "4cad81c53cd88966",
+        "validation": "7ad52fe9b4847f33"
+      }
+    },
+    "arc_easy": {
+      "benchmark": "arc_easy",
+      "dataset": "allenai/ai2_arc",
+      "dataset_config": "ARC-Easy",
+      "dataset_revision": "210d026faf9955653af8916fad021475a3f00453",
+      "evaluation_examples": 2376,
+      "evaluation_fingerprint": "b019ca21ba59e1f3",
+      "max_model_input_tokens": 160,
+      "num_fewshot": 0,
+      "overflow_requests": 0,
+      "request_sha256": "ce61d9c2bb6bcb8146564a06d2daf9e12af93379c9c0b8da2446afdacc62dea7",
+      "requests": 9501,
+      "split_fingerprints": {
+        "test": "b019ca21ba59e1f3",
+        "train": "3f0efa3624a04562",
+        "validation": "85bbde565a00cd05"
+      }
+    },
+    "boolq": {
+      "benchmark": "boolq",
+      "dataset": "aps/super_glue",
+      "dataset_config": "boolq",
+      "dataset_revision": "3de24cf8022e94f4ee4b9d55a6f539891524d646",
+      "evaluation_examples": 3270,
+      "evaluation_fingerprint": "3465575e190d308f",
+      "max_model_input_tokens": 1084,
+      "num_fewshot": 0,
+      "overflow_requests": 0,
+      "request_sha256": "16c70fcd9415b902b3d359c1f699b2ef2899161066e6cb60f1ddbbdc50604774",
+      "requests": 6540,
+      "split_fingerprints": {
+        "test": "395e21f9d993dfe0",
+        "train": "b185bde8d81835b3",
+        "validation": "3465575e190d308f"
+      }
+    },
+    "hellaswag": {
+      "benchmark": "hellaswag",
+      "dataset": "Rowan/hellaswag",
+      "dataset_config": null,
+      "dataset_revision": "218ec52e09a7e7462a5400043bb9a69a41d06b76",
+      "evaluation_examples": 10042,
+      "evaluation_fingerprint": "b783f852cb5ac819",
+      "max_model_input_tokens": 150,
+      "num_fewshot": 0,
+      "overflow_requests": 0,
+      "request_sha256": "935129310a17b932bdbde40fea2714380357deddc960bad652e3c647b5edd360",
+      "requests": 40168,
+      "split_fingerprints": {
+        "test": "ade68387409a89dc",
+        "train": "5c5bea5996a5827b",
+        "validation": "71a62ba9d49be089"
+      }
+    },
+    "lambada_openai": {
+      "benchmark": "lambada_openai",
+      "dataset": "EleutherAI/lambada_openai",
+      "dataset_config": "default",
+      "dataset_revision": "900124bf3b8235c6daf21033af9948b3f07346c4",
+      "evaluation_examples": 5153,
+      "evaluation_fingerprint": "b7a20cd35991215a",
+      "max_model_input_tokens": 230,
+      "num_fewshot": 0,
+      "overflow_requests": 0,
+      "request_sha256": "d13a2ff4a229d7f5968ab64a7de1811d307d3b80a240440a22b30184727a18a7",
+      "requests": 5153,
+      "split_fingerprints": {
+        "test": "b7a20cd35991215a"
+      }
+    },
+    "mmlu_abstract_algebra": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "abstract_algebra",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 100,
+      "evaluation_fingerprint": "a405e35a20e96c3e",
+      "max_model_input_tokens": 391,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "49edab81e741ae3d9df52167f79f55ca2dfba7edae1eeafc775fda28f01fc548",
+      "requests": 400,
+      "split_fingerprints": {
+        "dev": "b1bb87f92915b281",
+        "test": "a405e35a20e96c3e",
+        "validation": "d1b279b9e9eca438"
+      }
+    },
+    "mmlu_anatomy": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "anatomy",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 135,
+      "evaluation_fingerprint": "f5316a25c7cd3834",
+      "max_model_input_tokens": 403,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "f8fb28cd3befb520d3a2a506553da2b8c76a92a9d6d310315ceaa4e610b6b90b",
+      "requests": 540,
+      "split_fingerprints": {
+        "dev": "0334465adb519fff",
+        "test": "f5316a25c7cd3834",
+        "validation": "67d1d415924b0d58"
+      }
+    },
+    "mmlu_astronomy": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "astronomy",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 152,
+      "evaluation_fingerprint": "a9271288c1c8608a",
+      "max_model_input_tokens": 704,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "e68353a8385977a7e0f8d8d9f6d0bd0a89f12917c0e320b358096bcdfdbeadfd",
+      "requests": 608,
+      "split_fingerprints": {
+        "dev": "2161b724e41707ef",
+        "test": "a9271288c1c8608a",
+        "validation": "11823ae9639bc8ef"
+      }
+    },
+    "mmlu_business_ethics": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "business_ethics",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 100,
+      "evaluation_fingerprint": "73d48c7e397703f2",
+      "max_model_input_tokens": 615,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "efc030fd5bd52aa0ddc0ccedaea7a84c1e4f942d4a8161cd68aeba9d4ea3e62b",
+      "requests": 400,
+      "split_fingerprints": {
+        "dev": "a67b9c21c9b987c0",
+        "test": "73d48c7e397703f2",
+        "validation": "cc5ce239a24d25e1"
+      }
+    },
+    "mmlu_clinical_knowledge": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "clinical_knowledge",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 265,
+      "evaluation_fingerprint": "52dba1b9a7a1c715",
+      "max_model_input_tokens": 480,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "4be02d9cdf60baff3d52f1c6a90f50b5a50a9ff2ab72030a16d518286fc3fafd",
+      "requests": 1060,
+      "split_fingerprints": {
+        "dev": "c71659d34d450a20",
+        "test": "52dba1b9a7a1c715",
+        "validation": "92a35d7dd3ff5003"
+      }
+    },
+    "mmlu_college_biology": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "college_biology",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 144,
+      "evaluation_fingerprint": "f481f714da28f58e",
+      "max_model_input_tokens": 598,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "6a2bc76f7cfcece7aea59a548fe4f71f2fdc4d17ab83a4354fff1a5fe2e3f348",
+      "requests": 576,
+      "split_fingerprints": {
+        "dev": "a9c300cf1a5b5925",
+        "test": "f481f714da28f58e",
+        "validation": "b8e1f2ae97e320c1"
+      }
+    },
+    "mmlu_college_chemistry": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "college_chemistry",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 100,
+      "evaluation_fingerprint": "c44cc25bbe4aa152",
+      "max_model_input_tokens": 638,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "aae6d9a549396419d00de937f50934667e655f537caa3bea3f8d4d7c5bee5c72",
+      "requests": 400,
+      "split_fingerprints": {
+        "dev": "855f0ed77badaa16",
+        "test": "c44cc25bbe4aa152",
+        "validation": "769b5ee20970e8fd"
+      }
+    },
+    "mmlu_college_computer_science": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "college_computer_science",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 100,
+      "evaluation_fingerprint": "17407d242be5fce7",
+      "max_model_input_tokens": 963,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "5872f50c91c2344f19d92c61fc12d1c62170301b28cd279d3f17aacb06bec084",
+      "requests": 400,
+      "split_fingerprints": {
+        "dev": "a6d2bb4faeca1df1",
+        "test": "17407d242be5fce7",
+        "validation": "6c6e58c6d350fa70"
+      }
+    },
+    "mmlu_college_mathematics": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "college_mathematics",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 100,
+      "evaluation_fingerprint": "cc8e8f1e82542ff9",
+      "max_model_input_tokens": 675,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "c2acd8d771c24eae5463842dab3c0f072eb8cf1eccdb8e914b2c2cddf422bdaa",
+      "requests": 400,
+      "split_fingerprints": {
+        "dev": "1d559905775ea869",
+        "test": "cc8e8f1e82542ff9",
+        "validation": "cba8387ecabd9e49"
+      }
+    },
+    "mmlu_college_medicine": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "college_medicine",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 173,
+      "evaluation_fingerprint": "c9c5b9e4534c3ad9",
+      "max_model_input_tokens": 1379,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "cd5f47b1f6aa3533f31a6b1913458e830ab7482763b0eec4c775dbd65d2fa3da",
+      "requests": 692,
+      "split_fingerprints": {
+        "dev": "7640c1e675aa0691",
+        "test": "c9c5b9e4534c3ad9",
+        "validation": "08ca707fb62c5ebb"
+      }
+    },
+    "mmlu_college_physics": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "college_physics",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 102,
+      "evaluation_fingerprint": "661d2023229857f2",
+      "max_model_input_tokens": 522,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "7846f32e5037e23a9ad1bd9f63b81f63903fb2b17f531e86926c9299c09527c4",
+      "requests": 408,
+      "split_fingerprints": {
+        "dev": "9ebc0dd0a7927857",
+        "test": "661d2023229857f2",
+        "validation": "048a609bded8043c"
+      }
+    },
+    "mmlu_computer_security": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "computer_security",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 100,
+      "evaluation_fingerprint": "c00551a55138390b",
+      "max_model_input_tokens": 556,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "75757001eac02719243f7e95b9812f86e9b84bdd916c0cd44ae5f23e035d9cc1",
+      "requests": 400,
+      "split_fingerprints": {
+        "dev": "c1147324c78ee7b0",
+        "test": "c00551a55138390b",
+        "validation": "31f38e8a68879b3b"
+      }
+    },
+    "mmlu_conceptual_physics": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "conceptual_physics",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 235,
+      "evaluation_fingerprint": "d9d38a5e9279b6ad",
+      "max_model_input_tokens": 347,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "80e73187ebdd047e144134acdad48369e2d1985b86725ee765d7519a0ff8169f",
+      "requests": 940,
+      "split_fingerprints": {
+        "dev": "388700e5ed58bc65",
+        "test": "d9d38a5e9279b6ad",
+        "validation": "691e98abd1c692ac"
+      }
+    },
+    "mmlu_econometrics": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "econometrics",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 114,
+      "evaluation_fingerprint": "a054399942377de0",
+      "max_model_input_tokens": 709,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "17b17d8535b33426b30154891d8d7a0ff88113280ec8fc0c2e6bfb460bfcb195",
+      "requests": 456,
+      "split_fingerprints": {
+        "dev": "bb4179396be05709",
+        "test": "a054399942377de0",
+        "validation": "1c877069bb1b7390"
+      }
+    },
+    "mmlu_electrical_engineering": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "electrical_engineering",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 145,
+      "evaluation_fingerprint": "7f22056f089182dc",
+      "max_model_input_tokens": 445,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "99c01b956c794d8dab126ffb0f00f994bb5416ee4d5fdd6983486df7d68bd57f",
+      "requests": 580,
+      "split_fingerprints": {
+        "dev": "581dd5a3a80e41e6",
+        "test": "7f22056f089182dc",
+        "validation": "a8331763192a9248"
+      }
+    },
+    "mmlu_elementary_mathematics": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "elementary_mathematics",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 378,
+      "evaluation_fingerprint": "ed1a2da884ddd4a4",
+      "max_model_input_tokens": 607,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "8cd66027bb8f37138405ffa0e2a9df2388eb3014a661857b5c96b56c84502742",
+      "requests": 1512,
+      "split_fingerprints": {
+        "dev": "7d6f5ed81ac00958",
+        "test": "ed1a2da884ddd4a4",
+        "validation": "c062b0a9c316675f"
+      }
+    },
+    "mmlu_formal_logic": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "formal_logic",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 126,
+      "evaluation_fingerprint": "6f88a8a590d6acc9",
+      "max_model_input_tokens": 761,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "2c5f0c0199e08dfc27df33f37571f5690fd4672ed2fed2f06fc1128623d93c7a",
+      "requests": 504,
+      "split_fingerprints": {
+        "dev": "1868504ceacd49ca",
+        "test": "6f88a8a590d6acc9",
+        "validation": "beab80593ce94b26"
+      }
+    },
+    "mmlu_global_facts": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "global_facts",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 100,
+      "evaluation_fingerprint": "36088c2f9bdfb126",
+      "max_model_input_tokens": 465,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "edc5f6b0b3d88dafd187853953fc4ad7a2a697a5955e8b485b36b685416c27f4",
+      "requests": 400,
+      "split_fingerprints": {
+        "dev": "34f433f4154e2a79",
+        "test": "36088c2f9bdfb126",
+        "validation": "820e7489b27bb201"
+      }
+    },
+    "mmlu_high_school_biology": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_biology",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 310,
+      "evaluation_fingerprint": "75b4e56cd1a20317",
+      "max_model_input_tokens": 627,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "e6c38da791bdcaca888ab6cb73dbe4e2766e1bcbe7704a1617aaeb1d125984f2",
+      "requests": 1240,
+      "split_fingerprints": {
+        "dev": "1ec9920e5764bafa",
+        "test": "75b4e56cd1a20317",
+        "validation": "52bb58f1073d3a81"
+      }
+    },
+    "mmlu_high_school_chemistry": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_chemistry",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 203,
+      "evaluation_fingerprint": "20a956b6a2569eb1",
+      "max_model_input_tokens": 586,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "e4abd06d77f323d61d8dd322026d9be6fa6b401affadf116008cded878729426",
+      "requests": 812,
+      "split_fingerprints": {
+        "dev": "798a91f155452499",
+        "test": "20a956b6a2569eb1",
+        "validation": "a5b6cddd11ec93a4"
+      }
+    },
+    "mmlu_high_school_computer_science": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_computer_science",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 100,
+      "evaluation_fingerprint": "a1b962b5b71142b8",
+      "max_model_input_tokens": 1206,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "f0f12de2d2bb4f91de0e87c802426f088e98a9bcdaacc7842dfee7ad2ce5012d",
+      "requests": 400,
+      "split_fingerprints": {
+        "dev": "7ccb6c680180f2cb",
+        "test": "a1b962b5b71142b8",
+        "validation": "e5e526a43ddffb7d"
+      }
+    },
+    "mmlu_high_school_european_history": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_european_history",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 165,
+      "evaluation_fingerprint": "575860884e6c1a8a",
+      "max_model_input_tokens": 3155,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "b5a5df5b4cf8097a98e7842ade52677df9c5472affb167253a7a7a3ebc5c4be4",
+      "requests": 660,
+      "split_fingerprints": {
+        "dev": "0a1573e4bf9ded85",
+        "test": "575860884e6c1a8a",
+        "validation": "d8a9f763198bc7ff"
+      }
+    },
+    "mmlu_high_school_geography": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_geography",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 198,
+      "evaluation_fingerprint": "1af64fe7fa5c3d75",
+      "max_model_input_tokens": 469,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "73750972210a4776850f32040cea84737638067423ee952566a403bc02c38ed2",
+      "requests": 792,
+      "split_fingerprints": {
+        "dev": "51feb49490b26511",
+        "test": "1af64fe7fa5c3d75",
+        "validation": "6fe0054db66b3a0e"
+      }
+    },
+    "mmlu_high_school_government_and_politics": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_government_and_politics",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 193,
+      "evaluation_fingerprint": "22e5ed8bb3d3e3d7",
+      "max_model_input_tokens": 572,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "2544c390112e0dcd428e9ea3aae1dcf502c43b84a8c2bae595b1a89315cdd676",
+      "requests": 772,
+      "split_fingerprints": {
+        "dev": "980b4eaeb104cc14",
+        "test": "22e5ed8bb3d3e3d7",
+        "validation": "8b81abd5b1979afe"
+      }
+    },
+    "mmlu_high_school_macroeconomics": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_macroeconomics",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 390,
+      "evaluation_fingerprint": "b0e7889f1b1eda45",
+      "max_model_input_tokens": 453,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "679519e71dedfdf364f58c82d9f2446c3431c8b6869054d5beab208b562faefc",
+      "requests": 1560,
+      "split_fingerprints": {
+        "dev": "1acb0d46b0b2bfe4",
+        "test": "b0e7889f1b1eda45",
+        "validation": "6cd80d62b59a7169"
+      }
+    },
+    "mmlu_high_school_mathematics": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_mathematics",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 270,
+      "evaluation_fingerprint": "da582b35c4bf1d03",
+      "max_model_input_tokens": 604,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "f186f474a646b000532036f7c5be3bc78960623f96dd5f5f36c31026fd895cd8",
+      "requests": 1080,
+      "split_fingerprints": {
+        "dev": "3f56b8c66af81941",
+        "test": "da582b35c4bf1d03",
+        "validation": "3172196e264896cf"
+      }
+    },
+    "mmlu_high_school_microeconomics": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_microeconomics",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 238,
+      "evaluation_fingerprint": "536acdd7215504fe",
+      "max_model_input_tokens": 498,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "e86be53c074a7ccd410ad8850144e0552bc36e05dbafd2fb632a683891d932a7",
+      "requests": 952,
+      "split_fingerprints": {
+        "dev": "4bdd4236afa76e51",
+        "test": "536acdd7215504fe",
+        "validation": "949566aa0383de9c"
+      }
+    },
+    "mmlu_high_school_physics": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_physics",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 151,
+      "evaluation_fingerprint": "dad4eca037a60c47",
+      "max_model_input_tokens": 719,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "acbc195a5155c8f5a73ed2ec51083bf2ae4900c0a3fd6455aa0327e352cca183",
+      "requests": 604,
+      "split_fingerprints": {
+        "dev": "8aa813aea7a66fcb",
+        "test": "dad4eca037a60c47",
+        "validation": "5028958f067ac2d7"
+      }
+    },
+    "mmlu_high_school_psychology": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_psychology",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 545,
+      "evaluation_fingerprint": "4334e2718bb3a40b",
+      "max_model_input_tokens": 694,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "11e5998fe9f918f075671bc8c09793d559acc9644d87d1c9fc92f7fcb2daa83f",
+      "requests": 2180,
+      "split_fingerprints": {
+        "dev": "676255442c9c92cb",
+        "test": "4334e2718bb3a40b",
+        "validation": "80489f25b904a5fb"
+      }
+    },
+    "mmlu_high_school_statistics": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_statistics",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 216,
+      "evaluation_fingerprint": "b8e9ee7d04c1f3f8",
+      "max_model_input_tokens": 1035,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "804a4257b9db11eadb9fd767289a93bda8c2f41b07970a190f70edb54f5faca4",
+      "requests": 864,
+      "split_fingerprints": {
+        "dev": "532311f4fb7130d4",
+        "test": "b8e9ee7d04c1f3f8",
+        "validation": "6887d566376301f7"
+      }
+    },
+    "mmlu_high_school_us_history": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_us_history",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 204,
+      "evaluation_fingerprint": "9898bff8bf0da33d",
+      "max_model_input_tokens": 2457,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "2685614a6e5533b0f9d52fa03dc9752cf33e1d79eee569f0f26247104ffef325",
+      "requests": 816,
+      "split_fingerprints": {
+        "dev": "caf8dc2718edab2f",
+        "test": "9898bff8bf0da33d",
+        "validation": "57df28524d650327"
+      }
+    },
+    "mmlu_high_school_world_history": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "high_school_world_history",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 237,
+      "evaluation_fingerprint": "7bc6897c1ad886c5",
+      "max_model_input_tokens": 1846,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "2a311a4b3f218f0ebb7b1e1693a907ad4c2fff8a40456a605c38e1396e7d2ae2",
+      "requests": 948,
+      "split_fingerprints": {
+        "dev": "81d1e4f4b632b291",
+        "test": "7bc6897c1ad886c5",
+        "validation": "d3e78fe1040afcf1"
+      }
+    },
+    "mmlu_human_aging": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "human_aging",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 223,
+      "evaluation_fingerprint": "8d6c00ed2cd60d8e",
+      "max_model_input_tokens": 353,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "dbafd0605f7679d820bf23af6e9a11217fa2b8f204d49803ee0b904c2c791805",
+      "requests": 892,
+      "split_fingerprints": {
+        "dev": "2a692a8f7205c2e3",
+        "test": "8d6c00ed2cd60d8e",
+        "validation": "e4be8f8841d819f6"
+      }
+    },
+    "mmlu_human_sexuality": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "human_sexuality",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 131,
+      "evaluation_fingerprint": "e2dbebe685a8233a",
+      "max_model_input_tokens": 485,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "a9dee95ef061d28b0e41ad8f50dd79652fb4cf6ffcf8c9c1254b67d9233faed7",
+      "requests": 524,
+      "split_fingerprints": {
+        "dev": "07e5da0a42ccac50",
+        "test": "e2dbebe685a8233a",
+        "validation": "6dbfd6cebf2d17df"
+      }
+    },
+    "mmlu_international_law": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "international_law",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 121,
+      "evaluation_fingerprint": "74c39d84b2740ac6",
+      "max_model_input_tokens": 725,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "b73c909220623249fb2cd85da3ba63de977671aed265f00360a95a37ceabcd74",
+      "requests": 484,
+      "split_fingerprints": {
+        "dev": "5095eed6aa832fd9",
+        "test": "74c39d84b2740ac6",
+        "validation": "9b76fc5b227b6b84"
+      }
+    },
+    "mmlu_jurisprudence": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "jurisprudence",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 108,
+      "evaluation_fingerprint": "30241999021c8a10",
+      "max_model_input_tokens": 506,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "92e57285f50fa37a2836d0fde07e50ca698221ba9e0ce954c4b70e2955c01040",
+      "requests": 432,
+      "split_fingerprints": {
+        "dev": "97a9bc09955f9886",
+        "test": "30241999021c8a10",
+        "validation": "5365aa5431ff5431"
+      }
+    },
+    "mmlu_logical_fallacies": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "logical_fallacies",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 163,
+      "evaluation_fingerprint": "f65d6f4a4236abee",
+      "max_model_input_tokens": 538,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "f8683c6f0e629d1247d165d5a3973e896311d89ce22acb1c7fe2049fe580393e",
+      "requests": 652,
+      "split_fingerprints": {
+        "dev": "a1a9368c13dfa728",
+        "test": "f65d6f4a4236abee",
+        "validation": "fc8cfffaec25d77c"
+      }
+    },
+    "mmlu_machine_learning": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "machine_learning",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 112,
+      "evaluation_fingerprint": "43ddde1813be4e9f",
+      "max_model_input_tokens": 826,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "c00c7b6a542d12a20edb231f49d19c6886f0252f2d90d999a5eddcbcb01a6677",
+      "requests": 448,
+      "split_fingerprints": {
+        "dev": "9be0118da7b66c48",
+        "test": "43ddde1813be4e9f",
+        "validation": "35f63f50e4c1c3c8"
+      }
+    },
+    "mmlu_management": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "management",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 103,
+      "evaluation_fingerprint": "91c15f84eda754f9",
+      "max_model_input_tokens": 316,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "0448b41bbde87a97964423a4aa814798966f5f06f2df51096b2a0f2b76bd34c3",
+      "requests": 412,
+      "split_fingerprints": {
+        "dev": "945042e33f22df97",
+        "test": "91c15f84eda754f9",
+        "validation": "d94b5b713a6dd09c"
+      }
+    },
+    "mmlu_marketing": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "marketing",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 234,
+      "evaluation_fingerprint": "8ae68060dbc57c5a",
+      "max_model_input_tokens": 474,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "0380a6cdd4c159ac545e514f0d0b90a321aeaaf179d13f24d8ee7f4f5f224400",
+      "requests": 936,
+      "split_fingerprints": {
+        "dev": "0a37e789e5d8fb5d",
+        "test": "8ae68060dbc57c5a",
+        "validation": "e12571679c6b547e"
+      }
+    },
+    "mmlu_medical_genetics": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "medical_genetics",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 100,
+      "evaluation_fingerprint": "a937079f923db81c",
+      "max_model_input_tokens": 369,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "b3d3aae1651fe30bb03678c16840e2fcad5915b505a71006c3b9095cb7888848",
+      "requests": 400,
+      "split_fingerprints": {
+        "dev": "0deead56d72e04f0",
+        "test": "a937079f923db81c",
+        "validation": "b6103f6e38eada89"
+      }
+    },
+    "mmlu_miscellaneous": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "miscellaneous",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 783,
+      "evaluation_fingerprint": "ca411d2cc3a3b57c",
+      "max_model_input_tokens": 521,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "f6874019851054811e5ad26d98290a1b0d737d97ac471ab857b07d03cca9c6a7",
+      "requests": 3132,
+      "split_fingerprints": {
+        "dev": "d18810bbd117b0a6",
+        "test": "ca411d2cc3a3b57c",
+        "validation": "0580f08fe9ebc43e"
+      }
+    },
+    "mmlu_moral_disputes": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "moral_disputes",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 346,
+      "evaluation_fingerprint": "fc1ad8e4522298d8",
+      "max_model_input_tokens": 585,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "1d5766b2c6c7fcb6147f27f8ee8087311d238498d8a8d673b3f5ea201513efd2",
+      "requests": 1384,
+      "split_fingerprints": {
+        "dev": "b1c354145016b84c",
+        "test": "fc1ad8e4522298d8",
+        "validation": "a53ef8948ad2ee84"
+      }
+    },
+    "mmlu_moral_scenarios": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "moral_scenarios",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 895,
+      "evaluation_fingerprint": "f8618f6d3e96a1b5",
+      "max_model_input_tokens": 683,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "162268bd60ce6455340bca4cdaf446812f0a5c054d7fcaa011b038513388936e",
+      "requests": 3580,
+      "split_fingerprints": {
+        "dev": "1551c2ca61fa74fc",
+        "test": "f8618f6d3e96a1b5",
+        "validation": "d95c1713be664c91"
+      }
+    },
+    "mmlu_nutrition": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "nutrition",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 306,
+      "evaluation_fingerprint": "faf8758395cf46ba",
+      "max_model_input_tokens": 644,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "9c76d9757e55619204eeb52557da9d8e43c448e71bc99b775d309d93ecc609cf",
+      "requests": 1224,
+      "split_fingerprints": {
+        "dev": "662069a14d56c86a",
+        "test": "faf8758395cf46ba",
+        "validation": "b6153658218f3392"
+      }
+    },
+    "mmlu_philosophy": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "philosophy",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 311,
+      "evaluation_fingerprint": "1c9a94ff88dd0c16",
+      "max_model_input_tokens": 490,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "d7fb0fd274c4f6aa0b2e938246977f7c8ec9a174a66d34bbf14eaecfa630db2a",
+      "requests": 1244,
+      "split_fingerprints": {
+        "dev": "fab560d11fd290d6",
+        "test": "1c9a94ff88dd0c16",
+        "validation": "f5f4d3649d98ee55"
+      }
+    },
+    "mmlu_prehistory": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "prehistory",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 324,
+      "evaluation_fingerprint": "d536feaa2949a8e3",
+      "max_model_input_tokens": 614,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "ff46bd0b5917b75416345489b1317470d8e87a193a90a9b0b8893e095758d221",
+      "requests": 1296,
+      "split_fingerprints": {
+        "dev": "8e3f6450e14a6f11",
+        "test": "d536feaa2949a8e3",
+        "validation": "7d2c05d13e993ad4"
+      }
+    },
+    "mmlu_professional_accounting": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "professional_accounting",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 282,
+      "evaluation_fingerprint": "9e9625827c7bded6",
+      "max_model_input_tokens": 756,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "2dd564f61b28c1aea0998a9576bc695985fd3a4b285a1ea1328278327adde08a",
+      "requests": 1128,
+      "split_fingerprints": {
+        "dev": "12501f3eb507ff67",
+        "test": "9e9625827c7bded6",
+        "validation": "6c61151424f77d5c"
+      }
+    },
+    "mmlu_professional_law": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "professional_law",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 1534,
+      "evaluation_fingerprint": "c36e72f1d6cb6e5f",
+      "max_model_input_tokens": 2167,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "24930c602cfd584dfa4a2379e2b3ae91c3b7bcb7416638d81710a91fe8b43263",
+      "requests": 6136,
+      "split_fingerprints": {
+        "dev": "5282aa28f352a666",
+        "test": "c36e72f1d6cb6e5f",
+        "validation": "3b3a0b004c708733"
+      }
+    },
+    "mmlu_professional_medicine": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "professional_medicine",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 272,
+      "evaluation_fingerprint": "d1e11faf82469872",
+      "max_model_input_tokens": 1293,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "cfa499f6b456ab06be93634670ab5af9bf11f3b59ed96874a933d3416aebad5c",
+      "requests": 1088,
+      "split_fingerprints": {
+        "dev": "a2ea1a94340e8846",
+        "test": "d1e11faf82469872",
+        "validation": "147c409951eb322c"
+      }
+    },
+    "mmlu_professional_psychology": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "professional_psychology",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 612,
+      "evaluation_fingerprint": "a445259986d2d927",
+      "max_model_input_tokens": 762,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "6bba17c827b92fc5d2927ac8c2856c8bac89f36c557966c6c3b3b147763a4954",
+      "requests": 2448,
+      "split_fingerprints": {
+        "dev": "570817fc494dd5db",
+        "test": "a445259986d2d927",
+        "validation": "85609cce831370d0"
+      }
+    },
+    "mmlu_public_relations": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "public_relations",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 110,
+      "evaluation_fingerprint": "c4c79891c4a06610",
+      "max_model_input_tokens": 558,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "e35dba2b17f2048059bd455ec02bcccf40d714bb6a7dcb4cd34b45895ef9ce86",
+      "requests": 440,
+      "split_fingerprints": {
+        "dev": "7745913bdf7ac087",
+        "test": "c4c79891c4a06610",
+        "validation": "40b43b753478dc4a"
+      }
+    },
+    "mmlu_security_studies": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "security_studies",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 245,
+      "evaluation_fingerprint": "f3f8511396432fe4",
+      "max_model_input_tokens": 1466,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "6188a981b7d62f0572edbd17274e08b94c025bd7ce6519647ac9f145008f4bde",
+      "requests": 980,
+      "split_fingerprints": {
+        "dev": "435bc367f3652360",
+        "test": "f3f8511396432fe4",
+        "validation": "52246d0c9eb73786"
+      }
+    },
+    "mmlu_sociology": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "sociology",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 201,
+      "evaluation_fingerprint": "ec8e27c2b3e16a55",
+      "max_model_input_tokens": 514,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "679a28942ffedc93e6c0d38ea9050eb647882e09a8e7b1ac43eb0dcaf2550db8",
+      "requests": 804,
+      "split_fingerprints": {
+        "dev": "6a636fd07e796817",
+        "test": "ec8e27c2b3e16a55",
+        "validation": "1c50920203f7f1af"
+      }
+    },
+    "mmlu_us_foreign_policy": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "us_foreign_policy",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 100,
+      "evaluation_fingerprint": "5082afc2b0bc4dbe",
+      "max_model_input_tokens": 474,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "14c4ac94923d9656808a3eca17977964333fb73a46c119f5fcb8eee0fc60fdb9",
+      "requests": 400,
+      "split_fingerprints": {
+        "dev": "a7b1e08a76be7789",
+        "test": "5082afc2b0bc4dbe",
+        "validation": "73c2ffeb2e7448ec"
+      }
+    },
+    "mmlu_virology": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "virology",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 166,
+      "evaluation_fingerprint": "6d133fea1047244b",
+      "max_model_input_tokens": 588,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "21d2c58add9431da19e22deb6ef6f015176023f0372d62e0885472b20b346d08",
+      "requests": 664,
+      "split_fingerprints": {
+        "dev": "31c0dbd005df6db9",
+        "test": "6d133fea1047244b",
+        "validation": "e8aeb5b245ddf59d"
+      }
+    },
+    "mmlu_world_religions": {
+      "benchmark": "mmlu",
+      "dataset": "cais/mmlu",
+      "dataset_config": "world_religions",
+      "dataset_revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "evaluation_examples": 171,
+      "evaluation_fingerprint": "c70e10ede8186900",
+      "max_model_input_tokens": 295,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "269d76f690f1c2127953d0e32b6af8508a24b0000b1ede22499bb38621827318",
+      "requests": 684,
+      "split_fingerprints": {
+        "dev": "9109cfe46e82cbae",
+        "test": "c70e10ede8186900",
+        "validation": "d5eebcc9d47fa87a"
+      }
+    },
+    "more_mmlu_pro_mc_biology": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 717,
+      "evaluation_fingerprint": "cc92e70e3413ed0a",
+      "max_model_input_tokens": 1744,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "45ed83eb6e7fe3ed31c2fb14e8ae8dc52af698f8006f3005a44d3a73417fed60",
+      "requests": 6815,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "more_mmlu_pro_mc_business": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 789,
+      "evaluation_fingerprint": "a4c2c0212bcd4781",
+      "max_model_input_tokens": 1273,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "8afba5b60dd3884c9ed481b5971358ec020700bc48a1c27020f61d0fc67e3730",
+      "requests": 7788,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "more_mmlu_pro_mc_chemistry": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 1132,
+      "evaluation_fingerprint": "36db67a9726ef7cf",
+      "max_model_input_tokens": 1522,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "ea539095d9fff649f36ddb3d64d8d99508821b647eae3646207e3c5a35cf073b",
+      "requests": 11093,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "more_mmlu_pro_mc_computer_science": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 410,
+      "evaluation_fingerprint": "22f9cfb1d2543192",
+      "max_model_input_tokens": 1775,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "d2d8fb0dbc99b8a0fc0927ed14a552a314fcbf7e63338d7962a7268fd8aba180",
+      "requests": 3767,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "more_mmlu_pro_mc_economics": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 844,
+      "evaluation_fingerprint": "49358d126c57e22a",
+      "max_model_input_tokens": 1684,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "5a16f73a854dc379b1249fa9b025f0793589d361873b7c430429047ce2cc18ae",
+      "requests": 7681,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "more_mmlu_pro_mc_engineering": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 969,
+      "evaluation_fingerprint": "1458e78d3177744f",
+      "max_model_input_tokens": 1678,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "efa919e92a5b4dcf4e3ac4aff9b8da1b25071842707de707a8579b025d637ca7",
+      "requests": 9286,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "more_mmlu_pro_mc_health": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 818,
+      "evaluation_fingerprint": "85074c0422efc591",
+      "max_model_input_tokens": 1678,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "0bbea58252040f4be4487e284bf5108a05845ba2338785e489991b935fe1d8b9",
+      "requests": 7440,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "more_mmlu_pro_mc_history": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 381,
+      "evaluation_fingerprint": "ec76bb72882e5973",
+      "max_model_input_tokens": 2374,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "4dc3483d28a71cd70c12a32d9df64919b397df005f7db1f20f5f8a6995c87658",
+      "requests": 3462,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "more_mmlu_pro_mc_law": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 1101,
+      "evaluation_fingerprint": "39dd2f734efbdccd",
+      "max_model_input_tokens": 1700,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "b8ff2caa46747e4aa2399c23da57a5f9b499c0c1b59a58d71630987016510197",
+      "requests": 10132,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "more_mmlu_pro_mc_math": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 1351,
+      "evaluation_fingerprint": "296f8c33b0ac3a22",
+      "max_model_input_tokens": 1414,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "b718c139ca656a416049eafaa1c298f2d377d1afde6f2885b2c68ef6a32b5377",
+      "requests": 13200,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "more_mmlu_pro_mc_other": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 924,
+      "evaluation_fingerprint": "9f15580651cd8709",
+      "max_model_input_tokens": 1139,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "3eb0aedd0e08102608d6c7f13c3b7dd509a439ba671c5b01ad2467d35e71a8b3",
+      "requests": 8452,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "more_mmlu_pro_mc_philosophy": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 499,
+      "evaluation_fingerprint": "e8364af988cbaff8",
+      "max_model_input_tokens": 1046,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "e99f6d61b04713dda98c36a3bd9590f9b852bb83f9724d6469be116a1554af4d",
+      "requests": 4413,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "more_mmlu_pro_mc_physics": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 1299,
+      "evaluation_fingerprint": "f6efede8f436b754",
+      "max_model_input_tokens": 1392,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "3009d364e2f864d01bb496bc887067923f76c0630c3348a44ba90176d66d54c2",
+      "requests": 12865,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "more_mmlu_pro_mc_psychology": {
+      "benchmark": "more_mmlu_pro_mc",
+      "dataset": "TIGER-Lab/MMLU-Pro",
+      "dataset_config": null,
+      "dataset_revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "evaluation_examples": 798,
+      "evaluation_fingerprint": "6e3ef0bc2849e58b",
+      "max_model_input_tokens": 1431,
+      "num_fewshot": 5,
+      "overflow_requests": 0,
+      "request_sha256": "9a8194d6dc01d9305a5c7fadde07d6b7601de0cd5bc4e1492d249f71cb121477",
+      "requests": 7596,
+      "split_fingerprints": {
+        "test": "0072dd0a32d256fc",
+        "validation": "4b5d7ccad3cc2d72"
+      }
+    },
+    "openbookqa": {
+      "benchmark": "openbookqa",
+      "dataset": "allenai/openbookqa",
+      "dataset_config": "main",
+      "dataset_revision": "388097ea7776314e93a529163e0fea805b8a6454",
+      "evaluation_examples": 500,
+      "evaluation_fingerprint": "6ab147ba0552ca72",
+      "max_model_input_tokens": 77,
+      "num_fewshot": 0,
+      "overflow_requests": 0,
+      "request_sha256": "1f085c049da408433ea000e0f5602a61a9a556baf67ade2ce5646ebda3a80305",
+      "requests": 2000,
+      "split_fingerprints": {
+        "test": "6ab147ba0552ca72",
+        "train": "c8c4e9bb369b94e0",
+        "validation": "4809c50e92d6f852"
+      }
+    },
+    "piqa": {
+      "benchmark": "piqa",
+      "dataset": "baber/piqa",
+      "dataset_config": null,
+      "dataset_revision": "142f6d7367fd9877f0fb3b5734ea6a545f54cdd1",
+      "evaluation_examples": 1838,
+      "evaluation_fingerprint": "506e3cab853d8e73",
+      "max_model_input_tokens": 257,
+      "num_fewshot": 0,
+      "overflow_requests": 0,
+      "request_sha256": "e490921e921451b777814586b5543146be1f41601a4e0812219e194abf6f5741",
+      "requests": 3676,
+      "split_fingerprints": {
+        "test": "c8edc3d1dc86702a",
+        "train": "f0a93a05e1bc907d",
+        "validation": "506e3cab853d8e73"
+      }
+    },
+    "winogrande": {
+      "benchmark": "winogrande",
+      "dataset": "allenai/winogrande",
+      "dataset_config": "winogrande_xl",
+      "dataset_revision": "01e74176c63542e6b0bcb004dcdea22d94fb67b5",
+      "evaluation_examples": 1267,
+      "evaluation_fingerprint": "5b125086384c0403",
+      "max_model_input_tokens": 37,
+      "num_fewshot": 0,
+      "overflow_requests": 0,
+      "request_sha256": "71306080aeb26cf81603f97f53ab33cb6d21e54807a8f9dfdd33346fbb8ca31f",
+      "requests": 2534,
+      "split_fingerprints": {
+        "test": "e1e2c9a9f0c7ce8f",
+        "train": "d5752cdf34722002",
+        "validation": "5b125086384c0403"
+      }
+    }
+  },
+  "tokenizer_sha256": "2304b0e1c7b1ff18a3797c40d035bc781652485db4f1fc89381bfde44bbfc76c",
+  "workers": [
+    {
+      "benchmarks": [
+        "mmlu"
+      ],
+      "group": "more_dense_benchmarks_worker_0",
+      "leaf_tasks": [
+        "mmlu_abstract_algebra",
+        "mmlu_anatomy",
+        "mmlu_astronomy",
+        "mmlu_business_ethics",
+        "mmlu_clinical_knowledge",
+        "mmlu_college_biology",
+        "mmlu_college_chemistry",
+        "mmlu_college_computer_science",
+        "mmlu_college_mathematics",
+        "mmlu_college_medicine",
+        "mmlu_college_physics",
+        "mmlu_computer_security",
+        "mmlu_conceptual_physics",
+        "mmlu_econometrics",
+        "mmlu_electrical_engineering",
+        "mmlu_elementary_mathematics",
+        "mmlu_formal_logic",
+        "mmlu_global_facts",
+        "mmlu_high_school_biology",
+        "mmlu_high_school_chemistry",
+        "mmlu_high_school_computer_science",
+        "mmlu_high_school_european_history",
+        "mmlu_high_school_geography",
+        "mmlu_high_school_government_and_politics",
+        "mmlu_high_school_macroeconomics",
+        "mmlu_high_school_mathematics",
+        "mmlu_high_school_microeconomics",
+        "mmlu_high_school_physics",
+        "mmlu_high_school_psychology",
+        "mmlu_high_school_statistics",
+        "mmlu_high_school_us_history",
+        "mmlu_high_school_world_history",
+        "mmlu_human_aging",
+        "mmlu_human_sexuality",
+        "mmlu_international_law",
+        "mmlu_jurisprudence",
+        "mmlu_logical_fallacies",
+        "mmlu_machine_learning",
+        "mmlu_management",
+        "mmlu_marketing",
+        "mmlu_medical_genetics",
+        "mmlu_miscellaneous",
+        "mmlu_moral_disputes",
+        "mmlu_moral_scenarios",
+        "mmlu_nutrition",
+        "mmlu_philosophy",
+        "mmlu_prehistory",
+        "mmlu_professional_accounting",
+        "mmlu_professional_law",
+        "mmlu_professional_medicine",
+        "mmlu_professional_psychology",
+        "mmlu_public_relations",
+        "mmlu_security_studies",
+        "mmlu_sociology",
+        "mmlu_us_foreign_policy",
+        "mmlu_virology",
+        "mmlu_world_religions"
+      ],
+      "task_config": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/preparation-515edaf/worker-0.yaml",
+      "task_config_sha256": "2751180ed18751e4a5764188e02233156f375b3385b452afa0c64a6c58e50939",
+      "worker": 0
+    },
+    {
+      "benchmarks": [
+        "more_mmlu_pro_mc"
+      ],
+      "group": "more_dense_benchmarks_worker_1",
+      "leaf_tasks": [
+        "more_mmlu_pro_mc_biology",
+        "more_mmlu_pro_mc_business",
+        "more_mmlu_pro_mc_chemistry",
+        "more_mmlu_pro_mc_computer_science",
+        "more_mmlu_pro_mc_economics",
+        "more_mmlu_pro_mc_engineering",
+        "more_mmlu_pro_mc_health",
+        "more_mmlu_pro_mc_history",
+        "more_mmlu_pro_mc_law",
+        "more_mmlu_pro_mc_math",
+        "more_mmlu_pro_mc_other",
+        "more_mmlu_pro_mc_philosophy",
+        "more_mmlu_pro_mc_physics",
+        "more_mmlu_pro_mc_psychology"
+      ],
+      "task_config": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/preparation-515edaf/worker-1.yaml",
+      "task_config_sha256": "cdbcc372008700efe9b12631252a6ba4ec5d027788a8606611f7ceaa6e49b018",
+      "worker": 1
+    },
+    {
+      "benchmarks": [
+        "hellaswag",
+        "lambada_openai"
+      ],
+      "group": "more_dense_benchmarks_worker_2",
+      "leaf_tasks": [
+        "hellaswag",
+        "lambada_openai"
+      ],
+      "task_config": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/preparation-515edaf/worker-2.yaml",
+      "task_config_sha256": "5b2a8d58f2558403751629c271a4f8ffc58ca3de009c2d3fe15540c5fd5b866b",
+      "worker": 2
+    },
+    {
+      "benchmarks": [
+        "arc_easy",
+        "arc_challenge",
+        "winogrande",
+        "piqa",
+        "boolq",
+        "openbookqa"
+      ],
+      "group": "more_dense_benchmarks_worker_3",
+      "leaf_tasks": [
+        "arc_challenge",
+        "arc_easy",
+        "boolq",
+        "openbookqa",
+        "piqa",
+        "winogrande"
+      ],
+      "task_config": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/preparation-515edaf/worker-3.yaml",
+      "task_config_sha256": "83a16c41829fd427a133cac13adbe10496b09b0b1698434b7d53693d571ce228",
+      "worker": 3
+    }
+  ]
+}

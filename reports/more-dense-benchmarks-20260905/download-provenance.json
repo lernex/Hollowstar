@@ -1,0 +1,1078 @@
+{
+  "completed_at_utc": "2026-09-05T17:01:14.415602+00:00",
+  "datasets": {
+    "EleutherAI/lambada_openai": {
+      "files": [
+        {
+          "bytes": 5474,
+          "path": "README.md",
+          "sha256": "2a7f96fbf8fa6859e3d0dd1bb165611b57319b21b7ac442b6a1e1a53410f51f9"
+        },
+        {
+          "bytes": 1157764,
+          "path": "default/test/default.parquet",
+          "sha256": "99d8a9e54cda761c6340ddd4fa6feda7f846ffb0e716afa52968dea75495eea7"
+        }
+      ],
+      "revision": "900124bf3b8235c6daf21033af9948b3f07346c4",
+      "snapshot": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/huggingface/hub/datasets--EleutherAI--lambada_openai/snapshots/900124bf3b8235c6daf21033af9948b3f07346c4"
+    },
+    "Rowan/hellaswag": {
+      "files": [
+        {
+          "bytes": 7019,
+          "path": "README.md",
+          "sha256": "cfe6e26e7e936a447a12f7eee50f2bffb0355c3b97459496d8c7296f65c5b353"
+        },
+        {
+          "bytes": 6112397,
+          "path": "data/test-00000-of-00001.parquet",
+          "sha256": "e572fd5579bd1768b1985f47234f8bbe29247aca200a778b635bffc637714a41"
+        },
+        {
+          "bytes": 24365524,
+          "path": "data/train-00000-of-00001.parquet",
+          "sha256": "cacb12587faa63d7f723a72d61d12bfa94b140446f5a6a0a2e1c6906ab88bf02"
+        },
+        {
+          "bytes": 6315951,
+          "path": "data/validation-00000-of-00001.parquet",
+          "sha256": "899813071e1e95efafec90f856e1987d2150fa4d020fc005df6962c259f660cd"
+        }
+      ],
+      "revision": "218ec52e09a7e7462a5400043bb9a69a41d06b76",
+      "snapshot": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/huggingface/hub/datasets--Rowan--hellaswag/snapshots/218ec52e09a7e7462a5400043bb9a69a41d06b76"
+    },
+    "TIGER-Lab/MMLU-Pro": {
+      "files": [
+        {
+          "bytes": 11723,
+          "path": "README.md",
+          "sha256": "4bd710f67da3fa359a33edce1b4b5816b3de416c823c2624ba5e89c2557d2a47"
+        },
+        {
+          "bytes": 4144185,
+          "path": "data/test-00000-of-00001.parquet",
+          "sha256": "0e24a191921c2f453518a537a8b2117bd137e7714d4ef1565e9ba06c1ecb9ad8"
+        },
+        {
+          "bytes": 42857,
+          "path": "data/validation-00000-of-00001.parquet",
+          "sha256": "139423c23722e480c807ac4a191409a710cfce4eba744c1d641cf88e730e2078"
+        }
+      ],
+      "revision": "b189ec765aa7ed75c8acfea42df31fdae71f97be",
+      "snapshot": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/huggingface/hub/datasets--TIGER-Lab--MMLU-Pro/snapshots/b189ec765aa7ed75c8acfea42df31fdae71f97be"
+    },
+    "allenai/ai2_arc": {
+      "files": [
+        {
+          "bytes": 203808,
+          "path": "ARC-Challenge/test-00000-of-00001.parquet",
+          "sha256": "62f03257e737aed263f55c6abf87c7bb0028a44a6bdd2a26eb1279eb42c1d1e9"
+        },
+        {
+          "bytes": 189909,
+          "path": "ARC-Challenge/train-00000-of-00001.parquet",
+          "sha256": "e488c1587ffdcfc8443f916c53488a95cd471c5790e0746c6bfe4cecf20962cb"
+        },
+        {
+          "bytes": 55743,
+          "path": "ARC-Challenge/validation-00000-of-00001.parquet",
+          "sha256": "395a5c88d1580d69855fbaee9450270578df1ad5af6259771cd0a42c20e99f05"
+        },
+        {
+          "bytes": 346257,
+          "path": "ARC-Easy/test-00000-of-00001.parquet",
+          "sha256": "4160597d618ae851c7eb04e281574f3f654776216ac6b6641588d64527b47177"
+        },
+        {
+          "bytes": 330598,
+          "path": "ARC-Easy/train-00000-of-00001.parquet",
+          "sha256": "b315db8a4be597dc7daa50a4e70d48dd7c990c32085629e6ccd8c926beaa80b5"
+        },
+        {
+          "bytes": 86080,
+          "path": "ARC-Easy/validation-00000-of-00001.parquet",
+          "sha256": "ed890ff1e4cef7a7140d3a30dcea3ed2c9d467c6458f447ad9ef0176d8dcbb74"
+        },
+        {
+          "bytes": 9001,
+          "path": "README.md",
+          "sha256": "4a293e352253d771604725c978adcea71ee6504e89ed40e1cb0024ecafa9b37e"
+        }
+      ],
+      "revision": "210d026faf9955653af8916fad021475a3f00453",
+      "snapshot": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/huggingface/hub/datasets--allenai--ai2_arc/snapshots/210d026faf9955653af8916fad021475a3f00453"
+    },
+    "allenai/openbookqa": {
+      "files": [
+        {
+          "bytes": 9061,
+          "path": "README.md",
+          "sha256": "a58e68a31e20e7cbac02f80f44f3282ffbb8a40aeb20488670e5ffa975687960"
+        },
+        {
+          "bytes": 55535,
+          "path": "main/test-00000-of-00001.parquet",
+          "sha256": "cd5483e366daa230c1c87bbdc512d8b7229f14f6dd04d19fc8b1a3855aaaa8a3"
+        },
+        {
+          "bytes": 495845,
+          "path": "main/train-00000-of-00001.parquet",
+          "sha256": "98148f8a54e62eb862346a75192d5fb824d6cbb68f2f59aecd793d39ecb5cd8b"
+        },
+        {
+          "bytes": 58233,
+          "path": "main/validation-00000-of-00001.parquet",
+          "sha256": "35370b9cfee8c1ff325ccc74adc434d12c47ca0ac3244aa87f3fa77069285206"
+        }
+      ],
+      "revision": "388097ea7776314e93a529163e0fea805b8a6454",
+      "snapshot": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/huggingface/hub/datasets--allenai--openbookqa/snapshots/388097ea7776314e93a529163e0fea805b8a6454"
+    },
+    "allenai/winogrande": {
+      "files": [
+        {
+          "bytes": 11171,
+          "path": "README.md",
+          "sha256": "fd653689cc77706672b40cd040156ad57f4969656d25a14be645cffa8ef55176"
+        },
+        {
+          "bytes": 117656,
+          "path": "winogrande_xl/test-00000-of-00001.parquet",
+          "sha256": "100885ec03a67f318d50f8a485cb7e55c9ed88fcefbc565c2907fc98de7f8444"
+        },
+        {
+          "bytes": 2058506,
+          "path": "winogrande_xl/train-00000-of-00001.parquet",
+          "sha256": "5d8c38ad12b9a6c88f79b6e00aaf0f40781f93d4f94816f6cff2b67625d67399"
+        },
+        {
+          "bytes": 85928,
+          "path": "winogrande_xl/validation-00000-of-00001.parquet",
+          "sha256": "f9d914d1818c0aba98cabdf8af2bc4bd943c462b9c5e7062647e05c2ce3315d1"
+        }
+      ],
+      "revision": "01e74176c63542e6b0bcb004dcdea22d94fb67b5",
+      "snapshot": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/huggingface/hub/datasets--allenai--winogrande/snapshots/01e74176c63542e6b0bcb004dcdea22d94fb67b5"
+    },
+    "aps/super_glue": {
+      "files": [
+        {
+          "bytes": 19734,
+          "path": "README.md",
+          "sha256": "da05060933491c5d3472f494ce22847d4247e928a39d59d94dff9555a4858df9"
+        },
+        {
+          "bytes": 1309912,
+          "path": "boolq/test-00000-of-00001.parquet",
+          "sha256": "95a74cd7c8fdbae1aa9ba767fa62993fcc2bd582ee5512f42a8c6c89b88a7c3d"
+        },
+        {
+          "bytes": 3846588,
+          "path": "boolq/train-00000-of-00001.parquet",
+          "sha256": "41e2ce07ac0d3bcd411bd4b6326bab2cff5fa67bacdbbcea74bb9e001ec635d3"
+        },
+        {
+          "bytes": 1313731,
+          "path": "boolq/validation-00000-of-00001.parquet",
+          "sha256": "f46438b8cce048184552a2bfcdb8252eadb3a2602f0c22334caccd9b6ea547d6"
+        }
+      ],
+      "revision": "3de24cf8022e94f4ee4b9d55a6f539891524d646",
+      "snapshot": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/huggingface/hub/datasets--aps--super_glue/snapshots/3de24cf8022e94f4ee4b9d55a6f539891524d646"
+    },
+    "baber/piqa": {
+      "files": [
+        {
+          "bytes": 496219,
+          "path": "piqa_test.parquet",
+          "sha256": "037e4175b967f4082e45a5ccf5c9d31ca3fd73030804aa7d4db0f7ca1fcd9b34"
+        },
+        {
+          "bytes": 2638413,
+          "path": "piqa_train.parquet",
+          "sha256": "3114602b31fa724309a6c493cc86368c4eab7ab6e79e285056fd5ce3b60ddf02"
+        },
+        {
+          "bytes": 299694,
+          "path": "piqa_validation.parquet",
+          "sha256": "2b17ee1215b1ceb2ddabf4c90a05c5a8b833bef9d207960f57d111c43a2080f3"
+        }
+      ],
+      "revision": "142f6d7367fd9877f0fb3b5734ea6a545f54cdd1",
+      "snapshot": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/huggingface/hub/datasets--baber--piqa/snapshots/142f6d7367fd9877f0fb3b5734ea6a545f54cdd1"
+    },
+    "cais/mmlu": {
+      "files": [
+        {
+          "bytes": 53221,
+          "path": "README.md",
+          "sha256": "665eef35ecd8a89037c1e4f1e1a0d7fd4c154edc04c81cea5634ace2d3e96953"
+        },
+        {
+          "bytes": 3452,
+          "path": "abstract_algebra/dev-00000-of-00001.parquet",
+          "sha256": "e778f60903669e953c49f0d3c8deffa1738a81fe344e0bf1791e450a5e8b9d6c"
+        },
+        {
+          "bytes": 9964,
+          "path": "abstract_algebra/test-00000-of-00001.parquet",
+          "sha256": "92338cdcdb43d2871691ef9a0e125e633ca57335ed635a635fe6dead94f224c2"
+        },
+        {
+          "bytes": 3727,
+          "path": "abstract_algebra/validation-00000-of-00001.parquet",
+          "sha256": "b66df87644982b96b6708b1748cf5cdd4c45c476b80ee5f33d1bf104d397f840"
+        },
+        {
+          "bytes": 3503,
+          "path": "anatomy/dev-00000-of-00001.parquet",
+          "sha256": "1774b4af192a38e8ed6419fa0c5173aabd3f6ebaea10cd65e8cae26b9baed658"
+        },
+        {
+          "bytes": 20078,
+          "path": "anatomy/test-00000-of-00001.parquet",
+          "sha256": "cb88f5920b67ab290dd23a825f8e3826d01d8f48d99ad4931a8b0003a952a211"
+        },
+        {
+          "bytes": 5283,
+          "path": "anatomy/validation-00000-of-00001.parquet",
+          "sha256": "f99c5b6b26a8970a4b91c3a58367768a0bc291a478589c4cd47503ac941cfadc"
+        },
+        {
+          "bytes": 4942,
+          "path": "astronomy/dev-00000-of-00001.parquet",
+          "sha256": "73b897f92f1f5982c689cbcf7220d3454b18a589deda6596e738e1a21ad469a4"
+        },
+        {
+          "bytes": 28323,
+          "path": "astronomy/test-00000-of-00001.parquet",
+          "sha256": "bcdfe1afcb9421747b4edd8d426ac87d47fd4d03e7c3455bcb149d1ba14db228"
+        },
+        {
+          "bytes": 6051,
+          "path": "astronomy/validation-00000-of-00001.parquet",
+          "sha256": "98b9cdb9327b80ba66eb92f3726293938e096388c33afec8ffc736e9308174ee"
+        },
+        {
+          "bytes": 4959,
+          "path": "business_ethics/dev-00000-of-00001.parquet",
+          "sha256": "494ea1d948ca9a7519fda526bbe18812ad5fdd9834b3cb01f6b0d2c3821d189c"
+        },
+        {
+          "bytes": 21566,
+          "path": "business_ethics/test-00000-of-00001.parquet",
+          "sha256": "7910a4b8236c64ef339410a41d5806637087c84635278dda0ff674b8f894dfbb"
+        },
+        {
+          "bytes": 5094,
+          "path": "business_ethics/validation-00000-of-00001.parquet",
+          "sha256": "3a899aef15e318b267b39cfbb881606c5df0db9930e19dc470c9fda659b78195"
+        },
+        {
+          "bytes": 3669,
+          "path": "clinical_knowledge/dev-00000-of-00001.parquet",
+          "sha256": "105b492234b3de901223567bf9c72e4f87fe7f701f16b3ef903f1e8a4bb00913"
+        },
+        {
+          "bytes": 40510,
+          "path": "clinical_knowledge/test-00000-of-00001.parquet",
+          "sha256": "7bd3de302db35c6e9adb311ef40b2fb15ffe02ada17667119d9fb30fe393a44e"
+        },
+        {
+          "bytes": 7476,
+          "path": "clinical_knowledge/validation-00000-of-00001.parquet",
+          "sha256": "2337cba283032fc3dbbb0a7203fddd8ff1a3a5ed348328fe9df1199e57fefb97"
+        },
+        {
+          "bytes": 4273,
+          "path": "college_biology/dev-00000-of-00001.parquet",
+          "sha256": "0cf3cbb4fde72b09ed0659e81fb1e01fc66f92aecdf87ba5967ee6548d05d555"
+        },
+        {
+          "bytes": 31845,
+          "path": "college_biology/test-00000-of-00001.parquet",
+          "sha256": "5b6920ddbbb40ee6efd1e6c8814be9fd03d24c9e1e1dbd4b02325e2d454a6a82"
+        },
+        {
+          "bytes": 6899,
+          "path": "college_biology/validation-00000-of-00001.parquet",
+          "sha256": "f5010d257812f7f349e3bd6469be9380d083fe879694c05035663d8e6227344c"
+        },
+        {
+          "bytes": 4037,
+          "path": "college_chemistry/dev-00000-of-00001.parquet",
+          "sha256": "4c689a238a2795d02174ce3b7f621fd0cd721d8a19a6ac3e90e739deb7d1b8c9"
+        },
+        {
+          "bytes": 17877,
+          "path": "college_chemistry/test-00000-of-00001.parquet",
+          "sha256": "f012f90fc3aec5ead6963fe7bdeee58783010265538dda3be984a9d1dbbd7051"
+        },
+        {
+          "bytes": 4867,
+          "path": "college_chemistry/validation-00000-of-00001.parquet",
+          "sha256": "e394d9086108394ef71b8a2fa9f50fab42f4cbd910fa5e5dcd492fa8c927c2d4"
+        },
+        {
+          "bytes": 6812,
+          "path": "college_computer_science/dev-00000-of-00001.parquet",
+          "sha256": "6b35dffa1635615b201047dc10ae20ae2daa97cfa403128ebe2285f704a744a7"
+        },
+        {
+          "bytes": 28069,
+          "path": "college_computer_science/test-00000-of-00001.parquet",
+          "sha256": "08b79916057e75938a2a0d5ceb10c517cf923580e6058af48b1b7b3f7a52c5b8"
+        },
+        {
+          "bytes": 6251,
+          "path": "college_computer_science/validation-00000-of-00001.parquet",
+          "sha256": "967090233faa5cd90c4c6f593c5e94d3ede99ab77bc008313aa6428c15ae15ec"
+        },
+        {
+          "bytes": 5159,
+          "path": "college_mathematics/dev-00000-of-00001.parquet",
+          "sha256": "46ee5c84b379e1959b020786752c96c2a34a9d0cb52a9b247798dbc794bc324d"
+        },
+        {
+          "bytes": 16620,
+          "path": "college_mathematics/test-00000-of-00001.parquet",
+          "sha256": "f57b57e992d03d07a05c6f8f328a14a49870f61d91e8e525a062644e234bf4f0"
+        },
+        {
+          "bytes": 5000,
+          "path": "college_mathematics/validation-00000-of-00001.parquet",
+          "sha256": "e668d0830970536e21544d6221369ccaeaf75bd7f62cdef5eda8b37d9eca6a6c"
+        },
+        {
+          "bytes": 4838,
+          "path": "college_medicine/dev-00000-of-00001.parquet",
+          "sha256": "85bf7f27b795f63a87bb149b73f30acd182f1b04ee4573e36ba80c41ee81ff58"
+        },
+        {
+          "bytes": 42470,
+          "path": "college_medicine/test-00000-of-00001.parquet",
+          "sha256": "f21b3166975dbc14dff5940df41479bc28853008303c50a070d430fc59468f9c"
+        },
+        {
+          "bytes": 8995,
+          "path": "college_medicine/validation-00000-of-00001.parquet",
+          "sha256": "4b5a104770d73a2e4676869db26f107493286ef2a1a542eb893d5c2bfba762a2"
+        },
+        {
+          "bytes": 4510,
+          "path": "college_physics/dev-00000-of-00001.parquet",
+          "sha256": "eec8b9851f44831e3e8c82317c498c81ea3bc3a255d1f9004c26ea7e57728184"
+        },
+        {
+          "bytes": 18641,
+          "path": "college_physics/test-00000-of-00001.parquet",
+          "sha256": "81b8eafc776b3109fd0ba9f527a7f759b07b92fe953743d3711086e5208aadca"
+        },
+        {
+          "bytes": 6388,
+          "path": "college_physics/validation-00000-of-00001.parquet",
+          "sha256": "79f20c0d67a0497e6ebc0c434bb0aa562b24d8ec825e22eb94196c3f34317d7d"
+        },
+        {
+          "bytes": 4326,
+          "path": "computer_security/dev-00000-of-00001.parquet",
+          "sha256": "b491f6df6ed1fc6c6a345567bee8240d9e937801a39e626ac62f69619c13eaaa"
+        },
+        {
+          "bytes": 19150,
+          "path": "computer_security/test-00000-of-00001.parquet",
+          "sha256": "a6ad5774acf5133ac88cf1bb066c60db8668abee2d6a724cf2f9dfa7cb4f103d"
+        },
+        {
+          "bytes": 6674,
+          "path": "computer_security/validation-00000-of-00001.parquet",
+          "sha256": "1eaed4c8c709c36aaf1e7911c5454aa35de310e64b0242a76beffc9df7c98d9f"
+        },
+        {
+          "bytes": 3959,
+          "path": "conceptual_physics/dev-00000-of-00001.parquet",
+          "sha256": "1503db27184855758b61b52619317f483fe425293c1801853d3e409d1f5a668d"
+        },
+        {
+          "bytes": 25031,
+          "path": "conceptual_physics/test-00000-of-00001.parquet",
+          "sha256": "c66a861048a25f96baa59517b613c3ed1a26abf4d7717ae5aab2da29bac7fa70"
+        },
+        {
+          "bytes": 5978,
+          "path": "conceptual_physics/validation-00000-of-00001.parquet",
+          "sha256": "c6df7c8fd416f1239aa2950893468df0ab378b0b67d5bf18362ad95bff44b210"
+        },
+        {
+          "bytes": 4541,
+          "path": "econometrics/dev-00000-of-00001.parquet",
+          "sha256": "5edd31ddb8ce550de5b7e51b1f622cc7d83f82714509f81e86cc80f224e91179"
+        },
+        {
+          "bytes": 24480,
+          "path": "econometrics/test-00000-of-00001.parquet",
+          "sha256": "63501e9de9f822b4d0f60919024c660b40a78791b9cfcf1e69e759f16eef9123"
+        },
+        {
+          "bytes": 7019,
+          "path": "econometrics/validation-00000-of-00001.parquet",
+          "sha256": "52aceec5650ca39fbe012232878c838a3416ffd0c02f239664e6c966b1901e97"
+        },
+        {
+          "bytes": 4079,
+          "path": "electrical_engineering/dev-00000-of-00001.parquet",
+          "sha256": "92416acbafa70242a6158f72a3e38f5c1d2feeed84de07d3431f9815b0b08dca"
+        },
+        {
+          "bytes": 17589,
+          "path": "electrical_engineering/test-00000-of-00001.parquet",
+          "sha256": "3df176cabbd13a1315d7312f37ffec139f1cf51fc4ea3407b5293a00ac325570"
+        },
+        {
+          "bytes": 5078,
+          "path": "electrical_engineering/validation-00000-of-00001.parquet",
+          "sha256": "f03b430fd95349f5f566cd17bfa1c315911de80c1ee6701fe33975083ca175bf"
+        },
+        {
+          "bytes": 4547,
+          "path": "elementary_mathematics/dev-00000-of-00001.parquet",
+          "sha256": "03b0ff28b6515f1e6ae2c57c3eb1d14df2ea6b36c71aea99ac9e9e7aee17345a"
+        },
+        {
+          "bytes": 41056,
+          "path": "elementary_mathematics/test-00000-of-00001.parquet",
+          "sha256": "9cb645300084d3b7ff8af98efef034068f8c8780f06017e2ebf21d33beb2fc61"
+        },
+        {
+          "bytes": 9384,
+          "path": "elementary_mathematics/validation-00000-of-00001.parquet",
+          "sha256": "a33f741dae378bd7e3cb6d2dfaea013fb50d8e0718cd91bac0fa40f878ba115b"
+        },
+        {
+          "bytes": 4807,
+          "path": "formal_logic/dev-00000-of-00001.parquet",
+          "sha256": "6928410ade5a828d9c16b17864857be58843a5ccf44b4135079a10862847965e"
+        },
+        {
+          "bytes": 21515,
+          "path": "formal_logic/test-00000-of-00001.parquet",
+          "sha256": "a9f917e01461be6ef71bf32248bf10c3a0580d2fef641255b265131bf29d876c"
+        },
+        {
+          "bytes": 6562,
+          "path": "formal_logic/validation-00000-of-00001.parquet",
+          "sha256": "b5ae1527ce334b89aa6e8b1ff765f1aca12d5db8c9f7eae3d7df3baca4cd090c"
+        },
+        {
+          "bytes": 3575,
+          "path": "global_facts/dev-00000-of-00001.parquet",
+          "sha256": "ee23f3bd9dcce85f3d6b8c2387f2f52baa9801d51bb681297149ceb2380a8642"
+        },
+        {
+          "bytes": 11489,
+          "path": "global_facts/test-00000-of-00001.parquet",
+          "sha256": "9e4b5a22ad1cbe5c58c21f6a96fe65bd0dbb05c8295e1db6fc57c9ee7676b6ef"
+        },
+        {
+          "bytes": 4194,
+          "path": "global_facts/validation-00000-of-00001.parquet",
+          "sha256": "48b84607d6148a288af379c44f874d8551e2dde57b672e8905fd4a87d22b077b"
+        },
+        {
+          "bytes": 4939,
+          "path": "high_school_biology/dev-00000-of-00001.parquet",
+          "sha256": "4ae1c2d737b60977c22645093846ee6b9642c84480fde8ea39d8654630682aa4"
+        },
+        {
+          "bytes": 62704,
+          "path": "high_school_biology/test-00000-of-00001.parquet",
+          "sha256": "73600cc5c8032ffd20115887ec4f2c868d75c403c70ac1d115295e72cb8d80e3"
+        },
+        {
+          "bytes": 10573,
+          "path": "high_school_biology/validation-00000-of-00001.parquet",
+          "sha256": "5c7a4d5bbb0a94e1af2759b13a9c39936de35485ef20bdc9e9e5e6db7003a9ae"
+        },
+        {
+          "bytes": 4156,
+          "path": "high_school_chemistry/dev-00000-of-00001.parquet",
+          "sha256": "9ff0a32009626a305c800e347bd5b943898b112b7bd5575f90a5137890c02768"
+        },
+        {
+          "bytes": 33334,
+          "path": "high_school_chemistry/test-00000-of-00001.parquet",
+          "sha256": "fde2345147be31d8df06ad66200521d7e47588490ab59c09fd78861c8a373ccb"
+        },
+        {
+          "bytes": 8309,
+          "path": "high_school_chemistry/validation-00000-of-00001.parquet",
+          "sha256": "0caed54736757cba15b7fcf6dedb84196c795b4e42baa1f55658407ae3803593"
+        },
+        {
+          "bytes": 6537,
+          "path": "high_school_computer_science/dev-00000-of-00001.parquet",
+          "sha256": "431ad5ab203837d9bf82be92f391fa17584c8e3a936d023fca9d320d471cbb4f"
+        },
+        {
+          "bytes": 27253,
+          "path": "high_school_computer_science/test-00000-of-00001.parquet",
+          "sha256": "6e1b210896afc60f2ea3a1b011733b86dedd74690adce6ff0893346089f83252"
+        },
+        {
+          "bytes": 5282,
+          "path": "high_school_computer_science/validation-00000-of-00001.parquet",
+          "sha256": "1e41b804c5d8e352ccbc6053feffe5ce7f9fe18d6a9b53906bd2a4313ef1fcb0"
+        },
+        {
+          "bytes": 22211,
+          "path": "high_school_european_history/dev-00000-of-00001.parquet",
+          "sha256": "61cc946b008250ece8910275c171dcaf466e00b131a7bc6840dfab7600debb9c"
+        },
+        {
+          "bytes": 142465,
+          "path": "high_school_european_history/test-00000-of-00001.parquet",
+          "sha256": "2bcf46d76656082263b22d871c6ba16f29f4abed600d07381018b843769620c1"
+        },
+        {
+          "bytes": 31594,
+          "path": "high_school_european_history/validation-00000-of-00001.parquet",
+          "sha256": "38bd62d9100b36149f48caeef928d9a742b66ba2f683f8139735d09a715af551"
+        },
+        {
+          "bytes": 3929,
+          "path": "high_school_geography/dev-00000-of-00001.parquet",
+          "sha256": "d3a732b15dc6177cf2f3f432b2378baf5f48f36961ceace5faa3f62fc5ee0997"
+        },
+        {
+          "bytes": 28162,
+          "path": "high_school_geography/test-00000-of-00001.parquet",
+          "sha256": "d083f0a37e9802ff70af8c0ccee95dc6836d80db74f45327519756327076a2c1"
+        },
+        {
+          "bytes": 6164,
+          "path": "high_school_geography/validation-00000-of-00001.parquet",
+          "sha256": "d1c34639bf3b18722f93a268b11da8d8a69ce1cd5554bf4f430090eaf4bde0ee"
+        },
+        {
+          "bytes": 4475,
+          "path": "high_school_government_and_politics/dev-00000-of-00001.parquet",
+          "sha256": "3877a26ca2e8607f7b4eccbf29b2cd50b6c5b74373d8c64b6db8f5ebc5000b2d"
+        },
+        {
+          "bytes": 40219,
+          "path": "high_school_government_and_politics/test-00000-of-00001.parquet",
+          "sha256": "54bb3fcc3987afc3ce0e605343752de94ca227bd4ae13c84b7b1ec9bc3998292"
+        },
+        {
+          "bytes": 8269,
+          "path": "high_school_government_and_politics/validation-00000-of-00001.parquet",
+          "sha256": "28f197e5a0abe745e446e083f94b6051042f509d094a7230577c9728faa4b827"
+        },
+        {
+          "bytes": 4045,
+          "path": "high_school_macroeconomics/dev-00000-of-00001.parquet",
+          "sha256": "6aa2bf96a9cfa2069866fc89b1dccf1dfbb6f163afbd5e63547dc301e9bc47b0"
+        },
+        {
+          "bytes": 54819,
+          "path": "high_school_macroeconomics/test-00000-of-00001.parquet",
+          "sha256": "a0f2d6a33352452442a13ffb947ab04dcf16513e87bee7c52e8957c2bc761a4c"
+        },
+        {
+          "bytes": 9894,
+          "path": "high_school_macroeconomics/validation-00000-of-00001.parquet",
+          "sha256": "3219f345d00b7df30a989ea04446c4ed7170516d1e5fbabdffcb0118a432740a"
+        },
+        {
+          "bytes": 4501,
+          "path": "high_school_mathematics/dev-00000-of-00001.parquet",
+          "sha256": "73034b3a7694d27103ee880a1e13382c0e0a8c07991420d537e926513c125566"
+        },
+        {
+          "bytes": 33722,
+          "path": "high_school_mathematics/test-00000-of-00001.parquet",
+          "sha256": "310628511fac990528ecac65634fa1ab924ce2d4aad7a7d9cded06db17f6cf7d"
+        },
+        {
+          "bytes": 6987,
+          "path": "high_school_mathematics/validation-00000-of-00001.parquet",
+          "sha256": "841cc40a133f7c4c2e6f96d1dd353b3f9aaa681d4496b5b7a7c7edcad633ea76"
+        },
+        {
+          "bytes": 3835,
+          "path": "high_school_microeconomics/dev-00000-of-00001.parquet",
+          "sha256": "a8ae561bb6bfbbb00059c9c2b8fd3ea5ba01596a27126bd81c7c5841e7c24bd2"
+        },
+        {
+          "bytes": 38827,
+          "path": "high_school_microeconomics/test-00000-of-00001.parquet",
+          "sha256": "8a55dc2fa10fa86cc4cf5565bb49416bdcf45b545ebb83f6ce8e4360cc65b453"
+        },
+        {
+          "bytes": 7223,
+          "path": "high_school_microeconomics/validation-00000-of-00001.parquet",
+          "sha256": "5dce9d16182e4ecefb46cf7980ca653afed288a557294a6b20b6b8cf93201636"
+        },
+        {
+          "bytes": 4571,
+          "path": "high_school_physics/dev-00000-of-00001.parquet",
+          "sha256": "3b6fb5f8d1f1cc8b220012f1556ce095b00cd141ec5e228fb8e7aac3373e0be0"
+        },
+        {
+          "bytes": 32950,
+          "path": "high_school_physics/test-00000-of-00001.parquet",
+          "sha256": "48fc84060e4cd032a407da09164e99dfdf81f3ce345bf6c1871bb539ba4ead6c"
+        },
+        {
+          "bytes": 7962,
+          "path": "high_school_physics/validation-00000-of-00001.parquet",
+          "sha256": "696ee856dae60e75983afe6cff6eb9153b71059f32a294e58f1d02ddd8758daf"
+        },
+        {
+          "bytes": 5185,
+          "path": "high_school_psychology/dev-00000-of-00001.parquet",
+          "sha256": "ada3aebdb9802d09e0181ce8e219c1b68dd0cad09a253299c4027512b2f26fa8"
+        },
+        {
+          "bytes": 92752,
+          "path": "high_school_psychology/test-00000-of-00001.parquet",
+          "sha256": "9df4a744eb6faa12bb359df1f808c0461c055f240b998a9ec9d97b1c4e49a958"
+        },
+        {
+          "bytes": 15221,
+          "path": "high_school_psychology/validation-00000-of-00001.parquet",
+          "sha256": "964f3320887467481bcd96cae069e7feb5620621f0f37bbdecd10a52f195b1fc"
+        },
+        {
+          "bytes": 6074,
+          "path": "high_school_statistics/dev-00000-of-00001.parquet",
+          "sha256": "3b7c5d8b0c6c682e922ed199113f1ceef5bc4906ad75eb283d2eba5a4205d8e3"
+        },
+        {
+          "bytes": 57998,
+          "path": "high_school_statistics/test-00000-of-00001.parquet",
+          "sha256": "4922828bda3ae4c4470e95d8fa809e3abe18f6239047b21d675267ebefb1c691"
+        },
+        {
+          "bytes": 10852,
+          "path": "high_school_statistics/validation-00000-of-00001.parquet",
+          "sha256": "cb74547d5d9603438b19122af969fee81e2cdc641e23a4c3d1305f182ed06452"
+        },
+        {
+          "bytes": 17838,
+          "path": "high_school_us_history/dev-00000-of-00001.parquet",
+          "sha256": "dcc43231bf782c3ed7a1718e5d8b755cb1812944cdd7428a17369fb68905c66f"
+        },
+        {
+          "bytes": 154916,
+          "path": "high_school_us_history/test-00000-of-00001.parquet",
+          "sha256": "7e3c242fa3b087b918d30a5202948ed462363ca9de9e65a76970e2c58d5659b7"
+        },
+        {
+          "bytes": 27289,
+          "path": "high_school_us_history/validation-00000-of-00001.parquet",
+          "sha256": "73b682d8cc002dbff1dd62b48dd8df71969d49e581364b651e1be4198004054e"
+        },
+        {
+          "bytes": 10248,
+          "path": "high_school_world_history/dev-00000-of-00001.parquet",
+          "sha256": "5c37e72b49e3c509af1fcf83fcd75e12cfad9f31034344bcf6f3a2db64a7c0f7"
+        },
+        {
+          "bytes": 201554,
+          "path": "high_school_world_history/test-00000-of-00001.parquet",
+          "sha256": "abc9b0182e7cdd19ef7b70ec9734f62436f99e76c740c67f41155611eccbcd7d"
+        },
+        {
+          "bytes": 38500,
+          "path": "high_school_world_history/validation-00000-of-00001.parquet",
+          "sha256": "e7647086c3e35318ddb47782defe9567d915046076ec2cf8ba736a04c88d0eb1"
+        },
+        {
+          "bytes": 3667,
+          "path": "human_aging/dev-00000-of-00001.parquet",
+          "sha256": "7d5ef3e4af1f2cf3a490ab8707f14ed36210159a51648979365756ef46239908"
+        },
+        {
+          "bytes": 31249,
+          "path": "human_aging/test-00000-of-00001.parquet",
+          "sha256": "69b143d394fd115c893afd98ed8fddaf32039bdece6a60c7f0e6caa3e2a97847"
+        },
+        {
+          "bytes": 6280,
+          "path": "human_aging/validation-00000-of-00001.parquet",
+          "sha256": "bacec25cb2c8ad4502eb15ef4cc07bc25d4001dc38faf94dcd9be6db11d65b0f"
+        },
+        {
+          "bytes": 4085,
+          "path": "human_sexuality/dev-00000-of-00001.parquet",
+          "sha256": "e2f15b5006b8bdde4072a870525d5c2810ab5b24fafddf6fc25f42db8feff46e"
+        },
+        {
+          "bytes": 23185,
+          "path": "human_sexuality/test-00000-of-00001.parquet",
+          "sha256": "49efe58e13116a40ac9ee640da8b9c41b29a2915c86eb5bb33fb2959d0c724f9"
+        },
+        {
+          "bytes": 5263,
+          "path": "human_sexuality/validation-00000-of-00001.parquet",
+          "sha256": "0fdf548c599de8fb9526a1782b656f06430f3508b4e41e4226bb4b0fece6e457"
+        },
+        {
+          "bytes": 4957,
+          "path": "international_law/dev-00000-of-00001.parquet",
+          "sha256": "a74c7a33d187444a794a8576ec9c8e123d71e03ba4d58f0855f452e8ca085529"
+        },
+        {
+          "bytes": 29512,
+          "path": "international_law/test-00000-of-00001.parquet",
+          "sha256": "05da704a004fcc5c7d3d47a894af201ca26d8e071aadf05e3a34155fad968ccf"
+        },
+        {
+          "bytes": 7123,
+          "path": "international_law/validation-00000-of-00001.parquet",
+          "sha256": "32b9266ab1a3a937f6b49a8b63e42b9f20bd721baa684e19d180127d4e9bda69"
+        },
+        {
+          "bytes": 4047,
+          "path": "jurisprudence/dev-00000-of-00001.parquet",
+          "sha256": "1291e1cbdaaa3e2d036b73013df3421348abf52cdd99e84b10a1dc55e735c592"
+        },
+        {
+          "bytes": 23324,
+          "path": "jurisprudence/test-00000-of-00001.parquet",
+          "sha256": "0f302db5178cb629b3b1514cc5f9b2a94e6bbbf0925e3d18b09ed4394099e059"
+        },
+        {
+          "bytes": 6207,
+          "path": "jurisprudence/validation-00000-of-00001.parquet",
+          "sha256": "8ef2d3dcda612b02ecf2155d9d9ff35acd90ad3e574ff088cc5e257a788e1826"
+        },
+        {
+          "bytes": 4123,
+          "path": "logical_fallacies/dev-00000-of-00001.parquet",
+          "sha256": "cba7736ad6b6395e081affdbb27f89150b5a1207c98a903a2b092c11b1197632"
+        },
+        {
+          "bytes": 23022,
+          "path": "logical_fallacies/test-00000-of-00001.parquet",
+          "sha256": "87eefcf75ec88f69379d848bddab3f8936e4d340ef1e51498c334c5a76031fe7"
+        },
+        {
+          "bytes": 6524,
+          "path": "logical_fallacies/validation-00000-of-00001.parquet",
+          "sha256": "042b2502c81acc880164ec07e8bbf28da7ac87a6c4cbca7f7b0bbe347d38fcfd"
+        },
+        {
+          "bytes": 5247,
+          "path": "machine_learning/dev-00000-of-00001.parquet",
+          "sha256": "b8882136a1a6f4dbf9d764a2de8232347d02f818f3a8d369d93a6fcca5e14488"
+        },
+        {
+          "bytes": 19699,
+          "path": "machine_learning/test-00000-of-00001.parquet",
+          "sha256": "cd3d1ac01f117433bfed153f81425ede65b1d57abd7bebd2a3471b7b22334424"
+        },
+        {
+          "bytes": 6175,
+          "path": "machine_learning/validation-00000-of-00001.parquet",
+          "sha256": "090d14c981b139939bda61aaf2ebb71d322dd16fac3d86d62ac3c42f29d0d627"
+        },
+        {
+          "bytes": 3609,
+          "path": "management/dev-00000-of-00001.parquet",
+          "sha256": "772b281c0322acf770e8401df72dffe56424c6776b6dd1027467780735b9c430"
+        },
+        {
+          "bytes": 14722,
+          "path": "management/test-00000-of-00001.parquet",
+          "sha256": "b5579485f3b83ceabcf2269720c7ce087b76ad473f020336c5ec7e724900767f"
+        },
+        {
+          "bytes": 4497,
+          "path": "management/validation-00000-of-00001.parquet",
+          "sha256": "3db139ecc10160b62e3d8f2f7829df0d7d139864755f22b9ef87a973216e39a9"
+        },
+        {
+          "bytes": 4282,
+          "path": "marketing/dev-00000-of-00001.parquet",
+          "sha256": "a00bdec21ca5a867aab6a73e018df31470173e71f2d816a0d27512a77253e7f0"
+        },
+        {
+          "bytes": 37259,
+          "path": "marketing/test-00000-of-00001.parquet",
+          "sha256": "3c975f1b0dc699b113fe9ac9a438cda04995b5fab8613e949693cd85e360240a"
+        },
+        {
+          "bytes": 8206,
+          "path": "marketing/validation-00000-of-00001.parquet",
+          "sha256": "844b008134e392ac77cdb5778911dd2fc0cef59ccc02e530b16517ce35b3f497"
+        },
+        {
+          "bytes": 3766,
+          "path": "medical_genetics/dev-00000-of-00001.parquet",
+          "sha256": "a3e66d3e161967c0c331d24b055ac88e87d6d9a459335512b27d74308b39c57e"
+        },
+        {
+          "bytes": 16379,
+          "path": "medical_genetics/test-00000-of-00001.parquet",
+          "sha256": "f5535475f3afc3479697355679f2b615603fe90a58e8e5b6a98e50ccf07171b9"
+        },
+        {
+          "bytes": 5630,
+          "path": "medical_genetics/validation-00000-of-00001.parquet",
+          "sha256": "b1e5b8381e2f69c6c91cecaff8f9110e8964d5f65df83b5c83711406761e9f03"
+        },
+        {
+          "bytes": 3369,
+          "path": "miscellaneous/dev-00000-of-00001.parquet",
+          "sha256": "b3a42ee2192256ed52d005db54a03e0029572aaeb098fceee36a1378432a2d3e"
+        },
+        {
+          "bytes": 98558,
+          "path": "miscellaneous/test-00000-of-00001.parquet",
+          "sha256": "5665dde94d34f04a0310bb2af2f8a27fc09a8a2629fe1e6e9248b11592dbd060"
+        },
+        {
+          "bytes": 13170,
+          "path": "miscellaneous/validation-00000-of-00001.parquet",
+          "sha256": "00724923c0ea296af82d8b89934e9b0d82de005386d67b8a90bd57ec8f09f322"
+        },
+        {
+          "bytes": 4407,
+          "path": "moral_disputes/dev-00000-of-00001.parquet",
+          "sha256": "7efc2d7512a7e9e9ac8229fade7739f8c8baba7037441551cf6bb12cc6561290"
+        },
+        {
+          "bytes": 60902,
+          "path": "moral_disputes/test-00000-of-00001.parquet",
+          "sha256": "fc2a4270481cf732dcbce6816231b430bec14e327e28db930b396e7e53c6c775"
+        },
+        {
+          "bytes": 10734,
+          "path": "moral_disputes/validation-00000-of-00001.parquet",
+          "sha256": "c88b8e7cd4a577a1849d9d3fc7645b96a84890072b1554b43aa88f0f14eb5655"
+        },
+        {
+          "bytes": 5137,
+          "path": "moral_scenarios/dev-00000-of-00001.parquet",
+          "sha256": "c31c54bb7f8c48a935b6955ec1f4e219d148766e7e9b3b5a1dc7b411804bce02"
+        },
+        {
+          "bytes": 89816,
+          "path": "moral_scenarios/test-00000-of-00001.parquet",
+          "sha256": "e21cc9d8f5a1898bd4bb080fa5dad2474f67f27ca98d3c7bb8c7f529ea32a9f4"
+        },
+        {
+          "bytes": 14916,
+          "path": "moral_scenarios/validation-00000-of-00001.parquet",
+          "sha256": "8b222953f05eed1527bfcdba84c067e0a64f9f4ba12966a47099e32c5cc4cff4"
+        },
+        {
+          "bytes": 4987,
+          "path": "nutrition/dev-00000-of-00001.parquet",
+          "sha256": "4727ff1fb9351c82fba7b004b87368dc5fc4385415beced0b551311996753b64"
+        },
+        {
+          "bytes": 55041,
+          "path": "nutrition/test-00000-of-00001.parquet",
+          "sha256": "7ba291c21774407b1b27349172c3f85211af81df5047fe92b83b961d7bb7f03f"
+        },
+        {
+          "bytes": 9022,
+          "path": "nutrition/validation-00000-of-00001.parquet",
+          "sha256": "044ca489a67687422919dc3ef45b56e7d7a7ebca34c78af3aad01613178f5cc2"
+        },
+        {
+          "bytes": 4202,
+          "path": "philosophy/dev-00000-of-00001.parquet",
+          "sha256": "40bd9dee29bb8049f9d9f149e5a949737f551f4fce8b8936bbd54e27a00237d9"
+        },
+        {
+          "bytes": 48556,
+          "path": "philosophy/test-00000-of-00001.parquet",
+          "sha256": "51a6715bca767d89652f782825610b7acd22dd5feb9331dce53cb52a772e4d22"
+        },
+        {
+          "bytes": 9154,
+          "path": "philosophy/validation-00000-of-00001.parquet",
+          "sha256": "6883bbc1930bc93d50c00010d265c9eeaca05f72fcd4b6f1571e48b1338ae893"
+        },
+        {
+          "bytes": 4615,
+          "path": "prehistory/dev-00000-of-00001.parquet",
+          "sha256": "9f5ee161a94bd833e3d45683af80276e10ce24cf53f341d39ce730325a4bb151"
+        },
+        {
+          "bytes": 54316,
+          "path": "prehistory/test-00000-of-00001.parquet",
+          "sha256": "f4cf1e103e6494dd2f77bd1d732b58d8386cc3182346609b7c04353207122a25"
+        },
+        {
+          "bytes": 9895,
+          "path": "prehistory/validation-00000-of-00001.parquet",
+          "sha256": "7ef498da9ba70a7566bd8243ebe04ba65f99df124f999d5c52f51afd91338081"
+        },
+        {
+          "bytes": 4887,
+          "path": "professional_accounting/dev-00000-of-00001.parquet",
+          "sha256": "03ab250530422076d3dbbda82a33059f19159e3ecb5e280eb9cd8568dacc3e4d"
+        },
+        {
+          "bytes": 69518,
+          "path": "professional_accounting/test-00000-of-00001.parquet",
+          "sha256": "1fe6da7a3a8647ee70c23543a15ef9b3ad5bf9ec22e68d0583c98dfdf7585e0f"
+        },
+        {
+          "bytes": 12892,
+          "path": "professional_accounting/validation-00000-of-00001.parquet",
+          "sha256": "c2cf2ba25cde71ed3ef24d3fe9d36208a83a8a26124a2e546e6f775fd0082f21"
+        },
+        {
+          "bytes": 15139,
+          "path": "professional_law/dev-00000-of-00001.parquet",
+          "sha256": "cb7bf53b1bcf59d2c2c5fab9865da88e1522d0fa96b396af221b05a52d6c89e3"
+        },
+        {
+          "bytes": 1037057,
+          "path": "professional_law/test-00000-of-00001.parquet",
+          "sha256": "81cfdb63639fe7839da36aa1156e3f772a4521d532027d2c56f1db8fb30c6c7c"
+        },
+        {
+          "bytes": 115632,
+          "path": "professional_law/validation-00000-of-00001.parquet",
+          "sha256": "d64b01ffb220ee6857c4a45848fe1b4c262914b34decb07f121298b41db38cba"
+        },
+        {
+          "bytes": 8445,
+          "path": "professional_medicine/dev-00000-of-00001.parquet",
+          "sha256": "899036c8f5d8c035ee3f4dd17b4e2a761a8e507543cbadf40ac8106963725e1e"
+        },
+        {
+          "bytes": 124933,
+          "path": "professional_medicine/test-00000-of-00001.parquet",
+          "sha256": "8c1c18b16c9865bf52b7cd997c4d05346f914441645459fac8c5b2f78d9ebac9"
+        },
+        {
+          "bytes": 19864,
+          "path": "professional_medicine/validation-00000-of-00001.parquet",
+          "sha256": "f218bc4485cb02bda6fe19ace6a770429f748a7bee614517ddcea470c1646b69"
+        },
+        {
+          "bytes": 4691,
+          "path": "professional_psychology/dev-00000-of-00001.parquet",
+          "sha256": "c61d4fb24acc54ebce352f601b404f06b3e1c61df1f3bc136482746b9008d03a"
+        },
+        {
+          "bytes": 132551,
+          "path": "professional_psychology/test-00000-of-00001.parquet",
+          "sha256": "91529edc6760dbe5bfa41e9190021041499a15f332f5af8d9bffc9fb252116b9"
+        },
+        {
+          "bytes": 22115,
+          "path": "professional_psychology/validation-00000-of-00001.parquet",
+          "sha256": "85a3859b71860b53f31fa43cb9cf21534b1393e8cf50d404d464a282ee4ebf17"
+        },
+        {
+          "bytes": 4435,
+          "path": "public_relations/dev-00000-of-00001.parquet",
+          "sha256": "7dd78ceeccd2f8aabdc9301d70bfe94cfd941a4ac4c425189b6d143824110426"
+        },
+        {
+          "bytes": 20617,
+          "path": "public_relations/test-00000-of-00001.parquet",
+          "sha256": "9ce4ff437b2b6192505d2b5dbe745a5012711ce911ada34f8574fb18411d07cd"
+        },
+        {
+          "bytes": 6448,
+          "path": "public_relations/validation-00000-of-00001.parquet",
+          "sha256": "38c2f887dbd93767fc412245c74e585f92d1730b5b82fb37e95e2c4b79c31963"
+        },
+        {
+          "bytes": 7487,
+          "path": "security_studies/dev-00000-of-00001.parquet",
+          "sha256": "c7ab02234d038834c0d4d79af15f0bea9c46fc21ca3295f603708aff878212f7"
+        },
+        {
+          "bytes": 114103,
+          "path": "security_studies/test-00000-of-00001.parquet",
+          "sha256": "38477f527d22bc9f55e92fb7c247f73e301508d547841b591bd0f9f0fc9529d5"
+        },
+        {
+          "bytes": 18668,
+          "path": "security_studies/validation-00000-of-00001.parquet",
+          "sha256": "65866e2efc98654d1bcd39ee462209530c7d61c0266e58270b742f1417e90ef8"
+        },
+        {
+          "bytes": 4205,
+          "path": "sociology/dev-00000-of-00001.parquet",
+          "sha256": "4abb7ebab6f1cd68a4c599961c02ce4f86045b5909cf77845e1b045e7c101702"
+        },
+        {
+          "bytes": 43920,
+          "path": "sociology/test-00000-of-00001.parquet",
+          "sha256": "0cdb1dab92e7d5a8c1b617b1c868ae72dade770eb64d6539b26e256594a5d67a"
+        },
+        {
+          "bytes": 8355,
+          "path": "sociology/validation-00000-of-00001.parquet",
+          "sha256": "aadeb1fdd88ef34d9226a10c0ccdfb20e753614d1a1044e899931a0a9b3954a4"
+        },
+        {
+          "bytes": 4219,
+          "path": "us_foreign_policy/dev-00000-of-00001.parquet",
+          "sha256": "da27347e8868bd2b5558f4cf3629772cbe764e828c0c231ac89f7b1a6cff34aa"
+        },
+        {
+          "bytes": 19540,
+          "path": "us_foreign_policy/test-00000-of-00001.parquet",
+          "sha256": "8051dfc5f49bc73c4882049cbfe476fea2f57ec1879eb23319ed4bdd8f6b0cd3"
+        },
+        {
+          "bytes": 5268,
+          "path": "us_foreign_policy/validation-00000-of-00001.parquet",
+          "sha256": "e1149eaf277f6ed48bf39add21a613e1183525b7f32ef8fa834b8bec43556f36"
+        },
+        {
+          "bytes": 3872,
+          "path": "virology/dev-00000-of-00001.parquet",
+          "sha256": "2790f42d02f08f6dafb5aa45f28343eb6c79e1ffa184d7737f202f06e96a91d8"
+        },
+        {
+          "bytes": 27310,
+          "path": "virology/test-00000-of-00001.parquet",
+          "sha256": "c59ea23f72b405b180a3135c3a5240f8594af6f3c03e5c7784345914253a4928"
+        },
+        {
+          "bytes": 7047,
+          "path": "virology/validation-00000-of-00001.parquet",
+          "sha256": "fcc8b6cd99a01757293f521cc2394f1998620e981cd2cae8de7360f2b6b731f8"
+        },
+        {
+          "bytes": 3303,
+          "path": "world_religions/dev-00000-of-00001.parquet",
+          "sha256": "5676e31ed09b7f63c16975a30b88620a02bb415ec2e55bbdcd7cf677bf922082"
+        },
+        {
+          "bytes": 18922,
+          "path": "world_religions/test-00000-of-00001.parquet",
+          "sha256": "b59bdb0cb4b16fd8a0a81362d8bd8241c0013940b877c5c6e76d66f536613aff"
+        },
+        {
+          "bytes": 4940,
+          "path": "world_religions/validation-00000-of-00001.parquet",
+          "sha256": "769666ee1ad84717b1e3be48b3516f54a5c51f530ffb4c28968a629ee0c13c73"
+        }
+      ],
+      "revision": "c30699e8356da336a370243923dbaf21066bb9fe",
+      "snapshot": "/lus/lustre1/vollmerc/more-dense-flop-benchmarks-20260905/huggingface/hub/datasets--cais--mmlu/snapshots/c30699e8356da336a370243923dbaf21066bb9fe"
+    }
+  },
+  "downloader": "huggingface_hub",
+  "downloader_version": "1.27.0",
+  "schema": "more.benchmark-downloads/v1",
+  "started_at_utc": "2026-09-05T16:56:58.956738+00:00"
+}
