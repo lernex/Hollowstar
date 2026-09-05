@@ -33,6 +33,7 @@ export PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=6
 srun --kill-on-bad-exit=1 bash -c '
 set -euo pipefail
 export LOCAL_RANK="$SLURM_LOCALID"
+export ROCR_VISIBLE_DEVICES="$LOCAL_RANK" HIP_VISIBLE_DEVICES=0 CUDA_VISIBLE_DEVICES=0
 source "$METIS_ABLATION_RUNTIME"
 case "$LOCAL_RANK" in
   0) step=2000 ;;
@@ -47,5 +48,5 @@ exec python -B -m metis_ablation.routing_credit_probe \
   --output "$METIS_QUALITY_OUTPUT/gap8-step-$step" \
   --quality-only --evaluation-gap-blocks 8 --step "$step" \
   --sequences 6 --sequence-length 4096 --repeat-forwards 5 \
-  --precision bf16 --device "cuda:$LOCAL_RANK" --seed 16062026
+  --precision bf16 --device cuda:0 --seed 16062026
 '

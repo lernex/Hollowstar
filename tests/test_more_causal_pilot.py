@@ -159,7 +159,10 @@ class CausalPilotTests(unittest.TestCase):
         programs = {
             "git": '#!/bin/bash\nif [ "$3" = rev-parse ]; then echo pinned; fi\n',
             "srun": '#!/bin/bash\nshift\nfor rank in 0 1 2; do SLURM_LOCALID="$rank" "$@" || exit; done\n',
-            "python": f"#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n",
+            "python": (
+                f"#!{sys.executable}\nimport json,os,sys\n"
+                "print(json.dumps({'argv': sys.argv[1:], 'physical_gpu': os.environ['ROCR_VISIBLE_DEVICES']}))\n"
+            ),
         }
         for name, contents in programs.items():
             path = binary / name
@@ -179,10 +182,12 @@ class CausalPilotTests(unittest.TestCase):
         }
         launcher = Path(__file__).resolve().parents[1] / "slurm/ablation/causal-checkpoint-quality.sbatch"
         result = subprocess.run(["bash", str(launcher)], env=environment, text=True, capture_output=True, check=True)
-        commands = [json.loads(line) for line in result.stdout.splitlines()]
+        launches = [json.loads(line) for line in result.stdout.splitlines()]
+        commands = [launch["argv"] for launch in launches]
         self.assertEqual(len(commands), 3)
         self.assertEqual([command[command.index("--step") + 1] for command in commands], ["2000", "19000", "25000"])
-        self.assertEqual([command[command.index("--device") + 1] for command in commands], ["cuda:0", "cuda:1", "cuda:2"])
+        self.assertEqual([launch["physical_gpu"] for launch in launches], ["0", "1", "2"])
+        self.assertEqual([command[command.index("--device") + 1] for command in commands], ["cuda:0"] * 3)
         for command in commands:
             self.assertIn("--quality-only", command)
             self.assertEqual(command[command.index("--evaluation-gap-blocks") + 1], "8")
