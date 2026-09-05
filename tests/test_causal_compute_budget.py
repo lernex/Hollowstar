@@ -156,6 +156,28 @@ class CausalComputeBudgetTests(unittest.TestCase):
         for name in ("depths", "routed_k", "token_costs", "prefix_slack"):
             torch.testing.assert_close(getattr(gpu, name).cpu(), getattr(cpu, name), rtol=0, atol=0)
 
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA unavailable")
+    def test_full_length_cuda_admission_with_large_accumulated_credit(self):
+        # Terminal exploration can halt long prefixes. Exercise the real
+        # sequence/menu shape and an int64 balance far beyond int32, not only
+        # the tiny fixture's frequently depleted balance.
+        depth = torch.full((6, 4096, 5), -9.0, dtype=torch.float64)
+        depth[..., 0] = -8
+        depth[:, 2048:, 4] = 5
+        width = torch.zeros(6, 4096, 4, 2, 8, dtype=torch.float64)
+        mask = torch.ones(6, 4096, dtype=torch.bool)
+        kwargs = dict(
+            base_pass_costs=[1_000_000_003] * 4,
+            expert_costs=[10_000_019, 20_000_033],
+            credit_per_token=1_800_000_123, cost_scale=10_000_000_000,
+        )
+        cpu = allocate_causal_budget(depth, width, mask, **kwargs)
+        self.assertGreater(int(cpu.prefix_slack.max()), 2**40)
+        gpu = allocate_causal_budget(depth.cuda(), width.cuda(), mask.cuda(), **kwargs)
+        for name in ("depths", "routed_k", "token_costs", "prefix_slack"):
+            torch.testing.assert_close(getattr(gpu, name).cpu(), getattr(cpu, name), rtol=0, atol=0)
+        self.assertEqual(int(gpu.cost), int(cpu.cost))
+
 
 if __name__ == "__main__":
     unittest.main()
