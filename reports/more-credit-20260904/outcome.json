@@ -2,6 +2,15 @@
   "schema": "more.routing-repair-outcome/v1",
   "date": "2026-09-04",
   "promotion_decision": "not_qualified",
+  "final_review": {
+    "completed": true,
+    "reporting_fix_commit": "649312a",
+    "finding": "Historical observation-mode nominal forward FLOP totals counted reused exit projections twice.",
+    "historical_nominal_forward_totals_reliable": false,
+    "loss_comparisons_affected": false,
+    "controller_inclusive_budget_gates_affected": false,
+    "promotion_decision_changed": false
+  },
   "campaign_restarted": false,
   "original_campaign_status": {
     "core_job": 495820,

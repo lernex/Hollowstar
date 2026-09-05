@@ -28,6 +28,12 @@ is `reports/more-credit-20260904/results.tsv`. Natural GPU routing variability
 and forced-plan replay parity are recorded explicitly. Failed or
 noise-unresolved comparisons must not be quoted as allocation improvements.
 
+The final review found and corrected duplicated LM-head charges in the probe's
+observation-mode nominal forward-cost reports. Historical raw reports remain
+unchanged for provenance: their affected forward-cost totals must not be used
+as measured cost evidence. Losses, controller-inclusive budget gates, teacher
+token counts, and wall times are unaffected; the no-promotion decision stands.
+
 ## Budget and execution
 
 `--compute-allocation-mode joint` enables a separate outcome-prediction head.
