@@ -97,10 +97,13 @@ def _causal_admission(
     if costs.is_cuda:
         if triton is None:
             raise RuntimeError("Causal CUDA admission requires the sealed Triton runtime.")
-        _causal_admission_kernel[(batch,)](
-            costs.contiguous(), scores.contiguous(), active.contiguous(), selected, balances,
-            sequence, menu, credit, triton.next_power_of_2(menu), num_warps=4,
-        )
+        # Raw Triton launches select the current device/stream, unlike torch
+        # operators that guard their tensor's device themselves.
+        with torch.cuda.device(costs.device):
+            _causal_admission_kernel[(batch,)](
+                costs.contiguous(), scores.contiguous(), active.contiguous(), selected, balances,
+                sequence, menu, credit, triton.next_power_of_2(menu), num_warps=4,
+            )
         return selected, balances
 
     # Only the CPU reference loops in Python. CUDA performs the sequential

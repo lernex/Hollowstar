@@ -1,9 +1,11 @@
 """Causal admission spends only earned prefix credit, independently per row."""
 
 import unittest
+from unittest.mock import patch
 
 import torch
 
+import metis_training.compute_budget as budget_module
 from metis_training.compute_budget import allocate_causal_budget
 from tests.test_joint_compute_budget import _exhaustive_optimum, _scalar_account
 
@@ -177,6 +179,34 @@ class CausalComputeBudgetTests(unittest.TestCase):
         for name in ("depths", "routed_k", "token_costs", "prefix_slack"):
             torch.testing.assert_close(getattr(gpu, name).cpu(), getattr(cpu, name), rtol=0, atol=0)
         self.assertEqual(int(gpu.cost), int(cpu.cost))
+
+    @unittest.skipUnless(torch.cuda.device_count() >= 2, "Multiple CUDA devices unavailable")
+    def test_noncurrent_cuda_device_is_guarded_and_restored(self):
+        depth, width, mask = self.fixture()
+        original_device = torch.cuda.current_device()
+        target = (original_device + 1) % torch.cuda.device_count()
+        device = torch.device("cuda", target)
+        expected = self.allocate(depth, width, mask)
+        seen = []
+        kernel = budget_module._causal_admission_kernel
+
+        class LaunchSpy:
+            def __getitem__(self, grid):
+                seen.append(torch.cuda.current_device())
+                launch = kernel[grid]
+
+                def run(*args, **kwargs):
+                    seen.append(torch.cuda.current_device())
+                    return launch(*args, **kwargs)
+
+                return run
+
+        with patch.object(budget_module, "_causal_admission_kernel", LaunchSpy()):
+            actual = self.allocate(depth.to(device), width.to(device), mask.to(device))
+        self.assertEqual(seen, [target, target])
+        self.assertEqual(torch.cuda.current_device(), original_device)
+        torch.testing.assert_close(actual.depths.cpu(), expected.depths, rtol=0, atol=0)
+        torch.testing.assert_close(actual.routed_k.cpu(), expected.routed_k, rtol=0, atol=0)
 
 
 if __name__ == "__main__":
