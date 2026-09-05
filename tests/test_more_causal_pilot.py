@@ -9,7 +9,7 @@ import torch
 
 from metis_ablation.specs import GLOBAL_BATCH_SEQUENCES, spec_by_name
 from metis_ablation.train import main
-import test_more_execution_bounds as execution_bounds
+from tests import test_more_execution_bounds as execution_bounds
 
 
 class CausalPilotTests(unittest.TestCase):
