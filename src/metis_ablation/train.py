@@ -464,6 +464,10 @@ def _freeze_inactive_policy_parameters(
             ):
                 parameter.requires_grad_(False)
                 frozen.append(name)
+    if not joint and getattr(model, "joint_router", None) is not None:
+        for name, parameter in model.joint_router.named_parameters(prefix="joint_router"):
+            parameter.requires_grad_(False)
+            frozen.append(name)
     return tuple(sorted(frozen))
 
 
@@ -835,6 +839,8 @@ def train_row(
     stop_after_steps: int | None = None,
     observed_depth_credit: bool = False,
     keep_all_checkpoints: bool = False,
+    causal_compute_price: float = 0.0,
+    activation_recompute_policy: str | None = None,
 ) -> dict[str, Any]:
     runtime = initialize_runtime(device=device_override)
     lease = None
@@ -866,6 +872,8 @@ def train_row(
             stop_after_steps=stop_after_steps,
             observed_depth_credit=observed_depth_credit,
             keep_all_checkpoints=keep_all_checkpoints,
+            causal_compute_price=causal_compute_price,
+            activation_recompute_policy=activation_recompute_policy,
         )
     finally:
         _release_row_lease(lease)
@@ -896,6 +904,8 @@ def _train_row_inner(
     stop_after_steps: int | None = None,
     observed_depth_credit: bool = False,
     keep_all_checkpoints: bool = False,
+    causal_compute_price: float = 0.0,
+    activation_recompute_policy: str | None = None,
 ) -> dict[str, Any]:
     if stop_after_steps is not None:
         if type(stop_after_steps) is not int or stop_after_steps <= 0:
@@ -940,8 +950,29 @@ def _train_row_inner(
             "varlen_fused_required" if on_accelerator else "torch_reference"
         ),
     )
-    if compute_allocation_mode not in {"legacy", "joint"}:
-        raise ValueError("compute_allocation_mode must be legacy or joint")
+    if activation_recompute_policy is not None:
+        config = replace(config, activation_recompute_policy=activation_recompute_policy)
+        config._validate_tiny() if config.family == "tiny" else config.validate()
+    if compute_allocation_mode not in {"legacy", "joint", "causal", "causal-fixed"}:
+        raise ValueError("Unknown compute_allocation_mode")
+    joint_policy = compute_allocation_mode in {"joint", "causal"}
+    causal = compute_allocation_mode in {"causal", "causal-fixed"}
+    metered_policy = joint_policy or causal
+    if causal_compute_price != 0.0 and not causal:
+        raise ValueError("causal_compute_price requires an explicit causal allocation mode")
+    if causal:
+        config = replace(
+            config, joint_compute_router=True, causal_compute_budget=True,
+            causal_compute_price=causal_compute_price, budgeted_depth_values=(),
+        )
+        if compute_allocation_mode == "causal-fixed":
+            if (
+                curriculum.continuation_mode != "fixed_max"
+                or curriculum.max_passes != 2
+                or curriculum.routed_k_mode != "fixed"
+                or curriculum.fixed_routed_k != 4
+            ):
+                raise ValueError("causal-fixed requires an explicit fixed depth-two/k-four control")
     if observed_depth_credit:
         if (
             compute_allocation_mode != "legacy"
@@ -950,7 +981,7 @@ def _train_row_inner(
             raise ValueError("Observed depth credit requires a learned non-joint depth policy")
         config = replace(config, observed_depth_credit=True)
         config._validate_tiny() if config.family == "tiny" else config.validate()
-    if compute_allocation_mode == "joint":
+    if joint_policy:
         if spec.continuation_mode != "budgeted" or spec.routed_k_mode != "budgeted":
             raise ValueError("Joint routing must not silently replace a fixed or random control")
         config = replace(config, joint_compute_router=True, budgeted_depth_values=())
@@ -965,6 +996,9 @@ def _train_row_inner(
         curriculum.validate(config)
     elif joint_max_passes is not None:
         raise ValueError("joint_max_passes requires joint allocation")
+    if causal:
+        config._validate_tiny() if config.family == "tiny" else config.validate()
+        curriculum.validate(config)
     topology = build_replicated_expert_topology(runtime, family=config.family)
     policy = build_precision_policy(
         config.precision,
@@ -1031,10 +1065,10 @@ def _train_row_inner(
         frozen_policy_parameters
     )
     exact_budget_groups = {
-        "depth_policy": curriculum.continuation_mode == "budgeted" and compute_allocation_mode != "joint",
-        "width_policy": curriculum.routed_k_mode == "budgeted" and compute_allocation_mode != "joint",
+        "depth_policy": curriculum.continuation_mode == "budgeted" and not joint_policy,
+        "width_policy": curriculum.routed_k_mode == "budgeted" and not joint_policy,
     }
-    if compute_allocation_mode == "joint":
+    if joint_policy:
         exact_budget_groups["joint_policy"] = True
     optimizer_manifest["gradient_clipping"] = (
         {
@@ -1326,6 +1360,8 @@ def _train_row_inner(
             joint_step_flops = 0.0
             joint_step_router_flops = 0.0
             joint_step_active_tokens = 0.0
+            joint_step_head_tokens = 0.0
+            joint_step_budget_flops = 0.0
             joint_step_observations = 0.0
             expert_selection_counts: torch.Tensor | None = None
             depth_histogram = torch.zeros(
@@ -1429,10 +1465,16 @@ def _train_row_inner(
                 total_tokens += int(batch.non_padding_tokens)
 
                 telemetry = output.telemetry
-                if compute_allocation_mode == "joint":
+                if metered_policy:
                     joint_step_flops += float(telemetry["joint_model_flops"].detach().item())
                     joint_step_router_flops += float(telemetry["joint_router_flops"].detach().item())
                     joint_step_active_tokens += float(telemetry["executed_active_tokens"].detach().item())
+                    joint_step_head_tokens += float(telemetry.get(
+                        "executed_lm_head_tokens",
+                        batch.attention_mask.sum() if compute_allocation_mode == "causal-fixed"
+                        else telemetry["executed_active_tokens"],
+                    ).detach().item())
+                    joint_step_budget_flops += float(telemetry["joint_budget_flops"].detach().item())
                     joint_step_observations += float(telemetry["joint_utility_observations"].detach().item())
                 counts = telemetry.get("expert_selection_counts")
                 if isinstance(counts, torch.Tensor):
@@ -1475,7 +1517,7 @@ def _train_row_inner(
                 model, topology, global_supervised_tokens=global_supervised
             )
             if (
-                compute_allocation_mode == "joint"
+                joint_policy
                 or curriculum.continuation_mode == "budgeted"
                 or curriculum.routed_k_mode == "budgeted"
             ):
@@ -1528,7 +1570,7 @@ def _train_row_inner(
             )
 
             optimizer.step()
-            if compute_allocation_mode == "joint" and curriculum.joint_utility_coefficient > 0.0:
+            if joint_policy and curriculum.joint_utility_coefficient > 0.0:
                 global_utility_observations = all_reduce_sum(
                     torch.tensor([joint_step_observations], device=runtime.device),
                     topology,
@@ -1548,26 +1590,35 @@ def _train_row_inner(
                     observed_mean_passes=step_telemetry.get("mean_depth"),
                     observed_mean_routed_k=step_telemetry.get("mean_routed_k"),
                 )
-                if compute_allocation_mode == "joint":
+                if metered_policy:
                     joint_totals = all_reduce_sum(
                         torch.tensor(
-                            [joint_step_flops, joint_step_router_flops, joint_step_active_tokens],
+                            [
+                                joint_step_flops, joint_step_router_flops,
+                                joint_step_active_tokens, joint_step_head_tokens,
+                                joint_step_budget_flops,
+                            ],
                             device=runtime.device,
                             dtype=torch.float64,
                         ),
                         topology,
                     )
-                    model_flops, router_flops, active_tokens = [
+                    model_flops, router_flops, active_tokens, head_tokens, budget_flops = [
                         float(value.item()) for value in joint_totals
                     ]
                     replay_flops = (
                         (model_flops - router_flops) / 3.0
                         if config.activation_recompute_policy in {"pass", "layer"}
-                        else 2.0 * config.vocab_size * config.d_model * active_tokens
+                        else 2.0 * config.vocab_size * config.d_model * head_tokens
                     )
                     flops = model_flops + replay_flops
                     step_telemetry["global_joint_model_flops"] = model_flops
                     step_telemetry["global_joint_router_flops"] = router_flops
+                    step_telemetry["global_joint_budget_flops"] = budget_flops
+                    step_telemetry["global_joint_budget_fraction"] = model_flops / max(budget_flops, 1.0)
+                    step_telemetry["global_executed_active_tokens"] = active_tokens
+                    step_telemetry["global_executed_lm_head_tokens"] = head_tokens
+                    step_telemetry["global_checkpoint_replay_flops"] = replay_flops
                 memory = peak_memory_evidence(runtime.device)
                 metrics.write(
                     {
@@ -1727,7 +1778,16 @@ def _synthetic_batches(*, config: Any, spec: AblationSpec, step: int, rank: int,
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train one MoRE ablation row")
     parser.add_argument("--row", required=True, help="Ablation row name, e.g. more-core")
-    parser.add_argument("--compute-allocation-mode", choices=("legacy", "joint"), default="legacy")
+    parser.add_argument(
+        "--compute-allocation-mode",
+        choices=("legacy", "joint", "causal", "causal-fixed"), default="legacy",
+        help="Explicit causal candidate or lean fixed depth-two/k-four control; never reinterpret an old row",
+    )
+    parser.add_argument("--causal-compute-price", type=float, default=0.0)
+    parser.add_argument(
+        "--activation-recompute-policy", choices=("none", "pass", "layer"), default=None,
+        help="Explicit measured-lane override, sealed in model identity; preserve the row default when omitted",
+    )
     parser.add_argument("--joint-router-exploration", type=float, default=0.05)
     parser.add_argument("--joint-utility-coefficient", type=float, default=1.0)
     parser.add_argument("--joint-max-passes", type=int, default=None)
@@ -1738,6 +1798,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--diagnostic-apus", type=int, default=None,
         help="Explicit short-canary DP size; preserve the row micro-batch and global token batch",
+    )
+    parser.add_argument(
+        "--diagnostic-micro-batch", type=int, default=None,
+        help="Explicit pilot micro-batch paired with --diagnostic-apus; preserve the global token batch",
     )
     parser.add_argument("--output", required=True, help="Campaign output root")
     parser.add_argument("--release-root", default=None, help="1T release inventory root")
@@ -1787,16 +1851,20 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     spec = spec_by_name(args.row)
+    if args.diagnostic_micro_batch is not None and args.diagnostic_apus is None:
+        raise ValueError("diagnostic_micro_batch requires diagnostic_apus")
     if args.diagnostic_apus is not None:
         bound = args.stop_after_steps if args.stop_after_steps is not None else args.max_steps
         if bound is None or bound < 1:
             raise ValueError("A diagnostic allocation requires positive max_steps or stop_after_steps")
-        denominator = args.diagnostic_apus * spec.micro_batch
-        if args.diagnostic_apus < 2 or denominator <= 0 or GLOBAL_BATCH_SEQUENCES % denominator:
+        micro_batch = spec.micro_batch if args.diagnostic_micro_batch is None else args.diagnostic_micro_batch
+        denominator = args.diagnostic_apus * micro_batch
+        if args.diagnostic_apus < 2 or micro_batch < 1 or GLOBAL_BATCH_SEQUENCES % denominator:
             raise ValueError("Diagnostic APUs must tile the unchanged global batch with this micro-batch")
         spec = replace(
             spec,
             apus=args.diagnostic_apus,
+            micro_batch=micro_batch,
             grad_accum=GLOBAL_BATCH_SEQUENCES // denominator,
             measured_tokens_per_second=None,
             notes=spec.notes + " Explicit diagnostic DP geometry; original lane throughput does not apply.",
@@ -1824,6 +1892,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         stop_after_steps=args.stop_after_steps,
         observed_depth_credit=args.observed_depth_credit,
         keep_all_checkpoints=args.keep_all_checkpoints,
+        causal_compute_price=args.causal_compute_price,
+        activation_recompute_policy=args.activation_recompute_policy,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
