@@ -469,7 +469,7 @@ def main(argv: list[str] | None = None) -> int:
         from .runtime import supervise_prep
 
         supervise_prep(
-            root, code_root(), args.python.resolve(),
+            root, code_root(), args.python.expanduser().absolute(),
             maximum_nodes=args.maximum_nodes, workers_per_node=args.workers,
         )
     elif args.command == "import-policy":

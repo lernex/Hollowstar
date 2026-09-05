@@ -61,7 +61,11 @@ def _submit_prep_workers(
     logs.mkdir(parents=True, exist_ok=True)
     commit = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
-    recent = [job for job in previous["jobs"] if datetime.fromisoformat(job["submitted_at"]) >= cutoff]
+    recent = [
+        job for job in previous["jobs"]
+        if job.get("code_commit") == commit and job.get("python") == str(python)
+        and datetime.fromisoformat(job["submitted_at"]) >= cutoff
+    ]
     if free and len(recent) >= 3 * maximum_nodes:
         raise RuntimeError("Repeated short-lived prep launches; inspect Slurm logs before submitting more")
     for value in (root, checkout, python):
@@ -92,13 +96,14 @@ def _submit_prep_workers(
             "job_id": job_id,
             "node": "scheduler-selected",
             "code_commit": commit,
+            "python": str(python),
             "submitted_at": utc_now(),
             "workers": workers_per_node,
         }
         previous["jobs"].append(job)
         active.append(job)
         write_receipt(registry_path, previous)
-    return {"active_jobs": active, "registered_jobs": previous["jobs"]}
+    return {"status": "supervising", "active_jobs": active, "registered_jobs": previous["jobs"]}
 
 
 def submit_prep_workers(
@@ -127,7 +132,7 @@ def supervise_prep(
     root: Path, checkout: Path, python: Path, *,
     maximum_nodes: int = 4, workers_per_node: int = 32,
 ) -> None:
-    from .cli import _stop_event
+    from .cli import _stop_event, safe_error
     from .worker import EventTail, claim, failure_blocks, observe_failure, worker_configuration
 
     if maximum_nodes < 1 or workers_per_node < 1:
@@ -135,6 +140,7 @@ def supervise_prep(
     lock = claim(root / "locks" / "prep-supervisor.flock")
     if lock is None:
         raise RuntimeError("A preparation supervisor already owns this release")
+    status_path = root / "status" / "prep-supervisor.json"
     try:
         config, _ = worker_configuration(root)
         generation = config["generation"]
@@ -164,7 +170,7 @@ def supervise_prep(
                 )
             else:
                 result = {"status": "waiting_for_new_raw_objects"}
-            atomic_json(root / "status" / "prep-supervisor.json", {
+            atomic_json(status_path, {
                 "schema": "metis17.prep-supervisor/v1",
                 "host": socket.gethostname(), "pid": os.getpid(), "generation": generation,
                 "index_generation": index_generation,
@@ -173,5 +179,12 @@ def supervise_prep(
                 "pending_objects": len(pending), "maximum_nodes": maximum_nodes, **result,
             })
             stop.wait(60)
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        atomic_json(status_path, {
+            "schema": "metis17.prep-supervisor/v1", "status": "failed",
+            "host": socket.gethostname(), "pid": os.getpid(),
+            "updated_at": utc_now(), **safe_error(exc),
+        })
+        raise
     finally:
         lock.close()

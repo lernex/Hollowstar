@@ -551,6 +551,14 @@ def prep_service(
                 if not active and (stop.is_set() or now - last_work >= idle_seconds):
                     break
                 time.sleep(2)
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
+            atomic_json(status_path, {
+                "schema": "metis17.prep-status/v1", "status": "failed",
+                "host": host, "pid": os.getpid(), "code_commit": commit,
+                "generation": generation, "index_generation": index_generation,
+                "active_objects": sorted(active), "updated_at": utc_now(), **safe_error(exc),
+            })
+            raise
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
             for work in active.values():

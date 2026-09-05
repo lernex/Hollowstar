@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import threading
 import unittest
@@ -12,7 +13,7 @@ import yaml
 from metis_data17.acquisition import CapacityPending
 from metis_data17.cli import (
     _limits, append_event, download_order_key, download_service, init_run,
-    read_events, select_download_group, status,
+    main, read_events, select_download_group, status,
 )
 from metis_data17.common import ObjectSpec, RawReceipt, digest_json, read_receipt, write_receipt
 
@@ -82,6 +83,17 @@ class Metis17CliTests(unittest.TestCase):
         config.write_text(yaml.safe_dump(value))
         with self.assertRaises(ValueError):
             init_run(self.root, config)
+
+    def test_supervision_preserves_the_virtualenv_launcher_symlink(self):
+        launcher = Path(self.tmp.name) / "runtime" / "bin" / "python"
+        launcher.parent.mkdir(parents=True)
+        launcher.symlink_to(Path(sys.executable).resolve())
+        self.assertNotEqual(launcher, launcher.resolve())
+        with patch("metis_data17.runtime.supervise_prep") as supervise:
+            self.assertEqual(main(["supervise-prep", "--root", str(self.root),
+                                   "--python", str(launcher)]), 0)
+        self.assertEqual(supervise.call_args.args[2], launcher)
+        self.assertTrue(supervise.call_args.args[2].is_symlink())
 
     def test_no_reconstruction_source_kind(self):
         value = yaml.safe_load(self.config.read_text())

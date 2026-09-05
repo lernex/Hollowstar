@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from metis_data17.common import read_receipt, write_receipt
+from metis_data17.common import read_receipt, utc_now, write_receipt
 from metis_data17.runtime import idle_nodes, submit_prep_workers
 
 
@@ -54,6 +54,7 @@ class Metis17RuntimeTests(unittest.TestCase):
         self.assertIn("METIS17_WORKERS=32", exports)
         registry = read_receipt(self.root / "state" / "prep-jobs.json")
         self.assertEqual(registry["jobs"][0]["code_commit"], "a" * 40)
+        self.assertEqual(registry["jobs"][0]["python"], str(Path(sys.executable)))
 
     def test_active_jobs_are_not_duplicated_when_controller_restarts(self):
         write_receipt(self.root / "state" / "prep-jobs.json", {
@@ -81,6 +82,30 @@ class Metis17RuntimeTests(unittest.TestCase):
             result = submit_prep_workers(self.root, self.code, Path(sys.executable))
         command.assert_not_called()
         self.assertEqual(result["status"], "waiting_for_idle_nodes")
+
+    def test_corrected_code_or_runtime_is_not_blocked_by_previous_failed_launches(self):
+        write_receipt(self.root / "state" / "prep-jobs.json", {
+            "jobs": [
+                {"job_id": str(index), "submitted_at": utc_now(),
+                 "code_commit": "b" * 40, "python": "/wrong/system/python"}
+                for index in range(3)
+            ],
+        })
+
+        def output(argv, **_kwargs):
+            if argv[0] == "squeue":
+                return ""
+            if argv[0] == "git":
+                return "a" * 40
+            if argv[0] == "sbatch":
+                return "104\n"
+            raise AssertionError(argv)
+
+        with patch("metis_data17.runtime.idle_nodes", return_value=[
+            {"name": "node01", "cpus": 192, "memory_mb": 512000},
+        ]), patch("metis_data17.runtime.subprocess.check_output", side_effect=output):
+            result = submit_prep_workers(self.root, self.code, Path(sys.executable), maximum_nodes=1)
+        self.assertEqual([job["job_id"] for job in result["active_jobs"]], ["104"])
 
 
 if __name__ == "__main__":
