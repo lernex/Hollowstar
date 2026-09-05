@@ -438,6 +438,8 @@ class CurriculumState:
         if self.compute_allocation_mode == "joint":
             if not config.joint_compute_router:
                 raise ValueError("Joint allocation requires an enabled utility router.")
+            if (self.max_passes or config.max_passes) < config.causal_min_passes:
+                raise ValueError("The joint horizon cannot be below causal_min_passes.")
             if not 0.0 <= self.joint_router_exploration <= 1.0:
                 raise ValueError("Joint exploration must lie in [0, 1] loss units.")
             if not math.isfinite(self.joint_utility_coefficient) or self.joint_utility_coefficient < 0:
@@ -6261,6 +6263,8 @@ class Metis16ForCausalLM(nn.Module):
                 raise ValueError("Forced widths require an MoE pathway.")
         joint_mode = curriculum_state.compute_allocation_mode == "joint"
         causal_budget = self.config.causal_compute_budget
+        if joint_mode and effective_passes < self.config.causal_min_passes:
+            raise ValueError("The joint horizon cannot be below causal_min_passes.")
         causal_memory_metadata = self.config.causal_memory_metadata == "legacy_confidence"
         if self.config.terminal_action_critic and labels is not None and return_logits:
             raise ValueError(
@@ -7058,6 +7062,7 @@ class Metis16ForCausalLM(nn.Module):
                                 credit_per_token=causal_credit,
                                 price=self.config.causal_compute_price,
                                 cost_scale=costs.reference_per_token,
+                                minimum_depth=self.config.causal_min_passes - 1,
                             )
                             committed_depths, committed_widths = plan.depths, plan.routed_k
                         else:

@@ -1,1 +1,4 @@
 experiment	commit	metric	status	description
+baseline-fixed	c7aea46	3.4851856129419123	baseline	Corrected fixed d2/k4; 1.96608B training tokens; 73660 development tokens; job495958; 5.441391372G modeled training FLOPs/token
+baseline-core	c7aea46	3.5799722473117948	baseline	Corrected terminal Core; identical development tensor windows and training tokens; 5.354581744G modeled training FLOPs/token
+baseline-bootstrap254	0b5b22c	3.616984671082947	baseline	Prior 254-step reference bootstrap; same training and evaluation tokens; not an improvement

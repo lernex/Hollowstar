@@ -871,6 +871,8 @@ def train_row(
     terminal_critic_exploration: float = 0.05,
     require_routed_expert_gradients: bool = False,
     terminal_reference_bootstrap_steps: int = 0,
+    causal_min_passes: int = 1,
+    joint_router_hidden_dim: int | None = None,
 ) -> dict[str, Any]:
     runtime = initialize_runtime(device=device_override)
     lease = None
@@ -909,6 +911,8 @@ def train_row(
             terminal_critic_exploration=terminal_critic_exploration,
             require_routed_expert_gradients=require_routed_expert_gradients,
             terminal_reference_bootstrap_steps=terminal_reference_bootstrap_steps,
+            causal_min_passes=causal_min_passes,
+            joint_router_hidden_dim=joint_router_hidden_dim,
         )
     finally:
         _release_row_lease(lease)
@@ -946,6 +950,8 @@ def _train_row_inner(
     terminal_critic_exploration: float = 0.05,
     require_routed_expert_gradients: bool = False,
     terminal_reference_bootstrap_steps: int = 0,
+    causal_min_passes: int = 1,
+    joint_router_hidden_dim: int | None = None,
 ) -> dict[str, Any]:
     if stop_after_steps is not None:
         if type(stop_after_steps) is not int or stop_after_steps <= 0:
@@ -998,6 +1004,14 @@ def _train_row_inner(
     joint_policy = compute_allocation_mode in {"joint", "causal"}
     causal = compute_allocation_mode in {"causal", "causal-fixed"}
     metered_policy = joint_policy or causal
+    if causal_min_passes != 1 and compute_allocation_mode != "causal":
+        raise ValueError("causal_min_passes requires an explicit learned causal policy")
+    if joint_router_hidden_dim is not None:
+        if not joint_policy:
+            raise ValueError("joint_router_hidden_dim requires an explicit learned joint policy")
+        if isinstance(joint_router_hidden_dim, bool) or not isinstance(joint_router_hidden_dim, int):
+            raise ValueError("joint_router_hidden_dim must be a positive integer")
+        config = replace(config, joint_router_hidden_dim=joint_router_hidden_dim)
     if causal_compute_price != 0.0 and not causal:
         raise ValueError("causal_compute_price requires an explicit causal allocation mode")
     if causal_memory_metadata != "disabled" and not causal:
@@ -1016,6 +1030,7 @@ def _train_row_inner(
             terminal_action_critic=terminal_action_critic,
             terminal_critic_exploration=terminal_critic_exploration,
             terminal_reference_bootstrap_steps=terminal_reference_bootstrap_steps,
+            causal_min_passes=causal_min_passes,
         )
         if compute_allocation_mode == "causal-fixed":
             if (
@@ -1866,6 +1881,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--causal-compute-price", type=float, default=0.0)
     parser.add_argument(
+        "--causal-min-passes", type=int, default=1,
+        help="Opt-in minimum learned depth; extra passes still spend the unchanged joint compute budget",
+    )
+    parser.add_argument(
+        "--joint-router-hidden-dim", type=int, default=None,
+        help="Explicit learned-router capacity experiment, including its increased compute charge",
+    )
+    parser.add_argument(
         "--causal-memory-metadata", choices=("disabled", "legacy_confidence"),
         default="disabled",
         help="Explicit RM compatibility feature; execution remains controlled by the causal allocator",
@@ -1998,6 +2021,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         terminal_critic_exploration=args.terminal_critic_exploration,
         require_routed_expert_gradients=args.require_routed_expert_gradients,
         terminal_reference_bootstrap_steps=args.terminal_reference_bootstrap_steps,
+        causal_min_passes=args.causal_min_passes,
+        joint_router_hidden_dim=args.joint_router_hidden_dim,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0

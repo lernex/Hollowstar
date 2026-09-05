@@ -43,6 +43,48 @@
     "bootstrap_source": "0b5b22c",
     "original_core_excluded": "The original lineage had disconnected routed-expert learning and is not a valid baseline."
   },
+  "candidate_hypotheses": [
+    {
+      "name": "three-pass-support",
+      "hypothesis": "Restrict the learned horizon to three passes, avoiding poorly trained fourth/fifth-pass plans.",
+      "changes": {"joint_max_passes": 3}
+    },
+    {
+      "name": "context-floor",
+      "hypothesis": "Keep all tokens in the second-pass context while learning additional depth and expert width under the unchanged cost cap.",
+      "changes": {"causal_min_passes": 2, "joint_max_passes": 3},
+      "boundary": "This intentionally excludes one-pass exits; it is a conservative architecture ablation, not a claim that arbitrary early exits are repaired."
+    },
+    {
+      "name": "router-capacity",
+      "hypothesis": "A wider controller may better fit action-dependent outcomes.",
+      "changes": {"joint_router_hidden_dim": 512},
+      "boundary": "Charge the larger router against the same budget and do not change backbone initialization."
+    }
+  ],
+  "research": [
+    {
+      "title": "CHASE",
+      "date": "September 2026",
+      "url": "https://arxiv.org/html/2607.10110v2",
+      "relevance": "Actual token skipping changes SSM state dynamics; fixed-depth pretraining alone does not create competent intermediate exits.",
+      "boundary": "Its executable skipping results concern pure Mamba, not this attention-Mamba hybrid."
+    },
+    {
+      "title": "AdaPonderLM",
+      "date": "March 2026",
+      "url": "https://arxiv.org/html/2603.01914v2",
+      "relevance": "Staged gate/backbone optimization and preservation of halted-token attention context.",
+      "boundary": "Does not establish a successful jointly learned depth-and-expert-width terminal critic."
+    },
+    {
+      "title": "LoopMoE",
+      "date": "August 2026 revision",
+      "url": "https://arxiv.org/html/2606.04438v2",
+      "relevance": "Useful recurrence requires appropriate conditioning and capacity allocation.",
+      "boundary": "Uses fixed recurrences and fixed routed expert count; not evidence of adaptive width superiority."
+    }
+  ],
   "scope": {
     "in_scope": ["MoRE-Core", "MoRE-RM", "their tests and aggregate evidence"],
     "preserve": [

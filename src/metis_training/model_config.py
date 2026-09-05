@@ -505,6 +505,7 @@ class Metis16Config:
     joint_router_hidden_dim: int = 128
     causal_compute_budget: bool = False
     causal_compute_price: float = 0.0
+    causal_min_passes: int = 1
     causal_memory_metadata: str = "disabled"
     terminal_action_critic: bool = False
     terminal_critic_exploration: float = 0.05
@@ -598,6 +599,8 @@ class Metis16Config:
             payload.pop("causal_compute_budget")
             if self.causal_compute_price == 0.0:
                 payload.pop("causal_compute_price")
+        if self.causal_min_passes == 1:
+            payload.pop("causal_min_passes")
         if self.causal_memory_metadata == "disabled":
             payload.pop("causal_memory_metadata")
         if not self.terminal_action_critic:
@@ -945,6 +948,14 @@ class Metis16Config:
 
         if not isinstance(self.causal_compute_budget, bool):
             raise ValueError("causal_compute_budget must be boolean.")
+        if (
+            isinstance(self.causal_min_passes, bool)
+            or not isinstance(self.causal_min_passes, int)
+            or not 1 <= self.causal_min_passes <= self.max_passes
+        ):
+            raise ValueError("causal_min_passes must be an integer within [1, max_passes].")
+        if self.causal_min_passes != 1 and not self.causal_compute_budget:
+            raise ValueError("A minimum causal depth requires causal compute budgeting.")
         if (
             not isinstance(self.causal_memory_metadata, str)
             or self.causal_memory_metadata not in {"disabled", "legacy_confidence"}

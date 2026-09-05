@@ -60,11 +60,18 @@ if [ "${METIS_TERMINAL_CRITIC:-0}" = 1 ]; then
   resume_args+=(--terminal-action-critic --terminal-critic-exploration "${METIS_TERMINAL_EXPLORATION:-0.05}")
   resume_args+=(--terminal-reference-bootstrap-steps "${METIS_TERMINAL_BOOTSTRAP_STEPS:-0}")
 fi
+if [ -n "${METIS_JOINT_MAX_PASSES:-}" ]; then
+  resume_args+=(--joint-max-passes "$METIS_JOINT_MAX_PASSES")
+fi
+if [ -n "${METIS_JOINT_ROUTER_HIDDEN_DIM:-}" ]; then
+  resume_args+=(--joint-router-hidden-dim "$METIS_JOINT_ROUTER_HIDDEN_DIM")
+fi
 exec python -B -m metis_ablation.train \
   --row "$METIS_PILOT_ROW" --output "$METIS_PILOT_OUTPUT" \
   --release-root "$METIS_RELEASE_ROOT" \
   --compute-allocation-mode "$METIS_PILOT_MODE" \
   --causal-compute-price "${METIS_CAUSAL_COMPUTE_PRICE:-0}" \
+  --causal-min-passes "${METIS_CAUSAL_MIN_PASSES:-1}" \
   --causal-memory-metadata "$METIS_CAUSAL_MEMORY_METADATA" \
   --joint-router-exploration "${METIS_JOINT_EXPLORATION:-0.05}" \
   --joint-utility-coefficient "${METIS_JOINT_UTILITY_COEFFICIENT:-1}" \

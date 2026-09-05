@@ -38,7 +38,7 @@ class JointComputeCosts:
         reference = replace(
             config, joint_compute_router=False, causal_compute_budget=False,
             terminal_action_critic=False, terminal_reference_bootstrap_steps=0,
-            causal_memory_metadata="disabled",
+            causal_memory_metadata="disabled", causal_min_passes=1,
         )
         expert = 6 * 3 * config.latent_dim * config.expert_intermediate_dim
         previous = 0

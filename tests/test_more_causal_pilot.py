@@ -231,6 +231,33 @@ class CausalPilotTests(unittest.TestCase):
         self.assertEqual(trainer.call_args.kwargs["causal_memory_metadata"], "legacy_confidence")
         self.assertTrue(trainer.call_args.kwargs["terminal_action_critic"])
 
+    def test_context_floor_and_router_capacity_are_sealed_and_resume_guarded(self):
+        self.set_row("more-core")
+        kwargs = dict(
+            compute_allocation_mode="causal", terminal_action_critic=True,
+            causal_min_passes=2, joint_max_passes=3, joint_router_hidden_dim=8,
+        )
+        self.fixture.train("floor", stop_after_steps=1, **kwargs)
+        manifest = self.fixture.manifest("floor")
+        self.assertEqual(manifest["model"]["causal_min_passes"], 2)
+        self.assertEqual(manifest["model"]["joint_router_hidden_dim"], 8)
+        self.assertEqual(manifest["curriculum"]["max_passes"], 3)
+        self.fixture.train("floor", stop_after_steps=2, **kwargs)
+        self.assertEqual(manifest["run_identity_sha256"], self.fixture.manifest("floor")["run_identity_sha256"])
+        with self.assertRaisesRegex(RuntimeError, "identity changed"):
+            self.fixture.train("floor", stop_after_steps=3, **(kwargs | {"causal_min_passes": 1}))
+        with self.assertRaisesRegex(ValueError, "explicit learned"):
+            self.fixture.train("invalid-floor", stop_after_steps=1, causal_min_passes=2)
+        with patch("metis_ablation.train.train_row", return_value={}) as trainer:
+            main([
+                "--row", "more-core", "--output", "unused", "--compute-allocation-mode", "causal",
+                "--causal-min-passes", "2", "--joint-max-passes", "3",
+                "--joint-router-hidden-dim", "512", "--stop-after-steps", "3",
+            ])
+        self.assertEqual(trainer.call_args.kwargs["causal_min_passes"], 2)
+        self.assertEqual(trainer.call_args.kwargs["joint_max_passes"], 3)
+        self.assertEqual(trainer.call_args.kwargs["joint_router_hidden_dim"], 512)
+
     def test_quality_launcher_covers_each_permanent_window_exactly_once(self):
         root = self.fixture.root
         binary = root / "bin"

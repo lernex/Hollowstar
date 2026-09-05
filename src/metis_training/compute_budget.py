@@ -141,6 +141,7 @@ def allocate_causal_budget(
     credit_per_token: int,
     price: float = 0.0,
     cost_scale: int | None = None,
+    minimum_depth: int = 0,
 ) -> CausalBudgetPlan:
     """Commit trajectories with a fixed price and a causal per-sequence ledger.
 
@@ -154,6 +155,8 @@ def allocate_causal_budget(
     fixed-price optimal per-layer width policy. It is not exhaustive knapsack
     search. Unspent credit remains genuine slack. The certificate bounds the
     unconstrained total-cap utility optimum, not language-model quality.
+    A nonzero minimum must be affordable from each token's own credit, so it
+    cannot borrow future context or depend on earlier tokens leaving slack.
     """
     if not all(isinstance(value, Tensor) for value in (depth_utilities, width_utilities, active_mask)):
         raise TypeError("utilities and active_mask must be tensors")
@@ -166,6 +169,10 @@ def allocate_causal_budget(
         raise ValueError("active_mask must be bool [B,S]")
     if layers < 1 or choices < 1:
         raise ValueError("layers and expert choices must be positive")
+    if isinstance(minimum_depth, bool) or not isinstance(minimum_depth, Integral):
+        raise TypeError("minimum_depth must be an integer")
+    if not 0 <= minimum_depth <= rounds:
+        raise ValueError("minimum_depth is outside the available continuation horizon")
     device = depth_utilities.device
     if device.type not in {"cpu", "cuda"}:
         raise ValueError("causal allocation supports CPU and CUDA")
@@ -185,6 +192,9 @@ def allocate_causal_budget(
         raise ValueError("price must be finite and nonnegative")
     base_list = _integers(base_pass_costs, rounds, "base_pass_costs")
     expert_list = _integers(expert_costs, layers, "expert_costs")
+    minimum_cost = sum(base_list[:minimum_depth]) + minimum_depth * sum(expert_list)
+    if minimum_cost > credit:
+        raise ValueError("Each token's credit must fund its minimum continuation depth")
     max_cost = sum(base_list) + rounds * choices * sum(expert_list)
     n = batch * sequence
     if max(max_cost, credit, *base_list, *expert_list) * max(n, 1) > maximum:
@@ -236,6 +246,11 @@ def allocate_causal_budget(
     costs = torch.where(active[:, None], costs, 0)
     values = torch.where(active[:, None], values, 0.0)
     scores = values - costs.double() / cost_scale * price
+    if minimum_depth:
+        allowed = (
+            torch.arange(scores.shape[-1], device=device) % (rounds + 1)
+        ) >= minimum_depth
+        scores = scores.masked_fill(~allowed, -torch.inf)
     indices, slack = _causal_admission(
         costs.reshape(batch, sequence, -1),
         scores.reshape(batch, sequence, -1), active_mask, credit,
@@ -243,6 +258,8 @@ def allocate_causal_budget(
     rows = torch.arange(n, device=device)
     indices = indices.flatten()
     depths = torch.where(active, indices % (rounds + 1), 0)
+    if minimum_depth and bool((depths[active] < minimum_depth).any()):
+        raise ArithmeticError("Causal admission violated its minimum continuation depth")
     widths = policies[rows, indices // (rounds + 1)]
     live = torch.arange(rounds, device=device)[None, :, None] < depths[:, None, None]
     routed = torch.where(live, widths, 0)

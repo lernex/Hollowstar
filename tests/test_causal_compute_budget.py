@@ -52,6 +52,30 @@ class CausalComputeBudgetTests(unittest.TestCase):
         self.assertEqual(plan.prefix_slack.tolist(), [[2, 0]])
         self.assertEqual(int(plan.cost), 4)
 
+    def test_minimum_depth_preserves_context_without_inventing_credit(self):
+        depth, width, mask = self.fixture()
+        depth[..., 0] = 1e6
+        plan = self.allocate(depth, width, mask, minimum_depth=1)
+        self.assertTrue(bool((plan.depths[mask] >= 1).all()))
+        self.assertEqual(int(plan.depths[~mask].sum()), 0)
+        self.assertTrue(bool((plan.token_costs.cumsum(1) <= mask.long().cumsum(1) * 4).all()))
+        prefix = self.allocate(depth[:, :3], width[:, :3], mask[:, :3], minimum_depth=1)
+        solo = self.allocate(depth[:1], width[:1], mask[:1], minimum_depth=1)
+        torch.testing.assert_close(plan.depths[:, :3], prefix.depths)
+        torch.testing.assert_close(plan.routed_k[..., :3], prefix.routed_k)
+        torch.testing.assert_close(plan.depths[:1], solo.depths)
+        torch.testing.assert_close(plan.routed_k[:, :, :1], solo.routed_k)
+        cost, utility = _scalar_account(plan, depth, width, mask, [1, 1], [1, 1])
+        self.assertEqual(int(plan.cost), cost)
+        self.assertAlmostEqual(float(plan.utility), utility, places=10)
+        with self.assertRaisesRegex(ValueError, "fund its minimum"):
+            self.allocate(depth, width, mask, minimum_depth=2)
+        for invalid in (-1, 3):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                self.allocate(depth, width, mask, minimum_depth=invalid)
+        with self.assertRaises(TypeError):
+            self.allocate(depth, width, mask, minimum_depth=True)
+
     def test_future_values_masks_and_sequence_length_do_not_change_prefix(self):
         depth, width, mask = self.fixture()
         prefix = 3
@@ -153,10 +177,14 @@ class CausalComputeBudgetTests(unittest.TestCase):
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA unavailable")
     def test_fused_cuda_admission_matches_cpu(self):
         depth, width, mask = self.fixture()
-        cpu = self.allocate(depth, width, mask, price=.2)
-        gpu = self.allocate(depth.cuda(), width.cuda(), mask.cuda(), price=.2)
-        for name in ("depths", "routed_k", "token_costs", "prefix_slack"):
-            torch.testing.assert_close(getattr(gpu, name).cpu(), getattr(cpu, name), rtol=0, atol=0)
+        for minimum_depth in (0, 1):
+            with self.subTest(minimum_depth=minimum_depth):
+                cpu = self.allocate(depth, width, mask, price=.2, minimum_depth=minimum_depth)
+                gpu = self.allocate(
+                    depth.cuda(), width.cuda(), mask.cuda(), price=.2, minimum_depth=minimum_depth,
+                )
+                for name in ("depths", "routed_k", "token_costs", "prefix_slack"):
+                    torch.testing.assert_close(getattr(gpu, name).cpu(), getattr(cpu, name), rtol=0, atol=0)
 
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA unavailable")
     def test_full_length_cuda_admission_with_large_accumulated_credit(self):
