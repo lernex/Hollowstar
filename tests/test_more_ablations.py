@@ -2002,6 +2002,9 @@ def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
     assert "srun --kill-on-bad-exit=1 --network=disable_rdzv_get" in body
     assert "METIS_ABLATION_STALL_TIMEOUT_SECONDS" in body
     assert "no rank-zero telemetry progress" in body
+    assert "runtime_diagnostics.py" in body
+    assert "--scheduler-timeout 3" in body
+    assert "preserving the original stalled-step failure" in body
     assert "METIS_ABLATION_LR_MORE_CORE" in body
     assert "--checkpoint-every 500 " in body
     assert not (tmp_path / "wave1" / "launch-wave.sh").exists()
@@ -2639,6 +2642,28 @@ def test_trainer_rejects_a_nonfinite_learning_rate(tiny_proxy, tmp_path: Path):
     spec = _smoke_spec("more-core")
     with pytest.raises(ValueError, match="finite and positive"):
         _train(spec, tmp_path, max_steps=1, learning_rate=float("nan"))
+
+
+def test_observed_credit_trainer_flag_is_explicit_and_sealed(tiny_proxy, tmp_path: Path):
+    spec = _smoke_spec("more-core")
+    summary = _train(
+        spec, tmp_path, max_steps=1, final_checkpoint=False,
+        observed_depth_credit=True,
+    )
+    assert summary["steps"] == 1
+    manifest = json.loads((tmp_path / spec.name / "run.json").read_text())
+    assert manifest["model"]["observed_depth_credit"] is True
+    assert manifest["curriculum"]["compute_allocation_mode"] == "legacy"
+    records = [
+        json.loads(line)
+        for line in (tmp_path / spec.name / "telemetry" / "rank-00000.jsonl").read_text().splitlines()
+    ]
+    assert records[0]["telemetry"]["observed_depth_credit_enabled"] == 1.0
+    with pytest.raises(ValueError, match="learned non-joint"):
+        _train(
+            _smoke_spec("loop-fixed"), tmp_path / "invalid-control",
+            max_steps=1, observed_depth_credit=True,
+        )
 
 
 def test_resume_picks_up_where_it_stopped(tiny_proxy, tmp_path: Path):

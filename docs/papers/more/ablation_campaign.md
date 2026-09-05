@@ -462,6 +462,20 @@ Use a commit-specific, immutable worktree for new training jobs. Do not pull
 new model code into a checkout named by running or queued jobs; their frozen
 identities and already-exported environment remain part of the experiment.
 
+Progressive repair pilots should use `--stop-after-steps`, not `--max-steps`.
+The former bounds execution and saves at the actual next-step cursor while
+keeping the full sampler and learning-rate identity; the same recipe can then
+resume with a later stop bound. The latter intentionally retains its older
+truncated-run identity semantics.
+
+`--observed-depth-credit` is an explicitly identified depth-credit experiment:
+it does not change depth/width quotas, pathways, or the data budget, and is not
+a causal-routing qualification. Startup host/rank/boot evidence is recorded
+under each run's `operational/startups` directory, outside scientific identity.
+New watchdogs attempt a bounded, read-only rank and scheduler snapshot before
+terminating a stalled step; a diagnostic failure never replaces the original
+training failure.
+
 ```bash
 export METIS_REPO=/home/users/vollmerc/Metis
 export METIS_SCRATCH=/lus/lustre1/vollmerc

@@ -833,6 +833,7 @@ def train_row(
     joint_utility_coefficient: float = 1.0,
     joint_max_passes: int | None = None,
     stop_after_steps: int | None = None,
+    observed_depth_credit: bool = False,
 ) -> dict[str, Any]:
     runtime = initialize_runtime(device=device_override)
     lease = None
@@ -862,6 +863,7 @@ def train_row(
             joint_utility_coefficient=joint_utility_coefficient,
             joint_max_passes=joint_max_passes,
             stop_after_steps=stop_after_steps,
+            observed_depth_credit=observed_depth_credit,
         )
     finally:
         _release_row_lease(lease)
@@ -890,6 +892,7 @@ def _train_row_inner(
     joint_utility_coefficient: float = 1.0,
     joint_max_passes: int | None = None,
     stop_after_steps: int | None = None,
+    observed_depth_credit: bool = False,
 ) -> dict[str, Any]:
     if stop_after_steps is not None:
         if type(stop_after_steps) is not int or stop_after_steps <= 0:
@@ -936,6 +939,14 @@ def _train_row_inner(
     )
     if compute_allocation_mode not in {"legacy", "joint"}:
         raise ValueError("compute_allocation_mode must be legacy or joint")
+    if observed_depth_credit:
+        if (
+            compute_allocation_mode != "legacy"
+            or curriculum.continuation_mode not in {"adaptive", "budgeted"}
+        ):
+            raise ValueError("Observed depth credit requires a learned non-joint depth policy")
+        config = replace(config, observed_depth_credit=True)
+        config._validate_tiny() if config.family == "tiny" else config.validate()
     if compute_allocation_mode == "joint":
         if spec.continuation_mode != "budgeted" or spec.routed_k_mode != "budgeted":
             raise ValueError("Joint routing must not silently replace a fixed or random control")
@@ -1715,6 +1726,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--joint-utility-coefficient", type=float, default=1.0)
     parser.add_argument("--joint-max-passes", type=int, default=None)
     parser.add_argument(
+        "--observed-depth-credit", action="store_true",
+        help="Opt in to observed-progress depth credit without changing the routing policy or budget",
+    )
+    parser.add_argument(
         "--diagnostic-apus", type=int, default=None,
         help="Explicit short-canary DP size; preserve the row micro-batch and global token batch",
     )
@@ -1723,7 +1738,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--budget-tokens", type=int, default=DEFAULT_BUDGET_TOKENS)
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--seed", type=int, default=16_062_026)
-    parser.add_argument("--checkpoint-every", type=int, default=5_000)
+    parser.add_argument("--checkpoint-every", type=int, default=500)
     parser.add_argument("--analysis-every", type=int, default=1_000)
     parser.add_argument("--telemetry-every", type=int, default=10)
     parser.add_argument("--max-steps", type=int, default=None)
@@ -1797,6 +1812,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         joint_utility_coefficient=args.joint_utility_coefficient,
         joint_max_passes=args.joint_max_passes,
         stop_after_steps=args.stop_after_steps,
+        observed_depth_credit=args.observed_depth_credit,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0

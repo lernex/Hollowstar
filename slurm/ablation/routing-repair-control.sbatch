@@ -14,17 +14,17 @@ set -euo pipefail
 : "${METIS_EXPECTED_REVISION:?pin the training source revision}"
 : "${METIS_RELEASE_ROOT:?set the sealed release root}"
 : "${METIS_CONTROL_OUTPUT:?set a fresh isolation-study output root}"
-: "${METIS_CONTROL_ROW:?set loop-fixed or fixed-depth-adaptive-k}"
+: "${METIS_CONTROL_ROW:?set the explicitly identified control or repair row}"
 : "${METIS_ABLATION_RUNTIME:?set the pinned runtime activation script}"
 case "$METIS_CONTROL_ROW" in
-  loop-fixed|fixed-depth-adaptive-k) ;;
+  loop-fixed|fixed-depth-adaptive-k|mor-fixed-k|more-core|more-rm) ;;
   *) echo "Unsupported isolation control: $METIS_CONTROL_ROW" >&2; exit 2 ;;
 esac
 if [ "$(git -C "$METIS_REPO" rev-parse HEAD)" != "$METIS_EXPECTED_REVISION" ]; then
   echo "Baseline source moved; refusing an unversioned comparison" >&2
   exit 2
 fi
-export WORLD_SIZE=40
+export WORLD_SIZE="${SLURM_NTASKS:?missing allocated task count}"
 export MASTER_ADDR="$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)"
 export MASTER_PORT=29610
 export OMP_NUM_THREADS=6
@@ -37,12 +37,24 @@ srun --kill-on-bad-exit=1 --network=disable_rdzv_get bash -c '
 set -euo pipefail
 export RANK="$SLURM_PROCID" LOCAL_RANK="$SLURM_LOCALID"
 source "$METIS_ABLATION_RUNTIME"
+execution_args=()
+if [ -n "${METIS_PILOT_STOP_AFTER_STEPS:-}" ]; then
+  execution_args+=(--stop-after-steps "$METIS_PILOT_STOP_AFTER_STEPS")
+else
+  execution_args+=(--max-steps "${METIS_CONTROL_STEPS:-1000}")
+fi
+if [ "${METIS_PILOT_RESUME:-0}" != 1 ]; then
+  execution_args+=(--no-resume)
+fi
+if [ "${METIS_OBSERVED_DEPTH_CREDIT:-0}" = 1 ]; then
+  execution_args+=(--observed-depth-credit)
+fi
 exec python -B -m metis_ablation.train \
   --row "$METIS_CONTROL_ROW" --output "$METIS_CONTROL_OUTPUT" \
   --release-root "$METIS_RELEASE_ROOT" \
   --budget-tokens 50000000000 --schedule-total-steps 25429 \
-  --max-steps "${METIS_CONTROL_STEPS:-1000}" \
   --learning-rate 0.00026 --seed 16062026 \
-  --checkpoint-every 250 --analysis-every 1000 --telemetry-every 10 \
-  --no-resume
+  --checkpoint-every "${METIS_PILOT_CHECKPOINT_EVERY:-500}" \
+  --analysis-every 1000 --telemetry-every 10 \
+  "${execution_args[@]}"
 '
