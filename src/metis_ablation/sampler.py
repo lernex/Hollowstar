@@ -140,6 +140,29 @@ class AblationSampleStream:
             remaining -= plan.blocks
         raise IndexError(f"step {step} is outside [0, {self.total_blocks})")
 
+    def evaluation_cursor(self, step: int, *, gap_blocks: int, window_tokens: int) -> int:
+        """Select a token-disjoint window in a declared training-stride gap."""
+
+        if type(gap_blocks) is not int or gap_blocks < 1:
+            raise ValueError("Evaluation gap_blocks must be a positive integer.")
+        if type(window_tokens) is not int or window_tokens < 1:
+            raise ValueError("Evaluation window_tokens must be a positive integer.")
+        base = self.release_cursor(step)
+        phase = self.phase_for_step(step)
+        plan = next(candidate for candidate in self.plans if candidate.phase == phase)
+        if gap_blocks >= plan.stride_blocks:
+            raise ValueError("Evaluation gap reaches the next sampled training block.")
+        # Training consumes a next-token target beyond its input block. Keep
+        # that token out of evaluation, including when selecting the first gap.
+        cursor = base + gap_blocks * self.block_tokens + 1
+        boundary = min(
+            base + plan.stride_blocks * self.block_tokens,
+            plan.release_start + plan.release_tokens,
+        )
+        if cursor + window_tokens >= boundary:
+            raise ValueError("Evaluation inputs or target lookahead cross a training/phase boundary.")
+        return cursor
+
     def micro_batches(
         self,
         *,

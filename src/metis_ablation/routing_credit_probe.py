@@ -770,8 +770,11 @@ def identify_batch(batch: TrainingBatch) -> dict[str, Any]:
 def held_out_batch(
     inventory: ReleaseInventory, identity: Mapping[str, Any], *,
     checkpoint_step: int, step: int, sequences: int, sequence_length: int,
+    gap_blocks: int = 0,
 ) -> tuple[TrainingBatch, dict[str, Any]]:
-    if step < checkpoint_step:
+    if type(gap_blocks) is not int or gap_blocks < 0:
+        raise ValueError("Probe gap_blocks must be a nonnegative integer")
+    if step < checkpoint_step and gap_blocks == 0:
         raise ValueError("Probe sampler step precedes the checkpoint's unexecuted boundary")
     if sequences <= 0 or sequence_length <= 0:
         raise ValueError("Sequences and sequence length must be positive")
@@ -792,11 +795,17 @@ def held_out_batch(
     )
     if sampler.describe() != sampler_spec:
         raise ValueError("Current sampler arithmetic differs from the frozen run manifest")
-    cursor = sampler.release_cursor(step)
+    cursor = (
+        sampler.evaluation_cursor(
+            step, gap_blocks=gap_blocks, window_tokens=sequences * sequence_length
+        )
+        if gap_blocks
+        else sampler.release_cursor(step)
+    )
     last_consumed_end = None
     if checkpoint_step:
         last_consumed_end = sampler.release_cursor(checkpoint_step - 1) + block
-        if cursor <= last_consumed_end:
+        if gap_blocks == 0 and cursor <= last_consumed_end:
             raise ValueError("Probe overlaps a trained block or its target lookahead; choose a later --step")
     batch = stream.batch(
         global_token_cursor=cursor, rank=0, world_size=1, micro_batch_size=sequences,
@@ -806,9 +815,14 @@ def held_out_batch(
     return batch, {
         **identify_batch(batch), "sampler_step": step, "checkpoint_next_unexecuted_step": checkpoint_step,
         "block_tokens": block, "sampled_fraction_of_block": sequences * sequence_length / block,
+        "gap_blocks": gap_blocks,
+        "disjoint_from_entire_declared_training_sampler": bool(gap_blocks),
         "last_consumed_block_end_including_target_lookahead": last_consumed_end,
         "shard_order_seed": SHARD_ORDER_SEED, "sampler_sha256": json_sha256(sampler_spec),
         "held_out_scope": (
+            "Token-disjoint from every block and target in the declared training sampler; "
+            "not a deduplicated document holdout. Bound to this sampler identity and budget."
+            if gap_blocks else
             "Not consumed by this checkpoint's deterministic sampler; not a deduplicated "
             "document holdout. A small future-block prefix, not representative full-release validation."
         ),
@@ -1394,6 +1408,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-manifest", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--step", type=int, default=7000)
+    parser.add_argument(
+        "--evaluation-gap-blocks", type=int, default=0,
+        help="Use an unsampled stride-gap block, disjoint from the entire declared training run",
+    )
     parser.add_argument("--sequences", type=int, default=1)
     parser.add_argument("--sequence-length", type=int, default=512)
     parser.add_argument("--pairs", type=int, default=8)
@@ -1431,7 +1449,10 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         raise CapabilityError("Joint evaluation requires fitted utility weights or --fit-steps")
     if not joint_requested and (args.utility_checkpoint is not None or args.joint_caps is not None):
         raise CapabilityError("Utility artifacts and joint caps require joint evaluation")
-    if args.fit_steps and args.fit_start_step <= args.step < args.fit_start_step + args.fit_steps:
+    if (
+        args.fit_steps and args.evaluation_gap_blocks == 0
+        and args.fit_start_step <= args.step < args.fit_start_step + args.fit_steps
+    ):
         raise ValueError("Evaluation sampler step overlaps the utility fitting steps")
     source = source_identity()
     checkpoint = args.checkpoint.expanduser().resolve(strict=True)
@@ -1467,6 +1488,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     batch, sampling = held_out_batch(
         inventory, identity, checkpoint_step=checkpoint_step, step=args.step,
         sequences=args.sequences, sequence_length=args.sequence_length,
+        gap_blocks=args.evaluation_gap_blocks,
     )
     precision = identity["precision_profile"] if args.precision == "checkpoint" else args.precision
     device = torch.device(args.device)

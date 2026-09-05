@@ -124,6 +124,16 @@ For controlled probes, `force_routed_k` has shape
 `force_depth` override. Active widths must be valid integers. These explicit
 interventions bypass the learned width surrogate.
 
+For end-to-end training comparisons, `--evaluation-gap-blocks 8` selects a
+window inside an unsampled stride gap rather than a block that training will
+eventually consume. Inputs and target lookahead are checked against the
+preceding/next training blocks and the phase boundary. The window is tied to
+the declared sampler identity and budget; changing that budget requires a new
+holdout definition. This is token-disjoint evaluation, not a claim of
+deduplicated document holdout. The default zero preserves the earlier
+checkpoint-relative future-window probes, and training input enumeration is
+unchanged.
+
 With an enabled utility head, supervised calls using an explicit depth/width
 trajectory can request `return_router_observations=True`. They expose utility
 observations in memory and the `joint_utility` auxiliary loss. A diagnostic
