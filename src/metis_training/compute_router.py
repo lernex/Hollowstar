@@ -29,6 +29,7 @@ class JointComputeCosts:
     removed_policy_per_pass: int = 0
     head_per_token: int = 0
     terminal_head_only: bool = False
+    metadata_transition_flops: int = 0
 
     @classmethod
     def from_config(cls, config: Metis16Config) -> JointComputeCosts:
@@ -37,6 +38,7 @@ class JointComputeCosts:
         reference = replace(
             config, joint_compute_router=False, causal_compute_budget=False,
             terminal_action_critic=False, terminal_reference_bootstrap_steps=0,
+            causal_memory_metadata="disabled",
         )
         expert = 6 * 3 * config.latent_dim * config.expert_intermediate_dim
         previous = 0
@@ -62,6 +64,7 @@ class JointComputeCosts:
             )
         )
         removed_policy = 0
+        metadata_transition = 0
         head = 6 * config.vocab_size * config.d_model
         if config.causal_compute_budget:
             continuation = (
@@ -77,6 +80,18 @@ class JointComputeCosts:
             # projects to vocabulary only at its terminal exit. Outcome
             # training still pays for every head it actually requests.
             reference_cost -= 2 * removed_policy + head
+            if config.causal_memory_metadata == "legacy_confidence":
+                route_projection = (
+                    (3 * config.d_model + config.route_feature_dim) * config.route_feature_dim
+                    + config.route_feature_dim
+                )
+                # This is a detached compatibility feature, not a policy
+                # trained through the memory path: price forward work only.
+                metadata_transition = 2 * (continuation + route_projection)
+                increments = [
+                    cost + (metadata_transition if index > 0 else 0)
+                    for index, cost in enumerate(increments)
+                ]
         if config.terminal_action_critic:
             # This objective observes only terminal CE. Charge its one head
             # separately, before admitting any remaining trajectory.
@@ -91,6 +106,7 @@ class JointComputeCosts:
             removed_policy,
             head,
             config.terminal_action_critic,
+            metadata_transition,
         )
 
     def pass_cost(self, pass_index: int, widths: Tensor, active_mask: Tensor) -> Tensor:

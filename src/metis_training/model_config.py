@@ -505,6 +505,7 @@ class Metis16Config:
     joint_router_hidden_dim: int = 128
     causal_compute_budget: bool = False
     causal_compute_price: float = 0.0
+    causal_memory_metadata: str = "disabled"
     terminal_action_critic: bool = False
     terminal_critic_exploration: float = 0.05
     terminal_reference_bootstrap_steps: int = 0
@@ -597,6 +598,8 @@ class Metis16Config:
             payload.pop("causal_compute_budget")
             if self.causal_compute_price == 0.0:
                 payload.pop("causal_compute_price")
+        if self.causal_memory_metadata == "disabled":
+            payload.pop("causal_memory_metadata")
         if not self.terminal_action_critic:
             payload.pop("terminal_action_critic")
             if self.terminal_critic_exploration == 0.05:
@@ -942,6 +945,13 @@ class Metis16Config:
 
         if not isinstance(self.causal_compute_budget, bool):
             raise ValueError("causal_compute_budget must be boolean.")
+        if (
+            not isinstance(self.causal_memory_metadata, str)
+            or self.causal_memory_metadata not in {"disabled", "legacy_confidence"}
+        ):
+            raise ValueError("causal_memory_metadata must be disabled or legacy_confidence.")
+        if self.causal_memory_metadata != "disabled" and not self.causal_compute_budget:
+            raise ValueError("Causal memory metadata requires causal compute budgeting.")
         if not isinstance(self.terminal_action_critic, bool):
             raise ValueError("terminal_action_critic must be boolean.")
         if (

@@ -426,8 +426,15 @@ class CurriculumState:
     def validate(self, config: Metis16Config) -> None:
         if self.compute_allocation_mode not in {"legacy", "joint"}:
             raise ValueError("compute_allocation_mode must be legacy or joint.")
-        if config.causal_compute_budget and self.memory_gate_scale != 0.0:
+        if (
+            config.causal_compute_budget and self.memory_gate_scale != 0.0
+            and config.causal_memory_metadata != "legacy_confidence"
+        ):
             raise ValueError("The causal compute ledger currently requires Core memory_gate_scale=0.")
+        if config.causal_memory_metadata == "legacy_confidence" and (
+            not math.isfinite(self.memory_gate_scale) or self.memory_gate_scale <= 0
+        ):
+            raise ValueError("Legacy-confidence causal metadata requires a positive finite memory gate.")
         if self.compute_allocation_mode == "joint":
             if not config.joint_compute_router:
                 raise ValueError("Joint allocation requires an enabled utility router.")
@@ -5543,6 +5550,35 @@ class Metis16ForCausalLM(nn.Module):
             decision = probability >= 0.5
         return active_mask & decision
 
+    @torch.no_grad()
+    def _causal_memory_confidence(
+        self,
+        state: Tensor,
+        memory: Tensor,
+        difference: Tensor,
+        route_history: Tensor,
+        needed: Tensor,
+    ) -> tuple[Tensor, int]:
+        """Retain the old memory feature without using it as a routing policy."""
+        layout = _active_token_layout(needed)
+        if not layout.token_count and not (
+            _precision_requires_synchronized_schedule(self.precision_policy)
+            and _group_world_size(self.process_groups.world) > 1
+        ):
+            return state.new_zeros(needed.shape, dtype=torch.float32), 0
+        if layout.token_count:
+            pieces = tuple(layout.pack(value) for value in (state, memory, difference, route_history))
+        else:
+            # Every rank enters the shared projection's precision context.
+            # A rank with no continuing tokens contributes only a dummy row.
+            pieces = tuple(value.new_zeros((1, 1, value.shape[-1]))
+                           for value in (state, memory, difference, route_history))
+        features = self._precision_call(self.depth_memory.routing_features, *pieces)
+        confidence = self.continuation(*pieces[:3], features)
+        if layout.token_count:
+            return layout.scatter(confidence), layout.token_count
+        return confidence.new_zeros(needed.shape), 1
+
     def _retrieve_ngram_memory(
         self,
         input_ids: Tensor,
@@ -6223,6 +6259,7 @@ class Metis16ForCausalLM(nn.Module):
                 raise ValueError("Forced widths require an MoE pathway.")
         joint_mode = curriculum_state.compute_allocation_mode == "joint"
         causal_budget = self.config.causal_compute_budget
+        causal_memory_metadata = self.config.causal_memory_metadata == "legacy_confidence"
         if self.config.terminal_action_critic and labels is not None and return_logits:
             raise ValueError(
                 "Terminal-action mode cannot duplicate its reserved head: "
@@ -6416,6 +6453,8 @@ class Metis16ForCausalLM(nn.Module):
         joint_budget = torch.zeros_like(joint_spent)
         joint_gap = streams.new_zeros((), dtype=torch.float32)
         joint_next_widths: Tensor | None = None
+        metadata_forward_rows = input_ids.new_zeros((), dtype=torch.int64)
+        metadata_useful_tokens = input_ids.new_zeros((), dtype=torch.int64)
         committed_depths: Tensor | None = None
         committed_widths: Tensor | None = None
         causal_credit = 0
@@ -7085,9 +7124,20 @@ class Metis16ForCausalLM(nn.Module):
                 # Legacy controls retain their historical forward path.
                 # Causal controls already bypassed the unused controller.
                 continuation_probability = continuation_probability.detach()
+            memory_confidence = continuation_probability
+            if causal_memory_metadata:
+                memory_confidence = torch.zeros_like(continuation_probability)
+                if pass_index + 1 < effective_passes:
+                    needed_metadata = active_mask & continuation_probability.bool()
+                    memory_confidence, metadata_rows = self._causal_memory_confidence(
+                        current_state, last_memory_summary,
+                        current_state - previous_pass_state, route_history, needed_metadata,
+                    )
+                    metadata_forward_rows = metadata_forward_rows + metadata_rows
+                    metadata_useful_tokens = metadata_useful_tokens + needed_metadata.sum(dtype=torch.int64)
             continuation_confidence = torch.where(
                 active_mask,
-                continuation_probability.to(embeddings.dtype),
+                memory_confidence.to(embeddings.dtype),
                 continuation_confidence,
             )
             if token_layout is not None:
@@ -7517,6 +7567,16 @@ class Metis16ForCausalLM(nn.Module):
             if causal_budget:
                 telemetry["causal_compute_budget_enabled"] = final_hidden.new_ones((), dtype=torch.long)
                 telemetry["causal_credit_per_token"] = final_hidden.new_tensor(causal_credit, dtype=torch.int64)
+                if causal_memory_metadata:
+                    telemetry["causal_memory_metadata_enabled"] = final_hidden.new_ones((), dtype=torch.int64)
+                    telemetry["causal_memory_metadata_tokens"] = metadata_useful_tokens
+                    telemetry["causal_memory_metadata_forward_rows"] = metadata_forward_rows
+                    telemetry["causal_memory_metadata_forward_flops"] = (
+                        metadata_forward_rows * costs.metadata_transition_flops
+                    )
+                    telemetry["causal_memory_metadata_dummy_flops"] = (
+                        (metadata_forward_rows - metadata_useful_tokens) * costs.metadata_transition_flops
+                    )
                 if self.config.terminal_action_critic:
                     telemetry["terminal_action_critic_enabled"] = final_hidden.new_ones((), dtype=torch.long)
                     telemetry["terminal_lm_head_reserved_flops"] = (
