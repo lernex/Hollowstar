@@ -320,7 +320,7 @@ def _claimed_input(root: Path, path: Path, input_id: str) -> bool:
 
 def _publish_batch(
     root: Path, runs: list[dict[str, Any]], manifest: dict[str, Any], commit: Path,
-    new_inputs: list[dict[str, Any]], quota: Any, working_budget: Any,
+    new_inputs: list[dict[str, Any]], quota: Any, working_budget: Any, *, defer_compaction: bool = False,
 ) -> None:
     if quota is not None:
         quota.reconcile()
@@ -333,7 +333,7 @@ def _publish_batch(
                 current = {run["bucket"]: _visible_runs(root, run["bucket"], cache) for run in runs}
                 overdue = [
                     bucket for bucket, visible in current.items()
-                    if working_budget is not None and _matching_tier(visible, FAN_IN)
+                    if not defer_compaction and working_budget is not None and _matching_tier(visible, FAN_IN)
                 ]
                 if not overdue:
                     for run in runs:
@@ -363,6 +363,7 @@ def ingest_eligible(
     stage_receipt_file_sha256: str | None = None,
     receipt_file_sha256: str | None = None,
     working_budget: Any = None,
+    defer_compaction: bool = False,
 ) -> dict[str, Any]:
     """Admit finalized shards once, including overlapping/repartitioned retries.
 
@@ -379,7 +380,11 @@ def ingest_eligible(
     whole-index quota. Production RUN/limits auto-enable it if omitted. Bulk
     metadata is metered before writes; small control files use its reserved
     metadata allowance. Attaching a budget adopts existing outputs once.
+    ``defer_compaction`` moves only cross-batch maintenance off the caller's
+    critical path; a bounded independent compactor must service those runs.
     """
+    if type(defer_compaction) is not bool:
+        raise ValueError("defer_compaction must be a boolean")
     positive_integer(batch_size, "batch_size")
     positive_integer(bucket_count, "bucket_count")
     stage_receipt_file_sha256 = receipt_file_pin(receipt_file_sha256, stage_receipt_file_sha256)
@@ -428,8 +433,9 @@ def ingest_eligible(
             )
             if (existing["input_sha256"] != identity and not legacy) or existing["batch_id"] != batch_id:
                 raise ValueError("The same batch_id was reused with different inputs")
-            compact_dedup(root, bucket_ids=[run["bucket"] for run in existing["runs"]],
-                          working_budget=working_budget)
+            if not defer_compaction:
+                compact_dedup(root, bucket_ids=[run["bucket"] for run in existing["runs"]],
+                              working_budget=working_budget)
             return existing
         intent_path = batch_root / "INTENT.json"
         intent = {"batch_id": batch_id, "input_sha256": identity}
@@ -476,12 +482,16 @@ def ingest_eligible(
                     "runs": runs, "exact_complete": True,
                     "near_span_code_decisions": "require_closed_comparison_scope",
                 }
-                _publish_batch(root, runs, manifest, commit, new_inputs, quota, working_budget)
+                _publish_batch(
+                    root, runs, manifest, commit, new_inputs, quota, working_budget,
+                    defer_compaction=defer_compaction,
+                )
                 published = True
             finally:
                 if not published and not commit.exists():
                     quota_rmtree(quota, work)
-    compact_dedup(root, bucket_ids=[run["bucket"] for run in runs], working_budget=working_budget)
+    if not defer_compaction:
+        compact_dedup(root, bucket_ids=[run["bucket"] for run in runs], working_budget=working_budget)
     return manifest
 
 
@@ -513,7 +523,7 @@ def _recover_compaction(root: Path, bucket: int, working_budget: Any) -> None:
 
 def compact_dedup(
     output_dir: Path, *, bucket_ids: Sequence[int] | None = None, max_fan_in: int = 16,
-    working_budget: Any = None,
+    working_budget: Any = None, max_merges: int | None = None,
 ) -> dict[str, Any]:
     """Size-tier, quota-metered compaction; never scan old prepared text.
 
@@ -521,6 +531,8 @@ def compact_dedup(
     leave committed runs authoritative and retain a journal for partial cleanup.
     """
     positive_integer(max_fan_in, "max_fan_in", minimum=2)
+    if max_merges is not None:
+        positive_integer(max_merges, "max_merges")
     root = Path(output_dir).resolve()
     working_budget = bind_working_budget(root, working_budget)
     config = _configuration(root)
@@ -571,12 +583,17 @@ def compact_dedup(
                 merges += 1
                 read_rows += sum(run["occurrences"]["rows"] for run in selected)
                 written_rows += merged["occurrences"]["rows"]
+                if max_merges is not None and merges >= max_merges:
+                    break
             with _lock(root, "publication"):
                 _reclaim_caches(root, bucket, runs, working_budget)
+        if max_merges is not None and merges >= max_merges:
+            break
     return {
         "schema": "metis17.exact-compaction-progress/v1", "buckets": buckets,
         "merges": merges, "metadata_rows_read": read_rows, "metadata_rows_written": written_rows,
         "max_fan_in": max_fan_in, "metadata_only": True,
+        "merge_budget_exhausted": max_merges is not None and merges >= max_merges,
     }
 
 

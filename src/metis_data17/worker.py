@@ -36,7 +36,9 @@ class EventTail:
     def __init__(self) -> None:
         self.positions: dict[Path, tuple[int, int]] = {}
 
-    def read(self, path: Path) -> list[dict[str, Any]]:
+    def read(self, path: Path, *, maximum_events: int | None = None) -> list[dict[str, Any]]:
+        if maximum_events is not None and (type(maximum_events) is not int or maximum_events < 1):
+            raise ValueError("A journal batch limit must be a positive integer")
         stat = path.stat()
         inode, offset = self.positions.get(path, (stat.st_ino, 0))
         if inode != stat.st_ino or stat.st_size < offset:
@@ -52,6 +54,8 @@ class EventTail:
                     raise RuntimeError(f"Corrupt committed event: {path}")
                 result.append(value)
                 offset = stream.tell()
+                if maximum_events is not None and len(result) >= maximum_events:
+                    break
         self.positions[path] = (inode, offset)
         return result
 
@@ -237,7 +241,8 @@ def index_chunk(stage_path: Path, spec: ObjectSpec, config: dict[str, Any]) -> d
             kwargs["working_budget"] = WorkingBudget(root)
         exact = ingest_eligible(
             paths, root / "dedup" / "exact" / config["index_generation"],
-            batch_id=seal, bucket_count=config["dedup"]["bucket_count"], **kwargs,
+            batch_id=seal, bucket_count=config["dedup"]["bucket_count"],
+            defer_compaction=config.get("defer_compaction", False), **kwargs,
         )
         metadata = spec.policy.get("metadata", {})
         crawl = metadata.get("crawl")
@@ -283,15 +288,40 @@ class ObjectWork:
     admitted: bool = False
 
 
+def _compact_job(config: dict[str, Any]) -> dict[str, Any]:
+    from .dedup import compact_dedup
+    from .storage import WorkingBudget
+
+    root = Path(config["root"])
+    cursor = root / "state" / "compaction" / f"{config['index_generation']}.json"
+    previous = read_receipt(cursor) if cursor.exists() else {"next_bucket": 0, "total_merges": 0}
+    bucket = previous["next_bucket"]
+    result = compact_dedup(
+        root / "dedup" / "exact" / config["index_generation"], bucket_ids=[bucket],
+        max_fan_in=config["dedup"]["max_fan_in"], max_merges=1,
+        working_budget=WorkingBudget(root),
+    )
+    progress = {
+        **result, "index_generation": config["index_generation"],
+        "next_bucket": (bucket + 1) % config["dedup"]["bucket_count"],
+        "total_merges": previous["total_merges"] + result["merges"], "updated_at": utc_now(),
+    }
+    write_receipt(cursor, progress)
+    return progress
+
+
 def prep_service(
     root: Path, *, workers: int = 32, raw_readers: int | None = None,
-    idle_seconds: float = 600, maximum_seconds: float = 42_000,
+    idle_seconds: float = 600, maximum_seconds: float = 42_000, defer_compaction: bool = False,
 ) -> None:
     if workers < 1 or idle_seconds <= 0 or maximum_seconds <= 0:
         raise ValueError("Worker counts and service time bounds must be positive")
+    if type(defer_compaction) is not bool:
+        raise ValueError("defer_compaction must be a boolean")
     if "fork" not in multiprocessing.get_all_start_methods():
         raise RuntimeError("Preparation requires a Linux/POSIX fork runtime with shared verified policy mappings")
     config, run = worker_configuration(root)
+    config["defer_compaction"] = defer_compaction
     readers = raw_readers or int(config["raw_readers_per_node"])
     if readers < 1:
         raise ValueError("A positive raw-reader count is required")
@@ -312,6 +342,8 @@ def prep_service(
     active: dict[str, ObjectWork] = {}
     jobs: dict[tuple[str, str], tuple[str, Any]] = {}
     totals: Counter[str] = Counter()
+    compaction_job = compaction_lease = None
+    next_compaction = 0.0
     started = last_work = time.monotonic()
     commit = code_commit()
     atomic_json(status_path, {
@@ -338,6 +370,24 @@ def prep_service(
                 )
                 current_limits = digest_json(current_capacity)
                 config["limits_sha256"] = current_limits
+                if compaction_job is not None and compaction_job.done():
+                    try:
+                        progress = _job_result(compaction_job)
+                        atomic_json(root / "status" / "compaction.json", {
+                            "status": "compacting", "host": host, "job_id": os.environ.get("SLURM_JOB_ID"),
+                            **progress,
+                        })
+                    except WorkerFailure as exc:
+                        if exc.result.get("capacity_pending") is not True:
+                            raise
+                        atomic_json(root / "status" / "compaction.json", {
+                            "status": "capacity_pending", "index_generation": index_generation,
+                            "updated_at": utc_now(), **exc.result,
+                        })
+                        next_compaction = now + 60
+                    finally:
+                        compaction_lease.close()
+                        compaction_job = compaction_lease = None
                 for stream in ("prepared", "prep-errors"):
                     for path in sorted((root / "events" / stream).glob("*.jsonl")):
                         for event in tail.read(path):
@@ -560,6 +610,15 @@ def prep_service(
                     )
                     work.pending.add(chunk_id)
                     last_work = now
+                if (
+                    defer_compaction and compaction_job is None and not stop.is_set()
+                    and now >= next_compaction
+                    and (root / "dedup" / "exact" / index_generation / "INDEX.json").exists()
+                ):
+                    compaction_lease = claim(root / "locks" / f"compaction-{index_generation}.flock")
+                    if compaction_lease is not None:
+                        compaction_job = pool.submit(_execute, _compact_job, dict(config))
+                        next_compaction = now + 2
                 atomic_json(status_path, {
                     "schema": "metis17.prep-status/v1", "host": host, "pid": os.getpid(),
                     "job_id": os.environ.get("SLURM_JOB_ID"), "code_commit": commit,
@@ -572,6 +631,8 @@ def prep_service(
                     "counter_scope": "worker_session_attempts",
                     "elapsed_seconds": now - started,
                     "policy_ready": True, "near_deletion_complete": False,
+                    "defer_compaction": defer_compaction,
+                    "compaction_active": compaction_job is not None,
                     "capacity_confirmation": current_capacity["capacity_confirmation"],
                 })
                 if not active and (stop.is_set() or now - last_work >= idle_seconds):
@@ -587,6 +648,8 @@ def prep_service(
             raise
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
+            if compaction_lease is not None:
+                compaction_lease.close()
             for work in active.values():
                 work.lease.close()
     value = json.loads(status_path.read_text())

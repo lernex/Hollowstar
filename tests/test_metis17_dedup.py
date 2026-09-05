@@ -1085,6 +1085,54 @@ class Metis17DedupTests(unittest.TestCase):
         self.assertEqual(budget.snapshot()["committed_bytes"], actual)
         self.assertLessEqual(budget.snapshot()["reserved_bytes"], budget.snapshot()["derived_limit_bytes"])
 
+    def test_deferred_budgeted_ingestion_never_compacts_and_preserves_late_winners(self):
+        budget = self.budget()
+        output = budget.root / "deferred"
+        paths = [self.shard(f"deferred-{index}", [
+            self.row(f"{index}-{row}", text=f"shared deferred text {row % 3}", priority=index)
+            for row in range(9)
+        ]) for index in range(5)]
+        with patch.object(dedup, "compact_dedup", side_effect=AssertionError("Maintenance blocked ingestion")):
+            for index, path in enumerate(paths):
+                receipt = ingest_eligible(
+                    [path], output, batch_id=str(index), bucket_count=2, batch_size=3,
+                    working_budget=budget, defer_compaction=True,
+                )
+                self.assertEqual(receipt["admitted_input_rows"], 9)
+            before = budget.snapshot()["committed_bytes"]
+            repeated = ingest_eligible(
+                [paths[-1]], output, batch_id="4", bucket_count=2,
+                working_budget=budget, defer_compaction=True,
+            )
+            self.assertEqual(repeated, receipt)
+            self.assertEqual(budget.snapshot()["committed_bytes"], before)
+        winners = list(iter_survivors(output))
+        occurrences = list(iter_occurrences(output))
+        self.assertEqual(len(occurrences), 45)
+        self.assertEqual(len(winners), 3)
+        self.assertTrue(all(row["priority"] == 4 for row in winners))
+        eager = self.root / "eager"
+        for index in reversed(range(5)):
+            ingest_eligible([paths[index]], eager, batch_id=str(index), bucket_count=2, batch_size=3)
+        self.assertEqual(winners, list(iter_survivors(eager)))
+        self.assertEqual(occurrences, list(iter_occurrences(eager)))
+        for _ in range(10):
+            progress = compact_dedup(output, working_budget=budget, max_fan_in=2, max_merges=1)
+            self.assertLessEqual(progress["merges"], 1)
+            if progress["merges"] == 0:
+                break
+        self.assertEqual(winners, list(iter_survivors(output)))
+        self.assertEqual(occurrences, list(iter_occurrences(output)))
+        self.assertEqual(dedup_status(output)["input_rows"], 45)
+
+    def test_compaction_scheduling_controls_are_explicit_and_strict(self):
+        path = self.shard("strict-maintenance", [self.row("document")])
+        with self.assertRaisesRegex(ValueError, "boolean"):
+            ingest_eligible([path], self.output, batch_id="bad", defer_compaction=1)
+        for budget in (0, -1, True):
+            with self.subTest(budget=budget), self.assertRaises(ValueError):
+                compact_dedup(self.output, max_merges=budget)
+
     def test_release_limits_automatically_enable_quota_and_exhaustion_is_unpublished(self):
         from metis_data17.acquisition import CapacityPending
 

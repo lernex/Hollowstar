@@ -15,7 +15,7 @@ from metis_data17.acquisition import CapacityPending, receipt_path
 from metis_data17.cli import append_event, main
 from metis_data17.common import digest_json, read_receipt, write_receipt
 from metis_data17.worker import (
-    EventTail, WorkerFailure, _execute, _job_result, admit_source, claim,
+    EventTail, WorkerFailure, _compact_job, _execute, _job_result, admit_source, claim,
     failure_blocks, index_chunk, observe_failure, prep_service, raw_event,
     screen_chunk, worker_configuration,
 )
@@ -192,8 +192,41 @@ class Metis17WorkerTests(unittest.TestCase):
     def test_cli_reaches_actual_prep_service(self):
         with patch("metis_data17.worker.prep_service") as run:
             self.assertEqual(main(["prep", "--root", str(self.root), "--workers", "9", "--raw-readers", "2"]), 0)
-        run.assert_called_once_with(
-            self.root, workers=9, raw_readers=2, idle_seconds=600, maximum_seconds=42000,
+        self.assertEqual(run.call_args.args, (self.root,))
+        kwargs = dict(run.call_args.kwargs)
+        self.assertIs(kwargs.pop("defer_compaction", False), False)
+        self.assertEqual(kwargs, {
+            "workers": 9, "raw_readers": 2, "idle_seconds": 600, "maximum_seconds": 42000,
+        })
+
+    def test_independent_compaction_visits_every_bucket_without_blocking_index_admission(self):
+        spec, raw, output = self._object()
+        config = {**self.config, "defer_compaction": True}
+        normalized = fixtures.reblock_object(spec, raw, output, config)
+        with patch("metis_data17.dedup.compact_dedup", side_effect=AssertionError("Synchronous compaction")):
+            for chunk in normalized["chunks"]:
+                screened = screen_chunk(self.root / chunk["ready_receipt"], spec, config)
+                index_chunk(self.root / screened["receipt_path"], spec, config)
+        write_receipt(self.root / "limits.json", {
+            "capacity_confirmation": "unlimited", "max_raw_bytes": 100_000_000,
+            "max_working_bytes": 200_000_000, "policy_and_metadata_reserve_bytes": 1_000_000,
+            "filesystem_free_floor_bytes": 0,
+        })
+        from metis_data17.dedup import iter_survivors
+
+        exact = self.root / "dedup" / "exact" / config["index_generation"]
+        self.assertTrue((exact / "INDEX.json").is_file())
+        before = list(iter_survivors(exact))
+        buckets = config["dedup"]["bucket_count"]
+        seen = []
+        for _ in range(buckets):
+            progress = _compact_job(config)
+            seen.append((progress["next_bucket"] - 1) % buckets)
+            self.assertLessEqual(progress["merges"], 1)
+        self.assertEqual(seen, list(range(buckets)))
+        self.assertEqual(list(iter_survivors(exact)), before)
+        self.assertEqual(
+            read_receipt(self.root / "state" / "compaction" / "fixture-index.json")["next_bucket"], 0,
         )
 
     def test_dispatcher_covers_both_uplinks_and_screens_before_raw_eof(self):
