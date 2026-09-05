@@ -164,6 +164,24 @@ class TerminalReferenceBootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "optimizer step"):
             model(self.inputs(), curriculum=self.curriculum(-1))
 
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA unavailable")
+    def test_cuda_reference_bootstrap_forward_backward_and_cap(self):
+        torch.manual_seed(605)
+        model = Metis16ForCausalLM(self.config()).cuda().train()
+        inputs = self.inputs().cuda()
+        labels = self.labels(inputs)
+        with torch.no_grad():
+            reference = model(inputs, labels, curriculum=self.curriculum())
+        output = model(inputs, labels, curriculum=self.curriculum())
+        torch.testing.assert_close(output.loss, reference.loss, rtol=1e-5, atol=1e-6)
+        self.assertTrue(bool(output.chosen_depths.eq(2).all()))
+        self.assertEqual(int(output.telemetry["terminal_reference_bootstrap_active"]), 1)
+        self.assertLessEqual(int(output.telemetry["joint_model_flops"]), int(output.telemetry["joint_budget_flops"]))
+        (output.loss + output.auxiliary_losses["joint_utility"]).backward()
+        self.assertTrue(bool(torch.isfinite(model.embedding.weight.grad).all()))
+        self.assertTrue(bool(torch.isfinite(model.joint_router.output.weight.grad).all()))
+        self.assertGreater(float(model.joint_router.output.weight.grad.abs().sum()), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
