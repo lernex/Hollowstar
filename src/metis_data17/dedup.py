@@ -22,6 +22,7 @@ import socket
 import time
 import uuid
 from collections import defaultdict
+from dataclasses import dataclass
 from itertools import groupby
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -42,6 +43,12 @@ FAN_IN = 16
 LOCK_TIMEOUT = 3600
 DEFERRED_RUN_LIMIT = 256
 _LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _CommitView:
+    sha256: str
+    runs: dict[str, dict[str, Any]]
 
 
 def _lock(root: Path, name: str):
@@ -93,8 +100,9 @@ def _bucket_path(root: Path, bucket: int) -> Path:
 
 
 def _visible_runs(
-    root: Path, bucket: int, cache: dict[str, dict[str, Any]] | None = None,
+    root: Path, bucket: int, cache: dict[str, _CommitView | None] | None = None,
 ) -> list[dict[str, Any]]:
+    """Reuse proofs only inside one publication transaction, not across snapshots."""
     path = _bucket_path(root, bucket)
     if not path.exists():
         return []
@@ -104,19 +112,27 @@ def _visible_runs(
     cache = {} if cache is None else cache
     result, seen = [], set()
     for run in state["runs"]:
-        commit = under_root(root, run["commit"])
-        if not commit.exists():
+        key = run["commit"]
+        if key not in cache:
+            commit = under_root(root, key)
+            if commit.exists():
+                manifest = read_receipt(commit)
+                indexed = {entry["run_id"]: entry for entry in manifest["runs"]}
+                if len(indexed) != len(manifest["runs"]):
+                    raise ValueError("A committed manifest repeats a run identity")
+                cache[key] = _CommitView(digest_json(manifest), indexed)
+            else:
+                cache[key] = None
+        view = cache[key]
+        if view is None:
             if run.get("commit_kind") == "batch":
                 continue
             raise ValueError("A published compaction receipt is missing")
-        if run["commit"] not in cache:
-            cache[run["commit"]] = read_receipt(commit)
-        manifest = cache[run["commit"]]
-        if digest_json(manifest) != run["commit_sha256"]:
+        if view.sha256 != run["commit_sha256"]:
             raise ValueError("Run publication receipt digest mismatch")
         unwrapped = {key: value for key, value in run.items()
                      if key not in {"commit", "commit_sha256", "commit_kind"}}
-        if unwrapped not in manifest["runs"] or run["bucket"] != bucket:
+        if view.runs.get(run["run_id"]) != unwrapped or run["bucket"] != bucket:
             raise ValueError("Run is not covered by its committed manifest/bucket")
         if run["run_id"] in seen:
             raise ValueError("Duplicate active run; refusing to double corpus accounting")
@@ -156,7 +172,7 @@ def _snapshot(
         with metadata_lock(lease_lock):
             with _lock(root, "publication"):
                 config = _configuration(root)
-                cache: dict[str, dict[str, Any]] = {}
+                cache: dict[str, _CommitView | None] = {}
                 buckets = {bucket: _visible_runs(root, bucket, cache)
                            for bucket in _selected_buckets(config, bucket_ids)}
                 write_receipt(lease, {
@@ -335,7 +351,7 @@ def _publish_batch(
                 for bucket in sorted(run["bucket"] for run in runs):
                     bucket_locks.enter_context(_lock(root, f"bucket-{bucket:06d}"))
             with _lock(root, "publication"):
-                cache: dict[str, dict[str, Any]] = {}
+                cache: dict[str, _CommitView | None] = {}
                 current = {run["bucket"]: _visible_runs(root, run["bucket"], cache) for run in runs}
                 overdue = [
                     bucket for bucket, visible in current.items()

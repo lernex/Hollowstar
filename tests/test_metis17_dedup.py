@@ -1137,6 +1137,36 @@ class Metis17DedupTests(unittest.TestCase):
             with self.subTest(minimum=minimum), self.assertRaises(ValueError):
                 compact_dedup(self.output, minimum_fan_in=minimum)
 
+    def test_one_locked_snapshot_verifies_each_manifest_once_but_checks_every_bucket_pin(self):
+        rows = []
+        for bucket in range(8):
+            index = 0
+            while True:
+                row = self.row(f"bucket-{bucket}-{index}")
+                if bucket_for(row["dedup_hash"], 8) == bucket:
+                    rows.append(row)
+                    break
+                index += 1
+        path = self.shard("manifest-cache", rows)
+        ingest_eligible([path], self.output, batch_id="one", bucket_count=8, defer_compaction=True)
+        original = dedup.digest_json
+        verified = []
+
+        def digest(value):
+            if value.get("schema") == "metis17.exact-batch/v1":
+                verified.append(value["batch_id"])
+            return original(value)
+
+        with patch.object(dedup, "digest_json", side_effect=digest):
+            self.assertEqual(len(list(iter_survivors(self.output))), 8)
+        self.assertEqual(verified, ["one"])
+        bucket_path = self.output / "buckets/000007/CURRENT.json"
+        state = read_receipt(bucket_path)
+        state["runs"][0]["commit_sha256"] = "f" * 64
+        write_receipt(bucket_path, state)
+        with self.assertRaisesRegex(ValueError, "digest mismatch"):
+            list(iter_survivors(self.output))
+
     def test_publishing_while_a_compactor_merges_keeps_the_later_higher_quality_batch(self):
         budget = self.budget()
         output = budget.root / "overlap"
