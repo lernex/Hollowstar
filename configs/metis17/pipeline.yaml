@@ -1,0 +1,262 @@
+schema: metis17.pipeline/v1
+release: metis-1.7-data-r1
+planned_acquisition_budget_bytes: 200000000000000
+
+# The full 200 TB launch requires explicit capacity confirmation. The user
+# requested immediate work; this initial run cannot silently consume it all.
+limits:
+  capacity_confirmation: pending
+  max_raw_bytes: 400000000000
+  max_working_bytes: 2000000000000
+  working_reservation_factor: 4
+  policy_and_metadata_reserve_bytes: 20000000000
+  filesystem_free_floor_bytes: 100000000000
+  max_unknown_object_bytes: 32000000000
+
+download:
+  workers_per_host: 4
+  attempts: 8
+  timeout_seconds: 120
+  admission_objects_per_group: 2
+  poll_seconds: 10
+  hosts:
+    portage-login1: [huggingface.co]
+    portage-login2: [data.hplt-project.org, data.commoncrawl.org, dumps.wikimedia.org]
+
+prep:
+  quality_profiles_path: configs/metis17/quality-profiles.yaml
+  output_chunk_bytes: 128000000
+  batch_size: 256
+  workers_per_node: 32
+  raw_readers_per_node: 2
+  source_minimum_acceptance: 0.10
+  network_content_fetch: false
+  retain_raw: true
+
+tokenizer:
+  vocabulary_size: 131072
+  split_digits: true
+  token_dtype: uint32
+  sample_target_bytes: 160000000000
+  min_sample_bytes_per_category: 1000000000
+  required_categories: [web, code, math, science, multilingual]
+  special_tokens:
+    - <|endoftext|>
+    - <|padding|>
+    - <|fim_prefix|>
+    - <|fim_middle|>
+    - <|fim_suffix|>
+    - <|tool_call|>
+    - <|tool_result|>
+
+decontamination:
+  minimum_matching_ngrams: 2
+  minimum_short_matching_ngrams: 0
+  minimum_code_matching_ngrams: 16
+  minimum_code_skeleton_matching_ngrams: 0
+  match_fraction: 0.002
+  contiguous_run_minimum: 8
+
+dedup:
+  bucket_count: 64
+  max_fan_in: 16
+  highest_quality_wins: true
+  discard_raw_or_losing_text: false
+  global_cross_snapshot_english_near_delete: false
+
+schedule:
+  tst_source_tokens: 30000000000000
+  tst_bag_size: 16
+  ntp_source_tokens: 5000000000000
+
+sources:
+  - id: nemotron_cc_math
+    kind: hf
+    repo: nvidia/Nemotron-CC-Math-v1
+    revision: 397a2502f2028c659ba411a6c4935b464a7f03aa
+    prefixes: [4plus, 4plus_MIND, '3']
+    allow_patterns: ['*.parquet']
+    expected_inventory_bytes: 259937827291
+    budget_bytes: 260000000000
+    adapter: text
+    priority: 100
+    policy:
+      category: math
+      language: en
+      license_mode: compilation
+      collection_license: NVIDIA Open Data Agreement
+      common_crawl_derived: true
+      generated: false
+      quality_profile: math
+    path_policies:
+      - name: 4plus
+        patterns: ['4plus/*']
+        priority: 100
+        policy:
+          metadata: {math_score: 4, source_quality_evidence: publisher_4plus_partition}
+      - name: MIND
+        patterns: ['4plus_MIND/*']
+        priority: 98
+        policy:
+          generated: true
+          metadata: {math_score: 4, source_quality_evidence: publisher_MIND_partition, generator_family: Phi-4}
+      - name: score3
+        patterns: ['3/*']
+        priority: 90
+        policy:
+          metadata: {math_score: 3, source_quality_evidence: publisher_score3_partition}
+
+  - id: nemotron_cc_code
+    kind: hf
+    repo: nvidia/Nemotron-CC-Code-v1
+    revision: 5c5bebce9f9a85c237d63b2afad516ee532f950f
+    prefixes: [data]
+    allow_patterns: ['data/*.parquet']
+    expected_inventory_bytes: 563191581141
+    budget_bytes: 570000000000
+    adapter: text
+    priority: 99
+    policy:
+      category: code
+      language: en
+      license_mode: compilation
+      collection_license: NVIDIA Open Data Agreement
+      common_crawl_derived: true
+      generated: false
+      quality_profile: code
+
+  - id: dolma35_science_permissive
+    kind: hf
+    repo: allenai/dolma3.5_pool
+    revision: d2bf6ae7aeda502ff8c5eb5ad425b90ae2f10279
+    prefixes: [dolma4pdfs/s2orcforolmo_nogpl_ngram_filtered_license_partioned]
+    allow_patterns: ['*_cc_by.jsonl.zst', '*_cc0.jsonl.zst', '*_mit.jsonl.zst', '*_public_domain.jsonl.zst']
+    expected_inventory_bytes: 88886739877
+    budget_bytes: 90000000000
+    adapter: text
+    priority: 98
+    policy:
+      category: science
+      language: any
+      license_mode: per_record
+      allowed_licenses: [CCBY, CC-BY, CC-BY-4.0, CC0, CC-0, MIT, public_domain, public-domain, Public Domain]
+      common_crawl_derived: false
+      generated: false
+      quality_profile: science
+
+  - id: nemotron_cc_v2
+    kind: hf
+    repo: nvidia/Nemotron-CC-v2
+    revision: 2669787c66d18601c0e91167fd520be6c1245865
+    allow_patterns: ['*.parquet']
+    expected_inventory_bytes: 10333000437893
+    budget_bytes: 10400000000000
+    adapter: text
+    priority: 88
+    policy:
+      category: web
+      language: any
+      license_mode: compilation
+      collection_license: NVIDIA Open Data Agreement
+      common_crawl_derived: true
+      generated: true
+      quality_profile: curated_prose
+    path_policies:
+      - name: high
+        patterns: ['High-Quality/*']
+        priority: 98
+        policy: {generated: false, language: en, metadata: {source_quality_evidence: publisher_high_partition}}
+      - name: medium_high
+        patterns: ['Medium-High-Quality/*']
+        priority: 94
+        policy: {generated: false, language: en, metadata: {source_quality_evidence: publisher_medium_high_partition}}
+      - name: medium
+        patterns: ['Medium-Quality/*']
+        priority: 80
+        policy: {generated: false, language: en, metadata: {source_quality_evidence: publisher_medium_partition}}
+
+  - id: nemotron_cc_v21
+    kind: hf
+    repo: nvidia/Nemotron-CC-v2.1
+    revision: ba6f2aaef7ada865bb08fc08640ca292150097db
+    allow_patterns: ['*.parquet']
+    expected_inventory_bytes: 4590657078792
+    budget_bytes: 4630000000000
+    adapter: text
+    priority: 91
+    policy:
+      category: web
+      language: any
+      license_mode: compilation
+      collection_license: NVIDIA Open Data Agreement
+      common_crawl_derived: true
+      generated: true
+      quality_profile: synthetic
+    path_policies:
+      - name: high
+        patterns: ['High-Quality/*']
+        priority: 98
+        policy: {generated: false, language: en, quality_profile: curated_prose}
+      - name: medium_high
+        patterns: ['Medium-High-Quality/*']
+        priority: 95
+        policy: {generated: false, language: en, quality_profile: curated_prose}
+      - name: medium
+        patterns: ['Medium-Quality/*']
+        priority: 84
+        policy: {generated: false, language: en, quality_profile: curated_prose}
+
+  - id: hplt3_english_wds10
+    kind: hplt
+    manifest_url: https://data.hplt-project.org/three/sorted/manifest.json
+    manifest_sha256: eb82cccdc093235f5ffd89fc775963ce9ca6b61857366b91b4b4096991afdb4c
+    selection: english-wds10
+    expected_objects: 3
+    budget_bytes: 70000000000
+    adapter: text
+    priority: 87
+    policy:
+      category: web
+      language: eng_Latn
+      license_mode: compilation
+      collection_license: CC0 packaging; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: native_prose
+
+  - id: hplt3_nonenglish
+    kind: hplt
+    manifest_url: https://data.hplt-project.org/three/sorted/manifest.json
+    manifest_sha256: eb82cccdc093235f5ffd89fc775963ce9ca6b61857366b91b4b4096991afdb4c
+    selection: nonenglish
+    expected_objects: 1775
+    budget_bytes: 24300000000000
+    adapter: text
+    priority: 85
+    policy:
+      category: multilingual
+      language: any
+      license_mode: compilation
+      collection_license: CC0 packaging; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: native_prose
+
+  - id: cc_main_2026_34_wet
+    kind: cc
+    manifest_url: https://data.commoncrawl.org/crawl-data/CC-MAIN-2026-34/wet.paths.gz
+    manifest_sha256: ef80e36ec3ba74717881659752a096f42c94834c778a371ca732292aac3b45ba
+    key_prefix: crawl-data/CC-MAIN-2026-34/
+    expected_objects: 100000
+    budget_bytes: 6450000000000
+    adapter: wet
+    priority: 50
+    policy:
+      category: web
+      language: any
+      license_mode: compilation
+      collection_license: Common Crawl terms; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: raw_web
+      metadata: {quality_selection_pending: true, crawl: CC-MAIN-2026-34}
