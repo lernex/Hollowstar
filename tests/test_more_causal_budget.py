@@ -242,6 +242,12 @@ class CausalModelBudgetTests(unittest.TestCase):
         self.assertTrue(enabled.to_dict()["causal_compute_budget"])
         self.assertEqual(enabled.to_dict()["causal_compute_price"], .1)
 
+    def test_noncausal_joint_solver_is_not_a_training_router(self):
+        config = replace(self.config(), causal_compute_budget=False)
+        model = Metis16ForCausalLM(config).train()
+        with self.assertRaisesRegex(ValueError, "noncausal offline oracle"):
+            model(self.inputs(), self.labels(self.inputs()), curriculum=self.curriculum())
+
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA unavailable")
     def test_cuda_full_model_causal_prefix(self):
         model = self.model().cuda()

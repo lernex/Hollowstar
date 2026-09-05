@@ -6167,6 +6167,11 @@ class Metis16ForCausalLM(nn.Module):
                 raise ValueError("Forced widths require an MoE pathway.")
         joint_mode = curriculum_state.compute_allocation_mode == "joint"
         causal_budget = self.config.causal_compute_budget
+        if joint_mode and self.training and not causal_budget:
+            raise ValueError(
+                "Batch-global joint allocation is a noncausal offline oracle; "
+                "training requires causal_compute_budget=True."
+            )
         if causal_budget and not joint_mode:
             if force_depth is None and curriculum_state.continuation_mode not in {"fixed_max", "depth_one"}:
                 raise ValueError("A causal model requires joint allocation or an explicit fixed depth control.")
