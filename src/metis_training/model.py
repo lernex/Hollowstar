@@ -723,6 +723,14 @@ def geometric_continue_probability(max_passes: int, mean_depth: float) -> float:
 
 
 @dataclass
+class _LMHeadWork:
+    forward_rows: Tensor
+    recompute_rows: Tensor
+    recompute_flops: Tensor
+    flops_per_row: int
+
+
+@dataclass
 class Metis16CausalLMOutput:
     logits: Tensor | None
     loss: Tensor | None
@@ -5945,6 +5953,7 @@ class Metis16ForCausalLM(nn.Module):
         *,
         compute_mask: Tensor,
         return_token_losses: bool = False,
+        head_work: _LMHeadWork | None = None,
     ) -> Tensor | tuple[Tensor, Tensor]:
         """Memory-bounded per-exit LM loss for hard-forward ACT credit.
 
@@ -5997,7 +6006,20 @@ class Metis16ForCausalLM(nn.Module):
                 values: Tensor,
                 targets: Tensor,
                 exit_weights: Tensor,
+                _seen: list[bool] = [False],
             ) -> Tensor | tuple[Tensor, Tensor]:
+                # Each chunk owns this flag; its checkpoint reuses the same
+                # closure. Count actual calls, including zero-weight dummy
+                # rows, rather than assuming every active token was projected.
+                if head_work is not None:
+                    if _seen[0]:
+                        head_work.recompute_rows.add_(values.shape[0])
+                        head_work.recompute_flops.add_(
+                            values.shape[0] * head_work.flops_per_row
+                        )
+                    else:
+                        head_work.forward_rows.add_(values.shape[0])
+                _seen[0] = True
                 with _execution_context(
                     self.precision_policy,
                     module=self.lm_head,
@@ -6326,6 +6348,12 @@ class Metis16ForCausalLM(nn.Module):
         activation_recompute_used = False
         pass_survival_gate = attention_mask.float()
         ponder_loss_sum = embeddings.float().sum() * 0.0
+        head_work = _LMHeadWork(
+            embeddings.new_zeros((), dtype=torch.int64),
+            embeddings.new_zeros((), dtype=torch.int64),
+            embeddings.new_zeros((), dtype=torch.int64),
+            2 * self.config.vocab_size * self.config.d_model,
+        )
         previous_token_losses: Tensor | None = None
         exit_mass_sum = torch.zeros(
             (), device=input_ids.device, dtype=torch.float32
@@ -6881,6 +6909,7 @@ class Metis16ForCausalLM(nn.Module):
                         active_mask.float(),
                         compute_mask=active_mask,
                         return_token_losses=True,
+                        head_work=head_work,
                     )
                     for observation in joint_observations:
                         observed = active_mask & observation.prediction.active_mask & labels.ne(-100)
@@ -7185,6 +7214,7 @@ class Metis16ForCausalLM(nn.Module):
                     weighted_loss, terminal_ce = self._chunked_weighted_causal_loss_sum(
                         self.final_norm(streams.mean(dim=-2)), labels, exit_gate,
                         compute_mask=head_mask, return_token_losses=True,
+                        head_work=head_work,
                     )
                     ponder_loss_sum = ponder_loss_sum + weighted_loss
                     horizon = terminal_prediction.width_utilities.shape[2]
@@ -7220,6 +7250,7 @@ class Metis16ForCausalLM(nn.Module):
                             active_mask.float(),
                             compute_mask=active_mask,
                             return_token_losses=True,
+                            head_work=head_work,
                         )
                     if previous_token_losses is None:
                         ponder_loss_sum = ponder_loss_sum + current_token_losses.sum()
@@ -7248,6 +7279,7 @@ class Metis16ForCausalLM(nn.Module):
                         labels,
                         exit_gate,
                         compute_mask=head_mask,
+                        head_work=head_work,
                     )
             if next_active is not None:
                 active_mask = next_active
@@ -7303,6 +7335,8 @@ class Metis16ForCausalLM(nn.Module):
             if return_logits
             else None
         )
+        if return_logits:
+            head_work.forward_rows.add_(final_hidden.numel() // final_hidden.shape[-1])
         if labels is None:
             causal_loss = None
         else:
@@ -7422,6 +7456,12 @@ class Metis16ForCausalLM(nn.Module):
             "mhc_stream_diversity": stream_diversity,
             "ngram_cached_vectors": final_hidden.new_tensor(input_ids.numel(), dtype=torch.long),
             "depth_memory_last_norm": last_memory_summary.float().norm(dim=-1).mean(),
+            "lm_head_forward_rows": head_work.forward_rows,
+            "lm_head_forward_flops": head_work.forward_rows * head_work.flops_per_row,
+            # These tensors are updated by checkpoint closures during backward.
+            # Consumers must snapshot them after backward, not after forward.
+            "lm_head_recompute_rows": head_work.recompute_rows,
+            "lm_head_recompute_flops": head_work.recompute_flops,
         }
         if collect_joint_outcomes or causal_budget:
             total_joint_cost = joint_spent + joint_router_spent
