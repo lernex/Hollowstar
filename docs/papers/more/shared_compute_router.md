@@ -5,6 +5,27 @@ campaign. Existing defaults, exact-marginal controls, and production Praxis and
 Logos remain unchanged. A feasible allocation or a fitted utility head is not
 evidence that the model has improved.
 
+**September 4, 2026 assessment: not qualified for a campaign restart.** Heads
+fitted for 32, 256, and 1,024 updates improved the existing allocation in some
+held-out comparisons, but did not establish superiority over uniform
+depth-two/k-four execution. At the real six-by-4,096-token per-APU layout, the
+learned allocation beat shuffled equal-work trajectories on several windows,
+yet the uniform control remained at least as strong. This is evidence of some
+allocation signal, not a successful replacement recipe.
+
+The frozen backbone in these assessments was the original Core step-5,000
+checkpoint. They were head-only adaptation experiments, not new 50B-token
+pretraining runs, and do not establish RM quality or final convergence.
+Three full-geometry FP8 optimizer steps also exercised actual five-pass
+execution within the modeled cap; they establish execution feasibility, not
+model quality or 80-APU throughput.
+
+Aggregate artifacts and source-bound utility checkpoints are preserved under
+`/lus/lustre1/vollmerc/more-credit-repair-20260904/`; the local experiment ledger
+is `reports/more-credit-20260904/results.tsv`. Natural GPU routing variability
+and forced-plan replay parity are recorded explicitly. Failed or
+noise-unresolved comparisons must not be quoted as allocation improvements.
+
 ## Budget and execution
 
 `--compute-allocation-mode joint` enables a separate outcome-prediction head.
