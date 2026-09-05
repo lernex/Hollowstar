@@ -102,6 +102,25 @@ class CausalPilotTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     self.fixture.train(row, compute_allocation_mode=mode, stop_after_steps=1)
 
+    def test_terminal_objective_is_sealed_and_runs_only_actual_exit_heads(self):
+        self.set_row("more-core")
+        self.fixture.train(
+            "terminal", compute_allocation_mode="causal", stop_after_steps=2,
+            terminal_action_critic=True, terminal_critic_exploration=0.5,
+        )
+        manifest = self.fixture.manifest("terminal")
+        self.assertTrue(manifest["model"]["terminal_action_critic"])
+        self.assertEqual(manifest["model"]["terminal_critic_exploration"], 0.5)
+        path = self.fixture.root / "terminal/more-core/telemetry/rank-00000.jsonl"
+        for line in path.read_text().splitlines():
+            record = json.loads(line)
+            telemetry = record["telemetry"]
+            self.assertEqual(telemetry["terminal_action_critic_enabled"], 1)
+            self.assertEqual(telemetry["global_executed_lm_head_tokens"], 128)
+            self.assertLessEqual(telemetry["global_joint_budget_fraction"], 1)
+        with self.assertRaisesRegex(ValueError, "explicit causal"):
+            self.fixture.train("invalid-terminal", stop_after_steps=1, terminal_action_critic=True)
+
     def test_cli_matched_pilot_geometry_preserves_global_batch_and_declared_schedule(self):
         with patch("metis_ablation.train.train_row", return_value={}) as trainer:
             main([

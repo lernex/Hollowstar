@@ -841,6 +841,8 @@ def train_row(
     keep_all_checkpoints: bool = False,
     causal_compute_price: float = 0.0,
     activation_recompute_policy: str | None = None,
+    terminal_action_critic: bool = False,
+    terminal_critic_exploration: float = 0.05,
 ) -> dict[str, Any]:
     runtime = initialize_runtime(device=device_override)
     lease = None
@@ -874,6 +876,8 @@ def train_row(
             keep_all_checkpoints=keep_all_checkpoints,
             causal_compute_price=causal_compute_price,
             activation_recompute_policy=activation_recompute_policy,
+            terminal_action_critic=terminal_action_critic,
+            terminal_critic_exploration=terminal_critic_exploration,
         )
     finally:
         _release_row_lease(lease)
@@ -906,6 +910,8 @@ def _train_row_inner(
     keep_all_checkpoints: bool = False,
     causal_compute_price: float = 0.0,
     activation_recompute_policy: str | None = None,
+    terminal_action_critic: bool = False,
+    terminal_critic_exploration: float = 0.05,
 ) -> dict[str, Any]:
     if stop_after_steps is not None:
         if type(stop_after_steps) is not int or stop_after_steps <= 0:
@@ -960,10 +966,16 @@ def _train_row_inner(
     metered_policy = joint_policy or causal
     if causal_compute_price != 0.0 and not causal:
         raise ValueError("causal_compute_price requires an explicit causal allocation mode")
+    if terminal_action_critic and not causal:
+        raise ValueError("terminal_action_critic requires an explicit causal allocation mode")
+    if terminal_critic_exploration != 0.05 and not terminal_action_critic:
+        raise ValueError("terminal_critic_exploration requires terminal_action_critic")
     if causal:
         config = replace(
             config, joint_compute_router=True, causal_compute_budget=True,
             causal_compute_price=causal_compute_price, budgeted_depth_values=(),
+            terminal_action_critic=terminal_action_critic,
+            terminal_critic_exploration=terminal_critic_exploration,
         )
         if compute_allocation_mode == "causal-fixed":
             if (
@@ -1471,7 +1483,9 @@ def _train_row_inner(
                     joint_step_active_tokens += float(telemetry["executed_active_tokens"].detach().item())
                     joint_step_head_tokens += float(telemetry.get(
                         "executed_lm_head_tokens",
-                        batch.attention_mask.sum() if compute_allocation_mode == "causal-fixed"
+                        batch.attention_mask.sum() if (
+                            compute_allocation_mode == "causal-fixed" or terminal_action_critic
+                        )
                         else telemetry["executed_active_tokens"],
                     ).detach().item())
                     joint_step_budget_flops += float(telemetry["joint_budget_flops"].detach().item())
@@ -1785,6 +1799,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--causal-compute-price", type=float, default=0.0)
     parser.add_argument(
+        "--terminal-action-critic", action="store_true",
+        help="Explicit terminal-action CE objective, with one vocabulary head per actual token exit",
+    )
+    parser.add_argument("--terminal-critic-exploration", type=float, default=0.05)
+    parser.add_argument(
         "--activation-recompute-policy", choices=("none", "pass", "layer"), default=None,
         help="Explicit measured-lane override, sealed in model identity; preserve the row default when omitted",
     )
@@ -1894,6 +1913,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         keep_all_checkpoints=args.keep_all_checkpoints,
         causal_compute_price=args.causal_compute_price,
         activation_recompute_policy=args.activation_recompute_policy,
+        terminal_action_critic=args.terminal_action_critic,
+        terminal_critic_exploration=args.terminal_critic_exploration,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
