@@ -32,7 +32,12 @@ from .context_parallel import (
 from .mhc_kernels import mhc_masked_write, mhc_read_mix
 from .routing_kernels import stream_gate_logits, swiglu
 from .model_config import Metis16Config, load_family_config
-from .compute_router import JointComputeRouter, JointRouterObservation
+from .compute_router import (
+    JointComputeRouter,
+    JointRouterObservation,
+    JointUtilityPrediction,
+    TerminalRouterObservation,
+)
 
 
 Tensor = torch.Tensor
@@ -729,6 +734,7 @@ class Metis16CausalLMOutput:
     continuation_probabilities: Tensor
     final_hidden_state: Tensor
     router_observations: tuple[JointRouterObservation, ...] = ()
+    terminal_router_observations: tuple[TerminalRouterObservation, ...] = ()
 
 
 @dataclass
@@ -6058,6 +6064,7 @@ class Metis16ForCausalLM(nn.Module):
         force_depth: int | Tensor | None = None,
         force_routed_k: Tensor | None = None,
         return_router_observations: bool = False,
+        return_terminal_router_observations: bool = False,
         return_logits: bool | None = None,
     ) -> Metis16CausalLMOutput:
         return self._forward_impl(
@@ -6072,6 +6079,7 @@ class Metis16ForCausalLM(nn.Module):
             force_depth=force_depth,
             force_routed_k=force_routed_k,
             return_router_observations=return_router_observations,
+            return_terminal_router_observations=return_terminal_router_observations,
             return_logits=return_logits,
         )
 
@@ -6089,6 +6097,7 @@ class Metis16ForCausalLM(nn.Module):
         force_depth: int | Tensor | None,
         force_routed_k: Tensor | None,
         return_router_observations: bool,
+        return_terminal_router_observations: bool,
         return_logits: bool | None,
     ) -> Metis16CausalLMOutput:
         if input_ids.ndim != 2:
@@ -6167,6 +6176,11 @@ class Metis16ForCausalLM(nn.Module):
                 raise ValueError("Forced widths require an MoE pathway.")
         joint_mode = curriculum_state.compute_allocation_mode == "joint"
         causal_budget = self.config.causal_compute_budget
+        if self.config.terminal_action_critic and labels is not None and return_logits:
+            raise ValueError(
+                "Terminal-action mode cannot duplicate its reserved head: "
+                "omit labels for logits, or omit return_logits for terminal CE."
+            )
         if joint_mode and self.training and not causal_budget:
             raise ValueError(
                 "Batch-global joint allocation is a noncausal offline oracle; "
@@ -6177,7 +6191,12 @@ class Metis16ForCausalLM(nn.Module):
                 raise ValueError("A causal model requires joint allocation or an explicit fixed depth control.")
             if force_routed_k is None and curriculum_state.routed_k_mode != "fixed":
                 raise ValueError("A causal model requires joint allocation or explicit fixed widths.")
-        collect_joint_outcomes = joint_mode or return_router_observations
+        if return_router_observations and self.config.terminal_action_critic:
+            raise ValueError("Terminal Q uses return_terminal_router_observations, not stop-loss observations.")
+        if return_terminal_router_observations and not self.config.terminal_action_critic:
+            raise ValueError("Terminal observations require terminal_action_critic=True.")
+        collect_joint_outcomes = joint_mode or return_router_observations or return_terminal_router_observations
+        terminal_utility = self.config.terminal_action_critic and collect_joint_outcomes
         observed_depth_credit = (
             self.config.observed_depth_credit
             and curriculum_state.continuation_mode in {"adaptive", "budgeted"}
@@ -6190,7 +6209,7 @@ class Metis16ForCausalLM(nn.Module):
             if not self.training and not curriculum_state.allow_untrained_joint_router:
                 if self.joint_router is None or not bool(self.joint_router.trained_updates.item()):
                     raise RuntimeError("Joint routing requires trained utility weights; untrained probes must opt in.")
-        if return_router_observations:
+        if return_router_observations or return_terminal_router_observations:
             if self.joint_router is None or labels is None:
                 raise ValueError("Utility observations require a utility router and supervised labels.")
             if not joint_mode and (force_depth is None or force_routed_k is None):
@@ -6323,6 +6342,9 @@ class Metis16ForCausalLM(nn.Module):
             or _group_world_size(self.process_groups.context) > 1
         )
         joint_observations: list[JointRouterObservation] = []
+        terminal_observations: list[TerminalRouterObservation] = []
+        terminal_prediction: JointUtilityPrediction | None = None
+        terminal_width_history: list[Tensor] = []
         joint_observation_count = torch.zeros((), device=input_ids.device, dtype=torch.long)
         joint_utility_sum = streams.new_zeros((), dtype=torch.float32)
         joint_spent = torch.zeros((), device=input_ids.device, dtype=torch.int64)
@@ -6344,6 +6366,8 @@ class Metis16ForCausalLM(nn.Module):
                 )
             costs = self.joint_router.costs
             joint_budget = attention_mask.sum(dtype=torch.int64) * costs.reference_per_token
+            if costs.terminal_head_only:
+                joint_spent = attention_mask.sum(dtype=torch.int64) * costs.head_per_token
         if joint_mode:
             bootstrap_k = round(self.config.target_mean_routed_k)
             joint_next_widths = torch.full(
@@ -6359,7 +6383,8 @@ class Metis16ForCausalLM(nn.Module):
                 causal_credit = (
                     costs.reference_per_token - costs.base_pass_costs[0]
                     - bootstrap_k * sum(costs.expert_costs)
-                    - (costs.router_per_token if effective_passes > 1 else 0)
+                    - (costs.router_per_token if effective_passes > 1 or terminal_utility else 0)
+                    - (costs.head_per_token if costs.terminal_head_only else 0)
                 )
                 if causal_credit < 0:
                     raise ValueError("The causal reference cap cannot fund bootstrap and controller work.")
@@ -6414,6 +6439,10 @@ class Metis16ForCausalLM(nn.Module):
                 if joint_mode
                 else force_routed_k[pass_index] if force_routed_k is not None else None
             )
+            predict_this_pass = collect_joint_outcomes and (
+                pass_index == 0 and (effective_passes > 1 or terminal_utility)
+                if causal_budget else pass_index + 1 < effective_passes
+            )
             if collect_joint_outcomes or causal_budget:
                 accounting_widths = pass_routed_k
                 if accounting_widths is None and causal_budget and execution_curriculum.routed_k_mode == "fixed":
@@ -6426,13 +6455,16 @@ class Metis16ForCausalLM(nn.Module):
                     raise RuntimeError("Utility outcome accounting requires explicit widths.")
                 for observation in joint_observations:
                     observation.width_history.append(pass_routed_k)
+                if terminal_utility and pass_index > 0:
+                    terminal_width_history.append(
+                        torch.where(active_mask.unsqueeze(0), accounting_widths, 0).detach()
+                    )
                 joint_spent = joint_spent + costs.pass_cost(
                     pass_index, accounting_widths, active_mask
                 )
                 required_router_cost = (
                     active_mask.sum(dtype=torch.int64) * costs.router_per_token
-                    if collect_joint_outcomes and pass_index + 1 < effective_passes
-                    and (not causal_budget or pass_index == 0)
+                    if predict_this_pass
                     else torch.zeros_like(joint_spent)
                 )
                 if joint_mode and bool(
@@ -6842,7 +6874,7 @@ class Metis16ForCausalLM(nn.Module):
             current_token_losses: Tensor | None = None
             joint_next_active: Tensor | None = None
             if collect_joint_outcomes:
-                if labels is not None:
+                if labels is not None and not terminal_utility:
                     _all_active_loss, current_token_losses = self._chunked_weighted_causal_loss_sum(
                         self.final_norm(streams.mean(dim=-2)),
                         labels,
@@ -6859,7 +6891,7 @@ class Metis16ForCausalLM(nn.Module):
                         )
                         joint_utility_sum = joint_utility_sum + value_loss
                         joint_observation_count = joint_observation_count + count
-                if pass_index + 1 < effective_passes and (not causal_budget or pass_index == 0):
+                if predict_this_pass:
                     prediction = self.joint_router(
                         current_state,
                         last_memory_summary,
@@ -6873,6 +6905,8 @@ class Metis16ForCausalLM(nn.Module):
                         joint_router_spent
                         + active_mask.sum(dtype=torch.int64) * costs.router_per_token
                     )
+                    if terminal_utility:
+                        terminal_prediction = prediction
                     if joint_mode:
                         from .compute_budget import allocate_causal_budget, allocate_joint_budget
 
@@ -6884,7 +6918,10 @@ class Metis16ForCausalLM(nn.Module):
                         utilities, width_utilities = self.joint_router.allocation_utilities(
                             prediction,
                             exploration=(
-                                curriculum_state.joint_router_exploration
+                                (
+                                    self.config.terminal_critic_exploration
+                                    if terminal_utility else curriculum_state.joint_router_exploration
+                                )
                                 if self.training and curriculum_state.stochastic_routing
                                 else 0.0
                             ),
@@ -6897,6 +6934,12 @@ class Metis16ForCausalLM(nn.Module):
                             causal_seed=(
                                 curriculum_state.random_policy_seed
                                 + 100_003 * curriculum_state.random_policy_step
+                            ),
+                            exploration_price_margin=(
+                                1.0 + self.config.causal_compute_price * (
+                                    sum(costs.base_pass_costs[1:effective_passes])
+                                    + (effective_passes - 1) * sum(costs.expert_costs) * self.config.max_routed_k
+                                ) / costs.reference_per_token
                             ),
                         )
                         if causal_budget:
@@ -6933,7 +6976,7 @@ class Metis16ForCausalLM(nn.Module):
                                 budget=joint_budget - joint_router_spent - joint_spent,
                             )
                         joint_next_active = active_mask & plan.depths.gt(0)
-                        joint_next_widths = plan.routed_k[0]
+                        joint_next_widths = plan.routed_k[0] if plan.routed_k.shape[0] else None
                         joint_gap = torch.maximum(
                             joint_gap,
                             (plan.dual_upper_bound - plan.utility).float().clamp_min(0.0),
@@ -7129,13 +7172,47 @@ class Metis16ForCausalLM(nn.Module):
                 exit_mass_by_token + exit_gate.detach().float()
             )
             head_mask = active_mask
-            if causal_budget and not collect_joint_outcomes:
+            if causal_budget and (not collect_joint_outcomes or terminal_utility):
                 head_mask = active_mask & exit_gate.detach().ne(0)
-                joint_spent = joint_spent - (
-                    active_mask.sum(dtype=torch.int64) - head_mask.sum(dtype=torch.int64)
-                ) * costs.head_per_token
+                if not costs.terminal_head_only:
+                    joint_spent = joint_spent - (
+                        active_mask.sum(dtype=torch.int64) - head_mask.sum(dtype=torch.int64)
+                    ) * costs.head_per_token
             if labels is not None:
-                if observed_depth_credit:
+                if terminal_utility:
+                    if terminal_prediction is None:
+                        raise RuntimeError("Terminal outcomes have no causal prediction context.")
+                    weighted_loss, terminal_ce = self._chunked_weighted_causal_loss_sum(
+                        self.final_norm(streams.mean(dim=-2)), labels, exit_gate,
+                        compute_mask=head_mask, return_token_losses=True,
+                    )
+                    ponder_loss_sum = ponder_loss_sum + weighted_loss
+                    horizon = terminal_prediction.width_utilities.shape[2]
+                    empty_widths = torch.zeros(
+                        (self.config.n_layers, *input_ids.shape),
+                        device=input_ids.device, dtype=torch.long,
+                    )
+                    actual_widths = (
+                        torch.stack(
+                            terminal_width_history
+                            + [empty_widths] * (horizon - len(terminal_width_history))
+                        )
+                        if horizon else empty_widths.new_zeros((0, *empty_widths.shape))
+                    )
+                    actual_depths = (chosen_depths - 1).clamp_min(0)
+                    observed = head_mask & labels.ne(-100)
+                    value_loss, count = terminal_prediction.terminal_loss(
+                        actual_depths, actual_widths, terminal_ce, observed
+                    )
+                    joint_utility_sum = joint_utility_sum + value_loss
+                    joint_observation_count = joint_observation_count + count
+                    if return_terminal_router_observations:
+                        terminal_observations.append(TerminalRouterObservation(
+                            terminal_prediction, actual_depths.detach().clone(),
+                            actual_widths.detach().clone(), terminal_ce.detach(),
+                            observed.detach().clone(),
+                        ))
+                elif observed_depth_credit:
                     if current_token_losses is None:
                         _, current_token_losses = self._chunked_weighted_causal_loss_sum(
                             self.final_norm(streams.mean(dim=-2)),
@@ -7362,6 +7439,11 @@ class Metis16ForCausalLM(nn.Module):
             if causal_budget:
                 telemetry["causal_compute_budget_enabled"] = final_hidden.new_ones((), dtype=torch.long)
                 telemetry["causal_credit_per_token"] = final_hidden.new_tensor(causal_credit, dtype=torch.int64)
+                if self.config.terminal_action_critic:
+                    telemetry["terminal_action_critic_enabled"] = final_hidden.new_ones((), dtype=torch.long)
+                    telemetry["terminal_lm_head_reserved_flops"] = (
+                        attention_mask.sum(dtype=torch.int64) * costs.head_per_token
+                    )
         if self.config.observed_depth_credit:
             telemetry["observed_depth_credit_enabled"] = final_hidden.new_tensor(
                 int(observed_depth_credit), dtype=torch.long
@@ -7377,6 +7459,9 @@ class Metis16ForCausalLM(nn.Module):
             continuation_probabilities=stacked_continuation,
             final_hidden_state=final_hidden,
             router_observations=tuple(joint_observations) if return_router_observations else (),
+            terminal_router_observations=(
+                tuple(terminal_observations) if return_terminal_router_observations else ()
+            ),
         )
 
 

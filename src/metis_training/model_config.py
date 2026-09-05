@@ -505,6 +505,8 @@ class Metis16Config:
     joint_router_hidden_dim: int = 128
     causal_compute_budget: bool = False
     causal_compute_price: float = 0.0
+    terminal_action_critic: bool = False
+    terminal_critic_exploration: float = 0.05
     # Dual step size for the width and depth budget controllers. Zero keeps the
     # fixed-coefficient penalty exactly as it was, which is what production
     # Praxis and Logos run. Any positive value turns the coefficient above into
@@ -594,6 +596,10 @@ class Metis16Config:
             payload.pop("causal_compute_budget")
             if self.causal_compute_price == 0.0:
                 payload.pop("causal_compute_price")
+        if not self.terminal_action_critic:
+            payload.pop("terminal_action_critic")
+            if self.terminal_critic_exploration == 0.05:
+                payload.pop("terminal_critic_exploration")
         if not self.joint_compute_router:
             payload.pop("joint_compute_router")
             if self.joint_router_hidden_dim == 128:
@@ -933,6 +939,17 @@ class Metis16Config:
 
         if not isinstance(self.causal_compute_budget, bool):
             raise ValueError("causal_compute_budget must be boolean.")
+        if not isinstance(self.terminal_action_critic, bool):
+            raise ValueError("terminal_action_critic must be boolean.")
+        if (
+            isinstance(self.terminal_critic_exploration, bool)
+            or not isinstance(self.terminal_critic_exploration, (int, float))
+            or not math.isfinite(self.terminal_critic_exploration)
+            or not 0 <= self.terminal_critic_exploration <= 1
+        ):
+            raise ValueError("terminal_critic_exploration must lie in [0, 1].")
+        if self.terminal_action_critic and not self.causal_compute_budget:
+            raise ValueError("The terminal-action critic requires causal compute budgeting.")
         if (
             isinstance(self.causal_compute_price, bool)
             or not isinstance(self.causal_compute_price, (int, float))

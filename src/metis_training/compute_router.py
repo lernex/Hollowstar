@@ -16,7 +16,7 @@ def utility_router_parameter_count(config: Metis16Config) -> int:
     inputs = 3 * config.d_model + config.route_feature_dim + config.max_passes
     hidden = config.joint_router_hidden_dim
     future = config.max_passes - 1
-    outputs = future * (1 + config.n_layers * config.max_routed_k)
+    outputs = future * (1 + config.n_layers * config.max_routed_k) + int(config.terminal_action_critic)
     return inputs * hidden + hidden + hidden * outputs + outputs
 
 
@@ -28,12 +28,16 @@ class JointComputeCosts:
     router_per_token: int
     removed_policy_per_pass: int = 0
     head_per_token: int = 0
+    terminal_head_only: bool = False
 
     @classmethod
     def from_config(cls, config: Metis16Config) -> JointComputeCosts:
         from .metrics import estimate_train_flops
 
-        reference = replace(config, joint_compute_router=False, causal_compute_budget=False)
+        reference = replace(
+            config, joint_compute_router=False, causal_compute_budget=False,
+            terminal_action_critic=False,
+        )
         expert = 6 * 3 * config.latent_dim * config.expert_intermediate_dim
         previous = 0
         increments = []
@@ -73,6 +77,10 @@ class JointComputeCosts:
             # projects to vocabulary only at its terminal exit. Outcome
             # training still pays for every head it actually requests.
             reference_cost -= 2 * removed_policy + head
+        if config.terminal_action_critic:
+            # This objective observes only terminal CE. Charge its one head
+            # separately, before admitting any remaining trajectory.
+            increments = [cost - head for cost in increments]
         if min(increments) <= 0 or reference_cost <= 0:
             raise ValueError("Joint routing requires positive audited compute costs.")
         return cls(
@@ -82,6 +90,7 @@ class JointComputeCosts:
             6 * utility_router_parameter_count(config),
             removed_policy,
             head,
+            config.terminal_action_critic,
         )
 
     def pass_cost(self, pass_index: int, widths: Tensor, active_mask: Tensor) -> Tensor:
@@ -112,6 +121,7 @@ class JointUtilityPrediction:
     width_utilities: Tensor
     active_mask: Tensor
     origin_pass: int
+    terminal_values: bool = False
 
     def value_of(self, width_history: Sequence[Tensor]) -> Tensor:
         depth = len(width_history)
@@ -140,6 +150,8 @@ class JointUtilityPrediction:
         improvement: Tensor,
         observed_mask: Tensor,
     ) -> tuple[Tensor, Tensor]:
+        if self.terminal_values:
+            raise ValueError("Terminal Q values require terminal CE targets, not observed improvements.")
         if improvement.shape != self.active_mask.shape:
             raise ValueError("Utility targets must have the original token shape.")
         if observed_mask.shape != self.active_mask.shape:
@@ -162,6 +174,53 @@ class JointUtilityPrediction:
             reduction="sum",
         ), count
 
+    def value_of_actions(self, depths: Tensor, routed_k: Tensor) -> Tensor:
+        rounds, layers, choices = self.width_utilities.shape[-3:]
+        if depths.shape != self.active_mask.shape or depths.dtype not in {torch.int32, torch.int64}:
+            raise ValueError("Action depths must be integer [batch, sequence].")
+        if routed_k.shape != (rounds, layers, *self.active_mask.shape):
+            raise ValueError("Action widths must be [rounds, layers, batch, sequence].")
+        if routed_k.dtype not in {torch.int32, torch.int64}:
+            raise ValueError("Action widths must be integers.")
+        if bool(((depths < 0) | (depths > rounds) | (~self.active_mask & depths.ne(0))).any()):
+            raise ValueError("Action depth is outside the active prediction horizon.")
+        live = torch.arange(rounds, device=depths.device)[:, None, None, None] < depths[None, None]
+        if bool(torch.where(live, (routed_k < 1) | (routed_k > choices), routed_k.ne(0)).any()):
+            raise ValueError("Action widths must match actually executed depth prefixes.")
+        value = self.depth_utilities.gather(-1, depths.long().unsqueeze(-1)).squeeze(-1)
+        for r in range(rounds):
+            for layer in range(layers):
+                indices = routed_k[r, layer].long().clamp_min(1) - 1
+                width_value = self.width_utilities[..., r, layer, :].gather(
+                    -1, indices.unsqueeze(-1)
+                ).squeeze(-1)
+                value = value + torch.where(depths > r, width_value, 0.0)
+        return value
+
+    def terminal_loss(
+        self,
+        depths: Tensor,
+        routed_k: Tensor,
+        terminal_ce: Tensor,
+        observed_mask: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        if not self.terminal_values:
+            raise ValueError("Terminal CE targets require a terminal-action critic.")
+        if terminal_ce.shape != self.active_mask.shape:
+            raise ValueError("Terminal CE must have the original token shape.")
+        if observed_mask.shape != self.active_mask.shape or observed_mask.dtype != torch.bool:
+            raise ValueError("Terminal observations must be bool [batch, sequence].")
+        if bool((observed_mask & ~self.active_mask).any()):
+            raise ValueError("Terminal observations cannot precede their prediction context.")
+        targets = terminal_ce.detach().float().masked_select(observed_mask)
+        if not bool(torch.isfinite(targets).all()) or bool((targets < 0).any()):
+            raise ValueError("Observed terminal CE must be finite and nonnegative.")
+        value = self.value_of_actions(depths, routed_k)
+        count = observed_mask.sum()
+        if not bool(count):
+            return value.sum() * 0.0, count
+        return F.mse_loss(value.masked_select(observed_mask), -targets, reduction="sum"), count
+
 
 @dataclass
 class JointRouterObservation:
@@ -170,11 +229,21 @@ class JointRouterObservation:
     width_history: list[Tensor]
 
 
+@dataclass
+class TerminalRouterObservation:
+    prediction: JointUtilityPrediction
+    depths: Tensor
+    routed_k: Tensor
+    terminal_ce: Tensor
+    observed_mask: Tensor
+
+
 class JointComputeRouter(nn.Module):
     """Predict the value of feasible trajectories, not confidence in a quota.
 
-    Targets are observed changes in next-token loss. Unvisited continuations
-    have no target: stopping must not manufacture a zero-cost future reward.
+    The default target is observed loss improvement. The separately identified
+    terminal-action candidate fits negative terminal CE, with a shared halt
+    value and action advantages. Neither objective labels unvisited actions.
     The hard allocator is separate from this outcome regression.
     """
 
@@ -188,7 +257,7 @@ class JointComputeRouter(nn.Module):
         self.config = config
         inputs = 3 * config.d_model + config.route_feature_dim + config.max_passes
         future = config.max_passes - 1
-        outputs = future * (1 + config.n_layers * config.max_routed_k)
+        outputs = future * (1 + config.n_layers * config.max_routed_k) + int(config.terminal_action_critic)
         self.hidden = nn.Linear(
             inputs, config.joint_router_hidden_dim, device=device, dtype=torch.float32
         )
@@ -219,7 +288,8 @@ class JointComputeRouter(nn.Module):
     ) -> JointUtilityPrediction:
         if not 0 <= origin_pass < self.config.max_passes - 1:
             raise ValueError("Utility context is outside the recurrent horizon.")
-        if not 1 <= remaining_passes <= self.config.max_passes - origin_pass - 1:
+        minimum_horizon = 0 if self.config.terminal_action_critic else 1
+        if not minimum_horizon <= remaining_passes <= self.config.max_passes - origin_pass - 1:
             raise ValueError("Invalid remaining utility horizon.")
         if state.shape[:-1] != active_mask.shape:
             raise ValueError("Utility context must have the original token shape.")
@@ -238,7 +308,7 @@ class JointComputeRouter(nn.Module):
             raw = self.output(F.silu(self.hidden(features.float())))
         future = self.config.max_passes - 1
         depth = raw[:, :future]
-        width = raw[:, future:].reshape(
+        width = raw[:, future: future + future * self.config.n_layers * self.config.max_routed_k].reshape(
             -1, future, self.config.n_layers, self.config.max_routed_k
         )
         # A fixed-k reference identifies the depth term separately from the
@@ -258,6 +328,9 @@ class JointComputeRouter(nn.Module):
         depth_values = torch.cat(
             (depth_values.new_zeros(*active_mask.shape, 1), depth_values), dim=-1
         )
+        if self.config.terminal_action_critic:
+            state_value = raw.new_zeros(active_mask.numel()).index_copy(0, positions, raw[:, -1])
+            depth_values = depth_values + state_value.reshape(*active_mask.shape, 1)
         return JointUtilityPrediction(
             depth_values,
             flat_width.reshape(
@@ -268,6 +341,7 @@ class JointComputeRouter(nn.Module):
             ),
             active_mask,
             origin_pass,
+            self.config.terminal_action_critic,
         )
 
     @staticmethod
@@ -278,12 +352,15 @@ class JointComputeRouter(nn.Module):
         generator: torch.Generator | None,
         causal_keys: Tensor | None = None,
         causal_seed: int = 0,
+        exploration_price_margin: float = 1.0,
     ) -> tuple[Tensor, Tensor]:
         if not 0.0 <= exploration <= 1.0:
             raise ValueError("Utility exploration must lie in [0, 1] loss units.")
         depth = prediction.depth_utilities.detach()
         width = prediction.width_utilities.detach()
         if exploration:
+            if prediction.terminal_values and causal_keys is None:
+                raise ValueError("Terminal-action exploration requires causal token keys.")
             if causal_keys is None:
                 depth_noise = torch.rand(
                     depth.shape, device=depth.device, dtype=depth.dtype, generator=generator
@@ -310,7 +387,28 @@ class JointComputeRouter(nn.Module):
 
                 depth_noise = noise(depth, 17)
                 width_noise = noise(width, 104729)
+            if prediction.terminal_values:
+                if not torch.isfinite(depth.new_tensor(exploration_price_margin)) or exploration_price_margin <= 0:
+                    raise ValueError("Exploration price margin must be finite and positive.")
+                if depth.shape[-1] == 1:
+                    return depth, width
+                explore = (depth_noise[..., 0] < exploration) | (exploration == 1.0)
+                selected_depth = (depth_noise[..., -1] * depth.shape[-1]).long().clamp_max(depth.shape[-1] - 1)
+                selected_width = (width_noise[..., 0] * width.shape[-1]).long().clamp_max(width.shape[-1] - 1)
+                depth_choice = torch.arange(depth.shape[-1], device=depth.device)
+                width_choice = torch.arange(width.shape[-1], device=width.device)
+                random_depth = depth[..., :1] + (
+                    depth_choice == selected_depth[..., None]
+                ).to(depth.dtype) * exploration_price_margin
+                random_width = -(
+                    width_choice != selected_width[..., None]
+                ).to(width.dtype) * exploration_price_margin
+                return (
+                    torch.where(explore[..., None], random_depth, depth),
+                    torch.where(explore[..., None, None, None], random_width, width),
+                )
+            halt_value = depth[..., 0]
             depth = depth + (depth_noise * 2.0 - 1.0) * exploration
-            depth[..., 0] = 0.0
+            depth[..., 0] = halt_value
             width = width + (width_noise * 2.0 - 1.0) * exploration
         return depth, width
