@@ -288,25 +288,59 @@ class ObjectWork:
     admitted: bool = False
 
 
+def _claim_compaction(config: Mapping[str, Any]) -> tuple[int, BinaryIO] | None:
+    root = Path(config["root"])
+    generation = config["index_generation"]
+    selector = claim(root / "locks" / f"compaction-selection-{generation}.flock")
+    if selector is None:
+        return None
+    cursor = root / "state" / "compaction" / f"{generation}.json"
+    try:
+        previous = read_receipt(cursor) if cursor.exists() else {"next_bucket": 0}
+        count = config["dedup"]["bucket_count"]
+        start = previous["next_bucket"]
+        if type(start) is not int or not 0 <= start < count:
+            raise RuntimeError("Compaction cursor references an invalid bucket")
+        for offset in range(count):
+            bucket = (start + offset) % count
+            lease = claim(root / "locks" / f"compaction-{generation}-{bucket:06d}.flock")
+            if lease is not None:
+                handed_off = False
+                try:
+                    write_receipt(cursor, {
+                        "schema": "metis17.compaction-cursor/v1", "index_generation": generation,
+                        "next_bucket": (bucket + 1) % count,
+                    })
+                    handed_off = True
+                finally:
+                    if not handed_off:
+                        lease.close()
+                return bucket, lease
+        return None
+    finally:
+        selector.close()
+
+
 def _compact_job(config: dict[str, Any]) -> dict[str, Any]:
     from .dedup import compact_dedup
     from .storage import WorkingBudget
 
     root = Path(config["root"])
-    cursor = root / "state" / "compaction" / f"{config['index_generation']}.json"
-    previous = read_receipt(cursor) if cursor.exists() else {"next_bucket": 0, "total_merges": 0}
-    bucket = previous["next_bucket"]
+    bucket = config["compaction_bucket"]
+    progress_path = root / "state" / "compaction" / config["index_generation"] / f"{bucket:06d}.json"
+    previous = read_receipt(progress_path) if progress_path.exists() else {"total_merges": 0}
     result = compact_dedup(
         root / "dedup" / "exact" / config["index_generation"], bucket_ids=[bucket],
         max_fan_in=config["dedup"]["max_fan_in"], max_merges=1,
+        minimum_fan_in=min(8, config["dedup"]["max_fan_in"]),
         working_budget=WorkingBudget(root),
     )
     progress = {
         **result, "index_generation": config["index_generation"],
-        "next_bucket": (bucket + 1) % config["dedup"]["bucket_count"],
+        "counter_scope": "bucket_cumulative", "bucket": bucket,
         "total_merges": previous["total_merges"] + result["merges"], "updated_at": utc_now(),
     }
-    write_receipt(cursor, progress)
+    write_receipt(progress_path, progress)
     return progress
 
 
@@ -356,7 +390,8 @@ def prep_service(
     # Warm it before claiming objects, and reserve separate reader/chunk slots
     # in one pool. Abrupt worker death then fails futures instead of hanging.
     with ProcessPoolExecutor(
-        max_workers=readers + workers, mp_context=context, initializer=_child_initialize,
+        max_workers=readers + workers + int(defer_compaction),
+        mp_context=context, initializer=_child_initialize,
     ) as pool:
         pool.submit(_worker_ready).result()
         try:
@@ -373,6 +408,8 @@ def prep_service(
                 if compaction_job is not None and compaction_job.done():
                     try:
                         progress = _job_result(compaction_job)
+                        if progress["merges"]:
+                            last_work = now
                         atomic_json(root / "status" / "compaction.json", {
                             "status": "compacting", "host": host, "job_id": os.environ.get("SLURM_JOB_ID"),
                             **progress,
@@ -611,14 +648,18 @@ def prep_service(
                     work.pending.add(chunk_id)
                     last_work = now
                 if (
-                    defer_compaction and compaction_job is None and not stop.is_set()
+                    defer_compaction and compaction_job is None
+                    and (not stop.is_set() or active or jobs)
                     and now >= next_compaction
                     and (root / "dedup" / "exact" / index_generation / "INDEX.json").exists()
                 ):
-                    compaction_lease = claim(root / "locks" / f"compaction-{index_generation}.flock")
-                    if compaction_lease is not None:
-                        compaction_job = pool.submit(_execute, _compact_job, dict(config))
-                        next_compaction = now + 2
+                    claimed = _claim_compaction(config)
+                    if claimed is not None:
+                        bucket, compaction_lease = claimed
+                        compaction_job = pool.submit(
+                            _execute, _compact_job, {**config, "compaction_bucket": bucket},
+                        )
+                        next_compaction = now + 0.25
                 atomic_json(status_path, {
                     "schema": "metis17.prep-status/v1", "host": host, "pid": os.getpid(),
                     "job_id": os.environ.get("SLURM_JOB_ID"), "code_commit": commit,

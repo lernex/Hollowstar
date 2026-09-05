@@ -15,7 +15,7 @@ from metis_data17.acquisition import CapacityPending, receipt_path
 from metis_data17.cli import append_event, main
 from metis_data17.common import digest_json, read_receipt, write_receipt
 from metis_data17.worker import (
-    EventTail, WorkerFailure, _compact_job, _execute, _job_result, admit_source, claim,
+    EventTail, WorkerFailure, _claim_compaction, _compact_job, _execute, _job_result, admit_source, claim,
     failure_blocks, index_chunk, observe_failure, prep_service, raw_event,
     screen_chunk, worker_configuration,
 )
@@ -220,14 +220,46 @@ class Metis17WorkerTests(unittest.TestCase):
         buckets = config["dedup"]["bucket_count"]
         seen = []
         for _ in range(buckets):
-            progress = _compact_job(config)
-            seen.append((progress["next_bucket"] - 1) % buckets)
+            bucket, lease = _claim_compaction(config)
+            try:
+                progress = _compact_job({**config, "compaction_bucket": bucket})
+            finally:
+                lease.close()
+            seen.append(bucket)
             self.assertLessEqual(progress["merges"], 1)
         self.assertEqual(seen, list(range(buckets)))
         self.assertEqual(list(iter_survivors(exact)), before)
         self.assertEqual(
             read_receipt(self.root / "state" / "compaction" / "fixture-index.json")["next_bucket"], 0,
         )
+
+    def test_parallel_compactors_receive_disjoint_buckets_and_cover_the_whole_partition(self):
+        leases = []
+        try:
+            for _ in range(self.config["dedup"]["bucket_count"]):
+                leases.append(_claim_compaction(self.config))
+            self.assertEqual([bucket for bucket, _ in leases], list(range(7)))
+            self.assertIsNone(_claim_compaction(self.config))
+        finally:
+            for _, lease in leases:
+                lease.close()
+        bucket, lease = _claim_compaction(self.config)
+        try:
+            self.assertEqual(bucket, 0)
+        finally:
+            lease.close()
+
+    def test_deferred_workers_reserve_a_process_that_can_relieve_backpressure(self):
+        with patch("metis_data17.worker.worker_configuration", return_value=(
+            self.config, {"config": {"limits": {"capacity_confirmation": "pending"}}},
+        )), patch("metis_data17.worker.prep.prepare_runtime"), patch(
+            "metis_data17.worker.code_commit", return_value="fixture",
+        ), patch("metis_data17.worker._stop_event", return_value=threading.Event()), patch(
+            "metis_data17.worker.ProcessPoolExecutor", side_effect=RuntimeError("pool sentinel"),
+        ) as pool:
+            with self.assertRaisesRegex(RuntimeError, "pool sentinel"):
+                prep_service(self.root, workers=3, raw_readers=2, defer_compaction=True)
+        self.assertEqual(pool.call_args.kwargs["max_workers"], 6)
 
     def test_dispatcher_covers_both_uplinks_and_screens_before_raw_eof(self):
         first, first_raw, _ = self._object()

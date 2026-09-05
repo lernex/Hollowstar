@@ -8,6 +8,7 @@ import multiprocessing
 import os
 import shutil
 import socket
+import threading
 import unittest
 import uuid
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
@@ -1132,6 +1133,77 @@ class Metis17DedupTests(unittest.TestCase):
         for budget in (0, -1, True):
             with self.subTest(budget=budget), self.assertRaises(ValueError):
                 compact_dedup(self.output, max_merges=budget)
+        for minimum in (1, True, 17):
+            with self.subTest(minimum=minimum), self.assertRaises(ValueError):
+                compact_dedup(self.output, minimum_fan_in=minimum)
+
+    def test_publishing_while_a_compactor_merges_keeps_the_later_higher_quality_batch(self):
+        budget = self.budget()
+        output = budget.root / "overlap"
+        paths = [self.shard(f"publish-during-merge-{index}", [
+            self.row(f"{index}-{row}", text=f"shared value {row % 3}", priority=index)
+            for row in range(9)
+        ]) for index in range(3)]
+
+        def ingest(index):
+            return ingest_eligible(
+                [paths[index]], output, batch_id=str(index), bucket_count=1,
+                working_budget=budget, defer_compaction=True,
+            )
+
+        ingest(0)
+        ingest(1)
+        merging, release = threading.Event(), threading.Event()
+        original = dedup.write_run
+
+        def paused_merge(root, prefix, *args, **kwargs):
+            if "compaction-runs" in prefix.parts:
+                merging.set()
+                if not release.wait(10):
+                    raise RuntimeError("Test compactor was not released")
+            return original(root, prefix, *args, **kwargs)
+
+        with ThreadPoolExecutor(max_workers=2) as pool, patch.object(dedup, "write_run", paused_merge):
+            compacting = pool.submit(compact_dedup, output, working_budget=budget, max_merges=1)
+            try:
+                self.assertTrue(merging.wait(5))
+                published = pool.submit(ingest, 2).result(timeout=5)
+                self.assertEqual(published["admitted_input_rows"], 9)
+            finally:
+                release.set()
+            self.assertEqual(compacting.result(timeout=10)["merges"], 1)
+        self.assertEqual(len(list(iter_occurrences(output))), 27)
+        winners = list(iter_survivors(output))
+        self.assertEqual(len(winners), 3)
+        self.assertTrue(all(row["priority"] == 2 for row in winners))
+
+    def test_deferred_run_backpressure_yields_until_independent_maintenance_makes_space(self):
+        paths = [self.shard(f"backpressure-{index}", [
+            self.row(f"{index}-{row}", text=f"shared text {row}", priority=index) for row in range(3)
+        ]) for index in range(3)]
+
+        def ingest(index):
+            return ingest_eligible(
+                [paths[index]], self.output, batch_id=str(index),
+                bucket_count=1, defer_compaction=True,
+            )
+
+        ingest(0)
+        ingest(1)
+        waiting = threading.Event()
+        with ThreadPoolExecutor(max_workers=1) as pool, patch.object(
+            dedup, "DEFERRED_RUN_LIMIT", 2,
+        ), patch.object(dedup._LOG, "warning", side_effect=lambda *_args: waiting.set()):
+            pending = pool.submit(ingest, 2)
+            try:
+                self.assertTrue(waiting.wait(5))
+                self.assertFalse(pending.done())
+            finally:
+                compact_dedup(self.output, max_merges=1)
+            self.assertEqual(pending.result(timeout=5)["admitted_input_rows"], 3)
+        self.assertLessEqual(len(read_receipt(self.output / "buckets/000000/CURRENT.json")["runs"]), 2)
+        self.assertEqual(len(list(iter_occurrences(self.output))), 9)
+        self.assertTrue(all(row["priority"] == 2 for row in iter_survivors(self.output)))
 
     def test_release_limits_automatically_enable_quota_and_exhaustion_is_unpublished(self):
         from metis_data17.acquisition import CapacityPending

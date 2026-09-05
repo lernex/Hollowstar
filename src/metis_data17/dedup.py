@@ -16,8 +16,10 @@ scan in ``dedup_status``, not a corpus scan per ingest.
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import socket
+import time
 import uuid
 from collections import defaultdict
 from itertools import groupby
@@ -38,6 +40,8 @@ from .dedup_storage import (
 SCHEMA = "metis17.exact-index/v1"
 FAN_IN = 16
 LOCK_TIMEOUT = 3600
+DEFERRED_RUN_LIMIT = 256
+_LOG = logging.getLogger(__name__)
 
 
 def _lock(root: Path, name: str):
@@ -231,12 +235,12 @@ def _wrapped(run: dict[str, Any], root: Path, path: Path, manifest: dict[str, An
     }
 
 
-def _matching_tier(runs: list[dict[str, Any]], fan_in: int) -> list[dict[str, Any]]:
+def _matching_tier(runs: list[dict[str, Any]], fan_in: int, minimum_fan_in: int = 2) -> list[dict[str, Any]]:
     tiers: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for run in runs:
         tiers[run["level"]].append(run)
     for level in sorted(tiers):
-        if len(tiers[level]) >= 2:
+        if len(tiers[level]) >= minimum_fan_in:
             return sorted(tiers[level], key=lambda run: run["run_id"])[:fan_in]
     return []
 
@@ -324,16 +328,21 @@ def _publish_batch(
 ) -> None:
     if quota is not None:
         quota.reconcile()
+    reported_backpressure = False
     while True:
         with contextlib.ExitStack() as bucket_locks:
-            for bucket in sorted(run["bucket"] for run in runs):
-                bucket_locks.enter_context(_lock(root, f"bucket-{bucket:06d}"))
+            if not defer_compaction:
+                for bucket in sorted(run["bucket"] for run in runs):
+                    bucket_locks.enter_context(_lock(root, f"bucket-{bucket:06d}"))
             with _lock(root, "publication"):
                 cache: dict[str, dict[str, Any]] = {}
                 current = {run["bucket"]: _visible_runs(root, run["bucket"], cache) for run in runs}
                 overdue = [
                     bucket for bucket, visible in current.items()
-                    if not defer_compaction and working_budget is not None and _matching_tier(visible, FAN_IN)
+                    if (
+                        defer_compaction and len(visible) >= DEFERRED_RUN_LIMIT
+                        or not defer_compaction and working_budget is not None and _matching_tier(visible, FAN_IN)
+                    )
                 ]
                 if not overdue:
                     for run in runs:
@@ -351,6 +360,12 @@ def _publish_batch(
                     # Failed publication has neither visible rows nor training credits.
                     quota_receipt(quota, commit, manifest)
                     return
+        if defer_compaction:
+            if not reported_backpressure:
+                _LOG.warning("Exact-index publication is waiting for compaction in buckets %s", overdue)
+                reported_backpressure = True
+            time.sleep(0.1)
+            continue
         # Release bucket/publication locks before helping a concurrent compactor.
         # A capacity pause here bounds active streams instead of accumulating runs.
         compact_dedup(root, bucket_ids=overdue, working_budget=working_budget)
@@ -523,7 +538,7 @@ def _recover_compaction(root: Path, bucket: int, working_budget: Any) -> None:
 
 def compact_dedup(
     output_dir: Path, *, bucket_ids: Sequence[int] | None = None, max_fan_in: int = 16,
-    working_budget: Any = None, max_merges: int | None = None,
+    working_budget: Any = None, max_merges: int | None = None, minimum_fan_in: int = 2,
 ) -> dict[str, Any]:
     """Size-tier, quota-metered compaction; never scan old prepared text.
 
@@ -531,6 +546,9 @@ def compact_dedup(
     leave committed runs authoritative and retain a journal for partial cleanup.
     """
     positive_integer(max_fan_in, "max_fan_in", minimum=2)
+    positive_integer(minimum_fan_in, "minimum_fan_in", minimum=2)
+    if minimum_fan_in > max_fan_in:
+        raise ValueError("minimum_fan_in exceeds max_fan_in")
     if max_merges is not None:
         positive_integer(max_merges, "max_merges")
     root = Path(output_dir).resolve()
@@ -543,7 +561,9 @@ def compact_dedup(
             _recover_compaction(root, bucket, working_budget)
             with _lock(root, "publication"):
                 runs = _visible_runs(root, bucket)
-            while selected := _matching_tier(runs, max_fan_in):
+            while selected := _matching_tier(
+                runs, max_fan_in, 2 if len(runs) >= DEFERRED_RUN_LIMIT // 2 else minimum_fan_in,
+            ):
                 pending = None
                 if working_budget is None:
                     prefix = root / "compactions" / uuid.uuid4().hex
@@ -571,9 +591,16 @@ def compact_dedup(
                         "runs": [merged], "metadata_only": True,
                     }
                     quota_receipt(quota, commit, manifest)
-                runs = [run for run in runs if run not in selected]
-                runs.append(_wrapped(merged, root, commit, manifest, "compaction"))
                 with _lock(root, "publication"):
+                    # Deferred publishers may append while metadata is merged.
+                    # Only the pinned inputs are replaced, never the old snapshot.
+                    current = _visible_runs(root, bucket)
+                    selected_by_id = {run["run_id"]: run for run in selected}
+                    current_by_id = {run["run_id"]: run for run in current}
+                    if any(current_by_id.get(key) != run for key, run in selected_by_id.items()):
+                        raise RuntimeError("Compaction inputs changed while their bucket was leased")
+                    runs = [run for run in current if run["run_id"] not in selected_by_id]
+                    runs.append(_wrapped(merged, root, commit, manifest, "compaction"))
                     retired = read_receipt(_bucket_path(root, bucket)).get("retired", [])
                     retired.extend(run for run in selected if run["commit_kind"] == "compaction")
                     _publish_bucket(root, bucket, runs, retired=retired)
@@ -586,6 +613,7 @@ def compact_dedup(
                 if max_merges is not None and merges >= max_merges:
                     break
             with _lock(root, "publication"):
+                runs = _visible_runs(root, bucket)
                 _reclaim_caches(root, bucket, runs, working_budget)
         if max_merges is not None and merges >= max_merges:
             break
