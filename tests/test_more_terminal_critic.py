@@ -343,6 +343,29 @@ class TerminalCriticTests(unittest.TestCase):
                 return_router_observations=True,
             )
 
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA unavailable")
+    def test_cuda_terminal_critic_forward_backward_prefix_and_cost(self):
+        model = self.model().cuda().train()
+        inputs = self.inputs().cuda()
+        labels = self.labels(inputs)
+        output = model(
+            inputs, labels, curriculum=self.curriculum(),
+            return_terminal_router_observations=True,
+        )
+        (output.loss + output.auxiliary_losses["joint_utility"]).backward()
+        self.assertTrue(bool(torch.isfinite(model.embedding.weight.grad).all()))
+        self.assertTrue(bool(torch.isfinite(model.joint_router.output.weight.grad).all()))
+        self.assertGreater(float(model.joint_router.output.weight.grad.abs().sum()), 0)
+        self.assertEqual(int(output.telemetry["joint_utility_observations"]), int(labels.ne(-100).sum()))
+        self.assertLessEqual(int(output.telemetry["joint_model_flops"]), int(output.telemetry["joint_budget_flops"]))
+        changed = inputs.clone()
+        changed[:, 4:] += 50
+        with torch.no_grad():
+            left = model(inputs, curriculum=self.curriculum(), return_logits=True)
+            right = model(changed, curriculum=self.curriculum(), return_logits=True)
+        torch.testing.assert_close(left.chosen_depths[:, :4], right.chosen_depths[:, :4])
+        torch.testing.assert_close(left.logits[:, :4], right.logits[:, :4], rtol=1e-4, atol=1e-5)
+
 
 if __name__ == "__main__":
     unittest.main()
