@@ -222,6 +222,23 @@ class CausalModelBudgetTests(unittest.TestCase):
                     for actual, expected in zip(current, reference):
                         torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
 
+    def test_fresh_zero_output_critic_can_collect_real_exploration_outcomes(self):
+        torch.manual_seed(105)
+        model = Metis16ForCausalLM(self.config()).train()
+        inputs = self.inputs()
+        self.assertEqual(int(torch.count_nonzero(model.joint_router.output.weight)), 0)
+        output = model(
+            inputs, self.labels(inputs),
+            curriculum=self.curriculum(stochastic_routing=True, joint_router_exploration=.2),
+        )
+        self.assertGreater(int(output.telemetry["joint_utility_observations"]), 0)
+        output.auxiliary_losses["joint_utility"].backward()
+        self.assertGreater(float(model.joint_router.output.weight.grad.abs().sum()), 0)
+        self.assertIsNone(model.embedding.weight.grad)
+        self.assertLessEqual(
+            int(output.telemetry["joint_model_flops"]), int(output.telemetry["joint_budget_flops"])
+        )
+
     def test_causal_mode_rejects_unrepaired_legacy_policy_and_unaudited_rm(self):
         model = self.model()
         with self.assertRaisesRegex(ValueError, "fixed depth"):
