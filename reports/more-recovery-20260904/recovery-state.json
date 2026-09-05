@@ -1,0 +1,44 @@
+{
+  "schema": "more.recovery-state/v1",
+  "updated_at": "2026-09-05T02:45:00-05:00",
+  "status": "qualification_in_progress",
+  "full_campaign_relaunch_qualified": false,
+  "historical_core": {
+    "job_id": 495820,
+    "source_revision": "ba9809284cf787d3e69df96620048dd96345d66f",
+    "finding": "All 16 routed expert momentum buffers in the step-10000 checkpoint were exactly zero; non-expert positive controls were nonzero.",
+    "mechanism": "A no-grad BF16 parity forward cached a detached concatenation of grouped expert weights, reused by grad-enabled training.",
+    "scope_boundary": "No old-trainer GPU negative-gradient experiment was run. Attribution combines a full-model CPU negative witness, deployed GPU branch/config inspection, and real checkpoint optimizer evidence.",
+    "weight_boundary": "Expert masters need not be bitwise unchanged: weight decay can move them without learned gradients.",
+    "audit_root": "/lus/lustre1/vollmerc/more-recovery-20260904/incidents/expert-momentum-audit-20260905T063147Z-c9946c34",
+    "stopped_at": "2026-09-05T02:43:48-05:00",
+    "last_logged_step": 20860,
+    "last_logged_cumulative_tokens": 41014394880,
+    "preserved_checkpoint": "/lus/lustre1/vollmerc/more-recovery-20260904/baselines/more-core/checkpoints/step-0020000",
+    "preserved_state_sha256": "eb22ca5b14b77b897b33106c981b973f4ed5edd47241ab239379b3336d567365",
+    "preservation": "Full optimizer checkpoint copied outside retention and compared byte-for-byte before stopping the job. Original artifacts and source remain untouched.",
+    "decision_basis": "Established missing routed-expert learning, not an unfavorable quality score."
+  },
+  "corrected_expert_learning": {
+    "cache_fix_commit": "227c62a7a3499b90bfef48706b1d78f358aa26ff",
+    "qualification_commit": "c7aea46eef2e407ae92ed9e9c0f874e8bf836237",
+    "evidence": "All 16 routed weight tensors receive finite nonzero gradients on all 40 ranks in corrected fixed and terminal-Core pilots; four sampled optimizer chunks per step-100 checkpoint have nonzero momentum.",
+    "audit_root": "/lus/lustre1/vollmerc/more-recovery-20260904/incidents/corrected-momentum-check-20260905T072626Z-35d850b6",
+    "boundary": "Restored expert learning is not evidence of a quality win."
+  },
+  "runtime": {
+    "rm_failure_domain": "Both RM failures first lost the four-rank cohort on node064; a reboot is confirmed in the second. Node007 later rebooted in a fixed-control pilot before training.",
+    "random_k_failure": "Original job495818 first NODE_FAILed on043, then requeued and lost the064 cohort during another confirmed reboot; dependent495852 was canceled by dependency failure.",
+    "native_faults": "SIGBUS incidents on012 and056 coincide with amdgpu poison-consumption and uncorrectable-memory-error records. Fresh compiler caches and the model cache fix do not establish a native-fault repair.",
+    "new_submission_exclusions": "parrypeak[007,012,020,026,056,063-064]",
+    "scope": "User training-submission defaults and pending original495827/495829 only; no cluster-wide drain or changes to independent data-preparation jobs.",
+    "unresolved": "Underlying reboot and poison triggers require operator hardware, firmware, or driver evidence."
+  },
+  "remaining_gates": [
+    "Separate cache-only learning improvement from novel routing objectives.",
+    "Corrected matched full-model development and untouched acceptance quality comparisons.",
+    "Causal RM metadata, cost, and full-geometry execution qualification.",
+    "Representative stable runtime and honest controller, vocabulary, and replay accounting.",
+    "Versioned corrected Core/RM campaign relaunch and sustained progress."
+  ]
+}

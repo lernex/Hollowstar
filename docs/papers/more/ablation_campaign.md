@@ -453,6 +453,25 @@ specific to recurrent memory. The reboot triggers are not established without
 operator logs. Exclude both nodes from new submissions pending qualification;
 this is a localized mitigation, not a claimed repair of either host.
 
+Separate native SIGBUS failures on `parrypeak012` and `parrypeak056` coincide
+with amdgpu poison-consumption and uncorrectable-memory-error records.
+Exclude those nodes from new training submissions too, pending operator
+hardware/firmware/driver triage. A fresh compiler cache or successful later
+job does not establish that these faults are repaired. These exclusions are
+local submission defaults, not cluster-wide drain actions.
+
+**Original Core is not a valid full-expert-training baseline.** Its step-10,000
+checkpoint has exactly zero momentum in all 16 routed expert weight chunks,
+despite nonzero momentum in non-expert parameters. A no-grad BF16 parity
+forward had cached detached grouped-expert weights for subsequent training.
+The winning layer-recomputed frozen-loop control did not use that cache path,
+and sampled expert momentum there is nonzero. Weight decay can still move
+weights; zero learned momentum does not mean bitwise-unchanged parameters.
+The cache lifetime is repaired in `227c62a`. Corrected pilots require explicit
+expert-gradient evidence and separate quality comparisons. Original Core job
+`495820` was stopped after preserving its full step-20,000 checkpoint outside
+retention; original artifacts remain available as failure evidence.
+
 Newly generated full runs checkpoint every **500 optimizer steps**, limiting
 normal recovery exposure to roughly 0.98B tokens instead of 9.83B. Full-geometry
 40-APU controls measured about 25--30 seconds per 15.8-GiB checkpoint, implying
@@ -483,7 +502,7 @@ export METIS_REPO=/home/users/vollmerc/Metis
 export METIS_SCRATCH=/lus/lustre1/vollmerc
 export METIS_RELEASE_ROOT=/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r2
 export METIS_ABLATION_RUNTIME="$METIS_REPO/ops/more-ablation-runtime.sh"
-export METIS_ABLATION_EXCLUDE_NODES='parrypeak[007,020,026,063-064]'
+export METIS_ABLATION_EXCLUDE_NODES='parrypeak[007,012,020,026,056,063-064]'
 
 cd "$METIS_REPO"
 PYTHONPATH=src python -m metis_ablation.campaign plan --wave all

@@ -522,7 +522,7 @@ def emit_slurm(
             "set -euo pipefail",
             f"# Launch execution batch {group_name} ({len(group_specs)} rows, "
             f"{sum(spec.apus for spec in group_specs)} APUs).",
-            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[007,020,026,063-064]}"',
+            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[007,012,020,026,056,063-064]}"',
             "sbatch_args=()",
             'if [ -n "$exclude_nodes" ]; then sbatch_args+=(--exclude="$exclude_nodes"); fi',
             "",
@@ -668,7 +668,7 @@ def emit_sweep(
             "set -euo pipefail",
             f"# Learning-rate sweep batch {batch_name}: {len(batch_paths)} runs, "
             f"{batch_apus} APUs, {budget_tokens:,} tokens per run.",
-            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[007,020,026,063-064]}"',
+            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[007,012,020,026,056,063-064]}"',
             "sbatch_args=()",
             'if [ -n "$exclude_nodes" ]; then sbatch_args+=(--exclude="$exclude_nodes"); fi',
             "",
