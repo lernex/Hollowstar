@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -293,6 +294,30 @@ class TerminalCriticTests(unittest.TestCase):
         self.assertGreater(float(model.joint_router.output.bias.grad[-1].abs()), 0)
         self.assertEqual(int(torch.count_nonzero(model.joint_router.output.bias.grad[:-1])), 0)
         self.assertIsNone(model.embedding.weight.grad)
+
+    def test_terminal_loss_replays_synchronized_heads_even_without_local_exits(self):
+        model = Metis16ForCausalLM(self.config(lm_head_chunk_size=1)).train()
+        hidden = torch.randn(1, 1, model.config.d_model, requires_grad=True)
+        labels = torch.tensor([[1]])
+        calls = []
+        handle = model.lm_head.register_forward_hook(lambda module, args, result: calls.append(1))
+        try:
+            with (
+                patch("metis_training.model._precision_requires_synchronized_schedule", return_value=True),
+                patch("metis_training.model._group_world_size", return_value=2),
+                patch("metis_training.model.dist.all_reduce", side_effect=lambda value, **kwargs: value.fill_(2)),
+            ):
+                weighted, _ = model._chunked_weighted_causal_loss_sum(
+                    hidden, labels, torch.zeros_like(labels, dtype=torch.float32),
+                    compute_mask=torch.zeros_like(labels, dtype=torch.bool),
+                    return_token_losses=True,
+                )
+                self.assertEqual(len(calls), 2)
+                weighted.backward()
+                self.assertEqual(len(calls), 4)
+                self.assertEqual(int(torch.count_nonzero(hidden.grad)), 0)
+        finally:
+            handle.remove()
 
     def test_schema_objective_and_configuration_guards_are_explicit(self):
         config = self.config()
