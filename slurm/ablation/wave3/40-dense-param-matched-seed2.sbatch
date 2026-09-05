@@ -63,7 +63,7 @@ exec python -m metis_ablation.train \
   --budget-tokens 50000000000 \
   --seed 27182818 \
   --learning-rate "${METIS_ABLATION_LR_DENSE_PARAM_MATCHED:?run the sweep and set METIS_ABLATION_LR_DENSE_PARAM_MATCHED, or regenerate with --learning-rates}" \
-  --checkpoint-every 5000 \
+  --checkpoint-every 500 \
   --analysis-every 1000 \
   --telemetry-every 10
 ' &

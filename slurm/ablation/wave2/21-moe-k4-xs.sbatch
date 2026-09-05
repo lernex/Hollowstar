@@ -63,7 +63,7 @@ exec python -m metis_ablation.train \
   --budget-tokens 100000000000 \
   --seed 16062026 \
   --learning-rate "${METIS_ABLATION_LR_MOE_K4:?run the sweep and set METIS_ABLATION_LR_MOE_K4, or regenerate with --learning-rates}" \
-  --checkpoint-every 5000 \
+  --checkpoint-every 500 \
   --analysis-every 1000 \
   --telemetry-every 10
 ' &

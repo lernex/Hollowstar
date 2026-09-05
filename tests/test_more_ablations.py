@@ -2003,6 +2003,7 @@ def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
     assert "METIS_ABLATION_STALL_TIMEOUT_SECONDS" in body
     assert "no rank-zero telemetry progress" in body
     assert "METIS_ABLATION_LR_MORE_CORE" in body
+    assert "--checkpoint-every 500 " in body
     assert not (tmp_path / "wave1" / "launch-wave.sh").exists()
     batch_a = (tmp_path / "wave1" / "launch-wave-1a.sh").read_text()
     batch_b = (tmp_path / "wave1" / "launch-wave-1b.sh").read_text()
@@ -2010,13 +2011,30 @@ def test_wave_one_launchers_keep_the_requested_seed(tmp_path: Path):
     assert not (tmp_path / "wave1" / "launch-wave-1d.sh").exists()
     assert "440 APUs" in batch_a
     assert "360 APUs" in batch_b
-    assert 'METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026,063]' in batch_a
+    assert 'METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026,063-064]' in batch_a
     assert '"${sbatch_args[@]}"' in batch_a
     assert "10-more-core.sbatch" in batch_a
     assert "10-more-core.sbatch" not in batch_b
     assert "12-random-k.sbatch" in batch_a
     assert "01-dense-flop-matched.sbatch" in batch_a
     assert "05-loop-fixed.sbatch" in batch_b
+
+
+def test_launcher_checkpoint_cadence_is_explicit_and_validated(tmp_path: Path):
+    from metis_ablation.campaign import emit_slurm
+
+    emit_slurm(
+        tmp_path, wave="1", repo_root="/repo", output_root="/out",
+        release_root="/release", checkpoint_every=123,
+    )
+    assert "--checkpoint-every 123 " in (
+        tmp_path / "wave1" / "11-more-rm.sbatch"
+    ).read_text()
+    with pytest.raises(ValueError, match="checkpoint_every"):
+        emit_slurm(
+            tmp_path, wave="1", repo_root="/repo", output_root="/out",
+            release_root="/release", checkpoint_every=-1,
+        )
 
 
 def test_wave_two_emission_replaces_stale_scale_launchers(tmp_path: Path):

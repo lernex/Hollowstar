@@ -418,7 +418,7 @@ def emit_slurm(
     budget_tokens: int | None = None,
     seed: int = 16_062_026,
     time_limit: str = "36:00:00",
-    checkpoint_every: int = 5_000,
+    checkpoint_every: int = 500,
     analysis_every: int = 1_000,
     telemetry_every: int = 10,
     base_port: int = 29_500,
@@ -427,6 +427,8 @@ def emit_slurm(
 ) -> list[Path]:
     if wave == "all":
         raise ValueError("Emit waves separately so their launch order is explicit.")
+    if checkpoint_every < 0:
+        raise ValueError("checkpoint_every must be nonnegative.")
     budget_tokens = (
         DEFAULT_WAVE_BUDGET_TOKENS[wave]
         if budget_tokens is None
@@ -515,7 +517,7 @@ def emit_slurm(
             "set -euo pipefail",
             f"# Launch execution batch {group_name} ({len(group_specs)} rows, "
             f"{sum(spec.apus for spec in group_specs)} APUs).",
-            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026,063]}"',
+            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026,063-064]}"',
             "sbatch_args=()",
             'if [ -n "$exclude_nodes" ]; then sbatch_args+=(--exclude="$exclude_nodes"); fi',
             "",
@@ -661,7 +663,7 @@ def emit_sweep(
             "set -euo pipefail",
             f"# Learning-rate sweep batch {batch_name}: {len(batch_paths)} runs, "
             f"{batch_apus} APUs, {budget_tokens:,} tokens per run.",
-            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026,063]}"',
+            'exclude_nodes="${METIS_ABLATION_EXCLUDE_NODES:-parrypeak[020,026,063-064]}"',
             "sbatch_args=()",
             'if [ -n "$exclude_nodes" ]; then sbatch_args+=(--exclude="$exclude_nodes"); fi',
             "",
@@ -776,6 +778,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     slurm_parser.add_argument("--seed", type=int, default=16_062_026)
     slurm_parser.add_argument("--time-limit", default="36:00:00")
     slurm_parser.add_argument(
+        "--checkpoint-every", type=int, default=500,
+        help="Optimizer steps between recovery checkpoints; zero disables periodic checkpoints",
+    )
+    slurm_parser.add_argument(
         "--learning-rates",
         default=None,
         help=(
@@ -832,6 +838,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         budget_tokens=args.budget_tokens,
         seed=args.seed,
         time_limit=args.time_limit,
+        checkpoint_every=args.checkpoint_every,
         learning_rates=(
             load_learning_rates(Path(args.learning_rates))
             if args.learning_rates

@@ -445,12 +445,29 @@ and the seed within a wave.
 
 ## 7. Running it
 
+**Recovery update, September 2026.** Both failed RM jobs lost the four-rank
+cohort on `parrypeak064`; the second failure coincided with a confirmed host
+reboot. The reboot trigger is not established without operator logs. Exclude
+that node from new submissions pending qualification; this is a localized
+mitigation, not a claimed repair of the host.
+
+Newly generated full runs checkpoint every **500 optimizer steps**, limiting
+normal recovery exposure to roughly 0.98B tokens instead of 9.83B. Full-geometry
+40-APU controls measured about 25--30 seconds per 15.8-GiB checkpoint, implying
+roughly 1.5--2% overhead at the new interval. The generator exposes
+`--checkpoint-every` for explicit overrides. Existing spooled jobs are not
+rewritten by regenerating files.
+
+Use a commit-specific, immutable worktree for new training jobs. Do not pull
+new model code into a checkout named by running or queued jobs; their frozen
+identities and already-exported environment remain part of the experiment.
+
 ```bash
 export METIS_REPO=/home/users/vollmerc/Metis
 export METIS_SCRATCH=/lus/lustre1/vollmerc
 export METIS_RELEASE_ROOT=/lus/lustre1/vollmerc/metis-1.6/releases/metis-1.6-data-r2
 export METIS_ABLATION_RUNTIME="$METIS_REPO/ops/more-ablation-runtime.sh"
-export METIS_ABLATION_EXCLUDE_NODES='parrypeak[020,026,063]'
+export METIS_ABLATION_EXCLUDE_NODES='parrypeak[020,026,063-064]'
 
 cd "$METIS_REPO"
 PYTHONPATH=src python -m metis_ablation.campaign plan --wave all
