@@ -15,7 +15,8 @@ from metis_data17.acquisition import CapacityPending, receipt_path
 from metis_data17.cli import append_event, main
 from metis_data17.common import digest_json, read_receipt, write_receipt
 from metis_data17.worker import (
-    EventTail, WorkerFailure, _claim_compaction, _compact_job, _execute, _job_result, admit_source, claim,
+    EventTail, WorkerFailure, _claim_compaction, _compact_job, _execute, _job_result,
+    _raw_event_metadata, _reblock_job, admit_source, claim,
     failure_blocks, index_chunk, observe_failure, prep_service, raw_event,
     screen_chunk, worker_configuration,
 )
@@ -49,6 +50,17 @@ class Metis17WorkerTests(unittest.TestCase):
         changed = {**event, "byte_count": raw.byte_count + 1}
         with self.assertRaisesRegex(RuntimeError, "disagrees"):
             raw_event(self.root, changed)
+
+    def test_discovery_is_metadata_only_but_selected_work_rechecks_the_raw_receipt(self):
+        spec, raw, _ = self._object()
+        event = {**raw.to_dict(), "spec": spec.to_dict()}
+        with patch("metis_data17.worker.read_receipt", side_effect=AssertionError("Unclaimed object I/O")):
+            self.assertEqual(_raw_event_metadata(event), (spec, raw))
+        write_receipt(receipt_path(self.root, spec.object_id), {**event, "byte_count": raw.byte_count + 1})
+        with patch("metis_data17.worker.prep.reblock_object") as reader:
+            with self.assertRaisesRegex(RuntimeError, "disagrees"):
+                _reblock_job(spec, raw, self.config)
+        reader.assert_not_called()
 
     def test_configuration_publishes_a_reusable_policy_generation(self):
         settings = {

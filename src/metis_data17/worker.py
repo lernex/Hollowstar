@@ -110,9 +110,17 @@ def worker_configuration(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     return config, run
 
 
-def raw_event(root: Path, event: Mapping[str, Any]) -> tuple[ObjectSpec, RawReceipt]:
+def _raw_event_metadata(event: Mapping[str, Any]) -> tuple[ObjectSpec, RawReceipt]:
+    """Decode sealed journal hints; claimed work still verifies the actual receipt."""
     spec = ObjectSpec.from_dict(event["spec"])
     raw = RawReceipt.from_dict(event)
+    if raw.object_id != spec.object_id or raw.source_id != spec.source_id:
+        raise RuntimeError("RAW_READY journal disagrees with its object identity")
+    return spec, raw
+
+
+def raw_event(root: Path, event: Mapping[str, Any]) -> tuple[ObjectSpec, RawReceipt]:
+    spec, raw = _raw_event_metadata(event)
     saved = read_receipt(receipt_path(root, spec.object_id))
     if (
         RawReceipt.from_dict(saved) != raw
@@ -157,6 +165,7 @@ def observe_failure(failures: dict[str, dict[str, Any]], event: dict[str, Any]) 
 
 def _reblock_job(spec: ObjectSpec, raw: RawReceipt, config: dict[str, Any]) -> str:
     root = Path(config["root"])
+    raw_event(root, {**raw.to_dict(), "spec": spec.to_dict()})
     value = prep.reblock_object(spec, raw, _normalized_directory(root, config, spec), config)
     return value["receipt_path"]
 
@@ -380,10 +389,11 @@ def prep_service(
     next_compaction = 0.0
     started = last_work = time.monotonic()
     commit = code_commit()
-    atomic_json(status_path, {
-        "status": "loading_policies", "pid": os.getpid(), "host": host,
-        "generation": generation, "code_commit": commit, "updated_at": utc_now(),
-    })
+    startup = {
+        "pid": os.getpid(), "host": host, "job_id": os.environ.get("SLURM_JOB_ID"),
+        "generation": generation, "index_generation": index_generation, "code_commit": commit,
+    }
+    atomic_json(status_path, {**startup, "status": "loading_policies", "updated_at": utc_now()})
     prep.prepare_runtime(config, require_ready=True)
     context = multiprocessing.get_context("fork")
     # A fork executor starts its workers before the first submission returns.
@@ -394,6 +404,7 @@ def prep_service(
         mp_context=context, initializer=_child_initialize,
     ) as pool:
         pool.submit(_worker_ready).result()
+        atomic_json(status_path, {**startup, "status": "discovering_objects", "updated_at": utc_now()})
         try:
             while True:
                 now = time.monotonic()
@@ -448,7 +459,7 @@ def prep_service(
                 closed = newly_closed
                 for path in sorted((root / "events" / "raw").glob("*.jsonl")):
                     for event in tail.read(path):
-                        spec, raw = raw_event(root, event)
+                        spec, raw = _raw_event_metadata(event)
                         if spec.object_id not in observed:
                             observed.add(spec.object_id)
                             if spec.object_id not in closed:
@@ -581,9 +592,11 @@ def prep_service(
                                 waiting[object_id] = (work.spec, work.raw)
                 if not stop.is_set():
                     candidates = []
+                    checked_groups = set()
                     for object_id, (spec, raw) in list(waiting.items()):
                         group = str(spec.policy.get("admission_group", spec.source_id))
-                        if group not in admitted_groups:
+                        if group not in admitted_groups and group not in checked_groups:
+                            checked_groups.add(group)
                             admission_path = root / "admissions" / f"{digest_json(group)}.json"
                             if admission_path.exists() and read_receipt(admission_path)["status"] == "admitted":
                                 admitted_groups.add(group)
