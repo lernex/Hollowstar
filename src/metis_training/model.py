@@ -2385,7 +2385,16 @@ class _StackedGroupedLinear(nn.Module):
     def reset_expert_parameters(self, index: int) -> None:
         """Initialize one expert exactly as ``nn.Linear`` would have."""
 
+        self._materialized_weight = None
         nn.init.kaiming_uniform_(self.expert_weight(index), a=math.sqrt(5))
+
+    def _load_from_state_dict(self, *args: Any, **kwargs: Any) -> None:
+        self._materialized_weight = None
+        super()._load_from_state_dict(*args, **kwargs)
+
+    def _apply(self, function: Callable[[Tensor], Tensor], recurse: bool = True) -> "_StackedGroupedLinear":
+        self._materialized_weight = None
+        return super()._apply(function, recurse=recurse)
 
     def expert_weight(self, index: int) -> Tensor:
         if self.weight_chunk_count == 1:
@@ -2396,7 +2405,10 @@ class _StackedGroupedLinear(nn.Module):
     def _forward_weight(self) -> Tensor:
         if self.weight_chunk_count == 1:
             return self.weight
-        if not self.cache_materialized_weight:
+        if not self.cache_materialized_weight or not torch.is_grad_enabled():
+            # A no-grad parity/reference probe must never leave a detached
+            # concatenation for the following training forward to reuse.
+            self._materialized_weight = None
             return torch.cat(tuple(self.weight_chunks), dim=0)
         if self._materialized_weight is None:
             materialized = torch.cat(tuple(self.weight_chunks), dim=0)
@@ -2407,7 +2419,9 @@ class _StackedGroupedLinear(nn.Module):
                     return gradient
 
                 materialized.register_hook(clear)
-            self._materialized_weight = materialized
+                self._materialized_weight = materialized
+            else:
+                return materialized
         return self._materialized_weight
 
     def forward(self, values: Tensor, m_splits: Tensor) -> Tensor:
@@ -2535,6 +2549,10 @@ class GroupedSwiGLUExperts(nn.Module):
     def set_weight_materialization_cache(self, enabled: bool) -> None:
         for projection in (self.gate_up, self.down):
             projection.cache_materialized_weight = bool(enabled)
+            projection._materialized_weight = None
+
+    def clear_weight_materialization_cache(self) -> None:
+        for projection in (self.gate_up, self.down):
             projection._materialized_weight = None
 
     @property
@@ -6124,6 +6142,13 @@ class Metis16ForCausalLM(nn.Module):
     ) -> Metis16CausalLMOutput:
         if input_ids.ndim != 2:
             raise ValueError("input_ids must have shape [batch, sequence].")
+        # Reuse a concatenation across recurrent passes, never across logical
+        # forwards. Optimizer writes through parameter.data do not increment
+        # version counters, and separate forwards must not share a freed graph.
+        for layer in self.layers:
+            experts = getattr(layer.moe, "local_experts", None)
+            if isinstance(experts, GroupedSwiGLUExperts):
+                experts.clear_weight_materialization_cache()
         maximum_context = (
             self.config.context_extension_train_length
             if self.training
