@@ -1,0 +1,14 @@
+experiment	commit	metric	status	description
+0	169779b		blocked	Sealed Core step-5000 real-data probe loaded successfully but natural GPU routing changed across repeats; no quality result; job 495857
+1	032e097		correctness-only	Opt-in shared-cost outcome learner; local routing and trainer coverage passed; quality not established
+1-gpu	169779b		correctness-only	55 tests and 58 subtests passed on MI300A including CUDA allocator coverage; job 495856
+1-full	d828b79		numerical-only	Three full-geometry FP8 steps completed on four APUs; 5.90M tokens; depths 1-5 used; cost below reference cap; no drops; initial loss 11.58 is not quality evidence; job 495858
+2	27e0868	3.492164	not-promoted	32 utility updates; cap3 mean loss on512-token8000 window; uniform3.485550 and shuffle3.481616; no quality gate passed
+3	27e0868	3.487070	not-promoted	256 utility updates; same512-token8000 window; uniform3.486776; differences below conservative variability threshold
+4	27e0868	3.056879	not-promoted	256-update head; cap3 over4096-token8500/8600/8700 windows; uniform3.058731 but replay/noise gates prevent a quality claim
+5	27e0868	3.912949	not-promoted	1024 utility updates;512-token8500 window; uniform3.909324 and shuffle3.904377
+6	27e0868	3.215301	not-promoted	256-update head; actual6x4096 layout8800/8900; legacy3.243618,uniform3.211885,shuffle3.220604; replay parity valid
+7	27e0868	3.214576	not-promoted	1024-update head; same6x4096 layout8800/8900; legacy3.243655,uniform3.212005,shuffle3.217753; replay parity valid
+8	97bdc97	3.875307	not-promoted	Exact controller accounting;1024-head;fresh6x4096 windows9000/9100; legacy3.906457,uniform3.873553,shuffle3.879498; cap5 loss3.875665; no quality gate passed
+9	97bdc97	3.150534	not-promoted	Later Core checkpoint10000;128 utility updates;512-token12000 window; gain over uniform3.160930 below conservative variability threshold
+10	97bdc97	2.761149	not-promoted	Later Core checkpoint10000;fresh6x4096 window12100; legacy2.801904,uniform2.756999,shuffle2.774007; cap5 loss2.762910; replay parity valid; uniform superiority gate not met

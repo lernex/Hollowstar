@@ -13,9 +13,11 @@ learned allocation beat shuffled equal-work trajectories on several windows,
 yet the uniform control remained at least as strong. This is evidence of some
 allocation signal, not a successful replacement recipe.
 
-The frozen backbone in these assessments was the original Core step-5,000
-checkpoint. They were head-only adaptation experiments, not new 50B-token
-pretraining runs, and do not establish RM quality or final convergence.
+The initial frozen backbone was the original Core step-5,000 checkpoint.
+A later step-10,000 checkpoint with a separately fitted head showed the same
+qualification failure on an independent full-layout window. These were
+head-only adaptation experiments, not new 50B-token pretraining runs, and do
+not establish RM quality or final convergence.
 Three full-geometry FP8 optimizer steps also exercised actual five-pass
 execution within the modeled cap; they establish execution feasibility, not
 model quality or 80-APU throughput.
