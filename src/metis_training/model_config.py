@@ -420,7 +420,10 @@ class ParameterAudit:
     joint_router: int = 0
 
     def to_dict(self) -> dict[str, int]:
-        return asdict(self)
+        payload = asdict(self)
+        if not self.joint_router:
+            payload.pop("joint_router")
+        return payload
 
 
 @dataclass(frozen=True)
@@ -582,6 +585,10 @@ class Metis16Config:
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
+        if not self.joint_compute_router:
+            payload.pop("joint_compute_router")
+            if self.joint_router_hidden_dim == 128:
+                payload.pop("joint_router_hidden_dim")
         payload["ngram_memory"]["slots_by_order"] = {
             str(order): list(slots) for order, slots in self.ngram_memory.slots_by_order.items()
         }

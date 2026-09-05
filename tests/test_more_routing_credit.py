@@ -123,6 +123,20 @@ class JointCreditTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "research families"):
                 replace(config, joint_compute_router=True).validate()
 
+    def test_disabled_experiment_preserves_serialized_manifest_shape(self):
+        for family in ("praxis", "logos"):
+            config = load_family_config(family)
+            payload = config.to_dict()
+            self.assertNotIn("joint_compute_router", payload)
+            self.assertNotIn("joint_router_hidden_dim", payload)
+            self.assertEqual(
+                config.expected_parameter_audit,
+                config.logical_parameter_audit().to_dict(),
+            )
+        enabled = tiny_joint_config().to_dict()
+        self.assertTrue(enabled["joint_compute_router"])
+        self.assertEqual(enabled["joint_router_hidden_dim"], 8)
+
     def test_cost_reference_excludes_new_controller_and_matches_fixed_work(self):
         config = tiny_joint_config()
         router = JointComputeRouter(config)
