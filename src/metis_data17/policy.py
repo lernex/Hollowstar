@@ -18,6 +18,12 @@ from .optout17 import (
     snapshot_common_crawl_opt_out17 as snapshot_common_crawl_opt_out,
 )
 
+DECONTAMINATION_THRESHOLDS = (
+    "minimum_matching_ngrams", "minimum_short_matching_ngrams",
+    "minimum_code_matching_ngrams", "minimum_code_skeleton_matching_ngrams",
+    "match_fraction", "contiguous_run_minimum",
+)
+
 
 def _strict_opt_out_state(root: Path, path: str | Path, expected_sha256: str) -> dict[str, Any]:
     snapshot = under_root(root, str(path))
@@ -148,10 +154,27 @@ def policy_config(root: Path) -> dict[str, Any]:
     registry = Path(result["benchmark_registry"])
     if sha256_file(registry) != result["holdout_registry_sha256"]:
         raise RuntimeError("Frozen benchmark registry changed")
+    index = json.loads(Path(result["decontamination_index"]).read_text())
+    if index.get("manifest_sha256") != result["index_manifest_sha256"]:
+        raise RuntimeError("Frozen decontamination index identity changed")
+    effective = {key: index[key] for key in DECONTAMINATION_THRESHOLDS}
+    run_path = root / "RUN.json"
+    if run_path.exists():
+        declared = read_receipt(run_path)["config"].get("decontamination", {})
+        disagreements = [
+            key for key, value in declared.items()
+            if key not in effective or type(value) is not type(effective[key]) or value != effective[key]
+        ]
+        if disagreements:
+            raise RuntimeError(
+                "Declared decontamination settings disagree with the sealed policy: "
+                + ", ".join(sorted(disagreements))
+            )
     return {
         "decontamination_index": result["decontamination_index"],
         "benchmark_registry": result["benchmark_registry"],
         **opt_out_state,
         "published_opt_out_unparsed_entries": result.get("opt_out_unparsed_entries"),
+        "decontamination_effective": effective,
         "policy_ready": True,
     }

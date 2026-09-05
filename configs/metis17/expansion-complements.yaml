@@ -6,7 +6,8 @@ sources:
     revision: d2bf6ae7aeda502ff8c5eb5ad425b90ae2f10279
     prefixes: [dolma_code, the-stack-v2, swallow-code, dolma_code_prose, sponge211unified_code_prose, common_pile_code]
     allow_patterns: ['*.jsonl.gz', '*.jsonl.zst', '*.json.zst']
-    expected_inventory_bytes: 2458368343174
+    deny_patterns: ['*.csv.gz']
+    expected_inventory_bytes: 2457269805858
     budget_bytes: 2460000000000
     adapter: text
     priority: 97
@@ -165,7 +166,7 @@ sources:
     repo: EssentialAI/essential-web-v1.0
     revision: ce4eccc7e9604667b6d7f32cb6274b8b41f3113d
     prefixes: [data]
-    allow_patterns: ['data/CC-MAIN-2023-*/*.parquet', 'data/CC-MAIN-2024-*/*.parquet']
+    allow_patterns: ['data/crawl=CC-MAIN-2023-*/*.parquet', 'data/crawl=CC-MAIN-2024-*/*.parquet']
     expected_inventory_bytes: 10125429804428
     budget_bytes: 10130000000000
     adapter: text

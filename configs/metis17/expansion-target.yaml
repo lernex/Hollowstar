@@ -1,0 +1,80 @@
+schema: metis17.activation/v1
+# These are candidate ceilings, not 200 TB of accomplished downloads.
+# Extra approved whole objects replace blocked sources and inventory slack;
+# the separately confirmed release limit still caps actual payload at 200 TB.
+sources:
+  - id: hplt3_english_wds9
+    kind: hplt
+    manifest_url: https://data.hplt-project.org/three/sorted/manifest.json
+    manifest_sha256: eb82cccdc093235f5ffd89fc775963ce9ca6b61857366b91b4b4096991afdb4c
+    selection: english-wds9
+    expected_objects: 344
+    budget_bytes: 8400000000000
+    adapter: text
+    priority: 86
+    policy:
+      category: web
+      language: eng_Latn
+      license_mode: compilation
+      collection_license: CC0 packaging; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: native_prose
+
+  - id: hplt3_english_wds8
+    kind: hplt
+    manifest_url: https://data.hplt-project.org/three/sorted/manifest.json
+    manifest_sha256: eb82cccdc093235f5ffd89fc775963ce9ca6b61857366b91b4b4096991afdb4c
+    selection: english-wds8
+    expected_objects: 479
+    budget_bytes: 8061900000000
+    adapter: text
+    priority: 85
+    policy:
+      category: web
+      language: eng_Latn
+      license_mode: compilation
+      collection_license: CC0 packaging; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: native_prose
+
+  - id: fineweb_conditional_tail
+    kind: hf
+    repo: HuggingFaceFW/fineweb
+    revision: 9bb295ddab0e05d785b879661af7260fed5140fc
+    prefixes: [data]
+    allow_patterns: ['*.parquet']
+    expected_candidate_bytes: 53417984478442
+    selection_bytes: 32000000000000
+    budget_bytes: 32000000000000
+    adapter: text
+    priority: 60
+    policy:
+      category: web
+      language: en
+      license_mode: compilation
+      collection_license: ODC-By-1.0; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: curated_prose
+
+  - id: essential_conditional_older_tail
+    kind: hf
+    repo: EssentialAI/essential-web-v1.0
+    revision: ce4eccc7e9604667b6d7f32cb6274b8b41f3113d
+    prefixes: [data]
+    allow_patterns: ['data/crawl=CC-MAIN-201[3-9]-*/*.parquet', 'data/crawl=CC-MAIN-202[0-2]-*/*.parquet']
+    expected_candidate_bytes: 65197596478614
+    selection_bytes: 18000000000000
+    budget_bytes: 18000000000000
+    adapter: text
+    priority: 59
+    policy:
+      category: web
+      language: en
+      license_mode: compilation
+      collection_license: ODC-By-1.0; underlying source rights retained
+      common_crawl_derived: true
+      generated: false
+      quality_profile: curated_prose

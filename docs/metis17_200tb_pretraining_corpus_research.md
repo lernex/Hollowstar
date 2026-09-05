@@ -165,8 +165,10 @@ schema checks or a bounded selector are not ready-to-run downloads.
 
 Acquire in waves. Current curated anchors, scarce premium sources and the
 freshness pilot go first. Conditional parent corpora and duplicate-heavy
-tails go last. All reserve capacity remains unspent until a measured gap
-justifies it; filling a disk is not the success condition.
+tails go last. The September 5 clarification replaces the old unspent
+reserve with actual payload: acquire approximately 200 TB while keeping
+the highest-quality approved sources first. Final eligible yield remains
+a separate measured condition.
 
 ### Full Nemotron means the entire content-bearing release
 
@@ -187,42 +189,31 @@ Final licensing, contamination, quality masks and training weights are
 separate decisions; acquiring every shard does not promise every token will
 be used at equal weight.
 
-### Budget: exactly 200 TB allocated, not a claimed 200 TB frozen corpus
+### Revised September 5 contract: approximately 200 TB of actual compressed payload
 
-The CSV's allocation column sums to **200,000,000,000,000 bytes**:
+The user explicitly requires **200,000,000,000,000 bytes of useful downloaded
+payload**, including **25.7 TB of fresh WET**, not a 200 TB budget padded
+with unspent reserve. Metadata, failed transfers and retry traffic are not
+corpus bytes. Plain-JSONL sources count their actual wire payload; they are
+not mislabeled compressed. This is a transfer-time target, **not** a 200 TB
+limit on expanded text, intermediate artifacts or token IDs.
 
-| Acquisition group | Allocated decimal TB | What it includes |
-|---|---:|---|
-| Current Common Crawl, small manifests and Wikipedia | **26.3510** | 25.70 WET; 0.60 NEWS; at most 0.001 object-path metadata; 0.05 Wikipedia; no URL indexes or repair |
-| HPLT, FineWeb2 and bounded translation gap | **41.2500** | 24.30 non-English HPLT; 7.00 English HPLT; 9.45 FineWeb2; 0.50 gap-fill translations |
-| Web anchors and labeled transformations | **66.2500** | Dolma web; organic/transformed Nemotron separately; selected Ultra-FineWeb; bounded FineWeb-Edu/DCLM/Essential; Darwin and L3 |
-| Documents, science and mixed Dolma components | **14.3800** | 4.50 targeted Dolma non-web; 4.50 Common Corpus; 5.38 FinePDFs; local quality views, no extra Edu ID download |
-| Dedicated code families | **5.2500** | Conditional Stack 3.55; CC-Code 0.57; synthetic Code-v1/v2 0.23/0.90 |
-| Math, LaTeX and specialized pretraining | **2.6900** | UltraData, CC-Math, selected MegaMath, rights-cleared LaTeX candidates and configuration-gated specialists; no Legal-v1 |
-| Small newer science/reasoning/code candidates | **0.2971** | Shipped French science, Lean, math/science trajectories and inline editing/CUDA/SQL; no GitHub archive or repo-dependent replay lane |
-| Conditional historical expansion | **34.0000** | At most 16.00 additional FineWeb and 18.00 older Essential snapshots; release only for measured gaps |
-| Unspent transfer/pilot reserve | **9.5319** | Retries, small metadata or approved ready-made content gaps; no reconstruction, replay-image or optional membership-sidecar downloads |
-| **Total** | **200.0000** | **All categories inside one envelope** |
+The previous plan had only **156.4681 TB of named primary/complementary
+ceilings**, **34 TB conditional**, and **9.5319 TB unspent**. Calling that
+200 TB of datasets was incorrect. The current executable source batches are:
 
-This is approximately **156.468 TB of named primary/complementary
-allocations**, **34 TB of explicitly conditional historical expansion**,
-and **9.532 TB unspent**. Admission conditions still apply inside the first
-category; it is not a claim every candidate is uniformly premium.
+| Activation batch | Candidate ceiling, decimal TB |
+|---|---:|
+| Seed `pipeline.yaml` | 46.7700 |
+| `expansion-web.yaml` | 52.2400 |
+| `expansion-complements.yaml` | 42.3940 |
+| `expansion-target.yaml` | 66.4619 |
+| All configured candidates | **207.8659** |
+| Excluding blocked Darwin | **206.0659** |
+| Release-wide actual payload target and cap | **200.0000** |
 
-Priority order in the machine-readable ledger:
-
-| Priority | Allocation TB | Release condition |
-|---|---:|---|
-| P0 | **26.3510** | Protected freshness and small path manifests, after source/adapter pilots |
-| P1 | **94.5300** | Primary candidates including complete Nemotron CC v2/v2.1/Math, after source admission |
-| P2 | **35.5871** | Other complementary pools/derivatives, after overlap, ancestry and quality review |
-| P3 | **34.0000** | Historical tail only when the required streams remain short |
-| RESERVE | **9.5319** | Explicit reassignment, never presumed corpus capacity |
-
-P0+P1 is a **120.881 TB priority tranche**, not an instruction to launch
-everything at once. Resolve manual gates and new adapters on small objects,
-then let admitted lanes move and prepare their verified objects while the
-rest are downloading.
+Resolve manual gates and new adapters on small objects, then let admitted
+lanes move and prepare verified objects while the rest are downloading.
 
 **CSV contract:** `inventory_bytes` is populated only for an exact inspected
 inventory; `inventory_scope` says whether that is the full parent, a specific
@@ -232,12 +223,34 @@ not observed downloads. Selectors are descriptive sets or semicolon-separated
 patterns, not ready-made CLI arguments. The eventual lock must enumerate
 their exact physical objects.
 
+The current CSV removes the reserve, increases English HPLT from 7 TB to
+**16.5319 TB of WDS10/9/8 ceilings**, and allows up to **32 TB** of the
+reviewed FineWeb parent rather than 16 TB. Consequently its candidate
+ceilings sum to **216 TB**, not 200 TB. They must not all be downloaded.
+The live release-wide payload limit remains **200 TB**; high-priority
+admitted sources precede the historical target-filling tails.
+
+The seed, web, complements and target activation files together declare
+**207.8659 TB of source ceilings**. Excluding Darwin's **1.8 TB** blocked
+masked-checksum source leaves **206.0659 TB** before exact-object slack
+and admission failures. This deliberate headroom replaces the unfunded
+assumption that every old ledger candidate would automatically become
+usable. It is not proof that 206 TB has passed preparation. Small sources
+still needing adapter/rights review do not count toward this executable
+pool. If another source fails, its bytes must be replaced explicitly
+within the same 200 TB payload target, not reported as a completed corpus.
+
+Bounded HF sources seal both selected and omitted object IDs. WET/HPLT
+object sizes are learned on GET, without a full-object HEAD sweep; the
+final acquisition closure must account for their completed whole objects
+and omitted remainder. Global capacity can stop inside a source ceiling.
+No incomplete file counts toward the target.
+
 Small plain-JSONL candidates are labeled **raw**, not falsely described as
 compressed; their full wire bytes count against the same envelope. Source
-allowances cap selected payload, while retry/metadata overhead consumes
-recorded headroom or explicitly reassigned reserve. Every actual transferred
-byte still counts against the global budget. Extra funding for retries must
-not silently change the frozen selected-object list.
+allowances cap selected payload. Retry/metadata traffic is reported separately
+as elapsed-time/network overhead; it cannot fill a missing payload allocation.
+It must not silently change the frozen selected-object list.
 
 ### 3.1 A byte cap must resolve to physical objects
 
@@ -802,7 +815,7 @@ intended complete Dolma pool increases that old HF inventory to
 **208.200 TB**, before adding freshness. The revised plan must track publisher volumes and
 measured rates, not just a global 200 TB sum.
 
-For the revised CSV, named allocations contain **132.8171 TB of HF
+For the superseded reserve-inclusive CSV, named allocations contained **132.8171 TB of HF
 payload/support**, **57.651 TB from non-HF origins**, and **9.5319 TB of
 unassigned reserve**. At the historical HF ceiling, the named HF portion
 alone needs **13.97 days**. If the entire reserve also becomes HF transfer,
@@ -810,6 +823,15 @@ that bound rises to **14.98 days**, before downtime and preparation.
 Excluding P3's historical tail reduces the HF allocation to **98.8171 TB**,
 or **10.40 days** at that ceiling. These are conditional transfer bounds,
 not measured current performance.
+
+On **September 5, 2026**, a concurrent 120-second measurement after fixing
+origin scheduling observed **121.186 MB/s RX on login1** and **118.826 MB/s
+RX on login2**, with **229.979 MB/s useful compressed-payload progress**.
+This is practical saturation of both 1 Gb/s external links, not a promise
+of 250 MB/s application payload. At that sustained payload rate, 200 TB
+takes approximately **10.1 days of transfer**, excluding source-specific
+slowdowns, interruptions and remaining preparation. Sharing HF on both
+hosts is necessary to avoid stranding an uplink in a long HF-only tail.
 
 The P0+P1 priority tranche has **63.23 TB of HF allocation**; the other
 57.651 TB uses independent origins. Full Nemotron inclusion is now explicit

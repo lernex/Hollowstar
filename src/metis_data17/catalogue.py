@@ -169,6 +169,13 @@ def _resolve_hf(root: Path, source: Mapping[str, Any], writer: CatalogueWriter) 
                 raise RuntimeError(f"Unresolved payload object size: {repo}:{key}")
             lfs = item.lfs
             checksum = lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)
+            if checksum is not None and (
+                not isinstance(checksum, str) or re.fullmatch(r"[0-9a-f]{64}", checksum) is None
+            ):
+                raise RuntimeError(
+                    f"Publisher supplied a masked or invalid SHA-256 for {repo}:{key}; "
+                    "source remains blocked rather than downgrading integrity"
+                )
             policy, priority = _policy_for(source, key)
             policy["repo_id"] = repo
             spec = ObjectSpec.create(
@@ -246,6 +253,10 @@ def _cached_metadata(root: Path, url: str, *, maximum_bytes: int = 10_000_000) -
 
 
 def _resolve_hplt(root: Path, source: Mapping[str, Any], writer: CatalogueWriter) -> None:
+    selection = str(source["selection"])
+    english_bucket = re.fullmatch(r"english-wds(10|[1-9])", selection)
+    if selection != "nonenglish" and english_bucket is None:
+        raise ValueError("HPLT selection must name nonenglish or an exact English WDS bucket")
     data = _cached_metadata(root, str(source["manifest_url"]))
     digest = hashlib.sha256(data).hexdigest()
     if digest != source["manifest_sha256"]:
@@ -257,9 +268,9 @@ def _resolve_hplt(root: Path, source: Mapping[str, Any], writer: CatalogueWriter
         if name in names:
             raise RuntimeError("HPLT language is duplicated in the catalogue")
         names.add(name)
-        if source["selection"] == "english-wds10" and name != "eng_Latn":
+        if english_bucket is not None and name != "eng_Latn":
             continue
-        if source["selection"] == "nonenglish" and name == "eng_Latn":
+        if selection == "nonenglish" and name == "eng_Latn":
             continue
         md5_data = _cached_metadata(root, str(record["md5"])).decode("utf-8")
         checksums: dict[str, str] = {}
@@ -277,7 +288,7 @@ def _resolve_hplt(root: Path, source: Mapping[str, Any], writer: CatalogueWriter
                 raise RuntimeError("HPLT manifest contains an unapproved origin")
             filename = Path(parsed.path).name
             bucket = int(filename.split("_", 1)[0])
-            if source["selection"] == "english-wds10" and bucket != 10:
+            if english_bucket is not None and bucket != int(english_bucket[1]):
                 continue
             if filename not in checksums:
                 raise RuntimeError(f"HPLT object has no published checksum: {name}/{filename}")

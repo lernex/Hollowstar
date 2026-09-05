@@ -732,7 +732,7 @@ assumed complete 7.869 TB gzip snapshot.
 | Selected component group | Exact inventory bytes |
 |---|---:|
 | `cc_all_dressed` + `cc_all_dressed_addons` | **15,742,893,153,074** |
-| Six materialized code/prose components below | **2,458,368,343,174** |
+| Six materialized code/prose components below, excluding tokenizer-index CSV | **2,457,269,805,858** |
 | `dolma4pdfs/olmo-crawled-pdfs_ngram_filtered` | **1,683,945,715,602** |
 | S2ORC-derived, four exact approved-license suffixes | **88,886,739,877** |
 | `common_pile_textbook` | **19,696,162,283** |
@@ -766,9 +766,15 @@ These are materialized components in the Dolma package, not permission to
 buy a pointer-only Stack-v2 repository. Their overlap with separate code
 acquisitions still needs accounting.
 
-The non-web groups above total **4,353,618,236,465 bytes**, within a
+**September 5, 2026 content-inventory correction:** the earlier six-component
+directory total included **1,098,537,316 bytes** of
+`swallow-code/allenai/dolma2-tokenizer/0000.csv.gz`. A bounded read showed
+tokenizer-index fields rather than source text. This metadata-only object
+is excluded explicitly, not acquired as code or used to reconstruct files.
+
+The non-web groups above total **4,352,519,699,149 bytes**, within a
 **4.50 TB** allocation. Together with the two web components, the selected
-inventory is **20,096,511,389,539 bytes** before row-level admission. Omit
+inventory is **20,095,412,852,223 bytes** before row-level admission. Omit
 the separate `hplt` component (1,769,352,261,281 bytes) when acquiring HPLT,
 the FinePDFs-derived branch (972,989,810,708 bytes) when acquiring FinePDFs,
 and the unapproved S2ORC license partitions. These physical exclusions

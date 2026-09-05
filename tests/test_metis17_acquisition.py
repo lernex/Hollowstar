@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import requests
@@ -233,6 +234,24 @@ class Metis17AcquisitionTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             writer.seal()
 
+    def test_masked_publisher_digest_blocks_source_without_disabling_verification(self):
+        source = {
+            "id": "masked", "kind": "hf", "repo": "publisher/dataset", "revision": "a" * 40,
+            "allow_patterns": ["*.jsonl.gz"], "budget_bytes": 100, "adapter": "text",
+            "priority": 50, "policy": {},
+        }
+        item = SimpleNamespace(path="train.jsonl.gz", size=5, lfs={"sha256": "*" * 64})
+        api = SimpleNamespace(
+            dataset_info=lambda *args, **kwargs: SimpleNamespace(sha=source["revision"]),
+            list_repo_tree=lambda *args, **kwargs: iter([item]),
+        )
+        with patch("metis_data17.catalogue.HfApi", return_value=api), patch(
+            "metis_data17.catalogue.RepoFile", SimpleNamespace,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "masked or invalid SHA-256"):
+                resolve_source(self.root, source)
+        self.assertFalse(any(self.root.glob("catalogue/*/SOURCE_COMPLETE.json")))
+
     def test_incomplete_catalogue_can_be_reconciled_without_changing_old_objects(self):
         source = {"id": "source", "kind": "hf", "expected_inventory_bytes": 10, "formats": ["parquet"]}
         corrected = {**source, "formats": ["parquet", "jsonl"]}
@@ -295,6 +314,41 @@ class Metis17AcquisitionTests(unittest.TestCase):
         source = {"id": "forbidden", "kind": "github_repositories"}
         with self.assertRaises(ValueError):
             resolve_source(self.root, source)
+
+    def test_unknown_hplt_selection_cannot_silently_enumerate_every_language(self):
+        with patch("metis_data17.catalogue._cached_metadata") as metadata:
+            with self.assertRaisesRegex(ValueError, "exact English WDS bucket"):
+                resolve_source(self.root, {"id": "hplt", "kind": "hplt", "selection": "english-typo"})
+        metadata.assert_not_called()
+
+    def test_hplt_english_bucket_selection_is_disjoint_and_complete(self):
+        import hashlib
+        from metis_data17.catalogue import _resolve_hplt
+
+        names = ["10_a.jsonl.zst", "9_a.jsonl.zst", "9_b.jsonl.zst", "8_a.jsonl.zst"]
+        manifest = ("\n".join(json.dumps({
+            "name": language, "md5": f"https://data.hplt-project.org/{language}.md5",
+            "urls": [f"https://data.hplt-project.org/{language}/{name}" for name in names],
+        }) for language in ("eng_Latn", "deu_Latn")) + "\n").encode()
+        checksums = "".join(f"{'a' * 32}  {name}\n" for name in names).encode()
+        base = {
+            "id": "english", "kind": "hplt", "manifest_url": "https://data.hplt-project.org/manifest",
+            "manifest_sha256": hashlib.sha256(manifest).hexdigest(),
+            "priority": 80, "budget_bytes": 1000, "policy": {},
+        }
+        selected = {}
+        for bucket in (10, 9, 8):
+            source = {**base, "id": f"english{bucket}", "selection": f"english-wds{bucket}"}
+            writer = CatalogueWriter(self.root, source)
+            with patch("metis_data17.catalogue._cached_metadata",
+                       side_effect=lambda root, url: manifest if url.endswith("manifest") else checksums):
+                _resolve_hplt(self.root, source, writer)
+            writer.seal()
+            selected[bucket] = {record["relative_key"] for page in writer.directory.glob("page-*.json")
+                                for record in read_receipt(page)["objects"]}
+        self.assertEqual(selected[9], {"eng_Latn/9_a.jsonl.zst", "eng_Latn/9_b.jsonl.zst"})
+        self.assertEqual(sum(map(len, selected.values())), len(set.union(*selected.values())))
+        self.assertEqual(set.union(*selected.values()), {f"eng_Latn/{name}" for name in names})
 
 
 if __name__ == "__main__":
