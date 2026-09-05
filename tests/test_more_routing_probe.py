@@ -587,6 +587,58 @@ class UtilityFittingTests(OwnedFilesTestCase):
         self.assertGreater(report["nominal_teacher_forward_flops"], 0)
         json.dumps(report, allow_nan=False)
 
+    def test_observation_cost_reuses_the_existing_exit_projections(self):
+        batch = self.windows[0][0]
+        depths = batch.attention_mask.long() * 2
+        widths = fixed_widths(self.config, depths)
+        runtime = FrozenRuntimeState(self.model)
+        head_rows = []
+        hook = self.model.lm_head.register_forward_hook(
+            lambda _module, args, _output: head_rows.append(args[0].shape[0])
+        )
+        try:
+            plain, plain_report = repeated_plan_evaluation(
+                self.model, batch, self.curriculum, seed=18, runtime_state=runtime,
+                repeat_forwards=2, minimum_loss_delta=1e-5,
+                force_depth=depths, force_routed_k=widths,
+            )
+            plain_rows = sum(head_rows)
+            head_rows.clear()
+            observed, observed_report = repeated_plan_evaluation(
+                self.model, batch, self.curriculum, seed=18, runtime_state=runtime,
+                repeat_forwards=2, minimum_loss_delta=1e-5,
+                force_depth=depths, force_routed_k=widths,
+                return_router_observations=True,
+            )
+        finally:
+            hook.remove()
+        self.assertEqual(sum(head_rows), plain_rows)
+        self.assertEqual(plain.cost, observed.cost)
+        expected_extra = 2 * float(observed.output.telemetry["joint_router_flops"]) / 3.0
+        self.assertAlmostEqual(
+            observed_report["nominal_forward_flops_all_calls"]
+            - plain_report["nominal_forward_flops_all_calls"],
+            expected_extra,
+        )
+
+    def test_teacher_forward_cost_adds_only_the_utility_predictor(self):
+        expected = []
+
+        def account(model, _args, kwargs, output):
+            cost = plan_cost(model.config, output.chosen_depths, kwargs["force_routed_k"])
+            expected.append(
+                cost["nominal_forward_flops"]
+                + float(output.telemetry["joint_router_flops"]) / 3.0
+            )
+
+        hook = self.model.register_forward_hook(account, with_kwargs=True)
+        try:
+            report = self.fit()
+        finally:
+            hook.remove()
+        self.assertEqual(len(expected), report["teacher_forward_calls"])
+        self.assertAlmostEqual(report["nominal_teacher_forward_flops"], sum(expected))
+
     def test_overlap_is_rejected_before_any_update(self):
         with self.assertRaisesRegex(ValueError, "overlap"):
             fit_utility_in_memory(

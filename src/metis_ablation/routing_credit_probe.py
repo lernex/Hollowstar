@@ -625,11 +625,7 @@ def repeated_plan_evaluation(
         })
         forward = current.cost["nominal_forward_flops"]
         if "joint_router_flops" in current.output.telemetry:
-            active_targets = int((current.output.active_masks & batch.labels.ne(-100)[None]).sum())
-            forward += (
-                float(current.output.telemetry["joint_router_flops"]) / 3.0
-                + 2.0 * model.config.d_model * model.config.vocab_size * active_targets
-            )
+            forward += float(current.output.telemetry["joint_router_flops"]) / 3.0
         nominal_forward += forward
     assert first is not None
     return first, {
@@ -1282,10 +1278,9 @@ def fit_utility_in_memory(
                 torch.cuda.synchronize(device)
             elapsed = time.perf_counter() - call_started
             router_forward = float(output.telemetry["joint_router_flops"]) / 3.0
-            supervised_passes = int((output.active_masks & batch.labels.ne(-100)[None]).sum())
-            # Teacher observations project each exit in addition to the ordinary LM loss.
-            extra_exit_forward = 2.0 * model.config.d_model * model.config.vocab_size * supervised_passes
-            forward = expected_cost["nominal_forward_flops"] + router_forward + extra_exit_forward
+            # Observation targets reuse the per-exit head work already priced
+            # in the trajectory; only the utility predictor is additional.
+            forward = expected_cost["nominal_forward_flops"] + router_forward
             nominal_forward += forward
             nominal_router_backward += 2.0 * router_forward
             token_count += batch.non_padding_tokens
