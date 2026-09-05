@@ -184,6 +184,17 @@ class ExecutionBoundTests(unittest.TestCase):
         self.assertEqual(args.stop_after_steps, 1000)
         self.assertIsNone(args.max_steps)
 
+    def test_pilot_checkpoint_retention_preserves_every_progressive_boundary(self):
+        self.train("retained", stop_after_steps=2, checkpoint_every=1, keep_all_checkpoints=True)
+        original = {step: self.checkpoint_path("retained", step).read_bytes() for step in (1, 2)}
+        self.train("retained", stop_after_steps=4, checkpoint_every=1, keep_all_checkpoints=True)
+        for step in range(1, 5):
+            self.assertTrue(self.checkpoint_path("retained", step).is_file())
+        for step, contents in original.items():
+            self.assertEqual(self.checkpoint_path("retained", step).read_bytes(), contents)
+        self.assertTrue(self.manifest("retained")["keep_all_checkpoints"])
+        self.assertNotIn("keep_all_checkpoints", self.manifest("retained")["run_identity"])
+
 
 if __name__ == "__main__":
     unittest.main()

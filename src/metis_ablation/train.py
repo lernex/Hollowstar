@@ -592,7 +592,7 @@ def _save_checkpoint(
     total_steps: int,
     learning_rate: float,
     run_identity_sha256: str,
-    keep_last: int = 2,
+    keep_last: int | None = 2,
 ) -> Path | None:
     """Write a resumable checkpoint and prune older ones.
 
@@ -679,7 +679,7 @@ def _save_checkpoint(
     existing = sorted(
         path for path in paths.checkpoints.glob("step-*") if (path / "state.pt").exists()
     )
-    for stale in existing[:-keep_last]:
+    for stale in existing[:-keep_last] if keep_last is not None else ():
         for item in stale.iterdir():
             item.unlink()
         stale.rmdir()
@@ -834,6 +834,7 @@ def train_row(
     joint_max_passes: int | None = None,
     stop_after_steps: int | None = None,
     observed_depth_credit: bool = False,
+    keep_all_checkpoints: bool = False,
 ) -> dict[str, Any]:
     runtime = initialize_runtime(device=device_override)
     lease = None
@@ -864,6 +865,7 @@ def train_row(
             joint_max_passes=joint_max_passes,
             stop_after_steps=stop_after_steps,
             observed_depth_credit=observed_depth_credit,
+            keep_all_checkpoints=keep_all_checkpoints,
         )
     finally:
         _release_row_lease(lease)
@@ -893,6 +895,7 @@ def _train_row_inner(
     joint_max_passes: int | None = None,
     stop_after_steps: int | None = None,
     observed_depth_credit: bool = False,
+    keep_all_checkpoints: bool = False,
 ) -> dict[str, Any]:
     if stop_after_steps is not None:
         if type(stop_after_steps) is not int or stop_after_steps <= 0:
@@ -1261,6 +1264,7 @@ def _train_row_inner(
             "run_identity_sha256": identity_sha256,
             "campaign_identity_sha256": campaign_identity_sha256,
             "final_checkpoint": bool(final_checkpoint),
+            "keep_all_checkpoints": bool(keep_all_checkpoints),
             "sampler": sampler_manifest,
         }
         (paths.root / "run.json").write_text(
@@ -1609,6 +1613,7 @@ def _train_row_inner(
                     total_steps=total_steps,
                     learning_rate=base_lr,
                     run_identity_sha256=identity_sha256,
+                    keep_last=None if keep_all_checkpoints else 2,
                 )
                 last_checkpoint_step = completed_steps
             summary["steps"] = step + 1
@@ -1628,6 +1633,7 @@ def _train_row_inner(
             total_steps=total_steps,
             learning_rate=base_lr,
             run_identity_sha256=identity_sha256,
+            keep_last=None if keep_all_checkpoints else 2,
         )
     summary["fp8_parity_relative_error"] = fp8_parity_error
     summary["tokens"] = summary["steps"] * GLOBAL_BATCH_TOKENS
@@ -1739,6 +1745,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--seed", type=int, default=16_062_026)
     parser.add_argument("--checkpoint-every", type=int, default=500)
+    parser.add_argument(
+        "--keep-all-checkpoints", action="store_true",
+        help="Preserve every intermediate pilot checkpoint rather than retaining only the latest two",
+    )
     parser.add_argument("--analysis-every", type=int, default=1_000)
     parser.add_argument("--telemetry-every", type=int, default=10)
     parser.add_argument("--max-steps", type=int, default=None)
@@ -1813,6 +1823,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         joint_max_passes=args.joint_max_passes,
         stop_after_steps=args.stop_after_steps,
         observed_depth_credit=args.observed_depth_credit,
+        keep_all_checkpoints=args.keep_all_checkpoints,
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
