@@ -89,6 +89,7 @@ class CausalRMTests(unittest.TestCase):
                 dict(legacy.named_parameters())[name].grad, rtol=1e-4, atol=1e-5,
             )
         self.assertIsNone(candidate.continuation.output.weight.grad)
+        self.assertTrue(all(not parameter.requires_grad for parameter in candidate.continuation.parameters()))
         # This mutation must fail the compatibility reference: the old column
         # is a continuous feature, not the new policy's binary continuation.
         with torch.no_grad(), patch.object(
@@ -96,7 +97,7 @@ class CausalRMTests(unittest.TestCase):
             side_effect=lambda state, memory, difference, history, needed: (needed.float(), int(needed.sum())),
         ):
             corrupted = candidate(inputs, labels, curriculum=curriculum)
-        self.assertGreater(float((corrupted.final_hidden_state - left.final_hidden_state).abs().max()), 1e-4)
+        self.assertGreater(float((corrupted.final_hidden_state - left.final_hidden_state.detach()).abs().max()), 1e-4)
 
     def test_metadata_cost_is_paid_without_increasing_the_core_reference_cap(self):
         model = self.model()

@@ -5194,6 +5194,8 @@ class Metis16ForCausalLM(nn.Module):
             device=device,
             dtype=dtype,
         )
+        if config.causal_memory_metadata == "legacy_confidence":
+            self.continuation.requires_grad_(False)
         self.depth_budget = BudgetController(
             config.target_mean_passes,
             coefficient=config.depth_budget_coefficient,
